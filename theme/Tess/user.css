@@ -31,8 +31,7 @@ html.tess .Root__top-container,
 html.tess .Root {
   grid-template-rows: auto 1fr 0 !important;
 }
-html.tess .main-view-container__scroll-node-child,
-html.tess #Desktop_LeftSidebar_Id nav {
+html.tess .main-view-container__scroll-node-child {
   padding-bottom: 96px;
 }
 
@@ -151,14 +150,23 @@ html.tess #Desktop_LeftSidebar_Id nav {
   overflow: hidden;
   -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent);
 }
-.tb-sub span,
-.tn-text p span {
+/* subtitles scroll only when they don't fit (the script adds .scrolling) */
+.tess-marquee {
+  -webkit-mask-image: none !important;
+}
+.tess-marquee span {
   display: inline-block;
-  animation: tess-marquee 16s linear infinite;
+  white-space: nowrap;
+}
+.tess-marquee.scrolling {
+  -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent) !important;
+}
+.tess-marquee.scrolling span {
+  animation: tess-marquee 14s linear infinite;
 }
 @keyframes tess-marquee {
-  0%, 18% { transform: translateX(0); }
-  82%, 100% { transform: translateX(-35%); }
+  0%, 20% { transform: translateX(0); }
+  80%, 100% { transform: translateX(var(--tess-marquee-shift, 0)); }
 }
 .tb-prog {
   position: absolute;
@@ -285,7 +293,7 @@ html.tess #Desktop_LeftSidebar_Id nav {
   -webkit-backdrop-filter: blur(24px) saturate(1.6);
   border: 1px solid rgba(255, 255, 255, 0.16);
 }
-.tn-pill.tl { top: 16px; left: 16px; }
+.tn-pill.tl { top: 12px; left: 92px; }
 .tn-pill.tr { top: 16px; right: 16px; }
 .tn-pill.br { bottom: 18px; right: 18px; padding: 0 5px; gap: 4px; }
 #tess-np .tn-pill.br button {
@@ -299,6 +307,8 @@ html.tess #Desktop_LeftSidebar_Id nav {
   color: #26323b;
 }
 .tn-vol { width: 170px; }
+#tess-np .tn-gear { color: var(--tess-dim); }
+#tess-np .tn-gear:hover { color: #fff; }
 
 .tn-stage {
   position: absolute;
@@ -567,14 +577,22 @@ html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-t
   border-bottom-color: rgba(255, 255, 255, 0.07);
 }
 
-/* ================= artist pages ================= */
+/* ================= artist pages =================
+   The header fills the whole view until you scroll, like Apple Music.
+   Text is white over dark video and dark over light video (the script adds .tess-hero-light). */
 html.tess.tess-artist [data-testid="artist-page"] .main-entityHeader-container {
-  min-height: 62vh;
+  min-height: var(--tess-hero-h, 80vh);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  background: none !important;
 }
 html.tess.tess-artist [data-testid="artist-page"] .main-entityHeader-contentWrapper {
   justify-content: flex-end;
   align-items: center;
   text-align: center;
+  padding-bottom: 104px;
+  background: none !important;
 }
 html.tess.tess-artist [data-testid="artist-page"] .main-entityHeader-headerText {
   align-items: center;
@@ -588,32 +606,58 @@ html.tess.tess-artist [data-testid="artist-page"] .main-entityHeader-title {
 html.tess.tess-artist [data-testid="artist-page"] .main-entityHeader-title > span,
 html.tess.tess-artist [data-testid="artist-page"] .main-entityHeader-title h1 {
   font-family: var(--tess-font) !important;
-  font-size: 54px !important;
+  font-size: clamp(44px, 4.6vw, 76px) !important;
   font-weight: 700 !important;
-  letter-spacing: -0.015em !important;
-  text-shadow: 0 2px 24px rgba(0, 0, 0, 0.35);
+  letter-spacing: -0.01em !important;
+  line-height: 1.05 !important;
+}
+html.tess.tess-artist [data-testid="artist-page"] .main-entityHeader-headerText,
+html.tess.tess-artist [data-testid="artist-page"] .main-entityHeader-headerText * {
+  color: #fff !important;
+  text-shadow: 0 2px 22px rgba(0, 0, 0, 0.45);
+  transition: color 0.6s, text-shadow 0.6s;
+}
+html.tess.tess-artist.tess-hero-light [data-testid="artist-page"] .main-entityHeader-headerText,
+html.tess.tess-artist.tess-hero-light [data-testid="artist-page"] .main-entityHeader-headerText * {
+  color: #111 !important;
+  text-shadow: 0 1px 18px rgba(255, 255, 255, 0.4);
+}
+html.tess.tess-artist [data-testid="artist-page"] [data-testid="action-bar"] {
+  background: none !important;
 }
 html.tess.tess-artist [data-testid="artist-page"] [data-testid="action-bar-row"] {
   justify-content: center;
 }
+html.tess.tess-artist [data-testid="artist-page"] [data-testid="action-bar-row"] button {
+  color: #fff;
+}
+html.tess.tess-artist.tess-hero-light [data-testid="artist-page"] [data-testid="action-bar-row"] button:not([aria-label="Play"]):not([aria-label="Pause"]) {
+  color: #111 !important;
+  border-color: rgba(0, 0, 0, 0.35) !important;
+}
 
-/* header image: slow drift, and Spotify Canvas video when the artist has one */
+/* the header background: full height, slow drift, Canvas video on top, fade into the page */
 html.tess.tess-artist .tess-hero-bg {
-  animation: tess-kenburns 26s ease-in-out infinite alternate;
   overflow: hidden;
-  background-position: center 25% !important;
+  background-size: cover !important;
+  background-position: center 22% !important;
+  animation: tess-kenburns 28s ease-in-out infinite alternate;
+}
+@keyframes tess-kenburns {
+  from { transform: scale(1); }
+  to { transform: scale(1.08) translate(-1%, -1.5%); }
 }
 html.tess.tess-artist .tess-hero-bg::after {
   content: "";
   position: absolute;
   inset: 0;
   z-index: 1;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 40%, rgba(18, 18, 18, 0.55) 72%, #121212 100%);
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.25) 0%, rgba(0, 0, 0, 0) 18%, rgba(0, 0, 0, 0) 58%, rgba(0, 0, 0, 0.35) 82%, var(--tess-page) 100%);
   pointer-events: none;
 }
-@keyframes tess-kenburns {
-  from { transform: scale(1); }
-  to { transform: scale(1.1) translate(-1.5%, -2%); }
+html.tess.tess-artist.tess-hero-light .tess-hero-bg::after {
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.15) 0%, rgba(0, 0, 0, 0) 20%, rgba(0, 0, 0, 0) 78%, var(--tess-page) 100%);
 }
 .tess-hero-video {
   position: absolute;
@@ -629,4 +673,219 @@ html.tess.tess-artist .tess-hero-bg::after {
 }
 html:not(.tess-artist) .tess-hero-video {
   display: none;
+}
+
+/* ================= window tint and panels =================
+   Dia-style: one material for every panel, the window behind it tinted by the album art. */
+:root {
+  --tess-page: #121214;
+  --tess-panel: rgba(20, 20, 23, 0.6);
+  --tess-panel-solid: #141417;
+  --tess-hairline: rgba(255, 255, 255, 0.07);
+  --tess-radius: 14px;
+}
+#tess-ambient {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  background: #050506;
+  pointer-events: none;
+}
+#tess-ambient i {
+  position: absolute;
+  inset: -20%;
+  background: var(--art) center / cover;
+  filter: blur(110px) saturate(1.5);
+  opacity: 0;
+  transition: opacity 1.2s, background-image 1.2s;
+}
+html.tess-tint #tess-ambient i {
+  opacity: 0.75;
+}
+html.tess body,
+html.tess #main,
+html.tess .Root,
+html.tess .Root__top-container {
+  background: transparent !important;
+}
+html.tess #Desktop_LeftSidebar_Id,
+html.tess #main-view,
+html.tess .Root__right-sidebar-peek,
+html.tess .Root__right-sidebar-peek > aside {
+  background: var(--tess-panel-solid) !important;
+}
+html.tess.tess-tint #Desktop_LeftSidebar_Id,
+html.tess.tess-tint #main-view,
+html.tess.tess-tint .Root__right-sidebar-peek,
+html.tess.tess-tint .Root__right-sidebar-peek > aside {
+  background: var(--tess-panel) !important;
+}
+html.tess #Desktop_LeftSidebar_Id,
+html.tess #main-view,
+html.tess .Root__right-sidebar-peek {
+  border-radius: var(--tess-radius) !important;
+  box-shadow: inset 0 0 0 1px var(--tess-hairline);
+  overflow: hidden;
+}
+html.tess #main-view .main-view-container {
+  border-radius: var(--tess-radius);
+}
+
+/* one font across the app so Spotify's pages and Tess's surfaces match */
+html.tess body,
+html.tess button,
+html.tess input,
+html.tess [class*="encore-text"] {
+  font-family: var(--tess-font) !important;
+}
+
+/* ================= library sidebar ================= */
+html.tess #Desktop_LeftSidebar_Id h1 {
+  font-size: 15px !important;
+  font-weight: 650 !important;
+  letter-spacing: -0.01em;
+}
+html.tess #Desktop_LeftSidebar_Id button[aria-label="Create"] {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-radius: 999px !important;
+  box-shadow: inset 0 0 0 1px var(--tess-hairline);
+  transition: background 0.2s;
+}
+html.tess #Desktop_LeftSidebar_Id button[aria-label="Create"]:hover {
+  background: rgba(255, 255, 255, 0.14) !important;
+}
+/* filter chips: soft segmented pills */
+html.tess #Desktop_LeftSidebar_Id [role="listbox"] [role="option"] > div {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border-radius: 9px !important;
+  box-shadow: inset 0 0 0 1px var(--tess-hairline);
+  font-size: 12.5px !important;
+  transition: background 0.2s, color 0.2s;
+}
+html.tess #Desktop_LeftSidebar_Id [role="listbox"] [role="option"]:hover > div {
+  background: rgba(255, 255, 255, 0.11) !important;
+}
+html.tess #Desktop_LeftSidebar_Id [role="listbox"] [role="option"][aria-selected="true"] > div {
+  background: rgba(255, 255, 255, 0.92) !important;
+  color: #111 !important;
+}
+html.tess #Desktop_LeftSidebar_Id [role="search"] input {
+  border-radius: 9px !important;
+}
+/* rows: rounded, airy, a soft glow on what's playing */
+html.tess #Desktop_LeftSidebar_Id [data-encore-id="listRow"] {
+  border-radius: 11px !important;
+  transition: background 0.18s, transform 0.25s var(--tess-spring);
+}
+html.tess #Desktop_LeftSidebar_Id [data-encore-id="listRow"]:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+html.tess #Desktop_LeftSidebar_Id [data-encore-id="listRow"]:active {
+  transform: scale(0.985);
+}
+html.tess #Desktop_LeftSidebar_Id [role="row"][aria-selected="true"] [data-encore-id="listRow"],
+html.tess #Desktop_LeftSidebar_Id [data-encore-id="listRow"][aria-selected="true"] {
+  background: rgba(255, 255, 255, 0.1) !important;
+}
+html.tess #Desktop_LeftSidebar_Id [data-encore-id="listRow"]:has([data-encore-id="listRowTitle"][class*="bright-accent"]) {
+  background: linear-gradient(90deg, rgba(30, 215, 96, 0.16), rgba(30, 215, 96, 0.02) 70%) !important;
+  box-shadow: inset 0 0 0 1px rgba(30, 215, 96, 0.18);
+}
+html.tess #Desktop_LeftSidebar_Id [data-encore-id="listRow"] img {
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+html.tess #Desktop_LeftSidebar_Id [data-encore-id="listRowTitle"] {
+  font-size: 14px !important;
+  font-weight: 550 !important;
+  letter-spacing: -0.005em;
+}
+html.tess #Desktop_LeftSidebar_Id [data-encore-id="listRowSubtitle"] {
+  font-size: 12px !important;
+  opacity: 0.85;
+}
+
+/* ================= now playing panel (right) ================= */
+html.tess .Root__right-sidebar-peek [data-testid="cover-art-slot"],
+html.tess .Root__right-sidebar-peek [data-testid="cover-art-slot"] * {
+  border-radius: 12px !important;
+}
+html.tess .Root__right-sidebar-peek [data-testid="cover-art-slot"] {
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+}
+html.tess .Root__right-sidebar-peek section,
+html.tess .Root__right-sidebar-peek [data-testid="lyrics-npv-section"] {
+  border-radius: var(--tess-radius) !important;
+  box-shadow: inset 0 0 0 1px var(--tess-hairline);
+}
+html.tess .Root__right-sidebar-peek section {
+  background: rgba(255, 255, 255, 0.05) !important;
+}
+html.tess .Root__right-sidebar-peek [data-encore-id="card"],
+html.tess .Root__right-sidebar-peek [data-encore-id="card"] img {
+  border-radius: 10px !important;
+}
+
+/* ================= Tess settings dialog ================= */
+.tess-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 420px;
+  font-family: var(--tess-font);
+}
+.tess-set-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 12px 4px;
+  border-bottom: 1px solid var(--tess-hairline);
+  cursor: pointer;
+}
+.tess-set-row:last-child {
+  border-bottom: 0;
+}
+.tess-set-row div {
+  flex: 1;
+}
+.tess-set-row b {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+}
+.tess-set-row span {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--tess-dim);
+}
+.tess-set-row input {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 40px;
+  height: 24px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.2);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.2s;
+  flex: none;
+}
+.tess-set-row input::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.25s var(--tess-spring);
+}
+.tess-set-row input:checked {
+  background: var(--tess-accent);
+}
+.tess-set-row input:checked::after {
+  transform: translateX(16px);
 }
