@@ -2254,3 +2254,211 @@ html.tess.tess-home #main-view main > div > [style*="background-color"]:first-ch
   font-size: 11.5px;
   color: rgba(255, 255, 255, 0.4);
 }
+
+/* ================= playlist pages ================= */
+/* header: a tilted wall of the playlist's own covers drifting slowly behind the title (one moving layer) */
+html.tess [data-testid="playlist-page"] .main-entityHeader-container.tp-header {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border-radius: 0 0 var(--tess-radius) var(--tess-radius);
+}
+.tp-wall {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  perspective: 1100px;
+  pointer-events: none;
+}
+.tp-wall::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background:
+    linear-gradient(90deg, rgba(10, 10, 14, 0.92) 0%, rgba(10, 10, 14, 0.7) 38%, rgba(10, 10, 14, 0.35) 100%),
+    linear-gradient(180deg, rgba(10, 10, 14, 0.2) 0%, rgba(10, 10, 14, 0.85) 100%);
+}
+.tp-wall-plane {
+  position: absolute;
+  left: 30%;
+  top: -40%;
+  width: 95%;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 10px;
+  transform: rotateX(28deg) rotateZ(-14deg);
+  transform-origin: 50% 0;
+  animation: tp-drift 90s linear infinite;
+  will-change: transform;
+}
+.tp-wall-plane i {
+  aspect-ratio: 1;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05) center / cover;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5);
+}
+@keyframes tp-drift {
+  from { transform: rotateX(28deg) rotateZ(-14deg) translateY(0); }
+  to { transform: rotateX(28deg) rotateZ(-14deg) translateY(-45%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tp-wall-plane { animation: none; }
+}
+/* the header's own colour band gives way to the wall */
+html.tess [data-testid="playlist-page"] .tp-header .main-entityHeader-backgroundColor,
+html.tess [data-testid="playlist-page"] .tp-header .main-entityHeader-overlay,
+html.tess [data-testid="playlist-page"] .tp-header > [class*="mixingBackground"] {
+  background: transparent !important;
+}
+/* the playlist's own colour still tints the wall a little, so every playlist keeps its identity */
+.tp-wall::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: var(--tp-tint, transparent);
+  mix-blend-mode: color;
+  opacity: 0.35;
+}
+
+/* DNA */
+#tess-dna {
+  margin: 4px var(--content-spacing, 32px) 28px;
+  padding: 20px 22px 18px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+  font-family: var(--tess-font);
+  animation: tess-home-enter 0.5s var(--tess-spring) both;
+}
+.dna-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.dna-head h2 {
+  margin: 0;
+  font: 700 19px/1.2 var(--tess-font);
+  letter-spacing: -0.01em;
+}
+.dna-stats {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.dna-stats span {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.75);
+}
+.dna-ribbon {
+  display: flex;
+  gap: 4px;
+  height: 92px;
+  border-radius: 14px;
+  overflow: hidden;
+}
+.dna-seg {
+  position: relative;
+  flex: var(--w) 1 0;
+  min-width: 14px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 10px 12px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08) center / cover;
+  color: #fff !important;
+  text-decoration: none !important;
+  cursor: pointer;
+  transition: flex-grow 0.55s var(--tess-spring), filter 0.3s;
+}
+.dna-seg::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.05), rgba(0, 0, 0, 0.75));
+}
+.dna-ribbon:hover .dna-seg {
+  filter: saturate(0.7) brightness(0.75);
+}
+.dna-ribbon .dna-seg:hover {
+  flex-grow: calc(var(--w) * 1.6 + 8);
+  filter: none;
+}
+.dna-name,
+.dna-pct {
+  position: relative;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dna-name {
+  font-size: 13.5px;
+  font-weight: 700;
+}
+.dna-pct {
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.75);
+}
+.dna-others {
+  cursor: default;
+  background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.06) 0 8px, rgba(255, 255, 255, 0.03) 8px 16px);
+}
+.dna-years {
+  margin-top: 18px;
+}
+.dna-years-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.dna-years h3 {
+  margin: 0;
+  font: 650 14px/1.2 var(--tess-font);
+}
+.dna-years small {
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.55);
+}
+.dna-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 46px;
+}
+.dna-bars i {
+  flex: 1;
+  min-width: 2px;
+  height: calc(var(--h) * 100%);
+  min-height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: linear-gradient(180deg, var(--tess-accent), rgba(30, 215, 96, 0.35));
+  opacity: calc(0.35 + var(--h) * 0.65);
+  transition: opacity 0.2s;
+}
+.dna-bars i:hover {
+  opacity: 1;
+}
+.dna-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.dna-cap {
+  display: block;
+  margin-top: 3px;
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.55);
+}

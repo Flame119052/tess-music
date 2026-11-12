@@ -70,7 +70,7 @@
   const route = () => Spicetify.Platform.History.location?.pathname || '';
 
   // ---------------- settings ----------------
-  const DEFAULTS = { coverVideo: true, panelVideo: true, artistVideo: true, tintWindow: true, sideLyrics: true };
+  const DEFAULTS = { coverVideo: true, panelVideo: true, artistVideo: true, tintWindow: true, sideLyrics: true, circadian: true };
   const settings = (() => {
     try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('tess:settings') || '{}') }; } catch { return { ...DEFAULTS }; }
   })();
@@ -92,6 +92,7 @@
     ['artistVideo', 'Moving video on artist pages', 'Fills the top of an artist’s page with a Canvas from their top songs; it blurs as you scroll.'],
     ['sideLyrics', 'Live lyrics in the Now Playing panel', 'Synced lyrics that follow the song. Off shows Spotify’s preview card.'],
     ['tintWindow', 'Tint the window with the artwork colours', 'The panels pick up the colours of what’s playing.'],
+    ['circadian', 'Follow the time of day', 'Warm in the morning, neutral midday, golden in the evening, dim and low in blue at night.'],
   ];
   const settingChanged = () => { saveSettings(); applySettings(); syncTrack(); onRoute(); window.dispatchEvent(new Event('tess:settings')); };
   function buildThemeSection() {
@@ -181,11 +182,37 @@
       return out;
     } catch { return null; }
   }
+  // Colour psychology. The artwork sets the hue; the hour bends it (soft warm light in the morning, clean neutral
+  // light midday, golden in the evening, dim and low in blue at night so it doesn't fight your sleep); vivid
+  // artwork gives a livelier aurora, muted artwork a calmer one; and it slows almost to a stop while paused.
+  const DAYPARTS = [
+    // [from hour, tone rgb, how much tone to mix in, brightness, blue kept]
+    [5, [255, 176, 110], 0.22, 1.05, 0.95],  // morning: warm, gentle sunrise light
+    [11, [200, 215, 235], 0.1, 1.08, 1],     // midday: clean, neutral, bright
+    [16, [255, 150, 90], 0.26, 1.0, 0.9],    // golden hour / evening: warm amber
+    [20, [120, 70, 60], 0.3, 0.72, 0.6],     // night: dim, warm, little blue
+  ];
+  const daypart = () => {
+    const h = new Date().getHours();
+    return [...DAYPARTS].reverse().find((d) => h >= d[0]) || DAYPARTS[3];
+  };
+  let auroraPhase = 0;
+  let lastAuroraT = 0;
   function paintAurora(t) {
     const x = ambientCanvas.getContext('2d');
     const w = 96, h = 54;
-    // ease the colours toward the new artwork instead of jumping
-    auroraShown = auroraShown.map((c, i) => c.map((v, j) => v + (auroraColors[i][j] - v) * 0.08));
+    const [, tone, mix, bright, blue] = settings.circadian ? daypart() : [0, [0, 0, 0], 0, 1, 1];
+    // ease the colours toward the new artwork instead of jumping, through the time-of-day tone
+    auroraShown = auroraShown.map((c, i) => c.map((v, j) => {
+      const target = (auroraColors[i][j] * (1 - mix) + tone[j] * mix) * bright * (j === 2 ? blue : 1);
+      return v + (Math.min(255, target) - v) * 0.08;
+    }));
+    // vivid artwork moves more; paused barely drifts
+    const sat = auroraColors.reduce((s, c) => s + (Math.max(...c) - Math.min(...c)), 0) / (auroraColors.length * 255);
+    const speed = (P.isPlaying() ? 1 : 0.15) * (0.6 + sat * 1.2);
+    auroraPhase += (lastAuroraT ? t - lastAuroraT : 0) * speed;
+    lastAuroraT = t;
+    t = auroraPhase;
     x.filter = 'none';
     x.fillStyle = '#07070a';
     x.fillRect(0, 0, w, h);
