@@ -1025,7 +1025,7 @@
       filtered = libFilterInput();
       if (filtered) {
         setReactValue(filtered, it.name);
-        row = await waitFor(() => findSpotifyRow(it.uri), 900);
+        row = await waitFor(() => findSpotifyRow(it.uri), 1800);
       }
     }
     if (row) {
@@ -1085,7 +1085,7 @@
   const originalPush = History.push;
   const waitFor = (find, ms) => new Promise((resolve) => {
     const t0 = performance.now();
-    const tick = () => { const n = find(); if (n || performance.now() - t0 > ms) resolve(n || null); else requestAnimationFrame(tick); };
+    const tick = () => { const n = find(); if (n || performance.now() - t0 > ms) resolve(n || null); else setTimeout(tick, 16); };
     tick();
   });
   History.push = function tessPush(to, ...rest) {
@@ -1100,7 +1100,8 @@
     const vt = document.startViewTransition(async () => {
       cover.style.viewTransitionName = '';
       originalPush.call(this, to, ...rest);
-      dest = await waitFor(() => document.querySelector('.main-entityHeader-imageContainer img, .main-entityHeader-image'), 700);
+      // the screen is frozen while this waits, so never long: if the new page isn't drawn quickly, just cross-fade
+      dest = await waitFor(() => document.querySelector('.main-entityHeader-imageContainer img, .main-entityHeader-image'), 220);
       if (dest) dest.style.viewTransitionName = 'tess-cover';
     });
     vt.ready.catch(() => {});
@@ -1137,11 +1138,11 @@
         uri: artistUri, locale: '', includePrerelease: false,
       });
       const tracks = r?.data?.artistUnion?.discography?.topTracks?.items || [];
-      for (const t of tracks.slice(0, 6)) {
-        const c = await Spicetify.GraphQL.Request(Spicetify.GraphQL.Definitions.canvas, { trackUri: t.track.uri });
-        const cv = c?.data?.trackUnion?.canvas;
-        if (cv?.fileId && String(cv.type).startsWith('VIDEO')) { fileId = cv.fileId; break; }
-      }
+      // ask about all six at once; take the first in chart order that has a video
+      const found = await Promise.all(tracks.slice(0, 6).map((t) => Spicetify.GraphQL.Request(Spicetify.GraphQL.Definitions.canvas, { trackUri: t.track.uri })
+        .then((c) => { const cv = c?.data?.trackUnion?.canvas; return cv?.fileId && String(cv.type).startsWith('VIDEO') ? cv.fileId : ''; })
+        .catch(() => '')));
+      fileId = found.find(Boolean) || '';
     } catch {}
     canvasCache.set(artistUri, fileId);
     return fileId;
@@ -1201,15 +1202,28 @@
     html.classList.remove('tess-hero-light', 'tess-hero-past');
     html.style.setProperty('--tess-scroll-p', '0');
     clearInterval(heroTimer);
-    if (!isArtist) return;
+    if (!isArtist) { html.classList.remove('tess-hero-wait'); return; }
     setHeroHeight();
     const artistUri = 'spotify:artist:' + path.split('/')[2];
+    // Start the video straight away, before Spotify has even drawn the header, into a video element that waits
+    // offstage. Until it's ready (or we know there isn't one) the header picture stays hidden, so you go
+    // straight from a dark page to the video instead of photo → cover → video.
+    const wantVideo = settings.artistVideo;
+    html.classList.toggle('tess-hero-wait', wantVideo);
+    const unwait = () => { if (route() === path) html.classList.remove('tess-hero-wait'); };
+    setTimeout(unwait, 3000);
+    const early = wantVideo ? (async () => {
+      const fileId = await artistCanvas(artistUri);
+      if (!fileId) return null;
+      const v = el('<video class="tess-hero-video" muted loop playsinline></video>');
+      return (await playCanvas(v, fileId)) ? v : null;
+    })() : Promise.resolve(null);
     let bg = null;
-    for (let tries = 0; tries < 25 && !bg; tries++) {
+    for (let tries = 0; tries < 60 && !bg; tries++) {
       bg = findHeaderBackground();
-      if (!bg) await new Promise((r) => setTimeout(r, 200));
+      if (!bg) await new Promise((r) => setTimeout(r, tries < 20 ? 50 : 200));
     }
-    if (!bg || route() !== path) return;
+    if (!bg || route() !== path) { unwait(); return; }
     bg.classList.add('tess-hero-bg');
     const fitHero = () => {
       setHeroHeight();
@@ -1235,17 +1249,15 @@
     };
     img.src = (getComputedStyle(bg).backgroundImage.match(/url\("?(.*?)"?\)/) || [])[1] || '';
 
-    let v = bg.querySelector('video.tess-hero-video');
-    if (!settings.artistVideo) { v?.remove(); return; }
-    const fileId = await artistCanvas(artistUri);
-    if (!fileId || route() !== path) return;
-    if (!v) {
-      v = el('<video class="tess-hero-video" muted loop playsinline></video>');
-      bg.appendChild(v);
-    }
-    v.classList.remove('ready');
-    if (await playCanvas(v, fileId)) {
-      v.classList.add('ready');
+    bg.querySelectorAll('video.tess-hero-video').forEach((old) => old.remove());
+    if (!wantVideo) { unwait(); return; }
+    const v = await early;
+    if (route() !== path) return;
+    if (!v) { unwait(); return; }
+    bg.appendChild(v);
+    v.classList.add('ready');
+    unwait();
+    {
       heroTimer = setInterval(() => {
         if (!v.isConnected) return clearInterval(heroTimer);
         // reading pixels back from the GPU isn't free: only while the title is over the video and the window is visible
@@ -1280,7 +1292,7 @@
     const head = e.target.querySelector?.('.main-trackList-trackListHeader');
     if (head) head.classList.toggle('tess-stuck', head.getBoundingClientRect().top <= parseFloat(getComputedStyle(head).top) + e.target.getBoundingClientRect().top + 1 && e.target.scrollTop > 0);
   }, { capture: true, passive: true });
-  const unlisten = Spicetify.Platform.History.listen(() => setTimeout(onRoute, 50));
+  const unlisten = Spicetify.Platform.History.listen(() => requestAnimationFrame(onRoute));
   onDispose(() => typeof unlisten === 'function' && unlisten());
   listen(window, 'resize', () => { setHeroHeight(); setTimeout(onRoute, 100); });
   onRoute();

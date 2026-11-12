@@ -1026,7 +1026,7 @@
       filtered = libFilterInput();
       if (filtered) {
         setReactValue(filtered, it.name);
-        row = await waitFor(() => findSpotifyRow(it.uri), 900);
+        row = await waitFor(() => findSpotifyRow(it.uri), 1800);
       }
     }
     if (row) {
@@ -1086,7 +1086,7 @@
   const originalPush = History.push;
   const waitFor = (find, ms) => new Promise((resolve) => {
     const t0 = performance.now();
-    const tick = () => { const n = find(); if (n || performance.now() - t0 > ms) resolve(n || null); else requestAnimationFrame(tick); };
+    const tick = () => { const n = find(); if (n || performance.now() - t0 > ms) resolve(n || null); else setTimeout(tick, 16); };
     tick();
   });
   History.push = function tessPush(to, ...rest) {
@@ -1101,7 +1101,8 @@
     const vt = document.startViewTransition(async () => {
       cover.style.viewTransitionName = '';
       originalPush.call(this, to, ...rest);
-      dest = await waitFor(() => document.querySelector('.main-entityHeader-imageContainer img, .main-entityHeader-image'), 700);
+      // the screen is frozen while this waits, so never long: if the new page isn't drawn quickly, just cross-fade
+      dest = await waitFor(() => document.querySelector('.main-entityHeader-imageContainer img, .main-entityHeader-image'), 220);
       if (dest) dest.style.viewTransitionName = 'tess-cover';
     });
     vt.ready.catch(() => {});
@@ -1138,11 +1139,11 @@
         uri: artistUri, locale: '', includePrerelease: false,
       });
       const tracks = r?.data?.artistUnion?.discography?.topTracks?.items || [];
-      for (const t of tracks.slice(0, 6)) {
-        const c = await Spicetify.GraphQL.Request(Spicetify.GraphQL.Definitions.canvas, { trackUri: t.track.uri });
-        const cv = c?.data?.trackUnion?.canvas;
-        if (cv?.fileId && String(cv.type).startsWith('VIDEO')) { fileId = cv.fileId; break; }
-      }
+      // ask about all six at once; take the first in chart order that has a video
+      const found = await Promise.all(tracks.slice(0, 6).map((t) => Spicetify.GraphQL.Request(Spicetify.GraphQL.Definitions.canvas, { trackUri: t.track.uri })
+        .then((c) => { const cv = c?.data?.trackUnion?.canvas; return cv?.fileId && String(cv.type).startsWith('VIDEO') ? cv.fileId : ''; })
+        .catch(() => '')));
+      fileId = found.find(Boolean) || '';
     } catch {}
     canvasCache.set(artistUri, fileId);
     return fileId;
@@ -1202,15 +1203,28 @@
     html.classList.remove('tess-hero-light', 'tess-hero-past');
     html.style.setProperty('--tess-scroll-p', '0');
     clearInterval(heroTimer);
-    if (!isArtist) return;
+    if (!isArtist) { html.classList.remove('tess-hero-wait'); return; }
     setHeroHeight();
     const artistUri = 'spotify:artist:' + path.split('/')[2];
+    // Start the video straight away, before Spotify has even drawn the header, into a video element that waits
+    // offstage. Until it's ready (or we know there isn't one) the header picture stays hidden, so you go
+    // straight from a dark page to the video instead of photo → cover → video.
+    const wantVideo = settings.artistVideo;
+    html.classList.toggle('tess-hero-wait', wantVideo);
+    const unwait = () => { if (route() === path) html.classList.remove('tess-hero-wait'); };
+    setTimeout(unwait, 3000);
+    const early = wantVideo ? (async () => {
+      const fileId = await artistCanvas(artistUri);
+      if (!fileId) return null;
+      const v = el('<video class="tess-hero-video" muted loop playsinline></video>');
+      return (await playCanvas(v, fileId)) ? v : null;
+    })() : Promise.resolve(null);
     let bg = null;
-    for (let tries = 0; tries < 25 && !bg; tries++) {
+    for (let tries = 0; tries < 60 && !bg; tries++) {
       bg = findHeaderBackground();
-      if (!bg) await new Promise((r) => setTimeout(r, 200));
+      if (!bg) await new Promise((r) => setTimeout(r, tries < 20 ? 50 : 200));
     }
-    if (!bg || route() !== path) return;
+    if (!bg || route() !== path) { unwait(); return; }
     bg.classList.add('tess-hero-bg');
     const fitHero = () => {
       setHeroHeight();
@@ -1236,17 +1250,15 @@
     };
     img.src = (getComputedStyle(bg).backgroundImage.match(/url\("?(.*?)"?\)/) || [])[1] || '';
 
-    let v = bg.querySelector('video.tess-hero-video');
-    if (!settings.artistVideo) { v?.remove(); return; }
-    const fileId = await artistCanvas(artistUri);
-    if (!fileId || route() !== path) return;
-    if (!v) {
-      v = el('<video class="tess-hero-video" muted loop playsinline></video>');
-      bg.appendChild(v);
-    }
-    v.classList.remove('ready');
-    if (await playCanvas(v, fileId)) {
-      v.classList.add('ready');
+    bg.querySelectorAll('video.tess-hero-video').forEach((old) => old.remove());
+    if (!wantVideo) { unwait(); return; }
+    const v = await early;
+    if (route() !== path) return;
+    if (!v) { unwait(); return; }
+    bg.appendChild(v);
+    v.classList.add('ready');
+    unwait();
+    {
       heroTimer = setInterval(() => {
         if (!v.isConnected) return clearInterval(heroTimer);
         // reading pixels back from the GPU isn't free: only while the title is over the video and the window is visible
@@ -1281,7 +1293,7 @@
     const head = e.target.querySelector?.('.main-trackList-trackListHeader');
     if (head) head.classList.toggle('tess-stuck', head.getBoundingClientRect().top <= parseFloat(getComputedStyle(head).top) + e.target.getBoundingClientRect().top + 1 && e.target.scrollTop > 0);
   }, { capture: true, passive: true });
-  const unlisten = Spicetify.Platform.History.listen(() => setTimeout(onRoute, 50));
+  const unlisten = Spicetify.Platform.History.listen(() => requestAnimationFrame(onRoute));
   onDispose(() => typeof unlisten === 'function' && unlisten());
   listen(window, 'resize', () => { setHeroHeight(); setTimeout(onRoute, 100); });
   onRoute();
@@ -2086,14 +2098,34 @@
     const ctx = { now: Date.now(), currentUri: P.data?.context?.uri || null, dialHistory: readHistory(), slots: SLOTS };
     let picked;
     try { picked = window.TessDialPick ? window.TessDialPick.pickDialItems(cands, ctx) : simplePick(cands); } catch { picked = simplePick(cands); }
+    // whatever is playing right now sits on the ring and is the one selected
+    const cur = P.data?.context?.uri;
+    if (cur && !picked.some((i) => i.uri === cur)) {
+      const c = cands.find((x) => x.uri === cur) || currentContextItem();
+      if (c) picked = [c, ...picked.slice(0, SLOTS - 1)];
+    }
     const key = picked.map((i) => i.uri).join();
     if (key === shownKey) return;
     shownKey = key;
     items = picked;
+    try { localStorage.setItem('tess:dialItems', JSON.stringify(items.map(({ uri, title, subtitle, img, kind, source, reason }) => ({ uri, title, subtitle, img, kind, source, reason })))); } catch {}
     noteShown(items);
     buildRing();
-    select(0, true);
+    const playingAt = items.findIndex((i) => i.uri === cur);
+    select(playingAt >= 0 ? playingAt : 0, true);
   }
+  function currentContextItem() {
+    const ctx = P.data?.context;
+    if (!ctx?.uri || !/^spotify:(playlist|album|artist|show|collection)/.test(ctx.uri)) return null;
+    const m = P.data?.item?.metadata || {};
+    const md = ctx.metadata || {};
+    return { uri: ctx.uri, title: md.context_description || m.context_description || 'Now playing', subtitle: '', img: imageOf(md.image_url || m.image_url || ''), kind: kindOf(ctx.uri), source: 'recent', reason: 'Playing now' };
+  }
+  // the ring from last time, shown immediately while the fresh one is worked out
+  try {
+    const saved = JSON.parse(localStorage.getItem('tess:dialItems') || '[]');
+    if (saved.length >= 4) { items = saved; shownKey = saved.map((i) => i.uri).join(); }
+  } catch {}
 
   // ---------- ring ----------
   const R = () => wheel.clientWidth * 0.41;
@@ -2134,12 +2166,21 @@
     dial.querySelector('.td-reason').textContent = it.reason || reasonFor(it);
     dial.querySelector('.td-title').textContent = it.title;
     dial.querySelector('.td-sub').textContent = it.subtitle;
-    dial.querySelector('.td-record i').style.backgroundImage = `url("${it.img}")`;
+    const live = isCurrent(it);
+    const song = P.data?.item;
+    const songArt = imageOf(song?.metadata?.image_large_url || song?.metadata?.image_url || '');
+    dial.querySelector('.td-record i').style.backgroundImage = `url("${live && songArt ? songArt : it.img}")`;
+    dial.classList.toggle('live', live);
+    if (live && song) {
+      dial.querySelector('.td-reason').textContent = P.isPlaying() ? 'Playing now' : 'Paused';
+      dial.querySelector('.td-sub').textContent = `${song.name || song.metadata?.title || ''} · ${song.metadata?.artist_name || ''}`;
+    }
     dial.querySelector('.td-play span').textContent = isPlayingNow(it) ? 'Pause' : 'Play';
     loadPalette(it.img);
   }
   const reasonFor = (it) => ({ dj: 'Your DJ', timeOfDay: 'For right now', madeFor: 'Made for you', jumpBackIn: 'Jump back in', topMixes: 'One of your top mixes', recent: 'Played recently', library: 'From your library' }[it.source] || 'For you');
-  const isPlayingNow = (it) => P.isPlaying() && (P.data?.context?.uri === it.uri);
+  const isCurrent = (it) => !!it && P.data?.context?.uri === it.uri;
+  const isPlayingNow = (it) => P.isPlaying() && isCurrent(it);
   function step(d) { turns += d; select(index + d); }
   function turnTo(i) {
     const n = items.length;
@@ -2284,22 +2325,48 @@
     while (chipRow && getComputedStyle(chipRow).position !== 'sticky') chipRow = chipRow.parentElement;
     masthead.querySelector('.thm-eyebrow').textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
     masthead.querySelector('.thm-title').textContent = firstName ? `${greeting()}, ${firstName}` : greeting();
-    if (chipRow && masthead.nextElementSibling !== chipRow) chipRow.before(masthead);
-    chipRow?.firstElementChild?.classList.add('tess-sticky-glass');
+    // the greeting lives inside Spotify's sticky filter bar, so the two stay pinned to the top together
+    if (chipRow && masthead.parentElement !== chipRow) { chipRow.prepend(masthead); chipRow.classList.add('tess-home-sticky'); }
+    chipRow?.querySelector(':scope > :not(#tess-home-masthead)')?.classList.add('tess-sticky-glass');
+    if (chipRow && !chipRow.dataset.tessScroll) {
+      chipRow.dataset.tessScroll = '1';
+      let sc = chipRow.parentElement;
+      while (sc && !/auto|scroll/.test(getComputedStyle(sc).overflowY)) sc = sc.parentElement;
+      sc?.addEventListener('scroll', () => chipRow.classList.toggle('tess-compact', sc.scrollTop > 40), { passive: true });
+    }
     const content = page.querySelector('.main-home-content') || page.querySelector('.view-homeShortcutsGrid-shortcuts')?.parentElement;
-    if (content && content.firstElementChild !== dial) { content.prepend(dial); layoutRing(); }
+    if (content && content.firstElementChild !== dial) {
+      content.prepend(dial);
+      if (items.length && !ring.children.length) { buildRing(); const at = items.findIndex((i) => i.uri === P.data?.context?.uri); select(at >= 0 ? at : 0, true); }
+      layoutRing();
+    }
     if (content && dial.nextElementSibling !== otd) dial.after(otd);
     refreshDial();
     fillOnThisDay();
   }
-  const onSong = () => { if (dial.isConnected && items.length) select(index); };
+  const onSong = () => {
+    if (!dial.isConnected || !items.length) return;
+    const at = items.findIndex((i) => i.uri === P.data?.context?.uri);
+    if (at >= 0 && at !== index && !drag) turnTo(at); else select(index);
+  };
   P.addEventListener('songchange', onSong);
   P.addEventListener('onplaypause', onSong);
   onDispose(() => { P.removeEventListener('songchange', onSong); P.removeEventListener('onplaypause', onSong); html.classList.remove('tess-home'); });
   const ro = new ResizeObserver(() => layoutRing());
   ro.observe(wheel);
   onDispose(() => ro.disconnect());
-  const unlisten = Spicetify.Platform.History.listen(() => { setTimeout(render, 60); setTimeout(render, 600); });
+  // place everything the moment Spotify draws home, instead of polling for it
+  let queued = false;
+  const mo = new MutationObserver(() => {
+    if (queued || !isHome()) return;
+    if (dial.isConnected && masthead.isConnected) return;
+    queued = true;
+    requestAnimationFrame(() => { queued = false; render(); });
+  });
+  const watchMain = () => { const mv = document.getElementById('main-view'); if (mv) mo.observe(mv, { childList: true, subtree: true }); };
+  watchMain();
+  onDispose(() => mo.disconnect());
+  const unlisten = Spicetify.Platform.History.listen(() => { requestAnimationFrame(render); setTimeout(render, 400); });
   onDispose(() => typeof unlisten === 'function' && unlisten());
   const beat = setInterval(() => { if (!document.hidden && isHome()) render(); }, 4000);
   onDispose(() => clearInterval(beat));
@@ -2448,6 +2515,8 @@
     if (current === uri && page.querySelector('#tess-dna') && header.querySelector('.tp-wall')) return;
     current = uri;
     let a;
+    // wait until the browser is idle so building this never competes with Spotify drawing the page you clicked
+    await new Promise((r) => (window.requestIdleCallback ? requestIdleCallback(r, { timeout: 1200 }) : setTimeout(r, 300)));
     try { a = analyse(await loadPlaylist(uri)); } catch { return; }
     if (route() !== '/playlist/' + m[1] || a.tracks < 3) return;
     page.querySelector('#tess-dna')?.remove();

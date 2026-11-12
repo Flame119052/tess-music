@@ -146,14 +146,34 @@
     const ctx = { now: Date.now(), currentUri: P.data?.context?.uri || null, dialHistory: readHistory(), slots: SLOTS };
     let picked;
     try { picked = window.TessDialPick ? window.TessDialPick.pickDialItems(cands, ctx) : simplePick(cands); } catch { picked = simplePick(cands); }
+    // whatever is playing right now sits on the ring and is the one selected
+    const cur = P.data?.context?.uri;
+    if (cur && !picked.some((i) => i.uri === cur)) {
+      const c = cands.find((x) => x.uri === cur) || currentContextItem();
+      if (c) picked = [c, ...picked.slice(0, SLOTS - 1)];
+    }
     const key = picked.map((i) => i.uri).join();
     if (key === shownKey) return;
     shownKey = key;
     items = picked;
+    try { localStorage.setItem('tess:dialItems', JSON.stringify(items.map(({ uri, title, subtitle, img, kind, source, reason }) => ({ uri, title, subtitle, img, kind, source, reason })))); } catch {}
     noteShown(items);
     buildRing();
-    select(0, true);
+    const playingAt = items.findIndex((i) => i.uri === cur);
+    select(playingAt >= 0 ? playingAt : 0, true);
   }
+  function currentContextItem() {
+    const ctx = P.data?.context;
+    if (!ctx?.uri || !/^spotify:(playlist|album|artist|show|collection)/.test(ctx.uri)) return null;
+    const m = P.data?.item?.metadata || {};
+    const md = ctx.metadata || {};
+    return { uri: ctx.uri, title: md.context_description || m.context_description || 'Now playing', subtitle: '', img: imageOf(md.image_url || m.image_url || ''), kind: kindOf(ctx.uri), source: 'recent', reason: 'Playing now' };
+  }
+  // the ring from last time, shown immediately while the fresh one is worked out
+  try {
+    const saved = JSON.parse(localStorage.getItem('tess:dialItems') || '[]');
+    if (saved.length >= 4) { items = saved; shownKey = saved.map((i) => i.uri).join(); }
+  } catch {}
 
   // ---------- ring ----------
   const R = () => wheel.clientWidth * 0.41;
@@ -194,12 +214,21 @@
     dial.querySelector('.td-reason').textContent = it.reason || reasonFor(it);
     dial.querySelector('.td-title').textContent = it.title;
     dial.querySelector('.td-sub').textContent = it.subtitle;
-    dial.querySelector('.td-record i').style.backgroundImage = `url("${it.img}")`;
+    const live = isCurrent(it);
+    const song = P.data?.item;
+    const songArt = imageOf(song?.metadata?.image_large_url || song?.metadata?.image_url || '');
+    dial.querySelector('.td-record i').style.backgroundImage = `url("${live && songArt ? songArt : it.img}")`;
+    dial.classList.toggle('live', live);
+    if (live && song) {
+      dial.querySelector('.td-reason').textContent = P.isPlaying() ? 'Playing now' : 'Paused';
+      dial.querySelector('.td-sub').textContent = `${song.name || song.metadata?.title || ''} · ${song.metadata?.artist_name || ''}`;
+    }
     dial.querySelector('.td-play span').textContent = isPlayingNow(it) ? 'Pause' : 'Play';
     loadPalette(it.img);
   }
   const reasonFor = (it) => ({ dj: 'Your DJ', timeOfDay: 'For right now', madeFor: 'Made for you', jumpBackIn: 'Jump back in', topMixes: 'One of your top mixes', recent: 'Played recently', library: 'From your library' }[it.source] || 'For you');
-  const isPlayingNow = (it) => P.isPlaying() && (P.data?.context?.uri === it.uri);
+  const isCurrent = (it) => !!it && P.data?.context?.uri === it.uri;
+  const isPlayingNow = (it) => P.isPlaying() && isCurrent(it);
   function step(d) { turns += d; select(index + d); }
   function turnTo(i) {
     const n = items.length;
@@ -344,22 +373,48 @@
     while (chipRow && getComputedStyle(chipRow).position !== 'sticky') chipRow = chipRow.parentElement;
     masthead.querySelector('.thm-eyebrow').textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
     masthead.querySelector('.thm-title').textContent = firstName ? `${greeting()}, ${firstName}` : greeting();
-    if (chipRow && masthead.nextElementSibling !== chipRow) chipRow.before(masthead);
-    chipRow?.firstElementChild?.classList.add('tess-sticky-glass');
+    // the greeting lives inside Spotify's sticky filter bar, so the two stay pinned to the top together
+    if (chipRow && masthead.parentElement !== chipRow) { chipRow.prepend(masthead); chipRow.classList.add('tess-home-sticky'); }
+    chipRow?.querySelector(':scope > :not(#tess-home-masthead)')?.classList.add('tess-sticky-glass');
+    if (chipRow && !chipRow.dataset.tessScroll) {
+      chipRow.dataset.tessScroll = '1';
+      let sc = chipRow.parentElement;
+      while (sc && !/auto|scroll/.test(getComputedStyle(sc).overflowY)) sc = sc.parentElement;
+      sc?.addEventListener('scroll', () => chipRow.classList.toggle('tess-compact', sc.scrollTop > 40), { passive: true });
+    }
     const content = page.querySelector('.main-home-content') || page.querySelector('.view-homeShortcutsGrid-shortcuts')?.parentElement;
-    if (content && content.firstElementChild !== dial) { content.prepend(dial); layoutRing(); }
+    if (content && content.firstElementChild !== dial) {
+      content.prepend(dial);
+      if (items.length && !ring.children.length) { buildRing(); const at = items.findIndex((i) => i.uri === P.data?.context?.uri); select(at >= 0 ? at : 0, true); }
+      layoutRing();
+    }
     if (content && dial.nextElementSibling !== otd) dial.after(otd);
     refreshDial();
     fillOnThisDay();
   }
-  const onSong = () => { if (dial.isConnected && items.length) select(index); };
+  const onSong = () => {
+    if (!dial.isConnected || !items.length) return;
+    const at = items.findIndex((i) => i.uri === P.data?.context?.uri);
+    if (at >= 0 && at !== index && !drag) turnTo(at); else select(index);
+  };
   P.addEventListener('songchange', onSong);
   P.addEventListener('onplaypause', onSong);
   onDispose(() => { P.removeEventListener('songchange', onSong); P.removeEventListener('onplaypause', onSong); html.classList.remove('tess-home'); });
   const ro = new ResizeObserver(() => layoutRing());
   ro.observe(wheel);
   onDispose(() => ro.disconnect());
-  const unlisten = Spicetify.Platform.History.listen(() => { setTimeout(render, 60); setTimeout(render, 600); });
+  // place everything the moment Spotify draws home, instead of polling for it
+  let queued = false;
+  const mo = new MutationObserver(() => {
+    if (queued || !isHome()) return;
+    if (dial.isConnected && masthead.isConnected) return;
+    queued = true;
+    requestAnimationFrame(() => { queued = false; render(); });
+  });
+  const watchMain = () => { const mv = document.getElementById('main-view'); if (mv) mo.observe(mv, { childList: true, subtree: true }); };
+  watchMain();
+  onDispose(() => mo.disconnect());
+  const unlisten = Spicetify.Platform.History.listen(() => { requestAnimationFrame(render); setTimeout(render, 400); });
   onDispose(() => typeof unlisten === 'function' && unlisten());
   const beat = setInterval(() => { if (!document.hidden && isHome()) render(); }, 4000);
   onDispose(() => clearInterval(beat));

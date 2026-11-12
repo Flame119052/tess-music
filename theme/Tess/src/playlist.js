@@ -140,6 +140,8 @@
     if (current === uri && page.querySelector('#tess-dna') && header.querySelector('.tp-wall')) return;
     current = uri;
     let a;
+    // wait until the browser is idle so building this never competes with Spotify drawing the page you clicked
+    await new Promise((r) => (window.requestIdleCallback ? requestIdleCallback(r, { timeout: 1200 }) : setTimeout(r, 300)));
     try { a = analyse(await loadPlaylist(uri)); } catch { return; }
     if (route() !== '/playlist/' + m[1] || a.tracks < 3) return;
     page.querySelector('#tess-dna')?.remove();
