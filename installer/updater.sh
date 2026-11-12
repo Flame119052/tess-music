@@ -62,7 +62,7 @@ if ! "$VERIFY" "$TMP/components.txt" "$(tr -d '\n' < "$TMP/components.sig")"; th
 fi
 
 # each line: name sha256 url
-while read -r name sha url; do
+while read -r name sha url _src; do
   [ -n "$name" ] && [ -n "$sha" ] && [ -n "$url" ] || continue
   [ "$(cat "$STATE/$name" 2>/dev/null)" = "$sha" ] && continue
   f="$TMP/$name.dl"
