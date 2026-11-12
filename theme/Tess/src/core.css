@@ -2954,3 +2954,46 @@ html.tess ::-webkit-scrollbar-track {
 .tw-next:active { transform: scale(0.95); }
 .tess-set-meta { margin: 4px 0 8px; font: 13px var(--tess-font); color: rgba(255, 255, 255, 0.6); }
 .tess-set-link { all: unset; cursor: pointer; color: #fff; text-decoration: underline; text-underline-offset: 2px; }
+
+/* ================= full-screen scrubber: one rich glass track ================= */
+#tess-np .tn-scrub {
+  height: 6px !important;
+  margin-top: 22px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16) !important;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.25), inset 0 0 0 0.5px rgba(255, 255, 255, 0.12), 0 1px 0 rgba(255, 255, 255, 0.08);
+  transition: height 0.25s var(--tess-spring), background 0.2s;
+}
+#tess-np .tn-scrub > i {
+  opacity: 1 !important;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.78), #fff) !important;
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.45);
+  position: absolute;
+}
+/* a small glass knob at the playhead, shown on hover */
+#tess-np .tn-scrub > i::after {
+  content: "";
+  position: absolute;
+  right: -7px;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin-top: -7px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35), inset 0 -1px 1px rgba(0, 0, 0, 0.12);
+  transform: scale(0);
+  transition: transform 0.25s var(--tess-spring);
+}
+#tess-np .tn-scrub:hover {
+  height: 9px !important;
+  background: rgba(255, 255, 255, 0.22) !important;
+}
+#tess-np .tn-scrub:hover > i::after {
+  transform: scale(1);
+}
+#tess-np .tn-ribbon,
+#tess-np .tn-peek {
+  display: none !important;
+}

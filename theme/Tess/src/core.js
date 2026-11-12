@@ -855,6 +855,10 @@
   // The lyric ribbon: the progress bar is cut into one segment per sung line, so you can see the song's shape;
   // the line being sung glows, hovering a segment shows its words, clicking jumps there. Instrumental gaps stay thin.
   function renderRibbon() {
+    // the plain glass scrubber is used everywhere now (the segmented ribbon was too busy)
+    np.classList.remove('has-ribbon');
+    q(np, '.tn-ribbon').replaceChildren();
+    return;
     const rib = q(np, '.tn-ribbon');
     const dur = P.getDuration() || 1;
     const lines = lyrics.sync === 'LINE_SYNCED' || lyrics.sync === 'SYLLABLE_SYNCED' ? lyrics.lines.filter((l) => l.text && !/^♪+$/.test(l.text)) : [];
