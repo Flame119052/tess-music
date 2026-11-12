@@ -61,7 +61,8 @@ if ! "$VERIFY" "$TMP/components.txt" "$(tr -d '\n' < "$TMP/components.sig")"; th
   exit 0
 fi
 
-# each line: name sha256 url
+# each line: name sha256 url source-hash
+changed=0
 while read -r name sha url _src; do
   [ -n "$name" ] && [ -n "$sha" ] && [ -n "$url" ] || continue
   [ "$(cat "$STATE/$name" 2>/dev/null)" = "$sha" ] && continue
@@ -101,6 +102,7 @@ while read -r name sha url _src; do
     *) continue ;;
   esac
   echo "$sha" > "$STATE/$name"
-  log "$name: updated"
+  log "$name: updated"; changed=$((changed + 1))
 done < "$TMP/components.txt"
+[ "$changed" -gt 0 ] && log "parts current ($changed updated)"
 exit 0
