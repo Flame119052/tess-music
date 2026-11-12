@@ -421,6 +421,8 @@
   const npLook = () => (settings.npStyle === 'vinyl' ? 'vinyl' : settings.coverVideo ? 'canvas' : 'cover');
   const applyNpStyle = () => {
     np.classList.toggle('vinyl', npLook() === 'vinyl');
+    np.classList.toggle('look-canvas', npLook() === 'canvas');
+    document.querySelector('.tess-cover-wrap')?.classList.toggle('look-canvas', npLook() === 'canvas');
     armMeasured = false;
     document.querySelector('.tess-cover-wrap')?.classList.toggle('vinyl', npLook() === 'vinyl');
     np.querySelectorAll('.tn-look button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.look === npLook())));
@@ -1023,7 +1025,7 @@
     const v = q(sideCover, 'video');
     sideCover.classList.remove('has-canvas');
     if (!sideCover.isConnected) return;
-    (settings.panelVideo ? trackCanvas(uri) : Promise.resolve('')).then((fileId) => {
+    (settings.panelVideo ? songVideo(uri) : Promise.resolve('')).then((fileId) => {
       if (item()?.uri !== uri) return;
       playCanvas(v, fileId).then((ok) => sideCover.classList.toggle('has-canvas', ok && v.dataset.fileId === fileId));
     });
@@ -1173,7 +1175,7 @@
     const video = q(np, '.tn-cover video');
     const uri = item()?.uri;
     np.classList.remove('has-canvas');
-    (settings.coverVideo ? trackCanvas(uri) : Promise.resolve('')).then((fileId) => {
+    (settings.coverVideo ? songVideo(uri) : Promise.resolve('')).then((fileId) => {
       if (item()?.uri !== uri) return;
       playCanvas(video, fileId).then((ok) => {
         np.classList.toggle('has-canvas', ok && video.dataset.fileId === fileId);
@@ -1902,6 +1904,14 @@
   // ---------------- artist pages: full-height motion header ----------------
   const canvasCache = new Map();
   // A song's Canvas: from the player's data when it's the current song, otherwise asked of Spotify.
+  // The video for the current song: its own Canvas, else a Canvas from the artist's top songs (most songs have no
+  // Canvas of their own), else nothing — and the cover then drifts slowly instead.
+  async function songVideo(trackUri) {
+    const own = await trackCanvas(trackUri);
+    if (own) return own;
+    const artist = item()?.uri === trackUri ? (item()?.artists?.[0]?.uri || meta().artist_uri) : null;
+    return artist ? (await artistCanvas(artist)) || '' : '';
+  }
   async function trackCanvas(trackUri) {
     if (!trackUri) return '';
     const m = item()?.uri === trackUri ? meta() : {};

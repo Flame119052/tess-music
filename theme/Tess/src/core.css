@@ -3109,3 +3109,14 @@ html.tess-playing .tess-cover-wrap.vinyl .tess-side-cover { animation-play-state
   content: ""; position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
   background: conic-gradient(from 20deg, transparent, rgba(255, 255, 255, 0.12), transparent 22%, transparent 50%, rgba(255, 255, 255, 0.08), transparent 72%);
 }
+
+/* Video mode with no video anywhere: the cover drifts and breathes instead of sitting still */
+@keyframes tess-cover-drift {
+  0% { transform: scale(1.04) translate(0, 0); }
+  50% { transform: scale(1.12) translate(-2.5%, -2%); }
+  100% { transform: scale(1.06) translate(2%, 1.5%); }
+}
+#tess-np.look-canvas:not(.has-canvas):not(.vinyl) .tn-cover img,
+.tess-cover-wrap.look-canvas .tess-side-cover:not(.has-canvas) img {
+  animation: tess-cover-drift 26s ease-in-out infinite alternate;
+}
