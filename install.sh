@@ -56,6 +56,10 @@ tar -xzf "$TMP/patcher.tgz" -C "$HOME_TESS/bin/patcher"
 PATCHER="$HOME_TESS/bin/patcher/tess-patcher"
 chmod +x "$PATCHER"
 
+# --- pause the update helper while we work (it must never run at the same time) --------------------------------------
+launchctl bootout "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 || true
+mkdir -p "$HOME_TESS"; touch "$HOME_TESS/.installing"
+
 # --- quit Spotify, undo any earlier patching ---------------------------------------------------------------------
 WAS_RUNNING=""
 if pgrep -x Spotify >/dev/null; then
@@ -84,20 +88,44 @@ tar -xzf "$TMP/theme.tgz" -C "$CONF/Themes"
 "$PATCHER" config inject_theme_js 1 >/dev/null
 "$PATCHER" config check_spicetify_update 0 >/dev/null
 rm -rf "$CONF/Backup" 2>/dev/null || true
-"$PATCHER" backup apply --no-restart >/dev/null 2>&1 || "$PATCHER" backup apply --no-restart || fail "Couldn't apply Tess to Spotify $SPV."
+if ! "$PATCHER" backup apply --no-restart >"$TMP/apply.log" 2>&1; then
+  "$PATCHER" restore >/dev/null 2>&1 || true
+  rm -f "$HOME_TESS/.installing"
+  if grep -q "operation not permitted" "$TMP/apply.log"; then
+    fail "macOS blocked Terminal from updating Spotify. Open System Settings > Privacy & Security > App Management, turn on your terminal app, then run this again."
+  fi
+  tail -5 "$TMP/apply.log"
+  fail "Couldn't apply Tess to Spotify $SPV. Spotify was left unchanged."
+fi
+[ -d "$SPOTIFY/Contents/Resources/Apps/xpui" ] || fail "Tess didn't apply. Spotify was left unchanged; please report this."
+rm -f "$HOME_TESS/.installing"
 
 # --- the guard: re-apply after Spotify updates itself -----------------------------------------------------------------
 step "Keeping Tess on through Spotify updates"
 cat > "$HOME_TESS/reapply.sh" <<EOF
 #!/bin/zsh
+# Re-applies Tess after Spotify updates itself. It never restores or deletes anything: it only acts on a clean,
+# just-updated Spotify, and tells you if macOS doesn't let it.
 APPS="$SPOTIFY/Contents/Resources/Apps"
-[ -d "\$APPS" ] || exit 0
+LOCK="$HOME_TESS/.installing"
+[ -e "\$LOCK" ] && exit 0
+[ -f "\$APPS/xpui.spa" ] || exit 0
 [ -d "\$APPS/xpui" ] && exit 0
-sleep 5; [ -d "\$APPS/xpui" ] && exit 0
-running=\$(pgrep -x Spotify >/dev/null && echo 1)
+sleep 8
+{ [ -f "\$APPS/xpui.spa" ] && [ ! -d "\$APPS/xpui" ]; } || exit 0
+touch "\$LOCK"
 echo "\$(date) Spotify updated; re-applying Tess" >> "$HOME_TESS/guard.log"
-"$PATCHER" backup apply --no-restart >> "$HOME_TESS/guard.log" 2>&1 || { "$PATCHER" restore backup apply --no-restart >> "$HOME_TESS/guard.log" 2>&1; }
-if [ -n "\$running" ]; then osascript -e 'tell application "Spotify" to quit' >/dev/null 2>&1; for i in {1..40}; do pgrep -x Spotify >/dev/null || break; sleep 0.5; done; open -a "$SPOTIFY"; fi
+running=\$(pgrep -x Spotify >/dev/null && echo 1)
+if "$PATCHER" backup apply --no-restart >> "$HOME_TESS/guard.log" 2>&1 && [ -d "\$APPS/xpui" ]; then
+  if [ -n "\$running" ]; then
+    osascript -e 'tell application "Spotify" to quit' >/dev/null 2>&1
+    for i in {1..40}; do pgrep -x Spotify >/dev/null || break; sleep 0.5; done
+    open -a "$SPOTIFY"
+  fi
+else
+  osascript -e 'display notification "Spotify updated. Run the Tess install line again to bring Tess back." with title "Tess Music"' >/dev/null 2>&1
+fi
+rm -f "\$LOCK"
 EOF
 chmod +x "$HOME_TESS/reapply.sh"
 mkdir -p "$HOME/Library/LaunchAgents"
