@@ -465,7 +465,10 @@
     const outer = find(rec.width / 2 * 0.95), inner = find(Math.max(rec.width * 0.205, minD + 2));
     ARM_START = Math.min(outer, inner); ARM_END = Math.max(outer, inner); ARM_REST = ARM_START - 26;
   }
-  listen(window, 'resize', () => np.classList.contains('vinyl') && measureArm());
+  // re-measure whenever the record changes size or the player is narrowed (queue open), not only on window resize
+  const armObserver = new ResizeObserver(() => { if (np.classList.contains('vinyl')) { measureArm(); armMeasured = true; } });
+  armObserver.observe(q(np, '.tn-cover')); armObserver.observe(np);
+  onDispose(() => armObserver.disconnect());
   const arm = q(np, '.tn-arm');
   let armDrag = null;
   const armAngleFor = (ms) => ARM_START + (ARM_END - ARM_START) * Math.min(1, ms / (P.getDuration() || 1));
@@ -1398,13 +1401,16 @@
   listen(document, 'click', (e) => { if (!ttPop.hidden && !ttPop.contains(e.target)) { ttPop.hidden = true; q(timeline, '.tt-filter').setAttribute('aria-expanded', 'false'); } });
   listen(ttSearch, 'input', () => renderTimeline());
 
+  // pinned first, then most recently played by time (not by text)
+  const playedAt = (i) => { const t = i.lastPlayedAt ? new Date(i.lastPlayedAt).getTime() : 0; return Number.isFinite(t) ? t : 0; };
+  const byRecent = (a, b) => (b.pinned - a.pinned) || (playedAt(b) - playedAt(a));
   function renderTimeline() {
     renderChips();
     if (html.classList.contains('tess-lib-wide')) { renderShelves(); return; }
     timeline.classList.remove('shelves');
     const needle = ttSearch.value.trim().toLowerCase();
     const shown = libItems.filter((i) => libFilter.has(kindOf(i)) && (!needle || i.name.toLowerCase().includes(needle)));
-    shown.sort((a, b) => (b.pinned - a.pinned) || String(b.lastPlayedAt || '').localeCompare(String(a.lastPlayedAt || '')));
+    shown.sort(byRecent);
     const frag = document.createDocumentFragment();
     const wide = html.classList.contains('tess-lib-wide');
     timeline.classList.toggle('river', wide);
@@ -1572,7 +1578,7 @@
     q(timeline, '.tt-ruler')?.remove();
     const needle = ttSearch.value.trim().toLowerCase();
     const shown = libItems.filter((i) => libFilter.has(kindOf(i)) && (!needle || i.name.toLowerCase().includes(needle)));
-    shown.sort((a, b) => (b.pinned - a.pinned) || String(b.lastPlayedAt || '').localeCompare(String(a.lastPlayedAt || '')));
+    shown.sort(byRecent);
     const kinds = shown.reduce((m, i) => { const k = kindOf(i); m[k] = (m[k] || 0) + 1; return m; }, {});
     q(timeline, '.tt-river-sub').textContent = `${shown.length} items · ${kinds.artist || 0} artists · ${shown.length - (kinds.artist || 0) - (kinds.album || 0)} playlists · ${kinds.album || 0} albums`;
     const frag = document.createDocumentFragment();

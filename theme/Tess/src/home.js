@@ -351,7 +351,7 @@
         all = all.concat(r.items || []);
         if (!r.items || r.items.length < 500) break;
       }
-    } catch { return; }
+    } catch { otdDay = ''; return; } // try again next time instead of hiding it until tomorrow
     const dayStart = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
     const gap = (t) => { const a = new Date(t.addedAt); return Math.abs(dayStart(new Date(today.getFullYear(), a.getMonth(), a.getDate())) - dayStart(today)) / 864e5; };
     const past = all.filter((t) => t.addedAt && new Date(t.addedAt).getFullYear() < today.getFullYear());
