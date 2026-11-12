@@ -1731,7 +1731,7 @@ html.tess #global-nav-bar > div > div:last-child button {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 #tess-ambient::after {
-  background: radial-gradient(130% 100% at 50% 35%, transparent 45%, rgba(0, 0, 0, 0.6));
+  background: radial-gradient(140% 110% at 50% 35%, transparent 55%, rgba(0, 0, 0, 0.32));
 }
 
 /* cover-to-page: the clicked cover flies into the new page's header; the rest cross-fades quickly */
@@ -2007,6 +2007,25 @@ html.tess-lib-wide .tt-text b {
   height: 100%;
   object-fit: cover;
   object-position: left top;
+}
+
+/* Spotify paints its whole layout grid with the "main" colour; with a real palette that layer would cover the
+   aurora, so the grid (and anything else filling the window) stays clear and only the panels have a surface */
+html.tess .Root > div:has(> #main-view),
+html.tess .Root > div:has(> #global-nav-bar),
+html.tess div:has(> .Root),
+html.tess #main {
+  background: transparent !important;
+}
+/* the panels' inner layers take no paint of their own, so the tinted glass of the panel shows through */
+html.tess #Desktop_LeftSidebar_Id div:has(> header),
+html.tess #Desktop_LeftSidebar_Id div:has(> #tess-timeline),
+html.tess #Desktop_PanelContainer_Id,
+html.tess #Desktop_PanelContainer_Id > div,
+html.tess .Root__right-sidebar-peek aside,
+html.tess .Root__right-sidebar-peek aside > div,
+html.tess #main-view .main-view-container {
+  background-color: transparent !important;
 }
 
 /* ================= Home ("Listen Now") ================= */
@@ -2451,6 +2470,8 @@ html.tess.tess-home #main-view main > div > [style*="background-color"]:first-ch
 /* greeting + filters pinned together; the big title collapses to a compact one once you scroll (Apple large title) */
 .tess-home-sticky {
   isolation: isolate;
+  /* above the Dial, cards and shelves that scroll underneath it */
+  z-index: 20 !important;
 }
 .tess-home-sticky > .tess-sticky-glass {
   position: absolute !important;

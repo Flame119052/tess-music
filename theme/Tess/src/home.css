@@ -440,6 +440,8 @@ html.tess.tess-home #main-view main > div > [style*="background-color"]:first-ch
 /* greeting + filters pinned together; the big title collapses to a compact one once you scroll (Apple large title) */
 .tess-home-sticky {
   isolation: isolate;
+  /* above the Dial, cards and shelves that scroll underneath it */
+  z-index: 20 !important;
 }
 .tess-home-sticky > .tess-sticky-glass {
   position: absolute !important;

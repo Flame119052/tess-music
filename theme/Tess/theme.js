@@ -27,12 +27,18 @@
   };
   const mount = (node, parent = document.body) => { parent.appendChild(node); onDispose(() => node.remove()); return node; };
   // timers do nothing while the window is hidden or minimised
-  const every = (ms, fn) => { const id = setInterval(() => { if (!document.hidden) fn(); }, ms); onDispose(() => clearInterval(id)); };
+  // A copy of this script that is no longer the newest stops itself at its next tick, so two copies can never fight.
+  const stale = () => window.__tess !== self;
+  const every = (ms, fn) => { const id = setInterval(() => { if (stale()) return clearInterval(id); if (!document.hidden) fn(); }, ms); onDispose(() => clearInterval(id)); };
   // Run placement work the moment Spotify draws something (at most once a frame), with a slow timer as a backup.
   // This replaces polling, which made Tess's pieces appear seconds after Spotify's page.
   const placers = [];
   let placeQueued = false;
-  const runPlacers = () => { placeQueued = false; for (const fn of placers) { try { fn(); } catch {} } };
+  const runPlacers = () => {
+    placeQueued = false;
+    if (stale()) return domWatch.disconnect();
+    for (const fn of placers) { try { fn(); } catch {} }
+  };
   const domWatch = new MutationObserver(() => { if (!placeQueued) { placeQueued = true; requestAnimationFrame(runPlacers); } });
   const startWatch = () => { const root = document.querySelector('.Root') || document.body; domWatch.observe(root, { childList: true, subtree: true }); };
   onDispose(() => domWatch.disconnect());
@@ -216,9 +222,9 @@
     x.filter = 'blur(9px) saturate(140%)';
     colors.forEach((c, i) => {
       const a = seed + i * 1.7;
-      x.fillStyle = `rgba(${c.map(Math.round).join(',')},0.8)`;
+      x.fillStyle = `rgba(${c.map(Math.round).join(',')},0.95)`;
       x.beginPath();
-      x.ellipse(w * (0.5 + 0.4 * Math.cos(a)), h * (0.5 + 0.42 * Math.sin(a * 1.3)), w * 0.42, h * 0.55, a, 0, Math.PI * 2);
+      x.ellipse(w * (0.5 + 0.4 * Math.cos(a)), h * (0.5 + 0.42 * Math.sin(a * 1.3)), w * 0.5, h * 0.62, a, 0, Math.PI * 2);
       x.fill();
     });
   }
@@ -902,7 +908,14 @@
   }
 
   // Put the timeline in place of Spotify's list (when the library is at its normal width).
+  // remove anything an older copy of this script left behind, before placing ours
+  const sweepStale = () => {
+    for (const [sel, mine] of [['#tess-timeline', timeline], ['.tess-cover-wrap', coverWrap], ['.tess-side-lyrics', side]]) {
+      document.querySelectorAll(sel).forEach((n) => { if (n !== mine) n.remove(); });
+    }
+  };
   const placeTimeline = () => {
+    sweepStale();
     const lib = document.getElementById('Desktop_LeftSidebar_Id');
     if (!lib) return;
     const width = lib.getBoundingClientRect().width;
@@ -1347,6 +1360,8 @@
   onDispose(() => typeof unlisten === 'function' && unlisten());
   listen(window, 'resize', () => { setHeroHeight(); setTimeout(onRoute, 100); });
   startWatch();
+  sweepStale();
+  placeTimeline();
   onRoute();
 })();
 
