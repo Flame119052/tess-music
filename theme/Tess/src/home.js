@@ -41,7 +41,18 @@
     </section>`);
   onDispose(() => { masthead.remove(); hero.remove(); });
 
-  const pathOf = (uri) => { const [, type, id] = uri.split(':'); return `/${type}/${id}`; };
+  // Spotify's own URI helper knows every kind of link (collections, users, shows...), so nothing opens as a web link
+  const pathOf = (uri) => { try { return Spicetify.URI.fromString(uri).toURLPath(true); } catch { const [, type, id] = uri.split(':'); return `/${type}/${id}`; } };
+  // in-app navigation for our own links; a plain <a href> would leave the app
+  const onLinkClick = (e) => {
+    if (!(e.target instanceof Element) || e.target.closest('.thr-play, .thd-play')) return;
+    const a = e.target.closest('#tess-home-hero [data-path]');
+    if (!a) return;
+    e.preventDefault();
+    Spicetify.Platform.History.push(a.dataset.path);
+  };
+  document.addEventListener('click', onLinkClick, true);
+  onDispose(() => document.removeEventListener('click', onLinkClick, true));
 
   const homeRecent = () => { try { return JSON.parse(localStorage.getItem('tess:settings') || '{}').homeRecent !== false; } catch { return true; } };
   const imageOf = (u) => (u?.startsWith('spotify:mosaic:') ? 'https://mosaic.scdn.co/300/' + u.split(':').slice(2).join('') : u?.startsWith('spotify:image:') ? 'https://i.scdn.co/image/' + u.split(':')[2] : u || '');
@@ -77,7 +88,7 @@
     grid.innerHTML = '';
     for (const it of items) {
       const t = el('<a class="thr-item" draggable="false"><span class="thr-art"><img alt=""></span><span class="thr-text"><b></b><small></small></span><button class="thr-play" aria-label="Play"><svg width="11" height="13" viewBox="0 0 12 14" fill="currentColor"><path d="M1 1.5l9.5 5.5L1 12.5z"/></svg></button></a>');
-      t.href = pathOf(it.uri);
+      t.dataset.path = pathOf(it.uri);
       t.querySelector('img').src = it.img;
       if (it.uri.startsWith('spotify:artist:')) t.classList.add('round');
       t.querySelector('b').textContent = it.title;
@@ -89,7 +100,7 @@
 
   // 3D tilt: the card leans toward the pointer with a moving glare; only transforms, so it stays on the GPU's cheap path.
   const card = hero.querySelector('.thd-card');
-  card.href = pathOf(DJ_URI);
+  card.dataset.path = pathOf(DJ_URI);
   card.querySelector('.thd-art').style.backgroundImage = 'url("https://lexicon-assets.spotifycdn.com/DJ-Beta-CoverArt-300.jpg")';
   card.querySelector('.thd-play').onclick = (e) => { e.preventDefault(); e.stopPropagation(); Spicetify.Player.playUri(DJ_URI); };
   let tiltFrame = 0;
@@ -124,6 +135,7 @@
     masthead.querySelector('.thm-eyebrow').textContent = eyebrow();
     masthead.querySelector('.thm-title').textContent = firstName ? `${greeting()}, ${firstName}` : greeting();
     if (chipRow && masthead.nextElementSibling !== chipRow) chipRow.before(masthead);
+    chipRow?.firstElementChild?.classList.add('tess-sticky-glass');
 
     if (!shortcuts) { hero.remove(); return; }
     if (hero.nextElementSibling !== shortcuts) shortcuts.before(hero);

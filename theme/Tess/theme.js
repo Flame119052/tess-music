@@ -650,89 +650,193 @@
   every(2000, syncState);
   syncTrack();
 
-  // ---------------- library: a pinned dock, Arc/Dia style ----------------
-  // Pinned items leave the list and sit as artwork tiles above it, always in reach.
-  // Click opens, double-click plays; whatever is playing glows.
-  const dock = el('<section id="tess-dock" aria-label="Pinned"><div class="td-grid"></div></section>');
-  onDispose(() => dock.remove());
-  onDispose(() => document.querySelectorAll('.tess-pinned-row').forEach((n) => n.classList.remove('tess-pinned-row')));
-  let pins = [];
-  const pinImage = (it) => {
+  // ---------------- library: a timeline of what you've played ----------------
+  // Your library as a listening history: Pinned first, then Today / Yesterday / This week / This month / Earlier,
+  // on a thread whose node lights up on what's playing. A multi-select filter chooses which kinds of items show.
+  // (The expanded and collapsed library modes stay Spotify's own.)
+  const KINDS = [
+    ['mine', 'Your playlists'], ['others', 'Saved playlists'], ['spotify', 'Made by Spotify'], ['blend', 'Blends'],
+    ['album', 'Albums'], ['artist', 'Artists'], ['show', 'Podcasts'], ['audiobook', 'Audiobooks'],
+    ['event', 'Events'], ['folder', 'Folders'], ['local', 'Local Files'],
+  ];
+  const kindOf = (i) => {
+    if (i.type === 'playlist') {
+      const own = (i.owner?.name || i.owner?.displayName || '').toLowerCase();
+      if (own === 'spotify') return / \+ /.test(i.name) ? 'blend' : 'spotify';
+      return i.isOwnedBySelf ? 'mine' : 'others';
+    }
+    if (i.type === 'album' || i.type === 'pre-release-album') return 'album';
+    if (i.type === 'concert') return 'event';
+    if (i.type === 'local-files') return 'local';
+    if (i.type === 'episode' || i.type === 'show') return 'show';
+    return i.type;
+  };
+  const libFilter = new Set((() => { try { return JSON.parse(localStorage.getItem('tess:libFilter') || 'null'); } catch { return null; } })() || KINDS.map((k) => k[0]));
+  const saveLibFilter = () => { try { localStorage.setItem('tess:libFilter', JSON.stringify([...libFilter])); } catch {} };
+
+  const timeline = el(`
+    <section id="tess-timeline" aria-label="Your Library">
+      <div class="tt-bar">
+        <label class="tt-search"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="5"/><path d="M11 11l3.5 3.5"/></svg><input type="search" placeholder="Search" aria-label="Search your library"></label>
+        <button class="tt-filter" aria-haspopup="true" aria-expanded="false"><svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M1.5 3h13l-5 6v4.5l-3 1.5V9z"/></svg><span>Show</span><i></i></button>
+      </div>
+      <div class="tt-pop" hidden><div class="tt-chips"></div><div class="tt-pop-foot"><button class="tt-all">All</button><button class="tt-none">None</button></div></div>
+      <div class="tt-list" role="list"></div>
+    </section>`);
+  onDispose(() => timeline.remove());
+  onDispose(() => document.querySelectorAll('.tess-lib-hidden').forEach((n) => n.classList.remove('tess-lib-hidden')));
+  const ttList = q(timeline, '.tt-list');
+  const ttPop = q(timeline, '.tt-pop');
+  const ttSearch = q(timeline, 'input');
+  let libItems = [];
+  let libSig = '';
+
+  const libImage = (it) => {
     const u = it.images?.[0]?.url || '';
     if (u.startsWith('spotify:mosaic:')) return 'https://mosaic.scdn.co/300/' + u.split(':').slice(2).join('');
     if (u.startsWith('spotify:image:')) return imageUrl(u);
     return u.startsWith('http') ? u : '';
   };
-  const rowUri = (u) => (u === 'spotify:local-files' ? 'spotify:collection:local-files' : u);
-  const pagePath = (u) => {
-    if (u === 'spotify:local-files') return '/collection/local-files';
-    const [, type, id] = u.split(':');
-    return `/${type}/${id}`;
+  const libPath = (uri) => {
+    if (uri === 'spotify:local-files') return '/collection/local-files';
+    try { return Spicetify.URI.fromString(uri).toURLPath(true); } catch { const [, t, id] = uri.split(':'); return `/${t}/${id}`; }
   };
-  async function loadPins() {
+  const groupOf = (it) => {
+    if (it.pinned) return 'Pinned';
+    if (!it.lastPlayedAt) return 'Not played yet';
+    const then = new Date(it.lastPlayedAt), now = new Date();
+    const day = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const days = Math.round((day(now) - day(then)) / 864e5);
+    if (days <= 0) return 'Today';
+    if (days === 1) return 'Yesterday';
+    if (days < 7) return 'This week';
+    if (days < 31) return 'This month';
+    return then.getFullYear() === now.getFullYear() ? then.toLocaleDateString(undefined, { month: 'long' }) : String(then.getFullYear());
+  };
+  const subOf = (it) => {
+    const k = kindOf(it);
+    const label = { mine: 'Playlist', others: 'Playlist', spotify: 'Made by Spotify', blend: 'Blend', album: 'Album', artist: 'Artist', show: 'Podcast', audiobook: 'Audiobook', event: 'Event', folder: 'Folder', local: 'Local Files' }[k] || '';
+    const who = k === 'artist' || k === 'spotify' || k === 'blend' || k === 'local' ? '' : (it.artists?.[0]?.name || it.owner?.name || '');
+    return who ? `${label} · ${who}` : label;
+  };
+
+  async function loadLibrary() {
     try {
-      const r = await Spicetify.Platform.LibraryAPI.getContents({ limit: 60, offset: 0 });
-      const next = (r.items || []).filter((i) => i.pinned && i.uri);
-      if (JSON.stringify(next.map((i) => i.uri + i.name)) === JSON.stringify(pins.map((i) => i.uri + i.name))) return;
-      pins = next;
-      renderDock();
+      const L = Spicetify.Platform.LibraryAPI;
+      let all = [], off = 0, total = 1;
+      while (off < total && off < 2000) {
+        const r = await L.getContents({ limit: 100, offset: off });
+        total = r.totalLength; all = all.concat(r.items || []); off += 100;
+      }
+      const sig = all.map((i) => i.uri + i.lastPlayedAt + i.pinned + i.name).join('|');
+      if (sig === libSig) return;
+      libSig = sig;
+      libItems = all;
+      renderTimeline();
     } catch {}
   }
-  function renderDock() {
-    const grid = q(dock, '.td-grid');
-    grid.innerHTML = '';
-    dock.hidden = !pins.length;
-    for (const it of pins) {
-      const img = pinImage(it);
-      const tile = el(`<button class="td-tile" data-uri=""><span class="td-art"></span><span class="td-name"></span><span class="td-eq"><i></i><i></i><i></i></span></button>`);
-      tile.dataset.uri = it.uri;
-      tile.title = it.name;
-      q(tile, '.td-name').textContent = it.name;
-      const art = q(tile, '.td-art');
-      if (img) art.style.backgroundImage = `url("${img}")`;
-      else art.classList.add('td-local');
-      tile.onclick = () => Spicetify.Platform.History.push(pagePath(it.uri));
-      tile.ondblclick = () => Spicetify.Player.playUri(it.uri);
-      grid.appendChild(tile);
+
+  function renderChips() {
+    const present = new Set(libItems.map(kindOf));
+    const box = q(ttPop, '.tt-chips');
+    box.innerHTML = '';
+    for (const [k, label] of KINDS) {
+      if (!present.has(k)) continue;
+      const n = libItems.filter((i) => kindOf(i) === k).length;
+      const chip = el(`<button class="tt-chip" role="checkbox"><span></span><small></small></button>`);
+      chip.setAttribute('aria-checked', String(libFilter.has(k)));
+      q(chip, 'span').textContent = label;
+      q(chip, 'small').textContent = n;
+      chip.onclick = () => { libFilter.has(k) ? libFilter.delete(k) : libFilter.add(k); saveLibFilter(); renderChips(); renderTimeline(); };
+      box.appendChild(chip);
     }
-    markDock();
+    const hiddenKinds = [...present].filter((k) => !libFilter.has(k)).length;
+    q(timeline, '.tt-filter i').textContent = hiddenKinds ? String(present.size - hiddenKinds) : '';
+    q(timeline, '.tt-filter').classList.toggle('narrowed', hiddenKinds > 0);
   }
-  function markDock() {
-    const ctx = P.data?.context?.uri || P.data?.context_uri || '';
-    for (const t of dock.querySelectorAll('.td-tile')) {
-      const u = t.dataset.uri;
-      t.classList.toggle('playing', !!ctx && (ctx === u || (u === 'spotify:local-files' && /local-files/.test(ctx))));
-      t.classList.toggle('paused', !P.isPlaying());
-      t.classList.toggle('here', route() === pagePath(u));
-    }
-    // artwork wrappers that Spotify draws square get Tess's rounded corners; artist circles stay circles
-    for (const w of document.querySelectorAll('#Desktop_LeftSidebar_Id [data-encore-id="listRow"] div:has(> img):not([data-tess-shape])')) {
-      w.dataset.tessShape = '1';
-      if (!getComputedStyle(w).borderTopLeftRadius.includes('%')) w.classList.add('tess-sq');
-    }
-    const pinned = new Set(pins.map((i) => 'listrow-title-' + rowUri(i.uri)));
-    for (const row of document.querySelectorAll('#Desktop_LeftSidebar_Id [role="row"]')) {
-      const id = row.querySelector('[id^="listrow-title-"]')?.id;
-      row.classList.toggle('tess-pinned-row', !!id && pinned.has(id));
-    }
-  }
-  const placeDock = () => {
-    const head = document.querySelector('#Desktop_LeftSidebar_Id header')?.parentElement;
-    if (head && dock.previousElementSibling !== head) head.after(dock);
-    const lib = document.getElementById('Desktop_LeftSidebar_Id');
-    if (lib) html.classList.toggle('tess-lib-wide', lib.getBoundingClientRect().width > 640);
-    markDock();
+  q(ttPop, '.tt-all').onclick = () => { KINDS.forEach(([k]) => libFilter.add(k)); saveLibFilter(); renderChips(); renderTimeline(); };
+  q(ttPop, '.tt-none').onclick = () => { libFilter.clear(); saveLibFilter(); renderChips(); renderTimeline(); };
+  q(timeline, '.tt-filter').onclick = (e) => {
+    e.stopPropagation();
+    ttPop.hidden = !ttPop.hidden;
+    q(timeline, '.tt-filter').setAttribute('aria-expanded', String(!ttPop.hidden));
   };
-  every(700, placeDock);
-  // Expanded library: Spotify lays it over the page, so it must be a solid surface (and the page under it can stop drawing).
-  const libResize = new ResizeObserver(([entry]) => html.classList.toggle('tess-lib-wide', entry.contentRect.width > 640));
-  const watchLib = () => { const lib = document.getElementById('Desktop_LeftSidebar_Id'); if (lib && !lib.dataset.tessWatched) { lib.dataset.tessWatched = '1'; libResize.observe(lib); } };
-  watchLib();
-  every(2000, watchLib);
-  onDispose(() => { libResize.disconnect(); html.classList.remove('tess-lib-wide'); document.querySelectorAll('[data-tess-watched]').forEach((n) => delete n.dataset.tessWatched); });
-  placeDock();
-  every(6000, loadPins);
-  loadPins();
+  listen(document, 'click', (e) => { if (!ttPop.hidden && !ttPop.contains(e.target)) { ttPop.hidden = true; q(timeline, '.tt-filter').setAttribute('aria-expanded', 'false'); } });
+  listen(ttSearch, 'input', () => renderTimeline());
+
+  function renderTimeline() {
+    renderChips();
+    const needle = ttSearch.value.trim().toLowerCase();
+    const shown = libItems.filter((i) => libFilter.has(kindOf(i)) && (!needle || i.name.toLowerCase().includes(needle)));
+    shown.sort((a, b) => (b.pinned - a.pinned) || String(b.lastPlayedAt || '').localeCompare(String(a.lastPlayedAt || '')));
+    const frag = document.createDocumentFragment();
+    let group = '';
+    for (const it of shown) {
+      const g = groupOf(it);
+      if (g !== group) {
+        group = g;
+        const h = el('<div class="tt-group" role="presentation"></div>');
+        h.textContent = g;
+        frag.appendChild(h);
+      }
+      const row = el('<div class="tt-item" role="listitem" tabindex="0"><span class="tt-art"></span><span class="tt-text"><b></b><small></small></span></div>');
+      row.dataset.uri = it.uri;
+      row.title = it.name;
+      const art = q(row, '.tt-art');
+      const img = libImage(it);
+      if (img) art.style.backgroundImage = `url("${img}")`;
+      else art.classList.add('tt-local');
+      if (it.type === 'artist') row.classList.add('round');
+      q(row, 'b').textContent = it.name;
+      q(row, 'small').textContent = subOf(it);
+      row.onclick = () => Spicetify.Platform.History.push(libPath(it.uri));
+      row.ondblclick = () => Spicetify.Player.playUri(it.uri);
+      row.onkeydown = (e) => { if (e.key === 'Enter') row.onclick(); };
+      frag.appendChild(row);
+    }
+    if (!shown.length) {
+      const empty = el('<div class="tt-empty"></div>');
+      empty.textContent = libItems.length ? 'Nothing matches. Change what’s shown with the filter above.' : '';
+      frag.appendChild(empty);
+    }
+    ttList.replaceChildren(frag);
+    markTimeline();
+  }
+
+  function markTimeline() {
+    const ctx = P.data?.context?.uri || P.data?.context_uri || '';
+    const here = route();
+    for (const row of ttList.children) {
+      const u = row.dataset.uri;
+      if (!u) continue;
+      row.classList.toggle('playing', !!ctx && (ctx === u || (u === 'spotify:local-files' && /local-files/.test(ctx))));
+      row.classList.toggle('here', here === libPath(u));
+    }
+  }
+
+  // Put the timeline in place of Spotify's list (when the library is at its normal width).
+  const placeTimeline = () => {
+    const lib = document.getElementById('Desktop_LeftSidebar_Id');
+    if (!lib) return;
+    const width = lib.getBoundingClientRect().width;
+    html.classList.toggle('tess-lib-wide', width > 640);
+    html.classList.toggle('tess-lib-rail', width < 160);
+    const head = lib.querySelector('header')?.parentElement;
+    const listBlock = head?.nextElementSibling && head.nextElementSibling !== timeline ? head.nextElementSibling : timeline.nextElementSibling;
+    if (!head) return;
+    if (timeline.previousElementSibling !== head) head.after(timeline);
+    head.querySelector('[role="listbox"]')?.closest('header ~ div, header + *')?.classList.add('tess-lib-hidden');
+    if (listBlock && listBlock !== timeline) listBlock.classList.add('tess-lib-hidden');
+    markTimeline();
+  };
+  every(700, placeTimeline);
+  placeTimeline();
+  every(20000, loadLibrary);
+  loadLibrary();
+  // what's playing lights up now; a few seconds later the library reloads so it moves to Today
+  const onLibSong = () => { markTimeline(); setTimeout(loadLibrary, 3000); };
+  P.addEventListener('songchange', onLibSong);
+  onDispose(() => P.removeEventListener('songchange', onLibSong));
 
   // ---------------- artist pages: full-height motion header ----------------
   const canvasCache = new Map();
@@ -955,7 +1059,18 @@
     </section>`);
   onDispose(() => { masthead.remove(); hero.remove(); });
 
-  const pathOf = (uri) => { const [, type, id] = uri.split(':'); return `/${type}/${id}`; };
+  // Spotify's own URI helper knows every kind of link (collections, users, shows...), so nothing opens as a web link
+  const pathOf = (uri) => { try { return Spicetify.URI.fromString(uri).toURLPath(true); } catch { const [, type, id] = uri.split(':'); return `/${type}/${id}`; } };
+  // in-app navigation for our own links; a plain <a href> would leave the app
+  const onLinkClick = (e) => {
+    if (!(e.target instanceof Element) || e.target.closest('.thr-play, .thd-play')) return;
+    const a = e.target.closest('#tess-home-hero [data-path]');
+    if (!a) return;
+    e.preventDefault();
+    Spicetify.Platform.History.push(a.dataset.path);
+  };
+  document.addEventListener('click', onLinkClick, true);
+  onDispose(() => document.removeEventListener('click', onLinkClick, true));
 
   const homeRecent = () => { try { return JSON.parse(localStorage.getItem('tess:settings') || '{}').homeRecent !== false; } catch { return true; } };
   const imageOf = (u) => (u?.startsWith('spotify:mosaic:') ? 'https://mosaic.scdn.co/300/' + u.split(':').slice(2).join('') : u?.startsWith('spotify:image:') ? 'https://i.scdn.co/image/' + u.split(':')[2] : u || '');
@@ -991,7 +1106,7 @@
     grid.innerHTML = '';
     for (const it of items) {
       const t = el('<a class="thr-item" draggable="false"><span class="thr-art"><img alt=""></span><span class="thr-text"><b></b><small></small></span><button class="thr-play" aria-label="Play"><svg width="11" height="13" viewBox="0 0 12 14" fill="currentColor"><path d="M1 1.5l9.5 5.5L1 12.5z"/></svg></button></a>');
-      t.href = pathOf(it.uri);
+      t.dataset.path = pathOf(it.uri);
       t.querySelector('img').src = it.img;
       if (it.uri.startsWith('spotify:artist:')) t.classList.add('round');
       t.querySelector('b').textContent = it.title;
@@ -1003,7 +1118,7 @@
 
   // 3D tilt: the card leans toward the pointer with a moving glare; only transforms, so it stays on the GPU's cheap path.
   const card = hero.querySelector('.thd-card');
-  card.href = pathOf(DJ_URI);
+  card.dataset.path = pathOf(DJ_URI);
   card.querySelector('.thd-art').style.backgroundImage = 'url("https://lexicon-assets.spotifycdn.com/DJ-Beta-CoverArt-300.jpg")';
   card.querySelector('.thd-play').onclick = (e) => { e.preventDefault(); e.stopPropagation(); Spicetify.Player.playUri(DJ_URI); };
   let tiltFrame = 0;
@@ -1038,6 +1153,7 @@
     masthead.querySelector('.thm-eyebrow').textContent = eyebrow();
     masthead.querySelector('.thm-title').textContent = firstName ? `${greeting()}, ${firstName}` : greeting();
     if (chipRow && masthead.nextElementSibling !== chipRow) chipRow.before(masthead);
+    chipRow?.firstElementChild?.classList.add('tess-sticky-glass');
 
     if (!shortcuts) { hero.remove(); return; }
     if (hero.nextElementSibling !== shortcuts) shortcuts.before(hero);

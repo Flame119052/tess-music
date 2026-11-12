@@ -947,11 +947,12 @@ html.tess.tess-artist .tess-hero-bg::before {
 }
 
 /* the sticky strip that appears once you scroll is the same glass as the panels, never a flat page colour */
-html.tess .main-topBar-background {
-  background: rgba(22, 22, 26, 0.72) !important;
-  -webkit-backdrop-filter: blur(24px) saturate(1.6);
-  backdrop-filter: blur(24px) saturate(1.6);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+html.tess .main-topBar-background,
+html.tess .tess-sticky-glass {
+  background: rgba(30, 30, 36, 0.5) !important;
+  -webkit-backdrop-filter: blur(30px) saturate(1.8);
+  backdrop-filter: blur(30px) saturate(1.8);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
 }
 html.tess.tess-artist .before-scroll-node > [style*="background-color"] {
   background: none !important;
@@ -1230,115 +1231,266 @@ html.tess #queue-panel [data-encore-id="buttonPrimary"] {
   font-size: 13px !important;
 }
 
-/* ================= library: pinned dock ================= */
-#tess-dock {
-  flex: none;
-  padding: 2px 12px 10px;
-  border-bottom: 1px solid var(--tess-hairline);
-  font-family: var(--tess-font);
+/* ================= library: timeline ================= */
+html.tess:not(.tess-lib-wide):not(.tess-lib-rail) #Desktop_LeftSidebar_Id .tess-lib-hidden {
+  display: none !important;
 }
-#tess-dock[hidden] {
+html.tess:is(.tess-lib-wide, .tess-lib-rail) #tess-timeline {
   display: none;
 }
-.td-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
-  gap: 10px;
-}
-.td-tile {
-  all: unset;
+#tess-timeline {
   position: relative;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  font-family: var(--tess-font);
+}
+.tt-bar {
+  display: flex;
+  gap: 8px;
+  padding: 4px 12px 8px;
+}
+.tt-search {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 11px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 0 1px var(--tess-hairline);
+  color: rgba(255, 255, 255, 0.55);
+}
+.tt-search input {
+  all: unset;
+  flex: 1;
   min-width: 0;
+  font-size: 13px;
+  color: #fff;
+}
+.tt-filter {
+  all: unset;
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 0 1px var(--tess-hairline);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+  transition: background 0.2s;
+}
+.tt-filter:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+.tt-filter.narrowed {
+  color: var(--tess-accent);
+}
+.tt-filter i {
+  font-style: normal;
+  min-width: 16px;
+  text-align: center;
+  font-size: 11px;
+  border-radius: 8px;
+  background: rgba(30, 215, 96, 0.18);
+}
+.tt-filter i:empty {
+  display: none;
+}
+.tt-pop {
+  position: absolute;
+  top: 44px;
+  left: 12px;
+  right: 12px;
+  z-index: 5;
+  padding: 12px;
   border-radius: 14px;
-  transition: transform 0.35s var(--tess-spring);
+  background: rgba(36, 36, 42, 0.92);
+  -webkit-backdrop-filter: blur(24px) saturate(1.6);
+  backdrop-filter: blur(24px) saturate(1.6);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.09);
+  animation: tt-pop 0.28s var(--tess-spring);
 }
-.td-tile:hover {
-  transform: translateY(-2px);
+.tt-pop[hidden] {
+  display: none;
 }
-.td-tile:active {
+@keyframes tt-pop {
+  from { opacity: 0; transform: translateY(-6px) scale(0.97); }
+}
+.tt-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tt-chip {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 550;
+  color: rgba(255, 255, 255, 0.65);
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  transition: background 0.18s, color 0.18s, transform 0.25s var(--tess-spring);
+}
+.tt-chip small {
+  font-size: 11px;
+  opacity: 0.6;
+}
+.tt-chip[aria-checked="true"] {
+  background: rgba(255, 255, 255, 0.92);
+  color: #111;
+  box-shadow: none;
+}
+.tt-chip:active {
   transform: scale(0.95);
 }
-.td-art {
-  display: block;
-  aspect-ratio: 1;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.07) center / cover no-repeat;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
-  transition: box-shadow 0.3s;
+.tt-pop-foot {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-top: 10px;
 }
-.td-art.td-local {
-  background-image: linear-gradient(135deg, #2a9d5c, #1ed760);
+.tt-pop-foot button {
+  all: unset;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.7);
+}
+.tt-pop-foot button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+.tt-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 10px 20px;
+  scrollbar-width: thin;
+}
+.tt-group {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 -10px;
+  padding: 12px 22px 7px 40px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+  background: rgba(30, 30, 36, 0.5);
+  -webkit-backdrop-filter: blur(18px) saturate(1.5);
+  backdrop-filter: blur(18px) saturate(1.5);
+}
+/* each row hangs off a thread on the left; its node lights up when it's playing */
+.tt-item {
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 5px 8px 5px 30px;
+  border-radius: 11px;
+  cursor: pointer;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 54px;
+  transition: background 0.18s;
 }
-.td-art.td-local::after {
+.tt-item::before {
   content: "";
   position: absolute;
-  inset: 32%;
-  background: rgba(255, 255, 255, 0.92);
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 6.5A2.5 2.5 0 0 1 5.5 4h4l2 2h7A2.5 2.5 0 0 1 21 8.5v9a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z'/%3E%3C/svg%3E") center / contain no-repeat;
+  left: 12px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.08);
 }
-.td-name {
-  font-size: 11.5px;
-  font-weight: 550;
-  line-height: 1.25;
-  color: rgba(255, 255, 255, 0.78);
+.tt-item::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: #2c2c33;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.04);
+  transition: background 0.3s, box-shadow 0.3s;
+}
+.tt-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.tt-item.here {
+  background: rgba(255, 255, 255, 0.09);
+}
+.tt-item.playing::after {
+  background: var(--tess-accent);
+  box-shadow: 0 0 0 3px rgba(30, 215, 96, 0.22), 0 0 12px var(--tess-accent);
+}
+.tt-item.playing b {
+  color: var(--tess-accent);
+}
+.tt-art {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.07) center / cover no-repeat;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
+  transition: transform 0.3s var(--tess-spring);
+}
+.tt-item:hover .tt-art {
+  transform: scale(1.06);
+}
+.tt-item.round .tt-art {
+  border-radius: 50%;
+}
+.tt-art.tt-local {
+  background-image: linear-gradient(135deg, #2a9d5c, #1ed760);
+}
+.tt-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tt-text b,
+.tt-text small {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.tt-text b {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.tt-text small {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+}
+.tt-empty {
+  padding: 30px 20px;
   text-align: center;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.55);
 }
-.td-tile.here .td-art {
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4), inset 0 0 0 2px rgba(255, 255, 255, 0.55);
-}
-.td-tile.playing .td-art {
-  box-shadow: 0 0 0 2px var(--tess-accent), 0 0 22px rgba(30, 215, 96, 0.45), 0 6px 18px rgba(0, 0, 0, 0.4);
-}
-.td-tile.playing .td-name {
-  color: var(--tess-accent);
-}
-/* tiny equaliser on the playing tile */
-.td-eq {
-  position: absolute;
-  top: 7px;
-  right: 7px;
-  display: none;
-  gap: 2px;
-  align-items: flex-end;
-  height: 12px;
-  padding: 3px 4px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(8px);
-}
-.td-tile.playing .td-eq {
-  display: flex;
-}
-.td-eq i {
-  width: 2px;
-  height: 100%;
-  border-radius: 1px;
-  background: var(--tess-accent);
-  transform-origin: bottom;
-  animation: td-eq 0.9s ease-in-out infinite alternate;
-}
-.td-eq i:nth-child(2) { animation-delay: -0.3s; }
-.td-eq i:nth-child(3) { animation-delay: -0.6s; }
-.td-tile.paused .td-eq i { animation-play-state: paused; }
-@keyframes td-eq {
-  from { transform: scaleY(0.25); }
-  to { transform: scaleY(1); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .td-eq i { animation: none; }
-}
-/* pinned items live in the dock, not twice in the list */
-html.tess #Desktop_LeftSidebar_Id [role="row"].tess-pinned-row {
-  display: none !important;
-}
+
 
 /* lyric lines far from the current one: dimmer, never blurred */
 .tn-line.far {
