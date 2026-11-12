@@ -479,6 +479,84 @@
   }
   listen(window, 'resize', fitMarquees);
 
+  // ---------------- liquid glass ----------------
+  // Apple's Liquid Glass bends what's behind it near its edges (a lens), keeps the middle clear, and catches light on
+  // the rim. Each glass surface gets a displacement map drawn for its own size and corner radius: red/green encode how
+  // far to push each pixel, strongest in a band along the edge and zero in the centre. The filter is used as the
+  // element's backdrop-filter, so it refracts the real content underneath, then softly blurs and saturates it.
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const glassDefs = document.createElementNS(svgNS, 'svg');
+  glassDefs.setAttribute('width', '0');
+  glassDefs.setAttribute('height', '0');
+  glassDefs.style.position = 'absolute';
+  mount(glassDefs);
+  function lensMap(w, h, r, edge) {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const x = c.getContext('2d');
+    const img = x.createImageData(w, h);
+    for (let py = 0; py < h; py++) {
+      for (let px = 0; px < w; px++) {
+        // distance to the rounded-rect border, and the outward normal there
+        const qx = Math.max(Math.abs(px + 0.5 - w / 2) - (w / 2 - r), 0);
+        const qy = Math.max(Math.abs(py + 0.5 - h / 2) - (h / 2 - r), 0);
+        const inside = r - Math.hypot(qx, qy);
+        const d = Math.min(inside, Math.min(px, w - px, py, h - py) + (qx || qy ? 0 : 0));
+        const t = Math.max(0, 1 - Math.max(0, d) / edge); // 1 at the edge, 0 past the band
+        const k = t * t * (3 - 2 * t);                     // smooth falloff
+        let nx = Math.sign(px + 0.5 - w / 2) * (qx ? qx / (Math.hypot(qx, qy) || 1) : (Math.abs(px + 0.5 - w / 2) > w / 2 - edge ? 1 : 0));
+        let ny = Math.sign(py + 0.5 - h / 2) * (qy ? qy / (Math.hypot(qx, qy) || 1) : (Math.abs(py + 0.5 - h / 2) > h / 2 - edge ? 1 : 0));
+        const i = (py * w + px) * 4;
+        // pull the edge inward: samples come from further inside, which magnifies/bends like a thick lens
+        img.data[i] = 128 - nx * k * 127;
+        img.data[i + 1] = 128 - ny * k * 127;
+        img.data[i + 2] = 128;
+        img.data[i + 3] = 255;
+      }
+    }
+    x.putImageData(img, 0, 0);
+    return c.toDataURL();
+  }
+  const glassCache = new Map();
+  function glassFilter(w, h, r) {
+    w = Math.max(8, Math.round(w)); h = Math.max(8, Math.round(h)); r = Math.min(Math.round(r), Math.floor(Math.min(w, h) / 2));
+    const key = `${w}x${h}r${r}`;
+    if (glassCache.has(key)) return glassCache.get(key);
+    const id = 'tess-glass-' + glassCache.size;
+    const f = document.createElementNS(svgNS, 'filter');
+    f.setAttribute('id', id);
+    f.setAttribute('x', '0'); f.setAttribute('y', '0'); f.setAttribute('width', '100%'); f.setAttribute('height', '100%');
+    f.setAttribute('color-interpolation-filters', 'sRGB');
+    f.innerHTML = `
+      <feImage href="${lensMap(w, h, r, Math.min(22, Math.min(w, h) / 2.4))}" x="0" y="0" width="${w}" height="${h}" result="map"/>
+      <feDisplacementMap in="SourceGraphic" in2="map" scale="${Math.min(46, Math.min(w, h) * 0.9)}" xChannelSelector="R" yChannelSelector="G" result="bent"/>
+      <feGaussianBlur in="bent" stdDeviation="1.4" result="soft"/>
+      <feColorMatrix in="soft" type="saturate" values="1.6"/>`;
+    glassDefs.appendChild(f);
+    glassCache.set(key, id);
+    return id;
+  }
+  const GLASS = '#tess-bar, #tess-np .tn-pill, #global-nav-bar form[role="search"], #global-nav-bar button[aria-label="Home"], .tess-hero-switch, #tess-spot .ts-panel';
+  const glassed = new WeakMap();
+  const glassObserver = new ResizeObserver((entries) => {
+    for (const { target } of entries) {
+      const r = target.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8) continue;
+      const radius = parseFloat(getComputedStyle(target).borderTopLeftRadius) || 0;
+      const id = glassFilter(r.width, r.height, Math.min(radius, r.height / 2));
+      target.style.setProperty('--tess-lens', `url(#${id})`);
+    }
+  });
+  onDispose(() => glassObserver.disconnect());
+  const applyGlass = () => {
+    for (const n of document.querySelectorAll(GLASS)) {
+      if (glassed.has(n)) continue;
+      glassed.set(n, true);
+      n.classList.add('tess-liquid');
+      glassObserver.observe(n);
+    }
+  };
+
   // ---------------- Tess miniplayer ----------------
   // A small always-on-top window (Document Picture-in-Picture, the same thing Spotify's own miniplayer uses):
   // the artwork fills it, controls float on liquid glass, the current lyric line sits on top. It resizes from a
@@ -1668,6 +1746,8 @@
   listen(window, 'resize', () => { setHeroHeight(); setTimeout(onRoute, 100); });
   // for checking things from DevTools: window.__tessDebug.artistCanvas(uri), .playCanvas(video, fileId)
   self.debug = { artistCanvas, playCanvas, trackCanvas, onRoute: () => onRoute() };
+  onDraw(applyGlass, 4000);
+  applyGlass();
   startWatch();
   sweepStale();
   placeTimeline();
