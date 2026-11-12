@@ -2344,9 +2344,12 @@ html.tess-lib-wide #Desktop_LeftSidebar_Id header h1 {
 }
 .tn-card b { font-size: 13px; font-weight: 700; color: #fff; }
 .tn-card small { font-size: 11.5px; color: rgba(255, 255, 255, 0.78); }
-#tess-np.mode-lyrics .tn-card { --spread: 0.7; }
-#tess-np.mode-none .tn-card,
-#tess-np.vinyl .tn-flow { display: none; }
+/* the cover flow is the queue view: centred, full width, captions on glass (lyrics/none views show one cover) */
+#tess-np:not(.mode-queue) .tn-flow,
+#tess-np.mode-queue .tn-queue { display: none; }
+#tess-np.mode-queue .tn-stage { grid-template-columns: 1fr; }
+#tess-np.mode-queue .tn-player { width: min(440px, 30vw, 46vh); }
+#tess-np.mode-queue.vinyl .tn-flow { display: block; }
 
 /* vinyl: the cover becomes the label of a spinning record, a tonearm swings on while it plays */
 #tess-np .tn-arm {
@@ -2472,6 +2475,25 @@ html.tess #global-nav-bar form[role="search"]::before {
 }
 html.tess #global-nav-bar form[role="search"] input::placeholder {
   color: rgba(255, 255, 255, 0.7);
+}
+
+/* Artwork / Video / Vinyl segmented control in the top-right pill */
+#tess-np .tn-look {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.18);
+}
+#tess-np .tn-look button {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font: 600 12px/1 var(--tess-font);
+  color: rgba(255, 255, 255, 0.78);
+}
+#tess-np .tn-look button[aria-checked="true"] {
+  background: rgba(255, 255, 255, 0.92);
+  color: #111;
 }
 
 /* ================= Home ("Listen Now") ================= */

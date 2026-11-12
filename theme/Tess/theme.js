@@ -337,7 +337,7 @@
         <button class="tn-devices" aria-label="Connect to a device">${I.devices}</button>
         <input class="tn-vol" type="range" min="0" max="1" step="0.01" aria-label="Volume">
         <span class="tn-volicon">${I.volume}</span>
-        <button class="tn-style" aria-label="Cover or vinyl"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9.5"/><circle cx="12" cy="12" r="3"/><path d="M12 5.5a6.5 6.5 0 0 1 6.5 6.5"/></svg></button>
+        <div class="tn-look" role="radiogroup" aria-label="Full screen look"><button data-look="cover">Artwork</button><button data-look="canvas">Video</button><button data-look="vinyl">Vinyl</button></div>
         <button class="tn-gear" aria-label="Tess Music settings">${I.gear}</button>
       </div>
       <div class="tn-stage">
@@ -392,30 +392,43 @@
     np.classList.add('mode-' + m);
     q(np, '.tn-lyr').classList.toggle('on', m === 'lyrics');
     q(np, '.tn-q').classList.toggle('on', m === 'queue');
-    if (m === 'queue') renderQueue();
+    if (m === 'queue') { renderQueue(); renderFlow(); }
     lastLine = -2;
     requestAnimationFrame(fitMarquees);
   }
   q(np, '.tn-close').onclick = closeNP;
   q(np, '.tn-mini').onclick = () => { closeNP(); openMini(); };
   // Cover or Vinyl, remembered
-  const applyNpStyle = () => np.classList.toggle('vinyl', settings.npStyle === 'vinyl');
-  q(np, '.tn-style').onclick = () => { settings.npStyle = settings.npStyle === 'vinyl' ? 'cover' : 'vinyl'; saveSettings(); applyNpStyle(); };
+  // Artwork / Video (the song's Canvas) / Vinyl, remembered
+  const npLook = () => (settings.npStyle === 'vinyl' ? 'vinyl' : settings.coverVideo ? 'canvas' : 'cover');
+  const applyNpStyle = () => {
+    np.classList.toggle('vinyl', npLook() === 'vinyl');
+    np.querySelectorAll('.tn-look button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.look === npLook())));
+  };
+  np.querySelectorAll('.tn-look button').forEach((b) => {
+    b.onclick = () => {
+      settings.npStyle = b.dataset.look === 'vinyl' ? 'vinyl' : 'cover';
+      if (b.dataset.look !== 'vinyl') settings.coverVideo = b.dataset.look === 'canvas';
+      saveSettings();
+      applyNpStyle();
+      syncTrack();
+    };
+  });
   applyNpStyle();
 
   // Cover Flow of the queue around the cover: what played before on the left, what's next on the right.
   // Click a card to jump to it.
   function renderFlow() {
     const st = Spicetify.Platform.PlayerAPI.getState?.() || {};
-    const prev = (st.previousItems || []).slice(-2);
-    const next = (st.nextItems || []).filter((t) => t.uri?.startsWith('spotify:track') || t.uri?.startsWith('spotify:episode')).slice(0, 3);
+    const prev = (st.previousItems || []).slice(-3);
+    const next = (st.nextItems || []).filter((t) => t.uri?.startsWith('spotify:track') || t.uri?.startsWith('spotify:episode')).slice(0, 4);
     const flow = q(np, '.tn-flow');
     const cards = [...prev.map((t, i) => [t, i - prev.length]), ...next.map((t, i) => [t, i + 1])];
     flow.replaceChildren(...cards.map(([t, k]) => {
       const c = el('<button class="tn-card"><img alt=""><span><b></b><small></small></span></button>');
       const a = Math.abs(k), dir = Math.sign(k);
       // fanned out to each side, turned toward the middle, further ones smaller and dimmer
-      c.style.transform = `translateX(${dir * (30 + a * 22)}%) translateZ(${-a * 200}px) rotateY(${-dir * 42}deg)`;
+      c.style.transform = `translateX(${dir * (62 + (a - 1) * 34)}%) translateZ(${-a * 160}px) rotateY(${-dir * 32}deg) scale(${1 - a * 0.08})`;
       c.style.opacity = String(1 - a * 0.25);
       c.style.zIndex = String(10 - a);
       q(c, 'img').src = imageUrl(t.images?.[0]?.url || t.album?.images?.[0]?.url || '');
