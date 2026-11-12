@@ -27,6 +27,15 @@
   const mount = (node, parent = document.body) => { parent.appendChild(node); onDispose(() => node.remove()); return node; };
   // timers do nothing while the window is hidden or minimised
   const every = (ms, fn) => { const id = setInterval(() => { if (!document.hidden) fn(); }, ms); onDispose(() => clearInterval(id)); };
+  // Run placement work the moment Spotify draws something (at most once a frame), with a slow timer as a backup.
+  // This replaces polling, which made Tess's pieces appear seconds after Spotify's page.
+  const placers = [];
+  let placeQueued = false;
+  const runPlacers = () => { placeQueued = false; for (const fn of placers) { try { fn(); } catch {} } };
+  const domWatch = new MutationObserver(() => { if (!placeQueued) { placeQueued = true; requestAnimationFrame(runPlacers); } });
+  const startWatch = () => { const root = document.querySelector('.Root') || document.body; domWatch.observe(root, { childList: true, subtree: true }); };
+  onDispose(() => domWatch.disconnect());
+  const onDraw = (fn, backupMs = 2500) => { placers.push(fn); every(backupMs, fn); };
   const listen = (target, type, fn, opts) => { target.addEventListener(type, fn, opts); onDispose(() => target.removeEventListener(type, fn, opts)); };
   const imageUrl = (u) => (u && u.startsWith('spotify:image:') ? 'https://i.scdn.co/image/' + u.split(':')[2] : u || '');
   // Blurred-artwork backgrounds are painted small on a canvas and stretched by the GPU. It looks like a huge
@@ -136,7 +145,7 @@
     if (!route().startsWith('/preferences')) Spicetify.Platform.History.push('/preferences');
     else { document.getElementById('tess-theme-settings')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); pendingThemeScroll = false; }
   }
-  every(600, buildThemeSection);
+  onDraw(buildThemeSection);
   if (Spicetify.Menu?.Item) {
     const menuItem = new Spicetify.Menu.Item('Tess Music settings', false, openSettings);
     menuItem.register();
@@ -521,7 +530,7 @@
   }, true);
 
   // Put the Tess lyrics card in place of Spotify's preview, and make the cover open the full-screen player.
-  every(800, () => {
+  onDraw(() => {
     const spotifyLyrics = document.querySelector('.Root__right-sidebar-peek [data-testid="lyrics-npv-section"]');
     if (spotifyLyrics && side.nextElementSibling !== spotifyLyrics) {
       spotifyLyrics.before(side);
@@ -902,8 +911,27 @@
     if (listBlock && listBlock !== timeline) listBlock.classList.add('tess-lib-hidden');
     markTimeline();
   };
-  every(700, placeTimeline);
+  onDraw(placeTimeline);
   placeTimeline();
+  // Expand / minimise / collapse the library as one morph (View Transitions) instead of a jump.
+  let libMorphing = false;
+  listen(document, 'click', (e) => {
+    const btn = e.target instanceof Element && e.target.closest('#Desktop_LeftSidebar_Id button, #Desktop_LeftSidebar_Id ~ * button');
+    const label = btn?.getAttribute('aria-label') || '';
+    if (!/^(Expand|Minimize|Collapse|Open) Your Library$/.test(label) || libMorphing || !document.startViewTransition || document.hidden) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    libMorphing = true;
+    const lib = document.getElementById('Desktop_LeftSidebar_Id');
+    const before = lib?.getBoundingClientRect().width;
+    const vt = document.startViewTransition(async () => {
+      btn.click();
+      await waitFor(() => lib && Math.abs(lib.getBoundingClientRect().width - before) > 20, 400);
+      placeTimeline();
+    });
+    vt.ready.catch(() => {});
+    vt.finished.catch(() => {}).finally(() => { libMorphing = false; });
+  }, true);
   every(20000, loadLibrary);
   loadLibrary();
   // what's playing lights up now; a few seconds later the library reloads so it moves to Today
@@ -1311,5 +1339,6 @@
   const unlisten = Spicetify.Platform.History.listen(() => requestAnimationFrame(onRoute));
   onDispose(() => typeof unlisten === 'function' && unlisten());
   listen(window, 'resize', () => { setHeroHeight(); setTimeout(onRoute, 100); });
+  startWatch();
   onRoute();
 })();

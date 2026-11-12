@@ -1316,10 +1316,10 @@ html.tess #queue-panel [data-encore-id="buttonPrimary"] {
 }
 
 /* ================= library: timeline ================= */
-html.tess:not(.tess-lib-wide):not(.tess-lib-rail) #Desktop_LeftSidebar_Id .tess-lib-hidden {
+html.tess:not(.tess-lib-rail) #Desktop_LeftSidebar_Id .tess-lib-hidden {
   display: none !important;
 }
-html.tess:is(.tess-lib-wide, .tess-lib-rail) #tess-timeline {
+html.tess.tess-lib-rail #tess-timeline {
   display: none;
 }
 #tess-timeline {
@@ -1560,7 +1560,12 @@ html.tess:is(.tess-lib-wide, .tess-lib-rail) #tess-timeline {
   border-radius: 50%;
 }
 .tt-art.tt-local {
-  background-image: linear-gradient(135deg, #2a9d5c, #1ed760);
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='white' fill-opacity='.92' d='M3 6.5A2.5 2.5 0 0 1 5.5 4h4l2 2h7A2.5 2.5 0 0 1 21 8.5v9a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z'/%3E%3C/svg%3E"),
+    linear-gradient(135deg, #2a9d5c, #1ed760);
+  background-size: 42%, cover;
+  background-position: center;
+  background-repeat: no-repeat;
 }
 .tt-text {
   min-width: 0;
@@ -1920,6 +1925,75 @@ html.tess.tess-artist.tess-hero-wait .before-scroll-node > div {
 }
 .ts-row .ts-art img:not([src]) {
   display: none;
+}
+
+/* ================= expanded library: the timeline as a cover wall ================= */
+#tess-timeline {
+  view-transition-name: tess-lib;
+}
+html.tess-lib-wide .tt-bar {
+  max-width: 560px;
+  padding: 6px 24px 10px;
+}
+html.tess-lib-wide .tt-pop {
+  left: 24px;
+  right: auto;
+  width: 520px;
+}
+html.tess-lib-wide .tt-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  column-gap: 18px;
+  row-gap: 6px;
+  align-content: start;
+  padding: 0 24px 60px;
+}
+html.tess-lib-wide .tt-group {
+  grid-column: 1 / -1;
+  padding: 22px 0 8px;
+  font-size: 12px;
+}
+html.tess-lib-wide .tt-group::before {
+  display: none;
+}
+html.tess-lib-wide .tt-item {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 9px;
+  padding: 10px;
+  border-radius: 14px;
+  contain-intrinsic-size: auto 230px;
+}
+html.tess-lib-wide .tt-item::before,
+html.tess-lib-wide .tt-item::after {
+  display: none;
+}
+html.tess-lib-wide .tt-art {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: 12px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+}
+html.tess-lib-wide .tt-item:hover .tt-art {
+  transform: translateY(-3px);
+}
+html.tess-lib-wide .tt-item.playing .tt-art {
+  box-shadow: 0 0 0 2px var(--tess-accent), 0 0 26px rgba(30, 215, 96, 0.4), 0 10px 26px rgba(0, 0, 0, 0.45);
+}
+html.tess-lib-wide .tt-text b {
+  font-size: 14px;
+}
+/* expanding / collapsing morphs the library instead of jumping */
+::view-transition-group(tess-lib) {
+  animation-duration: 0.45s;
+  animation-timing-function: cubic-bezier(0.2, 0.9, 0.25, 1.05);
+}
+::view-transition-old(tess-lib),
+::view-transition-new(tess-lib) {
+  height: 100%;
+  object-fit: cover;
+  object-position: left top;
 }
 
 /* ================= Home ("Listen Now") ================= */

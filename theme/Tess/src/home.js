@@ -386,7 +386,9 @@
       chipRow.dataset.tessScroll = '1';
       let sc = chipRow.parentElement;
       while (sc && !/auto|scroll/.test(getComputedStyle(sc).overflowY)) sc = sc.parentElement;
-      sc?.addEventListener('scroll', () => chipRow.classList.toggle('tess-compact', sc.scrollTop > 40), { passive: true });
+      const onSc = () => chipRow.classList.toggle('tess-compact', sc.scrollTop > 40);
+      sc?.addEventListener('scroll', onSc, { passive: true });
+      onDispose(() => { sc?.removeEventListener('scroll', onSc); delete chipRow.dataset.tessScroll; });
     }
     const content = page.querySelector('.main-home-content') || page.querySelector('.view-homeShortcutsGrid-shortcuts')?.parentElement;
     if (content && content.firstElementChild !== dial) {
