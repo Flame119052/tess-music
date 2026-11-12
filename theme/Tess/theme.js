@@ -169,25 +169,30 @@
     onDispose(() => menuItem.deregister());
   }
 
+  // One icon family: 24-unit grid, 1.75 strokes, round caps and joins, soft filled glyphs for transport,
+  // so every control reads as part of the same object (SF Symbols' rules, drawn for Tess).
+  const ico = (w, h, body, fill = false) =>
+    `<svg viewBox="0 0 24 24" width="${w}" height="${h}" ${fill ? 'fill="currentColor"' : 'fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"'}>${body}</svg>`;
   const I = {
-    shuffle: '<svg viewBox="0 0 26 22" width="18" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5h4c6 0 8 12 14 12h3M2 17h4c2.5 0 4-2 5.5-4.5M14.5 9.5C16 7 17.5 5 20 5h3M20 2l3 3-3 3M20 14l3 3-3 3"/></svg>',
-    repeat: '<svg viewBox="0 0 26 22" width="18" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10V9a4 4 0 0 1 4-4h14M19 2l3 3-3 3M22 12v1a4 4 0 0 1-4 4H4M7 20l-3-3 3-3"/></svg>',
-    prev: '<svg viewBox="0 0 44 28" width="26" height="17" fill="currentColor"><path d="M21 3v22L4 14zM40 3v22L23 14z"/></svg>',
-    next: '<svg viewBox="0 0 44 28" width="26" height="17" fill="currentColor"><path d="M4 3v22l17-11zM23 3v22l17-11z"/></svg>',
-    pause: '<svg viewBox="0 0 34 36" width="16" height="18" fill="currentColor"><rect x="5" y="3" width="8" height="30" rx="2"/><rect x="21" y="3" width="8" height="30" rx="2"/></svg>',
-    play: '<svg viewBox="0 0 34 36" width="16" height="18" fill="currentColor"><path d="M7 3.5v29a1.5 1.5 0 0 0 2.3 1.3l22-14.5a1.5 1.5 0 0 0 0-2.6L9.3 2.2A1.5 1.5 0 0 0 7 3.5z"/></svg>',
-    lyrics: '<svg viewBox="0 0 24 22" width="19" height="17" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 1.5C6.2 1.5 1.5 5.3 1.5 10c0 2.7 1.5 5.1 3.9 6.6L4.5 20.5l4.3-2.3c1 .3 2.1.4 3.2.4 5.8 0 10.5-3.8 10.5-8.6S17.8 1.5 12 1.5z"/><path d="M7.5 8.5h3v2.5c0 1.3-.6 2.2-1.8 2.6M13.5 8.5h3v2.5c0 1.3-.6 2.2-1.8 2.6" stroke-width="1.5"/></svg>',
-    queue: '<svg viewBox="0 0 22 16" width="19" height="15" fill="currentColor"><circle cx="2" cy="2" r="1.6"/><circle cx="2" cy="8" r="1.6"/><circle cx="2" cy="14" r="1.6"/><rect x="6" y="1" width="16" height="2" rx="1"/><rect x="6" y="7" width="16" height="2" rx="1"/><rect x="6" y="13" width="16" height="2" rx="1"/></svg>',
-    devices: '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M6.2 15.6a7.6 7.6 0 1 1 11.6 0"/><path d="M8.9 13.2a4.1 4.1 0 1 1 6.2 0"/><circle cx="12" cy="10" r="1.4" fill="currentColor" stroke="none"/><path d="M12 15.4l3.6 4.6H8.4z" fill="currentColor" stroke="none"/></svg>',
-    volume: '<svg viewBox="0 0 26 22" width="20" height="18" fill="currentColor"><path d="M3 8h4l6-5v16l-6-5H3z"/><path d="M16 7a5 5 0 0 1 0 8M19 4a9 9 0 0 1 0 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
-    close: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
-    mini: '<svg viewBox="0 0 26 22" width="19" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="1.5" y="1.5" width="17" height="13" rx="3"/><rect x="10" y="9" width="14.5" height="11" rx="2.5" fill="currentColor"/></svg>',
-    gear: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v2.6M12 18.9v2.6M21.5 12h-2.6M5.1 12H2.5M18.7 5.3l-1.8 1.8M7.1 16.9l-1.8 1.8M18.7 18.7l-1.8-1.8M7.1 7.1L5.3 5.3"/></svg>',
-    saved: '<svg viewBox="0 0 24 24" width="17" height="17"><circle cx="12" cy="12" r="10" fill="currentColor"/><path d="M7.5 12.3l3 3 6-6.3" fill="none" stroke="#000" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    unsaved: '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 7.5v9M7.5 12h9" stroke-linecap="round"/></svg>',
-    expand: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/></svg>',
-    more: '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>',
+    shuffle: ico(19, 19, '<path d="M3 7h3.2c2 0 3.1.9 4.2 2.7l3.2 4.6c1.1 1.8 2.2 2.7 4.2 2.7H21"/><path d="M3 17h3.2c1.4 0 2.4-.5 3.2-1.4"/><path d="M14.4 8.4c.8-.9 1.8-1.4 3.2-1.4H21"/><path d="M18.5 4.5 21 7l-2.5 2.5M18.5 14.5 21 17l-2.5 2.5"/>'),
+    repeat: ico(19, 19, '<path d="M4 11V9.5A3.5 3.5 0 0 1 7.5 6H19"/><path d="M16.5 3.5 19 6l-2.5 2.5"/><path d="M20 13v1.5a3.5 3.5 0 0 1-3.5 3.5H5"/><path d="M7.5 20.5 5 18l2.5-2.5"/>'),
+    prev: ico(26, 26, '<path d="M11.2 6.2a1 1 0 0 1 1.6.8v10a1 1 0 0 1-1.6.8L4.6 12.8a1 1 0 0 1 0-1.6z"/><path d="M19.2 6.2a1 1 0 0 1 1.6.8v10a1 1 0 0 1-1.6.8l-6.6-5a1 1 0 0 1 0-1.6z"/>', true),
+    next: ico(26, 26, '<path d="M12.8 6.2a1 1 0 0 0-1.6.8v10a1 1 0 0 0 1.6.8l6.6-5a1 1 0 0 0 0-1.6z"/><path d="M4.8 6.2a1 1 0 0 0-1.6.8v10a1 1 0 0 0 1.6.8l6.6-5a1 1 0 0 0 0-1.6z"/>', true),
+    pause: ico(22, 22, '<rect x="5.5" y="4" width="4.6" height="16" rx="1.6"/><rect x="13.9" y="4" width="4.6" height="16" rx="1.6"/>', true),
+    play: ico(22, 22, '<path d="M7.6 4.3a1.3 1.3 0 0 0-2 1.1v13.2a1.3 1.3 0 0 0 2 1.1l10.4-6.6a1.3 1.3 0 0 0 0-2.2z"/>', true),
+    lyrics: ico(19, 19, '<path d="M20 12.2c0 4-3.6 7.3-8 7.3-1.1 0-2.2-.2-3.1-.6L4 20l1.2-3.5C4.4 15.3 4 13.8 4 12.2 4 8.1 7.6 4.9 12 4.9s8 3.2 8 7.3z"/><path d="M9 11.2h.01M9 11.2c0 1.2-.6 2.1-1.4 2.4M14.6 11.2h.01M14.6 11.2c0 1.2-.6 2.1-1.4 2.4"/>'),
+    queue: ico(19, 19, '<path d="M9 6.5h11M9 12h11M9 17.5h7"/><path d="M4 5.6v1.8M4 11.1v1.8M4 16.6v1.8" stroke-width="2.4"/>'),
+    devices: ico(19, 19, '<path d="M6.2 16.5A8 8 0 1 1 17.8 16.5"/><path d="M8.9 13.8a4.2 4.2 0 1 1 6.2 0"/><path d="M12 15.2 15.4 20H8.6z" fill="currentColor" stroke="none"/>'),
+    volume: ico(20, 20, '<path d="M4 9.6v4.8a1 1 0 0 0 1 1h2.6l4.4 3.6a.8.8 0 0 0 1.3-.6V5.6a.8.8 0 0 0-1.3-.6L7.6 8.6H5a1 1 0 0 0-1 1z"/><path d="M16.4 9a4.2 4.2 0 0 1 0 6M18.9 6.6a8 8 0 0 1 0 10.8"/>'),
+    close: ico(15, 15, '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke-width="2.2"/>'),
+    mini: ico(19, 19, '<rect x="3" y="4.5" width="18" height="15" rx="3.5"/><rect x="11.5" y="12" width="7" height="5" rx="1.5" fill="currentColor" stroke="none"/>'),
+    gear: ico(18, 18, '<circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/>'),
+    saved: ico(18, 18, '<circle cx="12" cy="12" r="10"/><path d="M7.6 12.3l3 3 5.8-6.2" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>', true),
+    unsaved: ico(18, 18, '<circle cx="12" cy="12" r="9.2"/><path d="M12 8v8M8 12h8"/>'),
+    more: ico(18, 18, '<circle cx="5.5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="18.5" cy="12" r="1.7"/>', true),
+    expand: ico(15, 15, '<path d="M14 4h6v6M10 20H4v-6M20 4l-6.5 6.5M4 20l6.5-6.5"/>'),
   };
+
 
   // ---------------- window tint (album colors behind the panels) ----------------
   // Aurora: soft light fields in the artwork's colours behind the panels. Painted ONCE per song (and when the time
@@ -416,6 +421,55 @@
   });
   applyNpStyle();
 
+  // Vinyl tonearm: its angle is the track position (outer groove at the start, inner groove at the end), it rests
+  // off the record while paused, and you can pick it up: drop it on the record to play from that spot, or lift it
+  // off to pause.
+  const ARM_REST = -28, ARM_START = 2, ARM_END = 24;
+  const arm = q(np, '.tn-arm');
+  let armDrag = null;
+  const armAngleFor = (ms) => ARM_START + (ARM_END - ARM_START) * Math.min(1, ms / (P.getDuration() || 1));
+  function placeArm(ms) {
+    if (armDrag || !np.classList.contains('vinyl')) return;
+    arm.style.transform = `rotate(${P.isPlaying() ? armAngleFor(ms) : ARM_REST}deg)`;
+  }
+  // the pivot from the arm's unrotated box (its rotated bounding box moves as it turns)
+  const pivot = () => {
+    const p = arm.parentElement.getBoundingClientRect();
+    const w = arm.clientWidth || arm.getBBox?.().width || 0;
+    const h = arm.clientHeight || 0;
+    const left = parseFloat(getComputedStyle(arm).left) || (p.width - w);
+    const top = parseFloat(getComputedStyle(arm).top) || 0;
+    return [p.left + left + w / 2, p.top + top + h * 0.1];
+  };
+  const pointerAngle = (e) => { const [cx, cy] = pivot(); return Math.atan2(cx - e.clientX, e.clientY - cy) * 180 / Math.PI; };
+  arm.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    try { arm.setPointerCapture(e.pointerId); } catch {}
+    const now = parseFloat((arm.style.transform.match(/-?[\d.]+/) || [ARM_REST])[0]);
+    armDrag = { offset: now - pointerAngle(e) };
+    arm.classList.add('held');
+  });
+  arm.addEventListener('pointermove', (e) => {
+    if (!armDrag) return;
+    const a = Math.max(ARM_REST, Math.min(ARM_END + 2, pointerAngle(e) + armDrag.offset));
+    armDrag.angle = a;
+    arm.style.transform = `rotate(${a}deg)`;
+  });
+  const dropArm = () => {
+    if (!armDrag) return;
+    const a = armDrag.angle ?? ARM_REST;
+    armDrag = null;
+    arm.classList.remove('held');
+    if (a < ARM_START - 4) { if (P.isPlaying()) P.pause(); }
+    else {
+      const frac = Math.max(0, Math.min(1, (a - ARM_START) / (ARM_END - ARM_START)));
+      P.seek(Math.round(frac * P.getDuration()));
+      if (!P.isPlaying()) P.play();
+    }
+  };
+  arm.addEventListener('pointerup', dropArm);
+  arm.addEventListener('pointercancel', dropArm);
+
   // Cover Flow of the queue around the cover: what played before on the left, what's next on the right.
   // Click a card to jump to it.
   function renderFlow() {
@@ -529,9 +583,16 @@
     f.setAttribute('color-interpolation-filters', 'sRGB');
     f.innerHTML = `
       <feImage href="${lensMap(w, h, r, Math.min(22, Math.min(w, h) / 2.4))}" x="0" y="0" width="${w}" height="${h}" result="map"/>
-      <feDisplacementMap in="SourceGraphic" in2="map" scale="${Math.min(46, Math.min(w, h) * 0.9)}" xChannelSelector="R" yChannelSelector="G" result="bent"/>
-      <feGaussianBlur in="bent" stdDeviation="1.4" result="soft"/>
-      <feColorMatrix in="soft" type="saturate" values="1.6"/>`;
+      <feDisplacementMap in="SourceGraphic" in2="map" scale="${Math.min(70, Math.min(w, h) * 1.2)}" xChannelSelector="R" yChannelSelector="G" result="r"/>
+      <feDisplacementMap in="SourceGraphic" in2="map" scale="${Math.min(62, Math.min(w, h) * 1.05)}" xChannelSelector="R" yChannelSelector="G" result="g"/>
+      <feDisplacementMap in="SourceGraphic" in2="map" scale="${Math.min(54, Math.min(w, h) * 0.9)}" xChannelSelector="R" yChannelSelector="G" result="b"/>
+      <feColorMatrix in="r" type="matrix" values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="rr"/>
+      <feColorMatrix in="g" type="matrix" values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0" result="gg"/>
+      <feColorMatrix in="b" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="bb"/>
+      <feBlend in="rr" in2="gg" mode="screen" result="rg"/>
+      <feBlend in="rg" in2="bb" mode="screen" result="bent"/>
+      <feGaussianBlur in="bent" stdDeviation="0.9" result="soft"/>
+      <feColorMatrix in="soft" type="saturate" values="1.8"/>`;
     glassDefs.appendChild(f);
     glassCache.set(key, id);
     return id;
@@ -984,6 +1045,7 @@
     const pct = Math.min(100, (ms / dur) * 100) + '%';
     q(bar, '.tb-prog i').style.width = pct;
     if (npOpen) {
+      placeArm(ms);
       q(np, '.tn-scrub i').style.width = pct;
       q(np, '.tn-cur').textContent = fmt(ms);
       q(np, '.tn-rem').textContent = '-' + fmt(dur - ms);
