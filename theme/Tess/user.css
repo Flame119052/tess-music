@@ -778,14 +778,29 @@ html:not(.tess-artist) .tess-hero-video {
 }
 #tess-ambient canvas {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
+  inset: -12%;
+  width: 124%;
+  height: 124%;
   opacity: 0;
-  transition: opacity 0.35s;
+  transition: opacity 1.4s ease;
+  /* stepped: the drift is a few pixels a minute, so ~2 updates a second look identical to 60 and cost far less */
+  animation: tess-aurora-drift var(--drift, 60s) steps(150) infinite alternate;
+  animation-play-state: paused;
+  will-change: transform;
 }
-html.tess-tint #tess-ambient canvas {
+html.tess-playing #tess-ambient canvas {
+  animation-play-state: running;
+}
+html.tess-tint #tess-ambient canvas.on {
   opacity: 1;
+}
+@keyframes tess-aurora-drift {
+  0% { transform: scale(1) rotate(0deg) translate(0, 0); }
+  50% { transform: scale(1.12) rotate(4deg) translate(2%, -2%); }
+  100% { transform: scale(1.05) rotate(-3deg) translate(-2%, 1%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #tess-ambient canvas { animation: none; }
 }
 html:not(.tess-tint) #tess-ambient {
   display: none;
@@ -1505,8 +1520,6 @@ html.tess.tess-lib-rail #tess-timeline {
   padding: 5px 8px 5px 30px;
   border-radius: 11px;
   cursor: pointer;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 54px;
   transition: background 0.18s;
 }
 .tt-item::before {
@@ -1713,8 +1726,8 @@ html.tess #global-nav-bar > div > div:last-child button {
   pointer-events: none;
 }
 #tess-ambient::before {
-  opacity: 0.09;
-  mix-blend-mode: overlay;
+  /* plain low-opacity grain: blending it would redo the whole window every frame */
+  opacity: 0.045;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 #tess-ambient::after {
@@ -2045,10 +2058,17 @@ html.tess [data-testid="home-ads-container"] {
 /* aurora painted at 96x54 and stretched; grain and vignette on top */
 .td-bg {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
+  inset: -15%;
+  width: 130%;
+  height: 130%;
   z-index: -2;
+  opacity: 0;
+  transition: opacity 0.9s ease;
+  animation: tess-aurora-drift 40s steps(100) infinite alternate;
+  will-change: transform;
+}
+.td-bg.on {
+  opacity: 1;
 }
 #tess-dial::before,
 #tess-dial::after {
@@ -2059,8 +2079,7 @@ html.tess [data-testid="home-ads-container"] {
   pointer-events: none;
 }
 #tess-dial::before {
-  opacity: 0.1;
-  mix-blend-mode: overlay;
+  opacity: 0.05;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 #tess-dial::after {
@@ -2531,8 +2550,7 @@ html.tess [data-testid="playlist-page"] .tp-header > [class*="mixingBackground"]
   inset: 0;
   z-index: 1;
   background: var(--tp-tint, transparent);
-  mix-blend-mode: color;
-  opacity: 0.35;
+  opacity: 0.18;
 }
 
 /* DNA */

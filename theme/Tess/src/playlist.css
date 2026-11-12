@@ -62,8 +62,7 @@ html.tess [data-testid="playlist-page"] .tp-header > [class*="mixingBackground"]
   inset: 0;
   z-index: 1;
   background: var(--tp-tint, transparent);
-  mix-blend-mode: color;
-  opacity: 0.35;
+  opacity: 0.18;
 }
 
 /* DNA */

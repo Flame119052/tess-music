@@ -174,14 +174,13 @@
   };
 
   // ---------------- window tint (album colors behind the panels) ----------------
-  const ambient = mount(el('<div id="tess-ambient" aria-hidden="true"><canvas width="64" height="36"></canvas></div>'));
-  const ambientCanvas = ambient.querySelector('canvas');
-  ambientCanvas.width = 96;
-  ambientCanvas.height = 54;
-  // Aurora: soft light fields in the artwork's colours drifting slowly behind the panels. Painted at 96x54 about
-  // eight times a second and stretched by the GPU; it stops while the window is hidden or the tint is off.
+  // Aurora: soft light fields in the artwork's colours behind the panels. Painted ONCE per song (and when the time
+  // of day changes) onto a tiny 96x54 canvas, cross-faded from the previous one; the slow drift is a CSS transform
+  // on the graphics chip, so it costs the main thread nothing and nothing re-renders while it moves.
+  const ambient = mount(el('<div id="tess-ambient" aria-hidden="true"><canvas width="96" height="54"></canvas><canvas width="96" height="54"></canvas></div>'));
+  const auroraCanvases = [...ambient.querySelectorAll('canvas')];
+  let auroraFront = 0;
   let auroraColors = [[40, 50, 90], [70, 40, 90], [30, 60, 80], [20, 20, 30]];
-  let auroraShown = [...auroraColors.map((c) => [...c])];
   function paletteOf(img) {
     try {
       const c = document.createElement('canvas');
@@ -196,7 +195,7 @@
   }
   // Colour psychology. The artwork sets the hue; the hour bends it (soft warm light in the morning, clean neutral
   // light midday, golden in the evening, dim and low in blue at night so it doesn't fight your sleep); vivid
-  // artwork gives a livelier aurora, muted artwork a calmer one; and it slows almost to a stop while paused.
+  // artwork drifts a little faster, muted artwork calmer; it holds still while paused.
   const DAYPARTS = [
     // [from hour, tone rgb, how much tone to mix in, brightness, blue kept]
     [5, [255, 176, 110], 0.22, 1.05, 0.95],  // morning: warm, gentle sunrise light
@@ -208,36 +207,38 @@
     const h = new Date().getHours();
     return [...DAYPARTS].reverse().find((d) => h >= d[0]) || DAYPARTS[3];
   };
-  let auroraPhase = 0;
-  let lastAuroraT = 0;
-  function paintAurora(t) {
-    const x = ambientCanvas.getContext('2d');
-    const w = 96, h = 54;
-    const [, tone, mix, bright, blue] = settings.circadian ? daypart() : [0, [0, 0, 0], 0, 1, 1];
-    // ease the colours toward the new artwork instead of jumping, through the time-of-day tone
-    auroraShown = auroraShown.map((c, i) => c.map((v, j) => {
-      const target = (auroraColors[i][j] * (1 - mix) + tone[j] * mix) * bright * (j === 2 ? blue : 1);
-      return v + (Math.min(255, target) - v) * 0.08;
-    }));
-    // vivid artwork moves more; paused barely drifts
-    const sat = auroraColors.reduce((s, c) => s + (Math.max(...c) - Math.min(...c)), 0) / (auroraColors.length * 255);
-    const speed = (P.isPlaying() ? 1 : 0.15) * (0.6 + sat * 1.2);
-    auroraPhase += (lastAuroraT ? t - lastAuroraT : 0) * speed;
-    lastAuroraT = t;
-    t = auroraPhase;
+  function paintFields(canvas, colors, seed) {
+    const x = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
     x.filter = 'none';
     x.fillStyle = '#07070a';
     x.fillRect(0, 0, w, h);
     x.filter = 'blur(9px) saturate(140%)';
-    auroraShown.forEach((c, i) => {
-      const a = t * 0.00009 * (i % 2 ? 1 : -1) + i * 1.7;
+    colors.forEach((c, i) => {
+      const a = seed + i * 1.7;
       x.fillStyle = `rgba(${c.map(Math.round).join(',')},0.8)`;
       x.beginPath();
       x.ellipse(w * (0.5 + 0.4 * Math.cos(a)), h * (0.5 + 0.42 * Math.sin(a * 1.3)), w * 0.42, h * 0.55, a, 0, Math.PI * 2);
       x.fill();
     });
   }
-  every(125, () => { if (settings.tintWindow) paintAurora(performance.now()); });
+  let auroraKey = '';
+  function paintAurora() {
+    if (!settings.tintWindow) return;
+    const [from, tone, mix, bright, blue] = settings.circadian ? daypart() : [0, [0, 0, 0], 0, 1, 1];
+    const key = JSON.stringify(auroraColors) + from + settings.circadian;
+    if (key === auroraKey) return;
+    auroraKey = key;
+    const colors = auroraColors.map((c) => c.map((v, j) => Math.min(255, (v * (1 - mix) + tone[j] * mix) * bright * (j === 2 ? blue : 1))));
+    const sat = auroraColors.reduce((s, c) => s + (Math.max(...c) - Math.min(...c)), 0) / (auroraColors.length * 255);
+    ambient.style.setProperty('--drift', Math.round(80 - sat * 40) + 's');
+    const back = auroraCanvases[1 - auroraFront];
+    paintFields(back, colors, (Date.now() / 6e4) % 6);
+    back.classList.add('on');
+    auroraCanvases[auroraFront].classList.remove('on');
+    auroraFront = 1 - auroraFront;
+  }
+  every(60000, paintAurora); // picks up the next part of the day
 
   // ---------------- floating playing bar ----------------
   const bar = mount(el(`
@@ -649,6 +650,7 @@
       paintGlow(q(np, '.tn-glow'), img, performance.now() / 1000);
       // the window tint is static: fade out, repaint, fade in
       auroraColors = paletteOf(img) || auroraColors;
+      paintAurora();
     });
     const video = q(np, '.tn-cover video');
     const uri = item()?.uri;
@@ -669,8 +671,10 @@
 
   function syncState() {
     const playing = P.isPlaying();
-    q(bar, '.tb-play').innerHTML = playing ? I.pause : I.play;
-    q(np, '.tn-play').innerHTML = playing ? I.pause : I.play;
+    // only touch the page when something actually changed
+    const setHTML = (n, h) => { if (n.dataset.v !== h) { n.dataset.v = h; n.innerHTML = h; } };
+    setHTML(q(bar, '.tb-play'), playing ? I.pause : I.play);
+    setHTML(q(np, '.tn-play'), playing ? I.pause : I.play);
     np.classList.toggle('paused', !playing);
     html.classList.toggle('tess-playing', playing);
     const shuffle = P.getShuffle();
@@ -684,15 +688,15 @@
     const saved = sb ? /bright-accent/.test(sb.className) : P.getHeart();
     for (const b of [q(bar, '.tb-heart'), q(np, '.tn-heart')]) {
       b.classList.toggle('active', saved);
-      b.innerHTML = saved ? I.saved : I.unsaved;
+      setHTML(b, saved ? I.saved : I.unsaved);
       b.setAttribute('aria-label', saved ? 'Saved — change where it is saved' : 'Add to playlist');
     }
     const vol = P.getVolume();
     barVol.value = vol;
     npVol.value = vol;
     const quality = document.querySelector('[data-testid="context-item-info-quality"]')?.textContent?.trim() || '';
-    q(bar, '.tb-quality').textContent = quality;
-    q(np, '.tn-quality').textContent = quality;
+    if (q(bar, '.tb-quality').textContent !== quality) q(bar, '.tb-quality').textContent = quality;
+    if (q(np, '.tn-quality').textContent !== quality) q(np, '.tn-quality').textContent = quality;
   }
 
   function syncProgress() {
@@ -2037,7 +2041,7 @@
   // ---------- the dial ----------
   const dial = el(`
     <section id="tess-dial" class="tess-home-enter" aria-label="Pick something to play" tabindex="0">
-      <canvas class="td-bg" width="96" height="54"></canvas>
+      <canvas class="td-bg" width="96" height="54"></canvas><canvas class="td-bg" width="96" height="54"></canvas>
       <div class="td-label">
         <small class="td-reason"></small>
         <b class="td-title"></b>
@@ -2280,12 +2284,30 @@
   });
 
   // ---------- aurora behind the dial, from the selected record's colours ----------
-  const bg = dial.querySelector('.td-bg');
-  let colors = [[40, 50, 90], [70, 40, 90], [30, 60, 80], [20, 20, 30]];
-  let shown = colors.map((c) => [...c]);
+  // The dial's own aurora: painted once per selection, cross-faded, drifting on the graphics chip (see core.js).
+  const bgs = [...dial.querySelectorAll('.td-bg')];
+  let bgFront = 0;
   const palettes = new Map();
+  function paintDialBg(p) {
+    const back = bgs[1 - bgFront];
+    const x = back.getContext('2d');
+    x.filter = 'none'; x.fillStyle = '#08080b'; x.fillRect(0, 0, 96, 54);
+    x.filter = 'blur(9px) saturate(150%)';
+    p.forEach((c, i) => {
+      const a = i * 1.7 + 0.6;
+      x.fillStyle = `rgba(${c.join(',')},0.85)`;
+      x.beginPath();
+      x.ellipse(96 * (0.5 + 0.38 * Math.cos(a)), 54 * (0.5 + 0.4 * Math.sin(a * 1.3)), 40, 30, a, 0, Math.PI * 2);
+      x.fill();
+    });
+    back.classList.add('on');
+    bgs[bgFront].classList.remove('on');
+    bgFront = 1 - bgFront;
+  }
+  let bgWant = '';
   function loadPalette(src) {
-    if (palettes.has(src)) { colors = palettes.get(src); return; }
+    bgWant = src;
+    if (palettes.has(src)) { paintDialBg(palettes.get(src)); return; }
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
@@ -2295,26 +2317,11 @@
         const d = x.getImageData(0, 0, 4, 4).data;
         const p = [0, 12, 40, 52].map((k) => [d[k], d[k + 1], d[k + 2]]);
         palettes.set(src, p);
-        if (items[index]?.img === src) colors = p;
+        if (bgWant === src) paintDialBg(p);
       } catch {}
     };
     img.src = src;
   }
-  function paint(t) {
-    const x = bg.getContext('2d');
-    shown = shown.map((c, i) => c.map((v, j) => v + (colors[i][j] - v) * 0.1));
-    x.filter = 'none'; x.fillStyle = '#08080b'; x.fillRect(0, 0, 96, 54);
-    x.filter = 'blur(9px) saturate(150%)';
-    shown.forEach((c, i) => {
-      const a = t * 0.00012 * (i % 2 ? 1 : -1) + i * 1.7;
-      x.fillStyle = `rgba(${c.map(Math.round).join(',')},0.85)`;
-      x.beginPath();
-      x.ellipse(96 * (0.5 + 0.38 * Math.cos(a)), 54 * (0.5 + 0.4 * Math.sin(a * 1.3)), 40, 30, a, 0, Math.PI * 2);
-      x.fill();
-    });
-  }
-  const bgTimer = setInterval(() => { if (!document.hidden && isHome() && dial.isConnected) paint(performance.now()); }, 90);
-  onDispose(() => clearInterval(bgTimer));
 
   // ---------- on this day ----------
   // Songs you saved to Liked Songs on today's date in earlier years (or, failing that, within a few days of it).

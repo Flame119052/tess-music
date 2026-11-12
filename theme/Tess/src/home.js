@@ -40,7 +40,7 @@
   // ---------- the dial ----------
   const dial = el(`
     <section id="tess-dial" class="tess-home-enter" aria-label="Pick something to play" tabindex="0">
-      <canvas class="td-bg" width="96" height="54"></canvas>
+      <canvas class="td-bg" width="96" height="54"></canvas><canvas class="td-bg" width="96" height="54"></canvas>
       <div class="td-label">
         <small class="td-reason"></small>
         <b class="td-title"></b>
@@ -283,12 +283,30 @@
   });
 
   // ---------- aurora behind the dial, from the selected record's colours ----------
-  const bg = dial.querySelector('.td-bg');
-  let colors = [[40, 50, 90], [70, 40, 90], [30, 60, 80], [20, 20, 30]];
-  let shown = colors.map((c) => [...c]);
+  // The dial's own aurora: painted once per selection, cross-faded, drifting on the graphics chip (see core.js).
+  const bgs = [...dial.querySelectorAll('.td-bg')];
+  let bgFront = 0;
   const palettes = new Map();
+  function paintDialBg(p) {
+    const back = bgs[1 - bgFront];
+    const x = back.getContext('2d');
+    x.filter = 'none'; x.fillStyle = '#08080b'; x.fillRect(0, 0, 96, 54);
+    x.filter = 'blur(9px) saturate(150%)';
+    p.forEach((c, i) => {
+      const a = i * 1.7 + 0.6;
+      x.fillStyle = `rgba(${c.join(',')},0.85)`;
+      x.beginPath();
+      x.ellipse(96 * (0.5 + 0.38 * Math.cos(a)), 54 * (0.5 + 0.4 * Math.sin(a * 1.3)), 40, 30, a, 0, Math.PI * 2);
+      x.fill();
+    });
+    back.classList.add('on');
+    bgs[bgFront].classList.remove('on');
+    bgFront = 1 - bgFront;
+  }
+  let bgWant = '';
   function loadPalette(src) {
-    if (palettes.has(src)) { colors = palettes.get(src); return; }
+    bgWant = src;
+    if (palettes.has(src)) { paintDialBg(palettes.get(src)); return; }
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
@@ -298,26 +316,11 @@
         const d = x.getImageData(0, 0, 4, 4).data;
         const p = [0, 12, 40, 52].map((k) => [d[k], d[k + 1], d[k + 2]]);
         palettes.set(src, p);
-        if (items[index]?.img === src) colors = p;
+        if (bgWant === src) paintDialBg(p);
       } catch {}
     };
     img.src = src;
   }
-  function paint(t) {
-    const x = bg.getContext('2d');
-    shown = shown.map((c, i) => c.map((v, j) => v + (colors[i][j] - v) * 0.1));
-    x.filter = 'none'; x.fillStyle = '#08080b'; x.fillRect(0, 0, 96, 54);
-    x.filter = 'blur(9px) saturate(150%)';
-    shown.forEach((c, i) => {
-      const a = t * 0.00012 * (i % 2 ? 1 : -1) + i * 1.7;
-      x.fillStyle = `rgba(${c.map(Math.round).join(',')},0.85)`;
-      x.beginPath();
-      x.ellipse(96 * (0.5 + 0.38 * Math.cos(a)), 54 * (0.5 + 0.4 * Math.sin(a * 1.3)), 40, 30, a, 0, Math.PI * 2);
-      x.fill();
-    });
-  }
-  const bgTimer = setInterval(() => { if (!document.hidden && isHome() && dial.isConnected) paint(performance.now()); }, 90);
-  onDispose(() => clearInterval(bgTimer));
 
   // ---------- on this day ----------
   // Songs you saved to Liked Songs on today's date in earlier years (or, failing that, within a few days of it).
