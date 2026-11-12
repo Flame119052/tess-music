@@ -23,9 +23,42 @@
     return t.content.firstElementChild;
   };
   const mount = (node, parent = document.body) => { parent.appendChild(node); onDispose(() => node.remove()); return node; };
-  const every = (ms, fn) => { const id = setInterval(fn, ms); onDispose(() => clearInterval(id)); };
+  // timers do nothing while the window is hidden or minimised
+  const every = (ms, fn) => { const id = setInterval(() => { if (!document.hidden) fn(); }, ms); onDispose(() => clearInterval(id)); };
   const listen = (target, type, fn, opts) => { target.addEventListener(type, fn, opts); onDispose(() => target.removeEventListener(type, fn, opts)); };
   const imageUrl = (u) => (u && u.startsWith('spotify:image:') ? 'https://i.scdn.co/image/' + u.split(':')[2] : u || '');
+  // Blurred-artwork backgrounds are painted small on a canvas and stretched by the GPU. It looks like a huge
+  // CSS blur but costs a tiny fraction of the GPU memory and work.
+  const artImages = new Map();
+  const trackCanvasCache = new Map();
+  function loadArt(url) {
+    if (!url) return Promise.resolve(null);
+    if (!artImages.has(url)) {
+      artImages.set(url, new Promise((r) => { const i = new Image(); i.crossOrigin = 'anonymous'; i.onload = () => r(i); i.onerror = () => r(null); i.src = url; }));
+      if (artImages.size > 6) artImages.delete(artImages.keys().next().value);
+    }
+    return artImages.get(url);
+  }
+  const GLOW_LAYERS = [[0.5, 0.5, 1.5, 0.85, 1 / 70], [0.7, 0.5, 1.1, 0.55, -1 / 95], [0.25, 0.75, 0.9, 0.45, 1 / 120]];
+  function paintGlow(canvas, img, seconds, layers = GLOW_LAYERS) {
+    const ctx = canvas.getContext('2d');
+    const { width: w, height: h } = canvas;
+    ctx.filter = 'none';
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#0b0b0d';
+    ctx.fillRect(0, 0, w, h);
+    if (!img) return;
+    ctx.filter = 'blur(5px) saturate(160%)';
+    for (const [cx, cy, size, alpha, speed] of layers) {
+      const d = size * Math.max(w, h);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(cx * w, cy * h);
+      ctx.rotate(seconds * speed * 2 * Math.PI);
+      ctx.drawImage(img, -d / 2, -d / 2, d, d);
+      ctx.restore();
+    }
+  }
   const item = () => P.data?.item;
   const meta = () => item()?.metadata || {};
   const artUrl = () => imageUrl(meta().image_xlarge_url || meta().image_large_url || meta().image_url);
@@ -128,7 +161,8 @@
   };
 
   // ---------------- window tint (album colors behind the panels) ----------------
-  const ambient = mount(el('<div id="tess-ambient" aria-hidden="true"><i></i></div>'));
+  const ambient = mount(el('<div id="tess-ambient" aria-hidden="true"><canvas width="64" height="36"></canvas></div>'));
+  const ambientCanvas = ambient.querySelector('canvas');
 
   // ---------------- floating playing bar ----------------
   const bar = mount(el(`
@@ -183,7 +217,7 @@
   // ---------------- full-screen now playing ----------------
   const np = mount(el(`
     <div id="tess-np" class="mode-lyrics" aria-hidden="true">
-      <div class="tn-bg"><div class="tn-a a1"></div><div class="tn-a a2"></div><div class="tn-a a3"></div><div class="tn-shade"></div></div>
+      <div class="tn-bg"><canvas class="tn-glow" width="128" height="72"></canvas><div class="tn-shade"></div></div>
       <div class="tn-pill tl">
         <button class="tn-close" aria-label="Close">${I.close}</button>
         <button class="tn-mini" aria-label="Open Miniplayer">${I.mini}</button>
@@ -229,11 +263,13 @@
     np.setAttribute('aria-hidden', 'false');
     renderQueue();
     requestAnimationFrame(fitMarquees);
+    if (np.classList.contains('has-canvas')) q(np, '.tn-cover video').play().catch(() => {});
     loop();
   }
   function closeNP() {
     npOpen = false;
     np.classList.remove('open');
+    q(np, '.tn-cover video').pause();
     np.setAttribute('aria-hidden', 'true');
   }
   function setMode(m) {
@@ -379,7 +415,9 @@
           const d = Math.abs(j - Math.max(i, 0));
           nodes[j].classList.toggle('on', j === i);
           nodes[j].classList.toggle('past', j < i);
-          nodes[j].style.filter = j === i ? 'none' : `blur(${Math.min(d * 0.8, 3.5).toFixed(1)}px)`;
+          // blur only the few lines around the current one; far lines just dim (no filter, no extra GPU layer)
+          nodes[j].style.filter = j === i || d > 3 ? 'none' : `blur(${(d * 0.8).toFixed(1)}px)`;
+          nodes[j].classList.toggle('far', d > 3);
         }
         const target = nodes[Math.max(i, 0)];
         if (target) v.lines.style.transform = `translateY(${-target.offsetTop}px)`;
@@ -401,11 +439,14 @@
   onDispose(() => document.querySelectorAll('.tess-npv-root, .tess-npv-col').forEach((n) => n.classList.remove('tess-npv-root', 'tess-npv-col')));
   function syncSideCover() {
     q(sideCover, 'img').src = artUrl();
-    const m = meta();
-    const fileId = settings.panelVideo && String(m['canvas.type'] || '').startsWith('VIDEO') ? m['canvas.fileId'] : '';
+    const uri = item()?.uri;
     const v = q(sideCover, 'video');
     sideCover.classList.remove('has-canvas');
-    if (sideCover.isConnected) playCanvas(v, fileId).then((ok) => sideCover.classList.toggle('has-canvas', ok && v.dataset.fileId === fileId));
+    if (!sideCover.isConnected) return;
+    (settings.panelVideo ? trackCanvas(uri) : Promise.resolve('')).then((fileId) => {
+      if (item()?.uri !== uri) return;
+      playCanvas(v, fileId).then((ok) => sideCover.classList.toggle('has-canvas', ok && v.dataset.fileId === fileId));
+    });
   }
   listen(document, 'click', (e) => {
     if (!(e.target instanceof Element) || !e.target.closest('.Root__right-sidebar-peek [data-testid="cover-art-slot"], .tess-side-cover')) return;
@@ -462,7 +503,8 @@
   // Spotify's own player does: read the video manifest and feed the VP9 WebM segments to MediaSource.
   const manifestCache = new Map();
   async function playCanvas(video, fileId) {
-    if (!fileId) { delete video.dataset.fileId; video.removeAttribute('src'); video.load(); return false; }
+    const release = () => { if (video._tessUrl) { URL.revokeObjectURL(video._tessUrl); video._tessUrl = null; } };
+    if (!fileId) { delete video.dataset.fileId; release(); video.removeAttribute('src'); video.load(); return false; }
     if (video.dataset.fileId === fileId && video.readyState >= 2) return true;
     video.dataset.fileId = fileId;
     try {
@@ -481,7 +523,9 @@
       const urls = [fill(m.initialization_template)];
       for (let t = 0; t * 1000 < c.end_time_millis; t += c.segment_length) urls.push(fill(m.segment_template, t));
       const ms = new MediaSource();
-      video.src = URL.createObjectURL(ms);
+      release();
+      video._tessUrl = URL.createObjectURL(ms);
+      video.src = video._tessUrl;
       await new Promise((r) => ms.addEventListener('sourceopen', r, { once: true }));
       if (video.dataset.fileId !== fileId) return false;
       const sb = ms.addSourceBuffer('video/webm; codecs="vp9"');
@@ -515,11 +559,24 @@
     q(np, '.tn-text p span').textContent = sub;
     const artCss = art ? `url("${art}")` : 'none';
     np.style.setProperty('--art', artCss);
-    ambient.style.setProperty('--art', artCss);
+    loadArt(art).then((img) => {
+      if (artUrl() !== art) return;
+      npArt = img;
+      paintGlow(q(np, '.tn-glow'), img, performance.now() / 1000);
+      // the window tint is static: fade out, repaint, fade in
+      ambientCanvas.style.opacity = '0';
+      setTimeout(() => { paintGlow(ambientCanvas, img, 0); ambientCanvas.style.opacity = ''; }, 350);
+    });
     const video = q(np, '.tn-cover video');
-    const fileId = settings.coverVideo && String(m['canvas.type'] || '').startsWith('VIDEO') ? m['canvas.fileId'] : '';
+    const uri = item()?.uri;
     np.classList.remove('has-canvas');
-    playCanvas(video, fileId).then((ok) => np.classList.toggle('has-canvas', ok && video.dataset.fileId === fileId));
+    (settings.coverVideo ? trackCanvas(uri) : Promise.resolve('')).then((fileId) => {
+      if (item()?.uri !== uri) return;
+      playCanvas(video, fileId).then((ok) => {
+        np.classList.toggle('has-canvas', ok && video.dataset.fileId === fileId);
+        if (!npOpen) video.pause();
+      });
+    });
     loadLyrics();
     syncSideCover();
     if (npOpen) renderQueue();
@@ -569,8 +626,11 @@
 
   let alive = true;
   onDispose(() => { alive = false; });
-  function loop() {
+  let npArt = null;
+  let lastGlow = 0;
+  function loop(now = performance.now()) {
     if (!npOpen || !alive) return;
+    if (P.isPlaying() && now - lastGlow > 42) { lastGlow = now; paintGlow(q(np, '.tn-glow'), npArt, now / 1000); }
     syncProgress();
     requestAnimationFrame(loop);
   }
@@ -581,6 +641,10 @@
   P.addEventListener('onplaypause', syncState);
   onDispose(() => P.removeEventListener('onplaypause', syncState));
   every(250, () => { if (!npOpen) { syncProgress(); updateLyrics(P.getProgress()); } });
+  // coming back to the window: resume the full-screen Canvas if the player is open (Spotify pauses videos while hidden)
+  listen(document, 'visibilitychange', () => {
+    if (!document.hidden && npOpen && np.classList.contains('has-canvas')) q(np, '.tn-cover video').play().catch(() => {});
+  });
   every(2000, syncState);
   syncTrack();
 
@@ -639,22 +703,48 @@
       t.classList.toggle('paused', !P.isPlaying());
       t.classList.toggle('here', route() === pagePath(u));
     }
+    // artwork wrappers that Spotify draws square get Tess's rounded corners; artist circles stay circles
+    for (const w of document.querySelectorAll('#Desktop_LeftSidebar_Id [data-encore-id="listRow"] div:has(> img):not([data-tess-shape])')) {
+      w.dataset.tessShape = '1';
+      if (!getComputedStyle(w).borderTopLeftRadius.includes('%')) w.classList.add('tess-sq');
+    }
     const pinned = new Set(pins.map((i) => 'listrow-title-' + rowUri(i.uri)));
     for (const row of document.querySelectorAll('#Desktop_LeftSidebar_Id [role="row"]')) {
       const id = row.querySelector('[id^="listrow-title-"]')?.id;
       row.classList.toggle('tess-pinned-row', !!id && pinned.has(id));
     }
   }
-  every(700, () => {
+  const placeDock = () => {
     const head = document.querySelector('#Desktop_LeftSidebar_Id header')?.parentElement;
     if (head && dock.previousElementSibling !== head) head.after(dock);
     markDock();
-  });
+  };
+  every(700, placeDock);
+  placeDock();
   every(6000, loadPins);
   loadPins();
 
   // ---------------- artist pages: full-height motion header ----------------
   const canvasCache = new Map();
+  // A song's Canvas: from the player's data when it's the current song, otherwise asked of Spotify.
+  async function trackCanvas(trackUri) {
+    if (!trackUri) return '';
+    const m = item()?.uri === trackUri ? meta() : {};
+    if (m['canvas.fileId'] && String(m['canvas.type'] || '').startsWith('VIDEO')) return m['canvas.fileId'];
+    if (!trackCanvasCache.has(trackUri)) {
+      trackCanvasCache.set(trackUri, Spicetify.GraphQL.Request(Spicetify.GraphQL.Definitions.canvas, { trackUri })
+        .then((c) => { const cv = c?.data?.trackUnion?.canvas; return cv?.fileId && String(cv.type).startsWith('VIDEO') ? cv.fileId : ''; })
+        .catch(() => ''));
+      if (trackCanvasCache.size > 40) trackCanvasCache.delete(trackCanvasCache.keys().next().value);
+    }
+    return trackCanvasCache.get(trackUri);
+  }
+
+  // Spotify keeps decoding its own Canvas in the panel even though Tess hides it; stop it whenever it starts.
+  listen(document, 'play', (e) => {
+    const v = e.target;
+    if (v instanceof HTMLVideoElement && !v.matches('.tess-video, .tess-hero-video, #tess-np video') && v.closest('.Root__right-sidebar-peek') && !v.checkVisibility()) v.pause();
+  }, true);
   async function artistCanvas(artistUri) {
     if (canvasCache.has(artistUri)) return canvasCache.get(artistUri);
     let fileId = '';
@@ -774,18 +864,25 @@
       v.classList.add('ready');
       heroTimer = setInterval(() => {
         if (!v.isConnected) return clearInterval(heroTimer);
+        // reading pixels back from the GPU isn't free: only while the title is over the video and the window is visible
+        if (document.hidden || heroP > 0.4) return;
         const light = headerIsLight(v);
         if (light !== null) html.classList.toggle('tess-hero-light', light);
-      }, 1500);
+      }, 4000);
     }
   }
   // Scroll drives two things on artist pages: Spotify's top strip stays hidden while the hero fills the page,
   // and --tess-scroll-p (0 at the top, 1 once the header is gone) blurs and dims the video behind.
+  let heroP = 0;
   function heroScroll(scroller) {
     if (!html.classList.contains('tess-artist') || !scroller?.contains(document.querySelector('[data-testid="artist-page"]'))) return;
     const hero = parseInt(getComputedStyle(html).getPropertyValue('--tess-hero-h')) || 600;
     html.classList.toggle('tess-hero-past', scroller.scrollTop > hero - 160);
-    html.style.setProperty('--tess-scroll-p', Math.min(1, Math.max(0, scroller.scrollTop / (hero * 0.75))).toFixed(3));
+    heroP = Math.min(1, Math.max(0, scroller.scrollTop / (hero * 0.75)));
+    html.style.setProperty('--tess-scroll-p', heroP.toFixed(3));
+    // once the video is a soft blur there's no point decoding it
+    const v = document.querySelector('video.tess-hero-video.ready');
+    if (v) { if (heroP > 0.97) { if (!v.paused) v.pause(); } else if (v.paused && !document.hidden) v.play().catch(() => {}); }
   }
   const artistScroller = () => {
     let e = document.querySelector('[data-testid="artist-page"]');
