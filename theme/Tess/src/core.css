@@ -3120,3 +3120,6 @@ html.tess-playing .tess-cover-wrap.vinyl .tess-side-cover { animation-play-state
 .tess-cover-wrap.look-canvas .tess-side-cover:not(.has-canvas) img {
   animation: tess-cover-drift 26s ease-in-out infinite alternate;
 }
+html.tess #main-view [role="radiogroup"] *:not(input):not([class*="indicator"]) {
+  background-color: transparent !important;
+}
