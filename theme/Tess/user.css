@@ -1218,3 +1218,113 @@ html.tess #queue-panel [data-encore-id="buttonPrimary"] {
   padding-block: 0 !important;
   font-size: 13px !important;
 }
+
+/* ================= library: pinned dock ================= */
+#tess-dock {
+  flex: none;
+  padding: 2px 12px 10px;
+  border-bottom: 1px solid var(--tess-hairline);
+  font-family: var(--tess-font);
+}
+#tess-dock[hidden] {
+  display: none;
+}
+.td-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 10px;
+}
+.td-tile {
+  all: unset;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  cursor: pointer;
+  border-radius: 14px;
+  transition: transform 0.35s var(--tess-spring);
+}
+.td-tile:hover {
+  transform: translateY(-2px);
+}
+.td-tile:active {
+  transform: scale(0.95);
+}
+.td-art {
+  display: block;
+  aspect-ratio: 1;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.07) center / cover no-repeat;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  transition: box-shadow 0.3s;
+}
+.td-art.td-local {
+  background-image: linear-gradient(135deg, #2a9d5c, #1ed760);
+  position: relative;
+}
+.td-art.td-local::after {
+  content: "";
+  position: absolute;
+  inset: 32%;
+  background: rgba(255, 255, 255, 0.92);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 6.5A2.5 2.5 0 0 1 5.5 4h4l2 2h7A2.5 2.5 0 0 1 21 8.5v9a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.td-name {
+  font-size: 11.5px;
+  font-weight: 550;
+  line-height: 1.25;
+  color: rgba(255, 255, 255, 0.78);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+.td-tile.here .td-art {
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4), inset 0 0 0 2px rgba(255, 255, 255, 0.55);
+}
+.td-tile.playing .td-art {
+  box-shadow: 0 0 0 2px var(--tess-accent), 0 0 22px rgba(30, 215, 96, 0.45), 0 6px 18px rgba(0, 0, 0, 0.4);
+}
+.td-tile.playing .td-name {
+  color: var(--tess-accent);
+}
+/* tiny equaliser on the playing tile */
+.td-eq {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  display: none;
+  gap: 2px;
+  align-items: flex-end;
+  height: 12px;
+  padding: 3px 4px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+}
+.td-tile.playing .td-eq {
+  display: flex;
+}
+.td-eq i {
+  width: 2px;
+  height: 100%;
+  border-radius: 1px;
+  background: var(--tess-accent);
+  transform-origin: bottom;
+  animation: td-eq 0.9s ease-in-out infinite alternate;
+}
+.td-eq i:nth-child(2) { animation-delay: -0.3s; }
+.td-eq i:nth-child(3) { animation-delay: -0.6s; }
+.td-tile.paused .td-eq i { animation-play-state: paused; }
+@keyframes td-eq {
+  from { transform: scaleY(0.25); }
+  to { transform: scaleY(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .td-eq i { animation: none; }
+}
+/* pinned items live in the dock, not twice in the list */
+html.tess #Desktop_LeftSidebar_Id [role="row"].tess-pinned-row {
+  display: none !important;
+}

@@ -584,6 +584,75 @@
   every(2000, syncState);
   syncTrack();
 
+  // ---------------- library: a pinned dock, Arc/Dia style ----------------
+  // Pinned items leave the list and sit as artwork tiles above it, always in reach.
+  // Click opens, double-click plays; whatever is playing glows.
+  const dock = el('<section id="tess-dock" aria-label="Pinned"><div class="td-grid"></div></section>');
+  onDispose(() => dock.remove());
+  onDispose(() => document.querySelectorAll('.tess-pinned-row').forEach((n) => n.classList.remove('tess-pinned-row')));
+  let pins = [];
+  const pinImage = (it) => {
+    const u = it.images?.[0]?.url || '';
+    if (u.startsWith('spotify:mosaic:')) return 'https://mosaic.scdn.co/300/' + u.split(':').slice(2).join('');
+    if (u.startsWith('spotify:image:')) return imageUrl(u);
+    return u.startsWith('http') ? u : '';
+  };
+  const rowUri = (u) => (u === 'spotify:local-files' ? 'spotify:collection:local-files' : u);
+  const pagePath = (u) => {
+    if (u === 'spotify:local-files') return '/collection/local-files';
+    const [, type, id] = u.split(':');
+    return `/${type}/${id}`;
+  };
+  async function loadPins() {
+    try {
+      const r = await Spicetify.Platform.LibraryAPI.getContents({ limit: 60, offset: 0 });
+      const next = (r.items || []).filter((i) => i.pinned && i.uri);
+      if (JSON.stringify(next.map((i) => i.uri + i.name)) === JSON.stringify(pins.map((i) => i.uri + i.name))) return;
+      pins = next;
+      renderDock();
+    } catch {}
+  }
+  function renderDock() {
+    const grid = q(dock, '.td-grid');
+    grid.innerHTML = '';
+    dock.hidden = !pins.length;
+    for (const it of pins) {
+      const img = pinImage(it);
+      const tile = el(`<button class="td-tile" data-uri=""><span class="td-art"></span><span class="td-name"></span><span class="td-eq"><i></i><i></i><i></i></span></button>`);
+      tile.dataset.uri = it.uri;
+      tile.title = it.name;
+      q(tile, '.td-name').textContent = it.name;
+      const art = q(tile, '.td-art');
+      if (img) art.style.backgroundImage = `url("${img}")`;
+      else art.classList.add('td-local');
+      tile.onclick = () => Spicetify.Platform.History.push(pagePath(it.uri));
+      tile.ondblclick = () => Spicetify.Player.playUri(it.uri);
+      grid.appendChild(tile);
+    }
+    markDock();
+  }
+  function markDock() {
+    const ctx = P.data?.context?.uri || P.data?.context_uri || '';
+    for (const t of dock.querySelectorAll('.td-tile')) {
+      const u = t.dataset.uri;
+      t.classList.toggle('playing', !!ctx && (ctx === u || (u === 'spotify:local-files' && /local-files/.test(ctx))));
+      t.classList.toggle('paused', !P.isPlaying());
+      t.classList.toggle('here', route() === pagePath(u));
+    }
+    const pinned = new Set(pins.map((i) => 'listrow-title-' + rowUri(i.uri)));
+    for (const row of document.querySelectorAll('#Desktop_LeftSidebar_Id [role="row"]')) {
+      const id = row.querySelector('[id^="listrow-title-"]')?.id;
+      row.classList.toggle('tess-pinned-row', !!id && pinned.has(id));
+    }
+  }
+  every(700, () => {
+    const head = document.querySelector('#Desktop_LeftSidebar_Id header')?.parentElement;
+    if (head && dock.previousElementSibling !== head) head.after(dock);
+    markDock();
+  });
+  every(6000, loadPins);
+  loadPins();
+
   // ---------------- artist pages: full-height motion header ----------------
   const canvasCache = new Map();
   async function artistCanvas(artistUri) {
