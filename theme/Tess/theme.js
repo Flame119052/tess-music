@@ -71,7 +71,7 @@
   const route = () => Spicetify.Platform.History.location?.pathname || '';
 
   // ---------------- settings ----------------
-  const DEFAULTS = { coverVideo: true, panelVideo: true, artistVideo: true, tintWindow: true, sideLyrics: true, homeRecent: true };
+  const DEFAULTS = { coverVideo: true, panelVideo: true, artistVideo: true, tintWindow: true, sideLyrics: true };
   const settings = (() => {
     try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('tess:settings') || '{}') }; } catch { return { ...DEFAULTS }; }
   })();
@@ -93,7 +93,6 @@
     ['artistVideo', 'Moving video on artist pages', 'Fills the top of an artist’s page with a Canvas from their top songs; it blurs as you scroll.'],
     ['sideLyrics', 'Live lyrics in the Now Playing panel', 'Synced lyrics that follow the song. Off shows Spotify’s preview card.'],
     ['tintWindow', 'Tint the window with the artwork colours', 'The panels pick up the colours of what’s playing.'],
-    ['homeRecent', 'Home: recently played beside the DJ', 'On shows what you played last. Off shows your Made For You mixes.'],
   ];
   const settingChanged = () => { saveSettings(); applySettings(); syncTrack(); onRoute(); window.dispatchEvent(new Event('tess:settings')); };
   function buildThemeSection() {
@@ -635,6 +634,7 @@
     q(bar, '.tb-play').innerHTML = playing ? I.pause : I.play;
     q(np, '.tn-play').innerHTML = playing ? I.pause : I.play;
     np.classList.toggle('paused', !playing);
+    html.classList.toggle('tess-playing', playing);
     const shuffle = P.getShuffle();
     const repeat = P.getRepeat();
     for (const b of [q(bar, '.tb-shuffle'), q(np, '.tn-shuffle')]) b.classList.toggle('active', !!shuffle);
@@ -1060,9 +1060,600 @@
   onRoute();
 })();
 
-// Tess Music — Home ("Listen Now").
-// A dated greeting, a tall DJ card you can tilt, beside it your recently played (or your mixes, per Settings),
-// then Spotify's own shortcuts and shelves, restyled in home.css. Everything still clicks through to Spotify.
+// Tess Music — The Dial: which items go on the ring, and in what order.
+//
+// Think of a radio programmer choosing the first records of the day. Each item
+// starts with a score for where it came from (Spotify's DJ and its time-of-day
+// shelf lead; a generic shelf trails). The score then rises or falls with what is
+// happening right now: the weekday and hour the item was picked for, how recently
+// it was played, and whether it is new this week. Finally the dial's own memory
+// is applied: things you actually played from the ring get a lift, things shown
+// over and over and never played sink, and both fade over a fortnight.
+//
+// The final score is rounded to a whole point and a small day-seeded tie-breaker
+// is added, so the ring is stable within a day but not frozen forever. Selection
+// then keeps the mix varied (no shelf or kind dominates, at most two artists,
+// always the DJ, at least one discovery and one familiar item). Ordering puts the
+// best item in slot 0 (unless it is already playing), then fills 1, 11, 2, 10 ...
+// — outward from the marker, picking at each step the item that contrasts most
+// with the neighbours it will sit beside, because the ring spins both ways.
+//
+// Plain script: no imports, no DOM, no network. Defines window.TessDialPick.
+
+(function () {
+  'use strict';
+
+  // ---------------- tuning knobs ----------------
+
+  const DAY = 86400000;
+  const DEFAULT_SLOTS = 12;
+
+  // Base pull of each home source, before personal signals. A source's own
+  // editorial confidence, in one number.
+  const SOURCE_BASE = { dj: 44, timeOfDay: 31, madeFor: 26, jumpBackIn: 22, topMixes: 19, recent: 17, library: 13, other: 8 };
+  // Which source wins when the same uri arrives from several shelves (lower wins).
+  const SOURCE_RANK = { dj: 0, timeOfDay: 1, madeFor: 2, jumpBackIn: 3, topMixes: 4, recent: 5, library: 6, other: 7 };
+
+  // Signals added to the base.
+  const TIME_OF_DAY_FIT = 12; // a "morning" shelf at breakfast
+  const WEEKDAY_FIT = 6; // a "Monday" shelf on Monday
+  const DAYLIST_LIFT = 4;
+  const FRESHNESS = 18; // Discover Weekly on Monday, Release Radar on Friday
+  const NEW_ADDITION = 7; // added in the last three days
+  const RECENCY = 14; // last played recently
+  const RECENCY_TAU = 7 * DAY;
+  const SHELF_PULL = 7; // high on the home page
+  const POSITION_PULL = 3; // early within its shelf
+  const PINNED = 9;
+  const HABIT = 4; // usually played at this hour of day
+  const DJ_LIFT = 6;
+
+  // The dial's memory.
+  const HISTORY_PLAY = 16; // played from the ring
+  const HISTORY_IGNORE = 12; // shown and never played
+  const HISTORY_HALF_LIFE = 14 * DAY;
+  const HOUR_SOURCE_PULL = 8; // sources you play at this hour
+  const HOUR_KIND_PULL = 5; // kinds you play at this hour
+
+  // Ring shape and stability.
+  const SOURCE_SHARE = 0.25; // at most a quarter of the ring from one source
+  const KIND_SHARE = 0.5; // at most half the ring from one kind
+  const MAX_ARTISTS = 2;
+  const SCORE_QUANTUM = 1; // round scores to whole points before tie-breaking
+  const DAY_TIE = 0.6; // day-seeded nudge inside one point
+  const CONTRAST_SOURCE = 9; // score points given up to avoid a same-source neighbour
+  const CONTRAST_KIND = 5;
+  const CONTRAST_TITLE = 30; // near-identical family (Daily Mix 1 vs 2)
+  const MIN_SLOTS = 1;
+  const MAX_SLOTS = 32;
+
+  const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const KINDS = { playlist: true, album: true, artist: true, show: true, episode: true, dj: true, other: true };
+
+  // ---------------- small helpers ----------------
+
+  function hash(text) {
+    let h = 2166136261 >>> 0;
+    for (let i = 0; i < text.length; i += 1) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+
+  function hourBucket(ms) {
+    const h = new Date(ms).getHours();
+    if (h < 5) return 'night';
+    if (h < 12) return 'morning';
+    if (h < 17) return 'afternoon';
+    if (h < 22) return 'evening';
+    return 'night';
+  }
+
+  function titleSignals(title) {
+    const t = String(title || '').toLowerCase();
+    let weekday = -1;
+    for (let i = 0; i < 7; i += 1) {
+      if (t.includes(WEEKDAYS[i])) { weekday = i; break; }
+    }
+    const bucket = t.includes('morning') ? 'morning'
+      : t.includes('afternoon') ? 'afternoon'
+        : t.includes('evening') ? 'evening'
+          : t.includes('night') ? 'night' : null;
+    return {
+      weekday,
+      bucket,
+      daylist: t.includes('daylist'),
+      discoverWeekly: t.includes('discover weekly'),
+      releaseRadar: t.includes('release radar'),
+    };
+  }
+
+  // "Daily Mix 1" and "Daily Mix 2" share a family; "Your Top Songs 2023" and
+  // "... 2024" do too. Used to keep near-identical cards off neighbouring slots.
+  function familyOf(title) {
+    return String(title || '')
+      .toLowerCase()
+      .replace(/\([^)]*\)/g, ' ')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\b(?:19|20)\d{2}\b/g, ' ')
+      .replace(/\b\d+\b/g, ' ')
+      .trim();
+  }
+
+  function bump(map, key, by) {
+    map.set(key, (map.get(key) || 0) + by);
+  }
+
+  function addWeighted(map, bucket, key, weight) {
+    let inner = map.get(bucket);
+    if (!inner) { inner = new Map(); map.set(bucket, inner); }
+    bump(inner, key, weight);
+  }
+
+  function maxOf(map) {
+    let max = 0;
+    for (const value of map.values()) if (value > max) max = value;
+    return max;
+  }
+
+  // ---------------- merge the same uri from several shelves ----------------
+
+  function mergeCandidates(candidates) {
+    const byUri = new Map();
+    for (const c of candidates) {
+      if (!c || typeof c.uri !== 'string' || !c.uri) continue;
+      const kind = KINDS[c.kind] ? c.kind : 'other';
+      const source = SOURCE_RANK[c.source] !== undefined ? c.source : 'other';
+      const shelfIndex = Number.isFinite(c.shelfIndex) ? c.shelfIndex : null;
+      const position = Number.isFinite(c.position) ? c.position : null;
+      const lastPlayedAt = Number.isFinite(c.lastPlayedAt) ? c.lastPlayedAt : null;
+      const addedAt = Number.isFinite(c.addedAt) ? c.addedAt : null;
+      const current = byUri.get(c.uri);
+
+      if (!current) {
+        byUri.set(c.uri, {
+          uri: c.uri,
+          title: c.title || '',
+          subtitle: c.subtitle || '',
+          img: c.img || '',
+          kind,
+          source,
+          shelfIndex,
+          position,
+          lastPlayedAt,
+          addedAt,
+          ownerIsSpotify: !!c.ownerIsSpotify,
+          pinned: !!c.pinned,
+          sources: c.source ? [c.source] : [],
+          isDj: c.source === 'dj',
+        });
+        continue;
+      }
+
+      // The same item can be both a made-for mix and a jump-back-in card. Keep
+      // the strongest source, the earliest shelf slot, the latest play, and the
+      // oldest "added" date (when it truly entered the library).
+      if (!current.title && c.title) current.title = c.title;
+      if (!current.subtitle && c.subtitle) current.subtitle = c.subtitle;
+      if (!current.img && c.img) current.img = c.img;
+      if (SOURCE_RANK[source] < SOURCE_RANK[current.source]) current.source = source;
+      if (c.source && !current.sources.includes(c.source)) current.sources.push(c.source);
+      if (shelfIndex !== null && (current.shelfIndex === null || shelfIndex < current.shelfIndex)) current.shelfIndex = shelfIndex;
+      if (position !== null && (current.position === null || position < current.position)) current.position = position;
+      if (lastPlayedAt !== null && (current.lastPlayedAt === null || lastPlayedAt > current.lastPlayedAt)) current.lastPlayedAt = lastPlayedAt;
+      if (addedAt !== null && (current.addedAt === null || addedAt < current.addedAt)) current.addedAt = addedAt;
+      current.ownerIsSpotify = current.ownerIsSpotify || !!c.ownerIsSpotify;
+      current.pinned = current.pinned || !!c.pinned;
+      current.isDj = current.isDj || c.source === 'dj';
+    }
+    return Array.from(byUri.values());
+  }
+
+  // ---------------- learn from what the ring showed and played ----------------
+
+  function buildHistory(history, now, metaByUri) {
+    const byUri = new Map();
+    const hourSource = new Map();
+    const hourKind = new Map();
+    if (!Array.isArray(history)) return { byUri, hourSource, hourKind, sourceMax: 0, kindMax: 0 };
+
+    for (const entry of history) {
+      if (!entry || typeof entry.uri !== 'string' || !entry.uri) continue;
+      const when = Number.isFinite(entry.playedAt) ? entry.playedAt
+        : Number.isFinite(entry.shownAt) ? entry.shownAt : null;
+      if (when === null) continue;
+      const decay = Math.pow(0.5, Math.max(0, now - when) / HISTORY_HALF_LIFE);
+
+      let record = byUri.get(entry.uri);
+      if (!record) { record = { played: 0, shown: 0 }; byUri.set(entry.uri, record); }
+      if (Number.isFinite(entry.playedAt)) {
+        record.played += decay;
+        const meta = metaByUri.get(entry.uri);
+        if (meta) {
+          const at = hourBucket(entry.playedAt);
+          addWeighted(hourSource, at, meta.source, decay);
+          addWeighted(hourKind, at, meta.kind, decay);
+        }
+      } else {
+        record.shown += decay;
+      }
+    }
+
+    let sourceMax = 0;
+    for (const inner of hourSource.values()) sourceMax = Math.max(sourceMax, maxOf(inner));
+    let kindMax = 0;
+    for (const inner of hourKind.values()) kindMax = Math.max(kindMax, maxOf(inner));
+    return { byUri, hourSource, hourKind, sourceMax, kindMax };
+  }
+
+  // ---------------- classify and explain ----------------
+
+  function classify(item, now, signals) {
+    const ageAddedDays = item.addedAt !== null ? Math.max(0, now - item.addedAt) / DAY : Infinity;
+    const agePlayedDays = item.lastPlayedAt !== null ? Math.max(0, now - item.lastPlayedAt) / DAY : Infinity;
+
+    const familiar = item.source === 'library'
+      || item.source === 'jumpBackIn'
+      || item.source === 'recent'
+      || item.pinned
+      || agePlayedDays <= 7;
+
+    const fresh = signals.discoverWeekly
+      || signals.releaseRadar
+      || signals.daylist
+      || (ageAddedDays <= 21 && agePlayedDays > 30)
+      || (item.kind === 'episode' && agePlayedDays > 14)
+      || (item.source === 'topMixes' && agePlayedDays > 21);
+
+    return { discovery: fresh && !familiar, comfort: familiar, agePlayedDays };
+  }
+
+  function titleCase(word) {
+    return word ? word.charAt(0).toUpperCase() + word.slice(1) : '';
+  }
+
+  function reasonFor(item, signals, flags, env, historyPlayed) {
+    if (historyPlayed) return 'You play this from the dial';
+    if (item.isDj) return 'Your DJ, ready right now';
+    if (signals.discoverWeekly && env.weekday === 1) return 'Your Monday discovery';
+    if (signals.releaseRadar && env.weekday === 5) return 'New releases for Friday';
+    if (signals.daylist) return 'Your ' + WEEKDAYS[env.weekday] + ' ' + env.bucket + ' daylist';
+    if (item.source === 'timeOfDay') {
+      if (signals.bucket === env.bucket && signals.weekday === env.weekday) {
+        return 'Your ' + titleCase(WEEKDAYS[env.weekday]) + ' ' + env.bucket + ' mix';
+      }
+      return 'Picked for this ' + env.bucket;
+    }
+    if (item.pinned) return 'Pinned in your library';
+    if (flags.comfort && flags.agePlayedDays <= 7) return 'Played most this week';
+    if (flags.discovery) return signals.discoverWeekly ? 'Fresh discoveries for you' : 'Something new for you';
+    if (flags.comfort && item.source === 'jumpBackIn') return 'Right where you left off';
+    if (flags.comfort && item.source === 'library') return 'From your library';
+    if (item.source === 'madeFor') return 'From your Made For shelf';
+    if (item.source === 'topMixes') return 'From your top mixes';
+    if (item.source === 'recent') return 'Recently played';
+    if (item.source === 'jumpBackIn') return 'Jump back in';
+    if (item.source === 'library') return 'From your library';
+    if (item.kind === 'episode' || item.kind === 'show') return 'From a show for you';
+    return 'Picked for you';
+  }
+
+  // ---------------- score every candidate ----------------
+
+  function scoreAll(merged, hist, env) {
+    const currentHourBucket = env.bucket;
+    const currentWeekday = env.weekday;
+
+    return merged.map((item) => {
+      const signals = titleSignals(item.title);
+      const base = SOURCE_BASE[item.source] !== undefined ? SOURCE_BASE[item.source] : SOURCE_BASE.other;
+      let raw = base;
+
+      if (item.isDj) raw += DJ_LIFT;
+
+      // Context: the shelf the home page built for this exact day and hour.
+      if (item.source === 'timeOfDay') {
+        if (signals.bucket === currentHourBucket) raw += TIME_OF_DAY_FIT;
+        if (signals.weekday === currentWeekday) raw += WEEKDAY_FIT;
+      }
+      if (signals.daylist) {
+        raw += DAYLIST_LIFT;
+        if (signals.bucket === currentHourBucket) raw += TIME_OF_DAY_FIT * 0.6;
+        if (signals.weekday === currentWeekday) raw += WEEKDAY_FIT * 0.5;
+      }
+
+      // Freshness: Discover Weekly peaks on Monday, Release Radar on Friday.
+      if (signals.discoverWeekly) raw += currentWeekday === 1 ? FRESHNESS : 3;
+      if (signals.releaseRadar) raw += currentWeekday === 5 ? FRESHNESS : 3;
+
+      if (item.addedAt !== null) {
+        const age = Math.max(0, env.now - item.addedAt);
+        if (age < 3 * DAY) raw += NEW_ADDITION;
+        else if (age < 14 * DAY) raw += NEW_ADDITION * 0.45;
+      }
+
+      if (item.lastPlayedAt !== null) {
+        const age = Math.max(0, env.now - item.lastPlayedAt);
+        raw += RECENCY * Math.exp(-age / RECENCY_TAU);
+        if (hourBucket(item.lastPlayedAt) === currentHourBucket) raw += HABIT;
+      }
+
+      if (item.shelfIndex !== null) raw += SHELF_PULL * Math.exp(-item.shelfIndex / 5);
+      if (item.position !== null) raw += POSITION_PULL * Math.exp(-item.position / 8);
+      if (item.pinned) raw += PINNED;
+
+      // What the ring taught us about this exact item.
+      const learned = hist.byUri.get(item.uri);
+      if (learned) {
+        raw += HISTORY_PLAY * Math.min(1, learned.played);
+        raw -= HISTORY_IGNORE * Math.min(1, learned.shown * 0.5);
+      }
+
+      // What the ring taught us about this hour: the sources and kinds the user
+      // tends to play at this point in the day.
+      const sourceWeights = hist.hourSource.get(currentHourBucket);
+      if (sourceWeights && hist.sourceMax > 0) {
+        raw += HOUR_SOURCE_PULL * Math.min(1, (sourceWeights.get(item.source) || 0) / hist.sourceMax);
+      }
+      const kindWeights = hist.hourKind.get(currentHourBucket);
+      if (kindWeights && hist.kindMax > 0) {
+        raw += HOUR_KIND_PULL * Math.min(1, (kindWeights.get(item.kind) || 0) / hist.kindMax);
+      }
+
+      // Round to whole points, then nudge within the point by a stable, per-day
+      // hash. Small changes in recency therefore rarely reshuffle the ring.
+      const tie = hash(item.uri + '|' + env.daySeed) / 4294967296;
+      const score = Math.round(raw / SCORE_QUANTUM) * SCORE_QUANTUM + tie * DAY_TIE;
+
+      const flags = classify(item, env.now, signals);
+      const historyPlayed = !!learned && learned.played > 0.08;
+
+      return {
+        uri: item.uri,
+        title: item.title,
+        subtitle: item.subtitle,
+        img: item.img,
+        kind: item.kind,
+        source: item.source,
+        sources: item.sources,
+        shelfIndex: item.shelfIndex,
+        position: item.position,
+        lastPlayedAt: item.lastPlayedAt,
+        addedAt: item.addedAt,
+        ownerIsSpotify: item.ownerIsSpotify,
+        pinned: item.pinned,
+        score: Math.round(score * 100) / 100,
+        flags,
+        signals,
+        historyPlayed,
+        isDj: item.isDj,
+        tie,
+      };
+    });
+  }
+
+  // ---------------- pick a balanced set ----------------
+
+  function selectItems(ranked, slots, currentUri) {
+    const perSource = Math.max(2, Math.floor(slots * SOURCE_SHARE));
+    const perKind = Math.max(3, Math.ceil(slots * KIND_SHARE));
+    const chosen = [];
+    const chosenUris = new Set();
+    const sourceCount = new Map();
+    const kindCount = new Map();
+    let artists = 0;
+
+    const allowed = (item, strict) => {
+      if (chosenUris.has(item.uri)) return false;
+      if (item.kind === 'artist' && artists >= MAX_ARTISTS) return false;
+      if (!strict) return true;
+      if ((sourceCount.get(item.source) || 0) >= perSource) return false;
+      if ((kindCount.get(item.kind) || 0) >= perKind) return false;
+      return true;
+    };
+    const take = (item) => {
+      chosen.push(item);
+      chosenUris.add(item.uri);
+      bump(sourceCount, item.source, 1);
+      bump(kindCount, item.kind, 1);
+      if (item.kind === 'artist') artists += 1;
+    };
+    const release = (index) => {
+      const item = chosen.splice(index, 1)[0];
+      chosenUris.delete(item.uri);
+      bump(sourceCount, item.source, -1);
+      bump(kindCount, item.kind, -1);
+      if (item.kind === 'artist') artists -= 1;
+      return item;
+    };
+
+    // The DJ is the house band: always on the ring, whatever the caps say.
+    const dj = ranked.find((item) => item.isDj);
+    if (dj) take(dj);
+
+    for (const item of ranked) {
+      if (chosen.length >= slots) break;
+      if (allowed(item, true)) take(item);
+    }
+
+    // The best item and the thing already playing are not swap fodder.
+    const mustKeep = new Set();
+    const best = chosen.reduce((top, item) => (top && top.score >= item.score ? top : item), null);
+    if (best) mustKeep.add(best.uri);
+    if (currentUri) mustKeep.add(currentUri);
+
+    // Guarantee at least one discovery and one familiar item when the pool has
+    // one, even if the caps squeezed them out. Swap out the weakest eligible
+    // item, never one that satisfies a guarantee already secured.
+    for (const need of ['discovery', 'comfort']) {
+      if (chosen.some((item) => item.flags[need])) continue;
+      let replacement = -1;
+      for (let i = chosen.length - 1; i >= 0; i -= 1) {
+        if (!chosen[i].isDj && !mustKeep.has(chosen[i].uri)) { replacement = i; break; }
+      }
+      const candidate = ranked.find((item) => item.flags[need] && !chosenUris.has(item.uri));
+      if (!candidate) continue;
+      if (replacement === -1) {
+        if (chosen.length < slots) { take(candidate); mustKeep.add(candidate.uri); }
+        continue;
+      }
+      const removed = release(replacement);
+      // This is the one place balance gives way: the guarantee matters more.
+      if (allowed(candidate, false)) { take(candidate); mustKeep.add(candidate.uri); }
+      else take(removed);
+    }
+
+    // If caps left holes, fill with the best remaining items. Source and kind
+    // balance is a preference; the artist cap stays hard.
+    if (chosen.length < slots) {
+      for (const item of ranked) {
+        if (chosen.length >= slots) break;
+        if (allowed(item, false)) take(item);
+      }
+    }
+
+    return chosen;
+  }
+
+  // ---------------- order the ring by contrast ----------------
+
+  function contrastPenalty(a, b) {
+    if (!a || !b) return 0;
+    let penalty = 0;
+    if (a.source === b.source) penalty += CONTRAST_SOURCE;
+    if (a.kind === b.kind) penalty += CONTRAST_KIND;
+    if (a.base === b.base) penalty += CONTRAST_TITLE;
+    return penalty;
+  }
+
+  function orderRing(chosen, currentUri) {
+    const n = chosen.length;
+    if (!n) return [];
+    for (const item of chosen) item.base = familyOf(item.title) || item.uri;
+    const ring = new Array(n).fill(null);
+
+    // Best item goes under the marker, unless that is what is already playing.
+    let first = -1;
+    for (let i = 0; i < n; i += 1) {
+      if (chosen[i].uri === currentUri) continue;
+      if (first === -1 || chosen[i].score > chosen[first].score) first = i;
+    }
+    if (first === -1) first = 0;
+    ring[0] = chosen[first];
+    const remaining = chosen.filter((_, i) => i !== first);
+
+    // Fill 1, n-1, 2, n-2, ... so both directions away from slot 0 are shaped
+    // first, then the far side of the wheel.
+    const positions = [0];
+    for (let d = 1; d < n; d += 1) {
+      positions.push(d % 2 === 1 ? (d + 1) / 2 : n - d / 2);
+    }
+
+    for (let p = 1; p < positions.length; p += 1) {
+      const slot = positions[p];
+      const before = ring[(slot - 1 + n) % n];
+      const after = ring[(slot + 1) % n];
+      let bestIndex = 0;
+      let bestValue = -Infinity;
+      for (let i = 0; i < remaining.length; i += 1) {
+        const item = remaining[i];
+        const value = item.score - contrastPenalty(item, before) - contrastPenalty(item, after);
+        if (value > bestValue) { bestValue = value; bestIndex = i; }
+      }
+      ring[slot] = remaining.splice(bestIndex, 1)[0];
+    }
+
+    return repairRing(ring);
+  }
+
+  // If two members of the same family still ended up side by side (usually
+  // because the pool had three Daily Mixes), swap one with a safe slot. Slot 0
+  // never moves, so the best item and the "not now playing" rule survive.
+  function repairRing(ring) {
+    const n = ring.length;
+    const clashes = (index) => {
+      const prev = ring[(index - 1 + n) % n];
+      const next = ring[(index + 1) % n];
+      return (prev && prev.base === ring[index].base) || (next && next.base === ring[index].base);
+    };
+
+    for (let pass = 0; pass < 4; pass += 1) {
+      let changed = false;
+      for (let i = 0; i < n; i += 1) {
+        const j = (i + 1) % n;
+        if (ring[i].base !== ring[j].base) continue;
+        const movable = j === 0 ? i : j;
+        for (let k = 1; k < n; k += 1) {
+          if (k === movable || k === i || k === j) continue;
+          if (ring[k].base === ring[movable].base) continue;
+          const swap = ring[k];
+          ring[k] = ring[movable];
+          ring[movable] = swap;
+          if (!clashes(movable) && !clashes(k)) { changed = true; break; }
+          ring[movable] = ring[k];
+          ring[k] = swap;
+        }
+      }
+      if (!changed) break;
+    }
+    return ring;
+  }
+
+  // ---------------- the public entry point ----------------
+
+  function pickDialItems(candidates, context) {
+    const list = Array.isArray(candidates) ? candidates : [];
+    const ctx = context || {};
+    const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+    const slots = Math.max(MIN_SLOTS, Math.min(MAX_SLOTS, Number.isFinite(ctx.slots) ? Math.floor(ctx.slots) : DEFAULT_SLOTS));
+    const currentUri = typeof ctx.currentUri === 'string' ? ctx.currentUri : null;
+
+    const merged = mergeCandidates(list);
+    if (!merged.length) return [];
+
+    const meta = new Map(merged.map((item) => [item.uri, item]));
+    const hist = buildHistory(ctx.dialHistory, now, meta);
+    const env = {
+      now,
+      bucket: hourBucket(now),
+      weekday: new Date(now).getDay(),
+      daySeed: hash(new Date(now).toDateString()),
+    };
+
+    const scored = scoreAll(merged, hist, env);
+    scored.sort((a, b) => b.score - a.score || b.tie - a.tie || (a.uri < b.uri ? -1 : a.uri > b.uri ? 1 : 0));
+
+    const chosen = selectItems(scored, slots, currentUri);
+    const ring = orderRing(chosen, currentUri);
+
+    return ring.map((item) => ({
+      uri: item.uri,
+      title: item.title,
+      subtitle: item.subtitle,
+      img: item.img,
+      kind: item.kind,
+      source: item.source,
+      sources: item.sources,
+      shelfIndex: item.shelfIndex,
+      position: item.position,
+      lastPlayedAt: item.lastPlayedAt,
+      addedAt: item.addedAt,
+      ownerIsSpotify: item.ownerIsSpotify,
+      pinned: item.pinned,
+      score: item.score,
+      reason: reasonFor(item, item.signals, item.flags, env, item.historyPlayed),
+    }));
+  }
+
+  window.TessDialPick = { pickDialItems };
+})();
+
+// Tess Music — Home.
+// A dated greeting, then The Dial: a ring of twelve things to play (your DJ, Made For mixes, the time-of-day
+// shelf, Jump back in, top mixes, recents), chosen and ordered by TessDialPick (dial-pick.js). Turn the ring by
+// scrolling, dragging or the arrow keys; whatever sits under the marker drops onto the record in the middle.
+// Spotify's own shelves follow below, restyled in home.css. Everything plays and opens through Spotify.
 (async function tessHome() {
   window.__tessHome?.dispose?.();
   const disposers = [];
@@ -1070,145 +1661,307 @@
   window.__tessHome = { dispose: () => disposers.splice(0).reverse().forEach((fn) => { try { fn(); } catch {} }) };
   while (!window.Spicetify?.Platform?.History || !Spicetify.Player) await new Promise((r) => setTimeout(r, 300));
 
+  const P = Spicetify.Player;
+  const html = document.documentElement;
   const route = () => Spicetify.Platform.History.location?.pathname || '';
   const isHome = () => route() === '/' || route() === '/home';
-  const el = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; };
+  const el = (h) => { const t = document.createElement('template'); t.innerHTML = h.trim(); return t.content.firstElementChild; };
+  const pathOf = (uri) => {
+    if (uri === 'spotify:local-files') return '/collection/local-files';
+    try { return Spicetify.URI.fromString(uri).toURLPath(true); } catch { const [, t, id] = uri.split(':'); return `/${t}/${id}`; }
+  };
+  const imageOf = (u) => (u?.startsWith('spotify:mosaic:') ? 'https://mosaic.scdn.co/300/' + u.split(':').slice(2).join('')
+    : u?.startsWith('spotify:image:') ? 'https://i.scdn.co/image/' + u.split(':')[2] : u || '');
+  const DJ_URI = 'spotify:playlist:37i9dQZF1EYkqdzj48dyYq';
+  const DJ_IMG = 'https://lexicon-assets.spotifycdn.com/DJ-Beta-CoverArt-300.jpg';
+  const SLOTS = 12;
 
+  // ---------- greeting ----------
   let firstName = '';
   Spicetify.Platform.UserAPI?.getUser?.().then((u) => { firstName = (u?.displayName || '').split(' ')[0]; render(); }).catch(() => {});
-
   const greeting = () => {
     const h = new Date().getHours();
     return h < 5 ? 'Good night' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
   };
-  const eyebrow = () => new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
-
   const masthead = el('<header id="tess-home-masthead" class="contentSpacing tess-home-enter"><div class="thm-eyebrow"></div><h1 class="thm-title"></h1></header>');
-  // The top of home: your DJ as a tall card you can tilt, and beside it what you played last (or your mixes).
-  const DJ_URI = 'spotify:playlist:37i9dQZF1EYkqdzj48dyYq';
-  const hero = el(`
-    <section id="tess-home-hero" class="tess-home-enter" aria-label="DJ and recently played">
-      <div class="thd-stage">
-        <a class="thd-card" draggable="false">
-          <span class="thd-art"></span>
-          <span class="thd-glare"></span>
-          <span class="thd-label"><b>DJ</b><small>Music and commentary picked for you, right now</small></span>
-          <button class="thd-play" aria-label="Play DJ"><svg width="14" height="16" viewBox="0 0 12 14" fill="currentColor"><path d="M1 1.5l9.5 5.5L1 12.5z"/></svg></button>
-        </a>
+
+  // ---------- the dial ----------
+  const dial = el(`
+    <section id="tess-dial" class="tess-home-enter" aria-label="Pick something to play" tabindex="0">
+      <canvas class="td-bg" width="96" height="54"></canvas>
+      <div class="td-label">
+        <small class="td-reason"></small>
+        <b class="td-title"></b>
+        <span class="td-sub"></span>
+        <div class="td-actions">
+          <button class="td-play"><svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor"><path d="M1 1.5l9.5 5.5L1 12.5z"/></svg><span>Play</span></button>
+          <button class="td-open">Open</button>
+        </div>
+        <div class="td-hint">Scroll, drag or use ← → to turn</div>
       </div>
-      <div class="thr">
-        <div class="thr-head"><h2></h2></div>
-        <div class="thr-grid"></div>
+      <div class="td-wheel">
+        <div class="td-ring"></div>
+        <div class="td-record"><i></i></div>
+        <div class="td-marker"></div>
       </div>
     </section>`);
-  onDispose(() => { masthead.remove(); hero.remove(); });
+  onDispose(() => { masthead.remove(); dial.remove(); });
+  const ring = dial.querySelector('.td-ring');
+  const wheel = dial.querySelector('.td-wheel');
+  let items = [];
+  let index = 0; // which item sits under the marker
+  let turns = 0; // total steps taken, so the ring keeps turning the short way round
 
-  // Spotify's own URI helper knows every kind of link (collections, users, shows...), so nothing opens as a web link
-  const pathOf = (uri) => { try { return Spicetify.URI.fromString(uri).toURLPath(true); } catch { const [, type, id] = uri.split(':'); return `/${type}/${id}`; } };
-  // in-app navigation for our own links; a plain <a href> would leave the app
-  const onLinkClick = (e) => {
-    if (!(e.target instanceof Element) || e.target.closest('.thr-play, .thd-play')) return;
-    const a = e.target.closest('#tess-home-hero [data-path]');
-    if (!a) return;
-    e.preventDefault();
-    Spicetify.Platform.History.push(a.dataset.path);
+  // ---------- candidates ----------
+  const shelfSource = (title) => {
+    const t = (title || '').toLowerCase();
+    if (/^made for/.test(t)) return 'madeFor';
+    if (/^soundtrack your|^your .*(morning|afternoon|evening|night)/.test(t)) return 'timeOfDay';
+    if (/jump back in/.test(t)) return 'jumpBackIn';
+    if (/top mixes/.test(t)) return 'topMixes';
+    if (/recently played/.test(t)) return 'recent';
+    return 'other';
   };
-  document.addEventListener('click', onLinkClick, true);
-  onDispose(() => document.removeEventListener('click', onLinkClick, true));
-
-  const homeRecent = () => { try { return JSON.parse(localStorage.getItem('tess:settings') || '{}').homeRecent !== false; } catch { return true; } };
-  const imageOf = (u) => (u?.startsWith('spotify:mosaic:') ? 'https://mosaic.scdn.co/300/' + u.split(':').slice(2).join('') : u?.startsWith('spotify:image:') ? 'https://i.scdn.co/image/' + u.split(':')[2] : u || '');
-
-  async function recentItems() {
-    try {
-      const list = await Spicetify.Platform.RecentlyPlayedAPI.getContexts();
-      return (list || []).filter((c) => c.uri !== DJ_URI && c.uri?.startsWith('spotify:')).slice(0, 6)
-        .map((c) => ({ uri: c.uri, title: c.name, sub: c.type === 'artist' ? 'Artist' : c.owner?.displayName || c.type.replace(/^./, (x) => x.toUpperCase()), img: imageOf(c.images?.[0]?.url) }));
-    } catch { return []; }
-  }
-  // Your mixes are read from home's own first shelf (Spotify's "Made For" row), so they match what Spotify picked.
-  function mixItems() {
-    const shelf = document.querySelector('[data-testid="home-page"] [data-testid="component-shelf"]');
-    return [...(shelf?.querySelectorAll('[data-encore-id="card"]') || [])].map((card) => ({
-      uri: card.querySelector('[id^="card-title-spotify:"]')?.id.replace('card-title-', ''),
-      title: card.querySelector('[data-encore-id="cardTitle"]')?.textContent?.trim() || '',
-      sub: card.querySelector('[data-encore-id="cardSubtitle"]')?.textContent?.trim() || '',
-      img: card.querySelector('img')?.src || '',
-    })).filter((i) => i.uri && i.img).slice(0, 6);
-  }
-
-  let shown = '';
-  async function fillRight() {
-    const recent = homeRecent();
-    document.documentElement.classList.toggle('tess-home-recent', recent && isHome());
-    const items = recent ? await recentItems() : mixItems();
-    const key = recent + JSON.stringify(items.map((i) => i.uri));
-    if (!items.length || key === shown) return;
-    shown = key;
-    hero.querySelector('.thr-head h2').textContent = recent ? 'Recently played' : 'Made for you';
-    const grid = hero.querySelector('.thr-grid');
-    grid.innerHTML = '';
-    for (const it of items) {
-      const t = el('<a class="thr-item" draggable="false"><span class="thr-art"><img alt=""></span><span class="thr-text"><b></b><small></small></span><button class="thr-play" aria-label="Play"><svg width="11" height="13" viewBox="0 0 12 14" fill="currentColor"><path d="M1 1.5l9.5 5.5L1 12.5z"/></svg></button></a>');
-      t.dataset.path = pathOf(it.uri);
-      t.querySelector('img').src = it.img;
-      if (it.uri.startsWith('spotify:artist:')) t.classList.add('round');
-      t.querySelector('b').textContent = it.title;
-      t.querySelector('small').textContent = it.sub;
-      t.querySelector('.thr-play').onclick = (e) => { e.preventDefault(); e.stopPropagation(); Spicetify.Player.playUri(it.uri); };
-      grid.appendChild(t);
-    }
-  }
-
-  // 3D tilt: the card leans toward the pointer with a moving glare; only transforms, so it stays on the GPU's cheap path.
-  const card = hero.querySelector('.thd-card');
-  card.dataset.path = pathOf(DJ_URI);
-  card.querySelector('.thd-art').style.backgroundImage = 'url("https://lexicon-assets.spotifycdn.com/DJ-Beta-CoverArt-300.jpg")';
-  card.querySelector('.thd-play').onclick = (e) => { e.preventDefault(); e.stopPropagation(); Spicetify.Player.playUri(DJ_URI); };
-  let tiltFrame = 0;
-  card.addEventListener('pointermove', (e) => {
-    cancelAnimationFrame(tiltFrame);
-    tiltFrame = requestAnimationFrame(() => {
-      const r = card.getBoundingClientRect();
-      const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
-      card.style.setProperty('--rx', ((0.5 - y) * 14).toFixed(2) + 'deg');
-      card.style.setProperty('--ry', ((x - 0.5) * 16).toFixed(2) + 'deg');
-      card.style.setProperty('--gx', (x * 100).toFixed(1) + '%');
-      card.style.setProperty('--gy', (y * 100).toFixed(1) + '%');
+  const kindOf = (uri) => (uri === DJ_URI ? 'dj' : (uri.split(':')[1] || 'other'));
+  function shelfCandidates() {
+    const out = [];
+    document.querySelectorAll('[data-testid="home-page"] [data-testid="component-shelf"]').forEach((shelf, shelfIndex) => {
+      const source = shelfSource(shelf.querySelector('h2')?.textContent);
+      shelf.querySelectorAll('[data-encore-id="card"]').forEach((card, position) => {
+        const uri = card.querySelector('[id^="card-title-spotify:"]')?.id.replace('card-title-', '');
+        const img = card.querySelector('img')?.src || '';
+        if (!uri || !img) return;
+        out.push({
+          uri, img, source, shelfIndex, position, kind: kindOf(uri),
+          title: card.querySelector('[data-encore-id="cardTitle"]')?.textContent?.trim() || '',
+          subtitle: card.querySelector('[data-encore-id="cardSubtitle"]')?.textContent?.trim() || '',
+          lastPlayedAt: null, addedAt: null, ownerIsSpotify: /^spotify:playlist:37i9/.test(uri), pinned: false,
+        });
+      });
     });
-  });
-  card.addEventListener('pointerleave', () => { cancelAnimationFrame(tiltFrame); card.style.removeProperty('--rx'); card.style.removeProperty('--ry'); });
-  window.addEventListener('tess:settings', fillRight);
-  onDispose(() => window.removeEventListener('tess:settings', fillRight));
+    return out;
+  }
+  async function apiCandidates() {
+    const out = [{ uri: DJ_URI, title: 'DJ', subtitle: 'Music and commentary picked for you', img: DJ_IMG, source: 'dj', kind: 'dj', shelfIndex: null, position: 0, lastPlayedAt: null, addedAt: null, ownerIsSpotify: true, pinned: false }];
+    try {
+      const recent = await Spicetify.Platform.RecentlyPlayedAPI.getContexts();
+      (recent || []).slice(0, 20).forEach((c, position) => {
+        if (!c.uri?.startsWith('spotify:')) return;
+        out.push({ uri: c.uri, title: c.name, subtitle: c.owner?.displayName || '', img: imageOf(c.images?.[0]?.url), source: 'recent', kind: kindOf(c.uri), shelfIndex: null, position, lastPlayedAt: c.timestampMs ? c.timestampMs * (c.timestampMs < 1e12 ? 1000 : 1) : null, addedAt: null, ownerIsSpotify: (c.owner?.displayName || '') === 'Spotify', pinned: false });
+      });
+    } catch {}
+    try {
+      const lib = await Spicetify.Platform.LibraryAPI.getContents({ limit: 100, offset: 0 });
+      (lib.items || []).forEach((i, position) => {
+        const img = imageOf(i.images?.[0]?.url);
+        if (!i.uri?.startsWith('spotify:') || !img.startsWith('http')) return;
+        out.push({ uri: i.uri, title: i.name, subtitle: i.owner?.name || i.artists?.[0]?.name || '', img, source: 'library', kind: kindOf(i.uri), shelfIndex: null, position, lastPlayedAt: i.lastPlayedAt ? Date.parse(i.lastPlayedAt) : null, addedAt: i.addedAt?.isoString ? Date.parse(i.addedAt.isoString) : null, ownerIsSpotify: /spotify/i.test(i.owner?.name || ''), pinned: !!i.pinned });
+      });
+    } catch {}
+    return out;
+  }
 
-  const htmlEl = document.documentElement;
-  onDispose(() => htmlEl.classList.remove('tess-home', 'tess-home-recent'));
+  // ---------- what the dial showed and what you played from it (the picker learns from this) ----------
+  const HISTORY_KEY = 'tess:dialHistory';
+  const readHistory = () => { try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; } };
+  const writeHistory = (h) => { try { localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(-400))); } catch {} };
+  function noteShown(list) {
+    const h = readHistory();
+    const day = new Date().toDateString();
+    for (const it of list) if (!h.some((e) => e.uri === it.uri && new Date(e.shownAt).toDateString() === day)) h.push({ uri: it.uri, shownAt: Date.now(), playedAt: null });
+    writeHistory(h);
+  }
+  function notePlayed(uri) {
+    const h = readHistory();
+    const last = [...h].reverse().find((e) => e.uri === uri && !e.playedAt);
+    if (last) last.playedAt = Date.now(); else h.push({ uri, shownAt: Date.now(), playedAt: Date.now() });
+    writeHistory(h);
+  }
+
+  // Fallback order until dial-pick.js is present: DJ, time-of-day, Made For, Jump back in, top mixes, recents.
+  function simplePick(cands) {
+    const rank = { dj: 0, timeOfDay: 1, madeFor: 2, jumpBackIn: 3, topMixes: 4, recent: 5, other: 6, library: 7 };
+    const seen = new Set();
+    return cands.filter((c) => !seen.has(c.uri) && seen.add(c.uri))
+      .sort((a, b) => (rank[a.source] - rank[b.source]) || (a.position - b.position)).slice(0, SLOTS);
+  }
+
+  let shownKey = '';
+  let lastRefresh = 0;
+  async function refreshDial() {
+    // the ring is chosen at most once a minute (and when home first loads), so it never shuffles under your hand
+    if (items.length && performance.now() - lastRefresh < 60000) return;
+    lastRefresh = performance.now();
+    const cands = [...shelfCandidates(), ...(await apiCandidates())];
+    if (cands.length < 4) return;
+    const ctx = { now: Date.now(), currentUri: P.data?.context?.uri || null, dialHistory: readHistory(), slots: SLOTS };
+    let picked;
+    try { picked = window.TessDialPick ? window.TessDialPick.pickDialItems(cands, ctx) : simplePick(cands); } catch { picked = simplePick(cands); }
+    const key = picked.map((i) => i.uri).join();
+    if (key === shownKey) return;
+    shownKey = key;
+    items = picked;
+    noteShown(items);
+    buildRing();
+    select(0, true);
+  }
+
+  // ---------- ring ----------
+  const R = () => wheel.clientWidth * 0.41;
+  function buildRing() {
+    ring.replaceChildren();
+    items.forEach((it, i) => {
+      const c = el('<button class="td-cover" tabindex="-1"><img alt="" draggable="false"></button>');
+      c.querySelector('img').src = it.img;
+      c.title = it.title;
+      c.setAttribute('aria-label', it.title);
+      if (it.kind === 'artist') c.classList.add('round');
+      c.onclick = () => turnTo(i);
+      c.ondblclick = () => play(items[i]);
+      ring.appendChild(c);
+    });
+    layoutRing();
+  }
+  function layoutRing() {
+    const n = items.length || 1;
+    const r = R();
+    [...ring.children].forEach((c, i) => {
+      const a = (i / n) * Math.PI * 2 - Math.PI / 2;
+      c.style.setProperty('--x', (Math.cos(a) * r).toFixed(1) + 'px');
+      c.style.setProperty('--y', (Math.sin(a) * r).toFixed(1) + 'px');
+    });
+    ring.style.setProperty('--turn', (-turns * 360 / n) + 'deg');
+  }
+  function select(i, instant) {
+    const n = items.length;
+    if (!n) return;
+    index = ((i % n) + n) % n;
+    if (instant) { turns = index; ring.classList.add('instant'); requestAnimationFrame(() => ring.classList.remove('instant')); }
+    ring.style.setProperty('--turn', (-turns * 360 / n) + 'deg');
+    [...ring.children].forEach((c, k) => c.classList.toggle('on', k === index));
+    const it = items[index];
+    dial.querySelector('.td-reason').textContent = it.reason || reasonFor(it);
+    dial.querySelector('.td-title').textContent = it.title;
+    dial.querySelector('.td-sub').textContent = it.subtitle;
+    dial.querySelector('.td-record i').style.backgroundImage = `url("${it.img}")`;
+    dial.querySelector('.td-play span').textContent = isPlayingNow(it) ? 'Pause' : 'Play';
+    loadPalette(it.img);
+  }
+  const reasonFor = (it) => ({ dj: 'Your DJ', timeOfDay: 'For right now', madeFor: 'Made for you', jumpBackIn: 'Jump back in', topMixes: 'One of your top mixes', recent: 'Played recently', library: 'From your library' }[it.source] || 'For you');
+  const isPlayingNow = (it) => P.isPlaying() && (P.data?.context?.uri === it.uri);
+  function step(d) { turns += d; select(index + d); }
+  function turnTo(i) {
+    const n = items.length;
+    let d = i - index;
+    if (d > n / 2) d -= n;
+    if (d < -n / 2) d += n;
+    step(d);
+  }
+  function play(it) {
+    if (!it) return;
+    if (isPlayingNow(it)) { P.togglePlay(); } else { Spicetify.Player.playUri(it.uri); notePlayed(it.uri); }
+    dial.classList.add('pulse');
+    setTimeout(() => dial.classList.remove('pulse'), 500);
+    setTimeout(() => select(index), 600);
+  }
+  dial.querySelector('.td-play').onclick = () => play(items[index]);
+  dial.querySelector('.td-open').onclick = () => items[index] && Spicetify.Platform.History.push(pathOf(items[index].uri));
+
+  // Wheel: one step per notch; trackpads accumulate so a gentle swipe moves one or two, not ten.
+  let acc = 0, lastWheel = 0;
+  wheel.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const now = performance.now();
+    if (now - lastWheel > 250) acc = 0;
+    lastWheel = now;
+    acc += Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    while (Math.abs(acc) >= 60) { step(Math.sign(acc)); acc -= Math.sign(acc) * 60; }
+  }, { passive: false });
+  // Drag: the ring follows the pointer around the centre and settles on the nearest item.
+  let drag = null;
+  const angleAt = (e) => { const r = wheel.getBoundingClientRect(); return Math.atan2(e.clientY - r.top - r.height / 2, e.clientX - r.left - r.width / 2); };
+  wheel.addEventListener('pointerdown', (e) => { if (e.button !== 0) return; drag = { a: angleAt(e), moved: 0 }; });
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  onDispose(() => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); });
+  function onMove(e) {
+    if (!drag || !items.length) return;
+    let d = angleAt(e) - drag.a;
+    if (d > Math.PI) d -= Math.PI * 2;
+    if (d < -Math.PI) d += Math.PI * 2;
+    const per = (Math.PI * 2) / items.length;
+    if (Math.abs(d) > per * 0.6) { const k = Math.round(d / per); step(-k); drag.a += k * per; drag.moved++; }
+  }
+  function onUp() { drag = null; }
+  dial.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); step(1); }
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); step(-1); }
+    else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); play(items[index]); }
+  });
+
+  // ---------- aurora behind the dial, from the selected record's colours ----------
+  const bg = dial.querySelector('.td-bg');
+  let colors = [[40, 50, 90], [70, 40, 90], [30, 60, 80], [20, 20, 30]];
+  let shown = colors.map((c) => [...c]);
+  const palettes = new Map();
+  function loadPalette(src) {
+    if (palettes.has(src)) { colors = palettes.get(src); return; }
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const c = document.createElement('canvas'); c.width = c.height = 4;
+        const x = c.getContext('2d'); x.drawImage(img, 0, 0, 4, 4);
+        const d = x.getImageData(0, 0, 4, 4).data;
+        const p = [0, 12, 40, 52].map((k) => [d[k], d[k + 1], d[k + 2]]);
+        palettes.set(src, p);
+        if (items[index]?.img === src) colors = p;
+      } catch {}
+    };
+    img.src = src;
+  }
+  function paint(t) {
+    const x = bg.getContext('2d');
+    shown = shown.map((c, i) => c.map((v, j) => v + (colors[i][j] - v) * 0.1));
+    x.filter = 'none'; x.fillStyle = '#08080b'; x.fillRect(0, 0, 96, 54);
+    x.filter = 'blur(9px) saturate(150%)';
+    shown.forEach((c, i) => {
+      const a = t * 0.00012 * (i % 2 ? 1 : -1) + i * 1.7;
+      x.fillStyle = `rgba(${c.map(Math.round).join(',')},0.85)`;
+      x.beginPath();
+      x.ellipse(96 * (0.5 + 0.38 * Math.cos(a)), 54 * (0.5 + 0.4 * Math.sin(a * 1.3)), 40, 30, a, 0, Math.PI * 2);
+      x.fill();
+    });
+  }
+  const bgTimer = setInterval(() => { if (!document.hidden && isHome() && dial.isConnected) paint(performance.now()); }, 90);
+  onDispose(() => clearInterval(bgTimer));
+
+  // ---------- placement ----------
   function render() {
-    htmlEl.classList.toggle('tess-home', isHome());
-    if (!isHome()) htmlEl.classList.remove('tess-home-recent');
+    html.classList.toggle('tess-home', isHome());
     if (!isHome()) return;
     const page = document.querySelector('[data-testid="home-page"]');
     if (!page) return;
-    // the All / Music / Podcasts row is a sticky bar just above the page; the greeting goes right before it
     let chipRow = document.querySelector('#main-view [data-encore-id="chip"]');
     while (chipRow && getComputedStyle(chipRow).position !== 'sticky') chipRow = chipRow.parentElement;
-    const shortcuts = page.querySelector('.view-homeShortcutsGrid-shortcuts');
-
-    masthead.querySelector('.thm-eyebrow').textContent = eyebrow();
+    masthead.querySelector('.thm-eyebrow').textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
     masthead.querySelector('.thm-title').textContent = firstName ? `${greeting()}, ${firstName}` : greeting();
     if (chipRow && masthead.nextElementSibling !== chipRow) chipRow.before(masthead);
     chipRow?.firstElementChild?.classList.add('tess-sticky-glass');
-
-    if (!shortcuts) { hero.remove(); return; }
-    if (hero.nextElementSibling !== shortcuts) shortcuts.before(hero);
-    fillRight();
+    const content = page.querySelector('.main-home-content') || page.querySelector('.view-homeShortcutsGrid-shortcuts')?.parentElement;
+    if (content && content.firstElementChild !== dial) { content.prepend(dial); layoutRing(); }
+    refreshDial();
   }
-
-  // Spotify rebuilds the page as it loads and when filters change: re-place on route changes and on a slow,
-  // visibility-aware beat that does nothing away from home.
-  const unlisten = Spicetify.Platform.History.listen(() => { setTimeout(render, 60); setTimeout(render, 400); });
+  const onSong = () => { if (dial.isConnected && items.length) select(index); };
+  P.addEventListener('songchange', onSong);
+  P.addEventListener('onplaypause', onSong);
+  onDispose(() => { P.removeEventListener('songchange', onSong); P.removeEventListener('onplaypause', onSong); html.classList.remove('tess-home'); });
+  const ro = new ResizeObserver(() => layoutRing());
+  ro.observe(wheel);
+  onDispose(() => ro.disconnect());
+  const unlisten = Spicetify.Platform.History.listen(() => { setTimeout(render, 60); setTimeout(render, 600); });
   onDispose(() => typeof unlisten === 'function' && unlisten());
-  const beat = setInterval(() => { if (!document.hidden && isHome()) render(); }, 1000);
+  const beat = setInterval(() => { if (!document.hidden && isHome()) render(); }, 4000);
   onDispose(() => clearInterval(beat));
   render();
 })();

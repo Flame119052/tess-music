@@ -25,216 +25,239 @@ html.tess [data-testid="home-ads-container"] {
   color: #fff;
 }
 
-/* top of home: tall DJ card on the left, recently played (or mixes) on the right */
-#tess-home-hero {
+/* ================= The Dial ================= */
+#tess-dial {
+  position: relative;
   flex: 0 0 100%;
   width: 100%;
-  display: grid;
-  grid-template-columns: clamp(200px, 22%, 270px) 1fr;
-  gap: 24px;
-  margin: 14px 0 30px;
-}
-.thd-stage {
-  perspective: 900px;
-}
-.thd-card {
-  --rx: 0deg;
-  --ry: 0deg;
-  --gx: 50%;
-  --gy: 30%;
-  position: relative;
-  display: block;
-  aspect-ratio: 3 / 4;
-  border-radius: 20px;
+  height: clamp(340px, 34vw, 430px);
+  margin: 12px 0 30px;
+  border-radius: 22px;
   overflow: hidden;
-  transform: rotateX(var(--rx)) rotateY(var(--ry));
-  transform-style: preserve-3d;
-  transition: transform 0.6s var(--tess-spring), box-shadow 0.4s;
-  box-shadow: 0 24px 50px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
-  text-decoration: none !important;
-  color: #fff !important;
+  isolation: isolate;
+  outline: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08), 0 24px 60px rgba(0, 0, 0, 0.45);
 }
-.thd-card:hover {
-  transition: transform 0.12s linear, box-shadow 0.4s;
-  box-shadow: 0 34px 70px rgba(0, 0, 0, 0.6), 0 0 40px rgba(30, 215, 96, 0.18), inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+#tess-dial:focus-visible {
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.5), 0 24px 60px rgba(0, 0, 0, 0.45);
 }
-.thd-art {
+/* aurora painted at 96x54 and stretched; grain and vignette on top */
+.td-bg {
   position: absolute;
   inset: 0;
-  /* zoomed onto the green ring so the cover's own "DJ" and "BETA" marks stay out of frame */
-  background: #1747b5 50% 44% / 190% no-repeat;
-  transform: translateZ(0) scale(1.02);
-  transition: transform 0.6s var(--tess-spring);
+  width: 100%;
+  height: 100%;
+  z-index: -2;
 }
-.thd-card:hover .thd-art {
-  transform: scale(1.08);
-}
-/* a soft dark wash at the bottom for the label */
-.thd-card::after {
+#tess-dial::before,
+#tess-dial::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(180deg, transparent 45%, rgba(5, 10, 30, 0.85) 100%);
+  z-index: -1;
+  pointer-events: none;
 }
-.thd-glare {
+#tess-dial::before {
+  opacity: 0.1;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+#tess-dial::after {
+  background: radial-gradient(120% 110% at 60% 45%, transparent 45%, rgba(0, 0, 0, 0.55));
+}
+.td-label {
+  padding: 0 0 0 clamp(24px, 3vw, 44px);
+  min-width: 0;
+}
+.td-reason {
+  display: block;
+  margin-bottom: 10px;
+  font: 700 11px/1 var(--tess-font);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.72);
+}
+.td-title {
+  display: block;
+  font: 800 clamp(28px, 3vw, 44px)/1.04 var(--tess-font);
+  letter-spacing: -0.025em;
+  color: #fff;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.td-sub {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-width: 420px;
+  margin-top: 8px;
+  font: 14px/1.4 var(--tess-font);
+  color: rgba(255, 255, 255, 0.72);
+}
+.td-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 20px;
+}
+.td-play,
+.td-open {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 20px;
+  border-radius: 999px;
+  font: 700 14px/1 var(--tess-font);
+  transition: transform 0.25s var(--tess-spring), background 0.2s;
+}
+.td-play {
+  background: #fff;
+  color: #111;
+}
+.td-open {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+.td-play:hover,
+.td-open:hover {
+  transform: scale(1.04);
+}
+.td-play:active,
+.td-open:active {
+  transform: scale(0.95);
+}
+.td-hint {
+  margin-top: 16px;
+  font: 500 11.5px/1 var(--tess-font);
+  color: rgba(255, 255, 255, 0.4);
+}
+.td-wheel {
+  position: relative;
+  width: clamp(300px, 30vw, 400px);
+  aspect-ratio: 1;
+  margin-right: clamp(20px, 3vw, 48px);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.td-wheel:active {
+  cursor: grabbing;
+}
+.td-ring {
+  --turn: 0deg;
   position: absolute;
   inset: 0;
-  z-index: 2;
-  background: radial-gradient(circle at var(--gx) var(--gy), rgba(255, 255, 255, 0.28), transparent 45%);
-  opacity: 0;
-  transition: opacity 0.3s;
-  mix-blend-mode: soft-light;
+  transform: rotate(var(--turn));
+  transition: transform 0.6s var(--tess-spring);
 }
-.thd-card:hover .thd-glare {
-  opacity: 1;
+.td-ring.instant,
+.td-ring.instant .td-cover {
+  transition: none;
 }
-.thd-label {
-  position: absolute;
-  left: 18px;
-  right: 70px;
-  bottom: 18px;
-  z-index: 3;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  transform: translateZ(40px);
-}
-.thd-label b {
-  font: 800 30px/1 var(--tess-font);
-  letter-spacing: -0.02em;
-}
-.thd-label small {
-  font: 500 12.5px/1.35 var(--tess-font);
-  color: rgba(255, 255, 255, 0.75);
-}
-.thd-play {
+.td-cover {
   all: unset;
   cursor: pointer;
   position: absolute;
-  right: 16px;
-  bottom: 18px;
-  z-index: 3;
-  display: grid;
-  place-items: center;
-  width: 46px;
-  height: 46px;
-  border-radius: 50%;
-  background: var(--tess-accent);
-  color: #000;
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
-  transform: translateZ(60px);
-  transition: transform 0.3s var(--tess-spring);
-}
-.thd-play svg {
-  margin-left: 3px;
-}
-.thd-play:hover {
-  transform: translateZ(60px) scale(1.08);
-}
-.thd-play:active {
-  transform: translateZ(60px) scale(0.94);
-}
-
-.thr {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-.thr-head h2 {
-  margin: 0 0 12px;
-  font: 700 21px/1.2 var(--tess-font);
-  letter-spacing: -0.015em;
-}
-.thr-grid {
-  flex: 1;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-auto-rows: 1fr;
-  gap: 10px;
-}
-.thr-item {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  min-width: 0;
-  padding: 10px 14px 10px 10px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.05);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
-  color: #fff !important;
-  text-decoration: none !important;
-  transition: background 0.2s, transform 0.3s var(--tess-spring);
-}
-.thr-item:hover {
-  background: rgba(255, 255, 255, 0.1);
-  transform: translateY(-2px);
-}
-.thr-art {
-  flex: none;
-  width: clamp(48px, 4.4vw, 68px);
+  left: 50%;
+  top: 50%;
+  width: 19%;
   aspect-ratio: 1;
-  border-radius: 10px;
+  margin: -9.5%;
+  border-radius: 12px;
   overflow: hidden;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+  /* each cover stays upright while the ring turns */
+  transform: translate(var(--x), var(--y)) rotate(calc(-1 * var(--turn))) scale(0.86);
+  opacity: 0.62;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
+  transition: transform 0.6s var(--tess-spring), opacity 0.35s, box-shadow 0.35s;
 }
-.thr-item.round .thr-art {
-  border-radius: 50%;
+.td-ring .td-cover {
+  --turn: inherit;
 }
-.thr-art img {
+.td-cover img {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
+  pointer-events: none;
 }
-.thr-text {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.thr-text b,
-.thr-text small {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.thr-text b {
-  font: 650 14px/1.25 var(--tess-font);
-}
-.thr-text small {
-  font: 12.5px/1.25 var(--tess-font);
-  color: rgba(255, 255, 255, 0.6);
-}
-.thr-play {
-  all: unset;
-  cursor: pointer;
-  position: absolute;
-  right: 12px;
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
+.td-cover.round {
   border-radius: 50%;
-  background: var(--tess-accent);
-  color: #000;
-  opacity: 0;
-  transform: scale(0.8);
-  transition: opacity 0.2s, transform 0.3s var(--tess-spring);
 }
-.thr-play svg {
-  margin-left: 2px;
+.td-cover:hover {
+  opacity: 0.95;
 }
-.thr-item:hover .thr-play {
+.td-cover.on {
   opacity: 1;
-  transform: none;
+  transform: translate(var(--x), var(--y)) rotate(calc(-1 * var(--turn))) scale(1.22);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.6), 0 0 0 2px rgba(255, 255, 255, 0.85);
+  z-index: 2;
+}
+/* the record in the middle: grooves, the chosen cover as its label, a moving sheen; spins only while music plays */
+.td-record {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 46%;
+  aspect-ratio: 1;
+  margin: -23%;
+  border-radius: 50%;
+  background: repeating-radial-gradient(circle, #121214 0 1.5px, #1c1c20 1.5px 3.5px);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.65), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  animation: td-spin 5.5s linear infinite;
+  animation-play-state: paused;
+}
+html.tess-playing .td-record {
+  animation-play-state: running;
+}
+.td-record i {
+  position: absolute;
+  inset: 29%;
+  border-radius: 50%;
+  background: #333 center / cover;
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.6);
+  transition: background-image 0.3s;
+}
+.td-record::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(from 30deg, transparent, rgba(255, 255, 255, 0.13), transparent 25%, transparent 50%, rgba(255, 255, 255, 0.09), transparent 75%);
+}
+@keyframes td-spin {
+  to { transform: rotate(360deg); }
+}
+.td-marker {
+  position: absolute;
+  left: 50%;
+  top: -2px;
+  width: 0;
+  height: 0;
+  margin-left: -8px;
+  border: 8px solid transparent;
+  border-top-color: #fff;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5));
+}
+#tess-dial.pulse .td-record {
+  box-shadow: 0 0 0 6px rgba(30, 215, 96, 0.35), 0 24px 60px rgba(0, 0, 0, 0.65);
 }
 @media (prefers-reduced-motion: reduce) {
-  .thd-card, .thd-card:hover, .thd-art { transition: none; transform: none !important; }
+  .td-ring, .td-cover { transition: none; }
+  .td-record { animation: none; }
 }
 @media (max-width: 760px) {
-  #tess-home-hero { grid-template-columns: 1fr; }
-  .thd-card { aspect-ratio: 16 / 9; }
+  #tess-dial { grid-template-columns: 1fr; height: auto; padding: 24px 0; }
+  .td-wheel { margin: 20px auto 0; }
 }
 
 /* shortcut tiles: one rounded tile, the artwork rounded inside it */
@@ -327,9 +350,4 @@ html.tess.tess-home #main-view main > div > [style*="background-color"]:first-ch
 /* the greeting lines up with the chips and cards below it */
 #tess-home-masthead {
   padding-inline: 40px !important;
-}
-
-/* with recently played beside the DJ, Spotify's eight recent shortcuts would repeat it */
-html.tess-home-recent .view-homeShortcutsGrid-shortcuts {
-  display: none !important;
 }

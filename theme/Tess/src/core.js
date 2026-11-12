@@ -70,7 +70,7 @@
   const route = () => Spicetify.Platform.History.location?.pathname || '';
 
   // ---------------- settings ----------------
-  const DEFAULTS = { coverVideo: true, panelVideo: true, artistVideo: true, tintWindow: true, sideLyrics: true, homeRecent: true };
+  const DEFAULTS = { coverVideo: true, panelVideo: true, artistVideo: true, tintWindow: true, sideLyrics: true };
   const settings = (() => {
     try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('tess:settings') || '{}') }; } catch { return { ...DEFAULTS }; }
   })();
@@ -92,7 +92,6 @@
     ['artistVideo', 'Moving video on artist pages', 'Fills the top of an artist’s page with a Canvas from their top songs; it blurs as you scroll.'],
     ['sideLyrics', 'Live lyrics in the Now Playing panel', 'Synced lyrics that follow the song. Off shows Spotify’s preview card.'],
     ['tintWindow', 'Tint the window with the artwork colours', 'The panels pick up the colours of what’s playing.'],
-    ['homeRecent', 'Home: recently played beside the DJ', 'On shows what you played last. Off shows your Made For You mixes.'],
   ];
   const settingChanged = () => { saveSettings(); applySettings(); syncTrack(); onRoute(); window.dispatchEvent(new Event('tess:settings')); };
   function buildThemeSection() {
@@ -634,6 +633,7 @@
     q(bar, '.tb-play').innerHTML = playing ? I.pause : I.play;
     q(np, '.tn-play').innerHTML = playing ? I.pause : I.play;
     np.classList.toggle('paused', !playing);
+    html.classList.toggle('tess-playing', playing);
     const shuffle = P.getShuffle();
     const repeat = P.getRepeat();
     for (const b of [q(bar, '.tb-shuffle'), q(np, '.tn-shuffle')]) b.classList.toggle('active', !!shuffle);
