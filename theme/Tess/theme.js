@@ -158,7 +158,13 @@
     meta.textContent = `Tess ${window.__tessVersion || 'dev'} · ${settings.channel === 'beta' ? 'Beta updates' : 'Stable updates'} · `;
     const ch = el('<button class="tess-set-link"></button>');
     ch.textContent = settings.channel === 'beta' ? 'Switch to stable' : 'Get beta updates';
-    ch.onclick = () => { settings.channel = settings.channel === 'beta' ? 'stable' : 'beta'; saveSettings(); try { localStorage.removeItem('tess:bundle'); } catch {} location.reload(); };
+    // the loader reads the channel when Spotify starts; reloading the page here would break Spicetify, so ask for a restart
+    ch.onclick = () => {
+      settings.channel = settings.channel === 'beta' ? 'stable' : 'beta'; saveSettings();
+      ch.textContent = settings.channel === 'beta' ? 'Beta updates from the next Spotify start' : 'Stable updates from the next Spotify start';
+      ch.disabled = true;
+      Spicetify.showNotification?.('Quit and reopen Spotify to switch update channel.');
+    };
     const again = el('<button class="tess-set-link"> · Show welcome</button>');
     again.onclick = () => { try { localStorage.removeItem('tess:onboarded'); } catch {} onboarding(); };
     meta.append(ch, again);
