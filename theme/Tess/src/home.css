@@ -351,3 +351,82 @@ html.tess.tess-home #main-view main > div > [style*="background-color"]:first-ch
 #tess-home-masthead {
   padding-inline: 40px !important;
 }
+
+/* ================= On this day ================= */
+#tess-otd {
+  flex: 0 0 100%;
+  width: 100%;
+  margin: 0 0 30px;
+}
+#tess-otd[hidden] {
+  display: none;
+}
+.otd-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.otd-head h2 {
+  margin: 0;
+  font: 700 21px/1.2 var(--tess-font);
+  letter-spacing: -0.015em;
+}
+.otd-head small {
+  font: 13px/1.2 var(--tess-font);
+  color: rgba(255, 255, 255, 0.55);
+}
+.otd-row {
+  display: flex;
+  gap: 14px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  scrollbar-width: none;
+}
+.otd-song {
+  all: unset;
+  cursor: pointer;
+  flex: none;
+  width: 148px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-family: var(--tess-font);
+}
+.otd-art {
+  position: relative;
+  aspect-ratio: 1;
+  margin-bottom: 7px;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.38);
+  transition: transform 0.35s var(--tess-spring);
+}
+.otd-song:hover .otd-art {
+  transform: translateY(-4px);
+}
+.otd-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.otd-song b,
+.otd-song small {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.otd-song b {
+  font-size: 14px;
+  font-weight: 650;
+}
+.otd-song small {
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.6);
+}
+.otd-song em {
+  font-style: normal;
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.4);
+}

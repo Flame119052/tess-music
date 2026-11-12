@@ -163,6 +163,8 @@
       const c = el('<button class="td-cover" tabindex="-1"><img alt="" draggable="false"></button>');
       c.querySelector('img').src = it.img;
       c.title = it.title;
+      c.dataset.uri = it.uri;
+      c.dataset.name = it.title;
       c.setAttribute('aria-label', it.title);
       if (it.kind === 'artist') c.classList.add('round');
       c.onclick = () => turnTo(i);
@@ -285,6 +287,53 @@
   const bgTimer = setInterval(() => { if (!document.hidden && isHome() && dial.isConnected) paint(performance.now()); }, 90);
   onDispose(() => clearInterval(bgTimer));
 
+  // ---------- on this day ----------
+  // Songs you saved to Liked Songs on today's date in earlier years (or, failing that, within a few days of it).
+  const otd = el(`<section id="tess-otd" class="tess-home-enter" hidden><div class="otd-head"><h2></h2><small></small></div><div class="otd-row"></div></section>`);
+  onDispose(() => otd.remove());
+  let otdDay = '';
+  async function fillOnThisDay() {
+    const today = new Date();
+    if (otdDay === today.toDateString()) return;
+    otdDay = today.toDateString();
+    let all = [];
+    try {
+      for (let off = 0; off < 20000; off += 500) {
+        const r = await Spicetify.Platform.LibraryAPI.getTracks({ limit: 500, offset: off });
+        all = all.concat(r.items || []);
+        if (!r.items || r.items.length < 500) break;
+      }
+    } catch { return; }
+    const dayStart = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const gap = (t) => { const a = new Date(t.addedAt); return Math.abs(dayStart(new Date(today.getFullYear(), a.getMonth(), a.getDate())) - dayStart(today)) / 864e5; };
+    const past = all.filter((t) => t.addedAt && new Date(t.addedAt).getFullYear() < today.getFullYear());
+    let picks = past.filter((t) => gap(t) === 0);
+    let title = 'On this day';
+    if (!picks.length) { picks = past.filter((t) => gap(t) <= 3); title = 'This week, years ago'; }
+    if (!picks.length) { picks = past.filter((t) => gap(t) <= 7); title = 'Around now, years ago'; }
+    if (!picks.length) { otd.hidden = true; return; }
+    picks.sort((a, b) => Date.parse(b.addedAt) - Date.parse(a.addedAt));
+    const years = [...new Set(picks.map((t) => today.getFullYear() - new Date(t.addedAt).getFullYear()))];
+    otd.querySelector('h2').textContent = title;
+    otd.querySelector('small').textContent = `Songs you saved ${years.map((y) => (y === 1 ? 'a year' : `${y} years`)).join(', ')} ago`;
+    const row = otd.querySelector('.otd-row');
+    row.replaceChildren(...picks.slice(0, 12).map((t) => {
+      const c = el('<button class="otd-song"><span class="otd-art"><img alt=""></span><b></b><small></small><em></em></button>');
+      c.querySelector('img').src = imageOf(t.album?.images?.[0]?.url || t.album?.coverArt?.sources?.[0]?.url || '');
+      c.querySelector('b').textContent = t.name;
+      c.dataset.uri = t.uri;
+      c.dataset.name = t.name;
+      c.querySelector('small').textContent = (t.artists || []).map((a) => a.name).join(', ');
+      c.querySelector('em').textContent = new Date(t.addedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+      c.onclick = () => {
+        // play it inside Liked Songs so the music carries on from there
+        Spicetify.Platform.PlayerAPI.play({ uri: 'spotify:collection:tracks' }, {}, { skipTo: { uri: t.uri } }).catch(() => Spicetify.Player.playUri(t.uri));
+      };
+      return c;
+    }));
+    otd.hidden = false;
+  }
+
   // ---------- placement ----------
   function render() {
     html.classList.toggle('tess-home', isHome());
@@ -299,7 +348,9 @@
     chipRow?.firstElementChild?.classList.add('tess-sticky-glass');
     const content = page.querySelector('.main-home-content') || page.querySelector('.view-homeShortcutsGrid-shortcuts')?.parentElement;
     if (content && content.firstElementChild !== dial) { content.prepend(dial); layoutRing(); }
+    if (content && dial.nextElementSibling !== otd) dial.after(otd);
     refreshDial();
+    fillOnThisDay();
   }
   const onSong = () => { if (dial.isConnected && items.length) select(index); };
   P.addEventListener('songchange', onSong);

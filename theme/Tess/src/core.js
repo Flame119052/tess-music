@@ -824,6 +824,7 @@
       }
       const row = el('<div class="tt-item" role="listitem" tabindex="0"><span class="tt-art"></span><span class="tt-text"><b></b><small></small></span></div>');
       row.dataset.uri = it.uri;
+      row.dataset.name = it.name;
       row.title = it.name;
       const art = q(row, '.tt-art');
       const img = libImage(it);
@@ -909,6 +910,8 @@
     spotList.replaceChildren(...spotItems.map((it, i) => {
       const row = el('<div class="ts-row" role="option"><span class="ts-art"><img alt=""></span><span class="ts-text"><b></b><small></small></span><span class="ts-kind"></span></div>');
       row.setAttribute('aria-selected', String(i === spotSel));
+      row.dataset.uri = it.uri;
+      row.dataset.name = it.name;
       if (it.img) q(row, 'img').src = it.img;
       if (it.round) row.classList.add('round');
       q(row, 'b').textContent = it.name;
@@ -970,6 +973,76 @@
   listen(spot, 'pointerdown', (e) => { if (e.target === spot) closeSpot(); });
   listen(document, 'keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); e.stopPropagation(); spot.hidden ? openSpot() : closeSpot(); }
+  }, true);
+
+  // ---------------- right-click: Spotify's real menus on Tess's own items ----------------
+  // Spotify builds its item menus inside its library rows. Tess keeps that list (hidden) and, when you right-click
+  // one of its own items, finds Spotify's row for the same thing and right-clicks it at your pointer, so you get the
+  // exact Spotify menu (queue, edit, delete, folders, pin, share...). Rows only exist near the top of the list, so if
+  // it isn't there Tess types the name into Spotify's (hidden) library filter first and clears it afterwards.
+  // Things that aren't in your library (search results, recommendations) get a small Tess menu instead.
+  const libRowUri = (u) => (u === 'spotify:local-files' ? 'spotify:collection:local-files' : u);
+  const findSpotifyRow = (uri) => document.getElementById('listrow-title-' + libRowUri(uri))?.closest('[data-encore-id="listRow"]');
+  const libFilterInput = () => [...document.querySelectorAll('#Desktop_LeftSidebar_Id input[type="search"], #Desktop_LeftSidebar_Id input[placeholder]')].find((i) => !i.closest('#tess-timeline'));
+  const setReactValue = (input, value) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  async function openItemMenu(it, e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const at = { clientX: e.clientX, clientY: e.clientY };
+    let row = findSpotifyRow(it.uri);
+    let filtered = null;
+    if (!row && it.name && libItems.some((i) => i.uri === it.uri)) {
+      filtered = libFilterInput();
+      if (filtered) {
+        setReactValue(filtered, it.name);
+        row = await waitFor(() => findSpotifyRow(it.uri), 900);
+      }
+    }
+    if (row) {
+      row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, ...at }));
+      if (filtered) {
+        // clear the filter once the menu has closed
+        const clear = setInterval(() => { if (!document.querySelector('#context-menu')) { clearInterval(clear); setReactValue(filtered, ''); } }, 300);
+      }
+      return;
+    }
+    if (filtered) setReactValue(filtered, '');
+    openTessMenu(it, at);
+  }
+  const tessMenu = mount(el('<div id="tess-menu" role="menu" hidden></div>'));
+  function openTessMenu(it, at) {
+    const isTrack = it.uri.startsWith('spotify:track:');
+    const path = (() => { try { return Spicetify.URI.fromString(it.uri).toURLPath(true); } catch { return ''; } })();
+    const entries = [
+      ['Play', () => Spicetify.Player.playUri(it.uri)],
+      isTrack && ['Add to queue', () => Spicetify.addToQueue([{ uri: it.uri }])],
+      path && ['Open', () => Spicetify.Platform.History.push(path)],
+      ['Save to Your Library', () => Spicetify.Platform.LibraryAPI.add({ uris: [it.uri] })],
+      ['Copy link', () => navigator.clipboard.writeText('https://open.spotify.com' + (path || ''))],
+    ].filter(Boolean);
+    tessMenu.replaceChildren(...entries.map(([label, fn]) => {
+      const b = el('<button role="menuitem"></button>');
+      b.textContent = label;
+      b.onclick = () => { tessMenu.hidden = true; fn(); };
+      return b;
+    }));
+    tessMenu.hidden = false;
+    const w = 220, h = entries.length * 38 + 12;
+    tessMenu.style.left = Math.min(at.clientX, innerWidth - w - 8) + 'px';
+    tessMenu.style.top = Math.min(at.clientY, innerHeight - h - 8) + 'px';
+  }
+  listen(document, 'pointerdown', (e) => { if (!tessMenu.hidden && !tessMenu.contains(e.target)) tessMenu.hidden = true; }, true);
+  listen(document, 'keydown', (e) => { if (e.key === 'Escape') tessMenu.hidden = true; });
+  // one listener for every Tess-drawn item
+  listen(document, 'contextmenu', (e) => {
+    const t = e.target instanceof Element && e.target.closest('.tt-item, .td-cover, .ts-row, .otd-song, [data-tess-uri]');
+    if (!t) return;
+    const uri = t.dataset.uri || t.dataset.tessUri;
+    if (!uri) return;
+    openItemMenu({ uri, name: t.dataset.name || t.title || t.querySelector('b')?.textContent || '' }, e);
   }, true);
 
   // ---------------- cover-to-page transition ----------------

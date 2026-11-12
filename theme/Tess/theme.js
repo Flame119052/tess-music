@@ -825,6 +825,7 @@
       }
       const row = el('<div class="tt-item" role="listitem" tabindex="0"><span class="tt-art"></span><span class="tt-text"><b></b><small></small></span></div>');
       row.dataset.uri = it.uri;
+      row.dataset.name = it.name;
       row.title = it.name;
       const art = q(row, '.tt-art');
       const img = libImage(it);
@@ -910,6 +911,8 @@
     spotList.replaceChildren(...spotItems.map((it, i) => {
       const row = el('<div class="ts-row" role="option"><span class="ts-art"><img alt=""></span><span class="ts-text"><b></b><small></small></span><span class="ts-kind"></span></div>');
       row.setAttribute('aria-selected', String(i === spotSel));
+      row.dataset.uri = it.uri;
+      row.dataset.name = it.name;
       if (it.img) q(row, 'img').src = it.img;
       if (it.round) row.classList.add('round');
       q(row, 'b').textContent = it.name;
@@ -971,6 +974,76 @@
   listen(spot, 'pointerdown', (e) => { if (e.target === spot) closeSpot(); });
   listen(document, 'keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); e.stopPropagation(); spot.hidden ? openSpot() : closeSpot(); }
+  }, true);
+
+  // ---------------- right-click: Spotify's real menus on Tess's own items ----------------
+  // Spotify builds its item menus inside its library rows. Tess keeps that list (hidden) and, when you right-click
+  // one of its own items, finds Spotify's row for the same thing and right-clicks it at your pointer, so you get the
+  // exact Spotify menu (queue, edit, delete, folders, pin, share...). Rows only exist near the top of the list, so if
+  // it isn't there Tess types the name into Spotify's (hidden) library filter first and clears it afterwards.
+  // Things that aren't in your library (search results, recommendations) get a small Tess menu instead.
+  const libRowUri = (u) => (u === 'spotify:local-files' ? 'spotify:collection:local-files' : u);
+  const findSpotifyRow = (uri) => document.getElementById('listrow-title-' + libRowUri(uri))?.closest('[data-encore-id="listRow"]');
+  const libFilterInput = () => [...document.querySelectorAll('#Desktop_LeftSidebar_Id input[type="search"], #Desktop_LeftSidebar_Id input[placeholder]')].find((i) => !i.closest('#tess-timeline'));
+  const setReactValue = (input, value) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  async function openItemMenu(it, e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const at = { clientX: e.clientX, clientY: e.clientY };
+    let row = findSpotifyRow(it.uri);
+    let filtered = null;
+    if (!row && it.name && libItems.some((i) => i.uri === it.uri)) {
+      filtered = libFilterInput();
+      if (filtered) {
+        setReactValue(filtered, it.name);
+        row = await waitFor(() => findSpotifyRow(it.uri), 900);
+      }
+    }
+    if (row) {
+      row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, ...at }));
+      if (filtered) {
+        // clear the filter once the menu has closed
+        const clear = setInterval(() => { if (!document.querySelector('#context-menu')) { clearInterval(clear); setReactValue(filtered, ''); } }, 300);
+      }
+      return;
+    }
+    if (filtered) setReactValue(filtered, '');
+    openTessMenu(it, at);
+  }
+  const tessMenu = mount(el('<div id="tess-menu" role="menu" hidden></div>'));
+  function openTessMenu(it, at) {
+    const isTrack = it.uri.startsWith('spotify:track:');
+    const path = (() => { try { return Spicetify.URI.fromString(it.uri).toURLPath(true); } catch { return ''; } })();
+    const entries = [
+      ['Play', () => Spicetify.Player.playUri(it.uri)],
+      isTrack && ['Add to queue', () => Spicetify.addToQueue([{ uri: it.uri }])],
+      path && ['Open', () => Spicetify.Platform.History.push(path)],
+      ['Save to Your Library', () => Spicetify.Platform.LibraryAPI.add({ uris: [it.uri] })],
+      ['Copy link', () => navigator.clipboard.writeText('https://open.spotify.com' + (path || ''))],
+    ].filter(Boolean);
+    tessMenu.replaceChildren(...entries.map(([label, fn]) => {
+      const b = el('<button role="menuitem"></button>');
+      b.textContent = label;
+      b.onclick = () => { tessMenu.hidden = true; fn(); };
+      return b;
+    }));
+    tessMenu.hidden = false;
+    const w = 220, h = entries.length * 38 + 12;
+    tessMenu.style.left = Math.min(at.clientX, innerWidth - w - 8) + 'px';
+    tessMenu.style.top = Math.min(at.clientY, innerHeight - h - 8) + 'px';
+  }
+  listen(document, 'pointerdown', (e) => { if (!tessMenu.hidden && !tessMenu.contains(e.target)) tessMenu.hidden = true; }, true);
+  listen(document, 'keydown', (e) => { if (e.key === 'Escape') tessMenu.hidden = true; });
+  // one listener for every Tess-drawn item
+  listen(document, 'contextmenu', (e) => {
+    const t = e.target instanceof Element && e.target.closest('.tt-item, .td-cover, .ts-row, .otd-song, [data-tess-uri]');
+    if (!t) return;
+    const uri = t.dataset.uri || t.dataset.tessUri;
+    if (!uri) return;
+    openItemMenu({ uri, name: t.dataset.name || t.title || t.querySelector('b')?.textContent || '' }, e);
   }, true);
 
   // ---------------- cover-to-page transition ----------------
@@ -1250,8 +1323,7 @@
   const DAY_TIE = 0.6; // day-seeded nudge inside one point
   const CONTRAST_SOURCE = 9; // score points given up to avoid a same-source neighbour
   const CONTRAST_KIND = 5;
-  const CONTRAST_TITLE = 30; // near-identical family (Daily Mix 1 vs 2)
-  const MIN_SLOTS = 1;
+  const CONTRAST_TITLE = 150; // near-identical family (Daily Mix 1 vs 2)
   const MAX_SLOTS = 32;
 
   const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
@@ -1736,37 +1808,57 @@
     return repairRing(ring);
   }
 
-  // If two members of the same family still ended up side by side (usually
-  // because the pool had three Daily Mixes), swap one with a safe slot. Slot 0
-  // never moves, so the best item and the "not now playing" rule survive.
+  // If members of the same family still ended up side by side, re-walk the ring
+  // once, keeping slot 0 fixed and preferring the order the contrast pass chose.
+  // A ring can hold at most floor(n/2) members of one family without neighbours
+  // repeating, so if the selection obeyed that cap this always finds a layout.
+  // With a degenerate pool (almost everything from one family) it gives up and
+  // returns the best-effort ring instead.
   function repairRing(ring) {
     const n = ring.length;
-    const clashes = (index) => {
-      const prev = ring[(index - 1 + n) % n];
-      const next = ring[(index + 1) % n];
-      return (prev && prev.family === ring[index].family) || (next && next.family === ring[index].family);
+    if (n < 3) return ring;
+    let conflicts = false;
+    for (let i = 0; i < n; i += 1) {
+      if (ring[i].family === ring[(i + 1) % n].family) { conflicts = true; break; }
+    }
+    if (!conflicts) return ring;
+
+    const counts = new Map();
+    for (const item of ring) bump(counts, item.family, 1);
+    let largest = 0;
+    for (const count of counts.values()) if (count > largest) largest = count;
+    if (largest > Math.floor(n / 2)) return ring;
+
+    const fixed = ring[0];
+    // Try the largest family first; that is the one that must be spread out.
+    // Within a family, keep the contrast pass's order.
+    const rest = ring.slice(1)
+      .map((item, index) => ({ item, index }))
+      .sort((a, b) => counts.get(b.item.family) - counts.get(a.item.family) || a.index - b.index)
+      .map((entry) => entry.item);
+    const used = new Array(rest.length).fill(false);
+    const out = [fixed];
+    let nodes = 0;
+
+    const place = (position) => {
+      if (position === n) return true;
+      nodes += 1;
+      if (nodes > 20000) return false;
+      for (let i = 0; i < rest.length; i += 1) {
+        if (used[i]) continue;
+        const item = rest[i];
+        if (out[position - 1].family === item.family) continue;
+        if (position === n - 1 && fixed.family === item.family) continue;
+        used[i] = true;
+        out.push(item);
+        if (place(position + 1)) return true;
+        out.pop();
+        used[i] = false;
+      }
+      return false;
     };
 
-    for (let pass = 0; pass < 4; pass += 1) {
-      let changed = false;
-      for (let i = 0; i < n; i += 1) {
-        const j = (i + 1) % n;
-        if (ring[i].family !== ring[j].family) continue;
-        const movable = j === 0 ? i : j;
-        for (let k = 1; k < n; k += 1) {
-          if (k === movable || k === i || k === j) continue;
-          if (ring[k].family === ring[movable].family) continue;
-          const swap = ring[k];
-          ring[k] = ring[movable];
-          ring[movable] = swap;
-          if (!clashes(movable) && !clashes(k)) { changed = true; break; }
-          ring[movable] = ring[k];
-          ring[k] = swap;
-        }
-      }
-      if (!changed) break;
-    }
-    return ring;
+    return place(1) ? out : ring;
   }
 
   // ---------------- the public entry point ----------------
@@ -1775,7 +1867,8 @@
     const list = Array.isArray(candidates) ? candidates : [];
     const ctx = context || {};
     const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
-    const slots = Math.max(MIN_SLOTS, Math.min(MAX_SLOTS, Number.isFinite(ctx.slots) ? Math.floor(ctx.slots) : DEFAULT_SLOTS));
+    const slots = Number.isFinite(ctx.slots) ? Math.max(0, Math.min(MAX_SLOTS, Math.floor(ctx.slots))) : DEFAULT_SLOTS;
+    if (slots === 0) return [];
     const currentUri = typeof ctx.currentUri === 'string' ? ctx.currentUri : null;
 
     const merged = mergeCandidates(list);
@@ -1983,6 +2076,8 @@
       const c = el('<button class="td-cover" tabindex="-1"><img alt="" draggable="false"></button>');
       c.querySelector('img').src = it.img;
       c.title = it.title;
+      c.dataset.uri = it.uri;
+      c.dataset.name = it.title;
       c.setAttribute('aria-label', it.title);
       if (it.kind === 'artist') c.classList.add('round');
       c.onclick = () => turnTo(i);
@@ -2105,6 +2200,53 @@
   const bgTimer = setInterval(() => { if (!document.hidden && isHome() && dial.isConnected) paint(performance.now()); }, 90);
   onDispose(() => clearInterval(bgTimer));
 
+  // ---------- on this day ----------
+  // Songs you saved to Liked Songs on today's date in earlier years (or, failing that, within a few days of it).
+  const otd = el(`<section id="tess-otd" class="tess-home-enter" hidden><div class="otd-head"><h2></h2><small></small></div><div class="otd-row"></div></section>`);
+  onDispose(() => otd.remove());
+  let otdDay = '';
+  async function fillOnThisDay() {
+    const today = new Date();
+    if (otdDay === today.toDateString()) return;
+    otdDay = today.toDateString();
+    let all = [];
+    try {
+      for (let off = 0; off < 20000; off += 500) {
+        const r = await Spicetify.Platform.LibraryAPI.getTracks({ limit: 500, offset: off });
+        all = all.concat(r.items || []);
+        if (!r.items || r.items.length < 500) break;
+      }
+    } catch { return; }
+    const dayStart = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const gap = (t) => { const a = new Date(t.addedAt); return Math.abs(dayStart(new Date(today.getFullYear(), a.getMonth(), a.getDate())) - dayStart(today)) / 864e5; };
+    const past = all.filter((t) => t.addedAt && new Date(t.addedAt).getFullYear() < today.getFullYear());
+    let picks = past.filter((t) => gap(t) === 0);
+    let title = 'On this day';
+    if (!picks.length) { picks = past.filter((t) => gap(t) <= 3); title = 'This week, years ago'; }
+    if (!picks.length) { picks = past.filter((t) => gap(t) <= 7); title = 'Around now, years ago'; }
+    if (!picks.length) { otd.hidden = true; return; }
+    picks.sort((a, b) => Date.parse(b.addedAt) - Date.parse(a.addedAt));
+    const years = [...new Set(picks.map((t) => today.getFullYear() - new Date(t.addedAt).getFullYear()))];
+    otd.querySelector('h2').textContent = title;
+    otd.querySelector('small').textContent = `Songs you saved ${years.map((y) => (y === 1 ? 'a year' : `${y} years`)).join(', ')} ago`;
+    const row = otd.querySelector('.otd-row');
+    row.replaceChildren(...picks.slice(0, 12).map((t) => {
+      const c = el('<button class="otd-song"><span class="otd-art"><img alt=""></span><b></b><small></small><em></em></button>');
+      c.querySelector('img').src = imageOf(t.album?.images?.[0]?.url || t.album?.coverArt?.sources?.[0]?.url || '');
+      c.querySelector('b').textContent = t.name;
+      c.dataset.uri = t.uri;
+      c.dataset.name = t.name;
+      c.querySelector('small').textContent = (t.artists || []).map((a) => a.name).join(', ');
+      c.querySelector('em').textContent = new Date(t.addedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+      c.onclick = () => {
+        // play it inside Liked Songs so the music carries on from there
+        Spicetify.Platform.PlayerAPI.play({ uri: 'spotify:collection:tracks' }, {}, { skipTo: { uri: t.uri } }).catch(() => Spicetify.Player.playUri(t.uri));
+      };
+      return c;
+    }));
+    otd.hidden = false;
+  }
+
   // ---------- placement ----------
   function render() {
     html.classList.toggle('tess-home', isHome());
@@ -2119,7 +2261,9 @@
     chipRow?.firstElementChild?.classList.add('tess-sticky-glass');
     const content = page.querySelector('.main-home-content') || page.querySelector('.view-homeShortcutsGrid-shortcuts')?.parentElement;
     if (content && content.firstElementChild !== dial) { content.prepend(dial); layoutRing(); }
+    if (content && dial.nextElementSibling !== otd) dial.after(otd);
     refreshDial();
+    fillOnThisDay();
   }
   const onSong = () => { if (dial.isConnected && items.length) select(index); };
   P.addEventListener('songchange', onSong);
