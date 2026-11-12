@@ -20,6 +20,9 @@ final class Spotify: ObservableObject {
   @Published var track = Track()
   @Published var art: NSImage?
   @Published var lyric = ""
+  /// sung lines as (start, end) in ms, from Tess, for the lyric ribbon
+  @Published var lines: [(Double, Double)] = []
+  @Published var linesDuration: Double = 1
   @Published var running = false
   private var lastPoll = Date()
   private var artFor = ""
@@ -48,7 +51,7 @@ final class Spotify: ObservableObject {
     t.playing = r.atIndex(8)?.booleanValue ?? false
     lastPoll = Date()
     DispatchQueue.main.async {
-      if t.id != self.track.id { self.lyric = "" }
+      if t.id != self.track.id { self.lyric = ""; self.lines = [] }
       self.track = t
     }
     if t.artURL != artFor, let url = URL(string: t.artURL) {
@@ -193,8 +196,22 @@ struct Scrubber: View {
     GeometryReader { g in
       let p = dragging ?? (sp.livePosition / sp.track.duration)
       ZStack(alignment: .leading) {
-        Capsule().fill(.white.opacity(0.25))
-        Capsule().fill(.white).frame(width: max(4, g.size.width * CGFloat(min(1, p))))
+        if sp.lines.count > 2 {
+          // the lyric ribbon: one segment per sung line, filled as the song passes it
+          let posMs = p * sp.linesDuration
+          ForEach(Array(sp.lines.enumerated()), id: \.offset) { _, l in
+            let x = g.size.width * CGFloat(l.0 / sp.linesDuration)
+            let w = max(2, g.size.width * CGFloat((l.1 - l.0) / sp.linesDuration) - 1.5)
+            let on = posMs >= l.0 && posMs < l.1
+            Capsule().fill(.white.opacity(posMs >= l.0 ? 0.95 : 0.3))
+              .frame(width: w, height: on ? 7 : 4)
+              .shadow(color: .white.opacity(on ? 0.7 : 0), radius: 4)
+              .offset(x: x)
+          }
+        } else {
+          Capsule().fill(.white.opacity(0.25))
+          Capsule().fill(.white).frame(width: max(4, g.size.width * CGFloat(min(1, p))))
+        }
       }
       .frame(height: dragging == nil ? 4 : 7)
       .frame(maxHeight: .infinity)
@@ -304,6 +321,12 @@ final class App: NSObject, NSApplicationDelegate {
           case "/show": self?.show()
           case "/hide": self?.hide()
           case "/lyric": self?.sp.lyric = body.trimmingCharacters(in: .whitespacesAndNewlines)
+          case "/lines":
+            if let d = body.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+               let l = o["l"] as? [[Double]], let dur = o["d"] as? Double {
+              self?.sp.lines = l.compactMap { $0.count == 2 ? ($0[0], $0[1]) : nil }
+              self?.sp.linesDuration = max(1, dur)
+            }
           default: break
           }
         }

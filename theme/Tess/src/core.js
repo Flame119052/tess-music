@@ -354,7 +354,7 @@
             <button class="tn-round tn-heart" aria-label="Add to playlist">${I.unsaved}</button>
             <button class="tn-round tn-more" aria-label="Go to album">${I.more}</button>
           </div>
-          <div class="tn-scrub"><i></i></div>
+          <div class="tn-scrub"><i></i><div class="tn-ribbon"></div><span class="tn-peek"></span></div>
           <div class="tn-times"><span class="tn-cur">0:00</span><span class="tn-quality"></span><span class="tn-rem">-0:00</span></div>
           <div class="tn-btns">
             <button class="tn-shuffle tn-sm" aria-label="Shuffle">${I.shuffle}</button>
@@ -626,7 +626,7 @@
   const MINI = 'http://127.0.0.1:38411';
   let nativeMini = false;
   async function openMini() {
-    try { await fetch(MINI + '/toggle', { mode: 'no-cors' }); nativeMini = true; return; } catch { nativeMini = false; }
+    try { await fetch(MINI + '/toggle', { mode: 'no-cors' }); nativeMini = true; pushedLinesFor = ''; pushedLine = null; renderRibbon(); return; } catch { nativeMini = false; }
     if (mini && !mini.closed) { mini.focus(); return; }
     if (!window.documentPictureInPicture) { spotifyButton('[data-testid="pip-toggle-button"]')?.click(); return; }
     mini = await documentPictureInPicture.requestWindow({ width: 340, height: 380 });
@@ -771,6 +771,53 @@
       }
     }
     lastLine = -2;
+    renderRibbon();
+  }
+
+  // The lyric ribbon: the progress bar is cut into one segment per sung line, so you can see the song's shape;
+  // the line being sung glows, hovering a segment shows its words, clicking jumps there. Instrumental gaps stay thin.
+  function renderRibbon() {
+    const rib = q(np, '.tn-ribbon');
+    const dur = P.getDuration() || 1;
+    const lines = lyrics.sync === 'LINE_SYNCED' || lyrics.sync === 'SYLLABLE_SYNCED' ? lyrics.lines.filter((l) => l.text && !/^♪+$/.test(l.text)) : [];
+    np.classList.toggle('has-ribbon', lines.length > 2);
+    rib.replaceChildren(...lines.map((l) => {
+      const seg = document.createElement('b');
+      seg.style.left = (l.start / dur * 100) + '%';
+      seg.style.width = Math.max(0.4, (Math.min(l.end, l.start + 9000) - l.start) / dur * 100 - 0.35) + '%';
+      seg.dataset.text = l.text;
+      seg.dataset.start = l.start;
+      return seg;
+    }));
+    pushMiniLines(lines, dur);
+  }
+  const scrub = q(np, '.tn-scrub');
+  scrub.addEventListener('mousemove', (e) => {
+    const seg = e.target.closest?.('.tn-ribbon b');
+    const peek = q(np, '.tn-peek');
+    if (!seg) { peek.classList.remove('on'); return; }
+    peek.textContent = seg.dataset.text;
+    const r = scrub.getBoundingClientRect();
+    peek.style.left = Math.min(r.width - 40, Math.max(40, e.clientX - r.left)) + 'px';
+    peek.classList.add('on');
+  });
+  scrub.addEventListener('mouseleave', () => q(np, '.tn-peek').classList.remove('on'));
+  function markRibbon(ms) {
+    const rib = q(np, '.tn-ribbon');
+    for (const seg of rib.children) {
+      const st = +seg.dataset.start;
+      seg.classList.toggle('past', st <= ms);
+    }
+    const i = lyrics.lines.length ? lineAt(ms + 120) : -1;
+    const cur = i >= 0 ? String(lyrics.lines[i].start) : '';
+    for (const seg of rib.children) seg.classList.toggle('on', seg.dataset.start === cur);
+  }
+  let pushedLinesFor = '';
+  function pushMiniLines(lines, dur) {
+    if (!nativeMini || pushedLinesFor === lyrics.uri) return;
+    pushedLinesFor = lyrics.uri;
+    const body = JSON.stringify({ d: dur, l: lines.map((l) => [l.start, Math.min(l.end, l.start + 9000)]) });
+    fetch(MINI + '/lines', { method: 'POST', mode: 'no-cors', body }).catch(() => {});
   }
 
   function lineAt(ms) {
@@ -869,6 +916,8 @@
 
   // Put the Tess lyrics card in place of Spotify's preview, and make the cover open the full-screen player.
   onDraw(() => {
+    // fast path: everything already where it belongs
+    if (coverWrap.isConnected && coverWrap.parentElement?.isConnected && (side.isConnected || !document.querySelector('.Root__right-sidebar-peek [data-testid="lyrics-npv-section"]')) && coverWrap.nextElementSibling?.classList.contains('tess-npv-col')) return;
     const spotifyLyrics = document.querySelector('.Root__right-sidebar-peek [data-testid="lyrics-npv-section"]');
     if (spotifyLyrics && side.nextElementSibling !== spotifyLyrics) {
       spotifyLyrics.before(side);
@@ -1045,6 +1094,7 @@
     q(bar, '.tb-prog i').style.width = pct;
     if (npOpen) {
       placeArm(ms);
+      markRibbon(ms);
       q(np, '.tn-scrub i').style.width = pct;
       q(np, '.tn-cur').textContent = fmt(ms);
       q(np, '.tn-rem').textContent = '-' + fmt(dur - ms);
@@ -1329,6 +1379,36 @@
     ['Podcasts & books', (k) => k === 'show' || k === 'audiobook'],
     ['Events', (k) => k === 'event'],
   ];
+  // Shelves read like a Mac dock: spines near the pointer swell and their titles grow, so names are easy to read
+  // without pulling every record out. Transforms only, once a frame.
+  let magQueued = false, magX = 0, magRow = null;
+  listen(ttList, 'mousemove', (e) => {
+    const row = e.target.closest?.('.ts-row');
+    if (!row) return;
+    magRow = row; magX = e.clientX;
+    if (!magQueued) { magQueued = true; requestAnimationFrame(magnify); }
+  }, { passive: true });
+  listen(ttList, 'mouseleave', () => { ttList.querySelectorAll('.ts-sleeve').forEach((s) => s.style.removeProperty('--mag')); });
+  function magnify() {
+    magQueued = false;
+    if (!magRow) return;
+    for (const s of magRow.querySelectorAll('.ts-sleeve')) {
+      const r = s.getBoundingClientRect();
+      const d = Math.abs(r.left + r.width / 2 - magX);
+      const m = Math.max(0, 1 - d / 170);
+      s.style.setProperty('--mag', (m * m * (3 - 2 * m)).toFixed(3));
+    }
+  }
+  // records arrive on the shelf one after another when the library opens full size
+  function stagger() {
+    let i = 0;
+    for (const s of ttList.querySelectorAll('.ts-sleeve, .ts-artist')) {
+      if (i > 60) break;
+      s.style.animationDelay = (i++ * 14) + 'ms';
+      s.classList.add('ts-arrive');
+    }
+  }
+
   function renderShelves() {
     timeline.classList.remove('river');
     timeline.classList.add('shelves');
@@ -1375,6 +1455,7 @@
     }
     ttList.replaceChildren(frag);
     markTimeline();
+    stagger();
   }
 
   function markTimeline() {
@@ -1395,11 +1476,20 @@
       document.querySelectorAll(sel).forEach((n) => { if (n !== mine) n.remove(); });
     }
   };
+  let libWidth = 420;
+  const libWidthObserver = new ResizeObserver(([e]) => { libWidth = e.contentRect.width; placeTimeline(); });
+  onDispose(() => { libWidthObserver.disconnect(); document.querySelectorAll('[data-tess-sized]').forEach((n) => delete n.dataset.tessSized); });
   const placeTimeline = () => {
     sweepStale();
     const lib = document.getElementById('Desktop_LeftSidebar_Id');
     if (!lib) return;
-    const width = lib.getBoundingClientRect().width;
+    // width comes from a ResizeObserver, never a forced layout on every draw
+    if (!lib.dataset.tessSized) {
+      lib.dataset.tessSized = '1';
+      libWidthObserver.observe(lib);
+      libWidth = lib.getBoundingClientRect().width;
+    }
+    const width = libWidth;
     const wasWide = html.classList.contains('tess-lib-wide');
     html.classList.toggle('tess-lib-wide', width > 640);
     if (wasWide !== html.classList.contains('tess-lib-wide') && libItems.length) renderTimeline();
@@ -1410,8 +1500,10 @@
     if (timeline.previousElementSibling !== head) head.after(timeline);
     head.querySelector('[role="listbox"]')?.closest('header ~ div, header + *')?.classList.add('tess-lib-hidden');
     if (listBlock && listBlock !== timeline) listBlock.classList.add('tess-lib-hidden');
-    markTimeline();
+    const sig = route() + '|' + (P.data?.context?.uri || '');
+    if (sig !== lastMarkSig) { lastMarkSig = sig; markTimeline(); }
   };
+  let lastMarkSig = '';
   onDraw(placeTimeline);
   placeTimeline();
   // Expand / minimise / collapse the library as one morph (View Transitions) instead of a jump.

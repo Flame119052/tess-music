@@ -31,6 +31,6 @@ cat > "$PLIST" <<PL
 <key>KeepAlive</key><true/>
 </dict></plist>
 PL
-launchctl bootout gui/$(id -u)/music.tess.mini 2>/dev/null || true
+launchctl bootout gui/$(id -u)/music.tess.mini 2>/dev/null && sleep 1 || true
 launchctl bootstrap gui/$(id -u) "$PLIST"
 echo "Tess Mini built and running"

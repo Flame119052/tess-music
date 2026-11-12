@@ -378,8 +378,13 @@
     if (!isHome()) return;
     const page = document.querySelector('[data-testid="home-page"]');
     if (!page) return;
-    let chipRow = document.querySelector('#main-view [data-encore-id="chip"]');
-    while (chipRow && getComputedStyle(chipRow).position !== 'sticky') chipRow = chipRow.parentElement;
+    // the sticky filter bar; found once per page (style lookups force layout, so don't repeat them every draw)
+    let chipRow = document.querySelector('.tess-home-sticky');
+    if (!chipRow || !chipRow.isConnected) {
+      chipRow = document.querySelector('#main-view [data-encore-id="chip"]');
+      while (chipRow && getComputedStyle(chipRow).position !== 'sticky') chipRow = chipRow.parentElement;
+    }
+    if (dial.isConnected && masthead.parentElement === chipRow && otd.isConnected) return;
     masthead.querySelector('.thm-eyebrow').textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
     masthead.querySelector('.thm-title').textContent = firstName ? `${greeting()}, ${firstName}` : greeting();
     // the greeting lives inside Spotify's sticky filter bar, so the two stay pinned to the top together
@@ -400,8 +405,9 @@
       layoutRing();
     }
     if (content && dial.nextElementSibling !== otd) dial.after(otd);
-    refreshDial();
-    fillOnThisDay();
+    const idle = window.requestIdleCallback || ((f) => setTimeout(f, 200));
+    idle(() => refreshDial(), { timeout: 800 });
+    idle(() => fillOnThisDay(), { timeout: 2000 });
   }
   const onSong = () => {
     if (!dial.isConnected || !items.length) return;

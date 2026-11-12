@@ -476,3 +476,18 @@ html.tess.tess-home #main-view main > div > [style*="background-color"]:first-ch
 #tess-dial.live .td-cover.on {
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.6), 0 0 0 2px var(--tess-accent), 0 0 24px rgba(30, 215, 96, 0.35);
 }
+
+/* calm pinned header: no dark band, just a light glass that fades in as you scroll, text there from the start */
+.tess-home-sticky > .tess-sticky-glass {
+  background: rgba(22, 22, 26, 0.22) !important;
+  -webkit-backdrop-filter: blur(22px) saturate(1.5) !important;
+  backdrop-filter: blur(22px) saturate(1.5) !important;
+  box-shadow: inset 0 -0.5px 0 rgba(255, 255, 255, 0.12) !important;
+  border: 0 !important;
+  transition: opacity 0.2s ease-out !important;
+}
+#tess-home-masthead .thm-eyebrow,
+#tess-home-masthead .thm-title {
+  transition: font-size 0.18s ease-out, opacity 0.15s, max-height 0.18s, margin 0.18s !important;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.25);
+}
