@@ -1058,7 +1058,9 @@
   // it isn't there Tess types the name into Spotify's (hidden) library filter first and clears it afterwards.
   // Things that aren't in your library (search results, recommendations) get a small Tess menu instead.
   const libRowUri = (u) => (u === 'spotify:local-files' ? 'spotify:collection:local-files' : u);
-  const findSpotifyRow = (uri) => document.getElementById('listrow-title-' + libRowUri(uri))?.closest('[data-encore-id="listRow"]');
+  // list rows in the sidebar, cards when the library is expanded
+  const findSpotifyRow = (uri) => document.getElementById('listrow-title-' + libRowUri(uri))?.closest('[data-encore-id="listRow"]')
+    || document.querySelector(`#Desktop_LeftSidebar_Id [id="card-title-${libRowUri(uri)}"]`)?.closest('[data-encore-id="card"]');
   const libFilterInput = () => [...document.querySelectorAll('#Desktop_LeftSidebar_Id input[type="search"], #Desktop_LeftSidebar_Id input[placeholder]')].find((i) => !i.closest('#tess-timeline'));
   const setReactValue = (input, value) => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
