@@ -55,14 +55,13 @@
 
   // Ring shape and stability.
   const SOURCE_SHARE = 0.25; // at most a quarter of the ring from one source
-  const KIND_SHARE = 0.5; // at most half the ring from one kind
+  const KIND_SHARE = 0.65; // at most about two thirds of the ring from one kind
   const MAX_ARTISTS = 2;
   const SCORE_QUANTUM = 1; // round scores to whole points before tie-breaking
   const DAY_TIE = 0.6; // day-seeded nudge inside one point
-  const CONTRAST_SOURCE = 0.5;
-  const CONTRAST_KIND = 0.35;
-  const CONTRAST_TITLE = 1.2;
-  const MIN_SLOTS = 1;
+  const CONTRAST_SOURCE = 9; // score points given up to avoid a same-source neighbour
+  const CONTRAST_KIND = 5;
+  const CONTRAST_TITLE = 150; // near-identical family (Daily Mix 1 vs 2)
   const MAX_SLOTS = 32;
 
   const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
@@ -163,7 +162,7 @@
           addedAt,
           ownerIsSpotify: !!c.ownerIsSpotify,
           pinned: !!c.pinned,
-          sources: c.source ? [c.source] : [],
+          sources: [source],
           isDj: c.source === 'dj',
         });
         continue;
@@ -176,7 +175,7 @@
       if (!current.subtitle && c.subtitle) current.subtitle = c.subtitle;
       if (!current.img && c.img) current.img = c.img;
       if (SOURCE_RANK[source] < SOURCE_RANK[current.source]) current.source = source;
-      if (c.source && !current.sources.includes(c.source)) current.sources.push(c.source);
+      if (!current.sources.includes(source)) current.sources.push(source);
       if (shelfIndex !== null && (current.shelfIndex === null || shelfIndex < current.shelfIndex)) current.shelfIndex = shelfIndex;
       if (position !== null && (current.position === null || position < current.position)) current.position = position;
       if (lastPlayedAt !== null && (current.lastPlayedAt === null || lastPlayedAt > current.lastPlayedAt)) current.lastPlayedAt = lastPlayedAt;
@@ -185,6 +184,7 @@
       current.pinned = current.pinned || !!c.pinned;
       current.isDj = current.isDj || c.source === 'dj';
     }
+    for (const item of byUri.values()) item.family = familyOf(item.title) || item.uri;
     return Array.from(byUri.values());
   }
 
@@ -256,7 +256,7 @@
     if (item.isDj) return 'Your DJ, ready right now';
     if (signals.discoverWeekly && env.weekday === 1) return 'Your Monday discovery';
     if (signals.releaseRadar && env.weekday === 5) return 'New releases for Friday';
-    if (signals.daylist) return 'Your ' + WEEKDAYS[env.weekday] + ' ' + env.bucket + ' daylist';
+    if (signals.daylist) return 'Your ' + titleCase(WEEKDAYS[env.weekday]) + ' ' + env.bucket + ' daylist';
     if (item.source === 'timeOfDay') {
       if (signals.bucket === env.bucket && signals.weekday === env.weekday) {
         return 'Your ' + titleCase(WEEKDAYS[env.weekday]) + ' ' + env.bucket + ' mix';
@@ -346,7 +346,6 @@
 
       const flags = classify(item, env.now, signals);
       const historyPlayed = !!learned && learned.played > 0.08;
-      const reason = reasonFor(item, signals, flags, env, historyPlayed);
 
       return {
         uri: item.uri,
@@ -356,6 +355,7 @@
         kind: item.kind,
         source: item.source,
         sources: item.sources,
+        family: item.family,
         shelfIndex: item.shelfIndex,
         position: item.position,
         lastPlayedAt: item.lastPlayedAt,
@@ -363,10 +363,9 @@
         ownerIsSpotify: item.ownerIsSpotify,
         pinned: item.pinned,
         score: Math.round(score * 100) / 100,
-        reason,
-        base: familyOf(item.title) || item.uri,
         flags,
         signals,
+        historyPlayed,
         isDj: item.isDj,
         tie,
       };
@@ -378,10 +377,12 @@
   function selectItems(ranked, slots, currentUri) {
     const perSource = Math.max(2, Math.floor(slots * SOURCE_SHARE));
     const perKind = Math.max(3, Math.ceil(slots * KIND_SHARE));
+    const perFamily = Math.max(1, Math.floor(slots / 2));
     const chosen = [];
     const chosenUris = new Set();
     const sourceCount = new Map();
     const kindCount = new Map();
+    const familyCount = new Map();
     let artists = 0;
 
     const allowed = (item, strict) => {
@@ -390,6 +391,7 @@
       if (!strict) return true;
       if ((sourceCount.get(item.source) || 0) >= perSource) return false;
       if ((kindCount.get(item.kind) || 0) >= perKind) return false;
+      if ((familyCount.get(item.family) || 0) >= perFamily) return false;
       return true;
     };
     const take = (item) => {
@@ -397,6 +399,7 @@
       chosenUris.add(item.uri);
       bump(sourceCount, item.source, 1);
       bump(kindCount, item.kind, 1);
+      bump(familyCount, item.family, 1);
       if (item.kind === 'artist') artists += 1;
     };
     const release = (index) => {
@@ -404,6 +407,7 @@
       chosenUris.delete(item.uri);
       bump(sourceCount, item.source, -1);
       bump(kindCount, item.kind, -1);
+      bump(familyCount, item.family, -1);
       if (item.kind === 'artist') artists -= 1;
       return item;
     };
@@ -417,28 +421,68 @@
       if (allowed(item, true)) take(item);
     }
 
+    // The best item and the thing already playing are not swap fodder.
+    const mustKeep = new Set();
+    const best = chosen.reduce((top, item) => (top && top.score >= item.score ? top : item), null);
+    if (best) mustKeep.add(best.uri);
+    if (currentUri) mustKeep.add(currentUri);
+
+    // Would this candidate fit if `removed` left the ring first? Used so the
+    // discovery/comfort guarantee can normally keep every cap intact.
+    const fitsAfter = (candidate, removed) => {
+      const artistAfter = artists - (removed.kind === 'artist' ? 1 : 0);
+      if (candidate.kind === 'artist' && artistAfter >= MAX_ARTISTS) return false;
+      const sourceAfter = (sourceCount.get(candidate.source) || 0) - (removed.source === candidate.source ? 1 : 0);
+      if (sourceAfter >= perSource) return false;
+      const kindAfter = (kindCount.get(candidate.kind) || 0) - (removed.kind === candidate.kind ? 1 : 0);
+      if (kindAfter >= perKind) return false;
+      const familyAfter = (familyCount.get(candidate.family) || 0) - (removed.family === candidate.family ? 1 : 0);
+      if (familyAfter >= perFamily) return false;
+      return true;
+    };
+
     // Guarantee at least one discovery and one familiar item when the pool has
-    // one, even if the caps squeezed them out. Swap out the weakest non-DJ.
-    for (const need of ['discovery', 'comfort']) {
-      if (chosen.some((item) => item.flags[need])) continue;
-      let replacement = -1;
+    // one, even if the caps squeezed them out. Swap out the weakest eligible
+    // item, never one that satisfies a guarantee already secured.
+    const swapIn = (need) => {
+      if (chosen.some((item) => item.flags[need])) return;
+      const wanted = ranked.filter((item) => item.flags[need] && !chosenUris.has(item.uri));
+      if (!wanted.length) return;
+
       for (let i = chosen.length - 1; i >= 0; i -= 1) {
-        if (!chosen[i].isDj && chosen[i].uri !== currentUri) { replacement = i; break; }
+        const removed = chosen[i];
+        if (removed.isDj || mustKeep.has(removed.uri)) continue;
+        for (const candidate of wanted) {
+          if (!fitsAfter(candidate, removed)) continue;
+          release(i);
+          take(candidate);
+          mustKeep.add(candidate.uri);
+          return;
+        }
       }
-      const candidate = ranked.find((item) => item.flags[need] && !chosenUris.has(item.uri));
-      if (!candidate) continue;
-      if (replacement === -1) {
-        if (chosen.length < slots) take(candidate);
-        continue;
+
+      if (chosen.length < slots) {
+        take(wanted[0]);
+        mustKeep.add(wanted[0].uri);
+        return;
       }
+
+      // Crowded ring: the guarantee matters more than perfect balance.
+      let replacement = -1;
+      let lowest = Infinity;
+      for (let i = 0; i < chosen.length; i += 1) {
+        const item = chosen[i];
+        if (item.isDj || mustKeep.has(item.uri)) continue;
+        if (item.score < lowest) { lowest = item.score; replacement = i; }
+      }
+      if (replacement === -1) return;
       const removed = release(replacement);
-      if (allowed(candidate, true)) take(candidate);
-      else if (chosen.length < slots) take(removed);
-      else {
-        release(chosen.length - 1);
-        take(removed);
-      }
-    }
+      const candidate = wanted.find((item) => allowed(item, false));
+      if (candidate) { take(candidate); mustKeep.add(candidate.uri); }
+      else take(removed);
+    };
+    swapIn('discovery');
+    swapIn('comfort');
 
     // If caps left holes, fill with the best remaining items. Source and kind
     // balance is a preference; the artist cap stays hard.
@@ -459,7 +503,7 @@
     let penalty = 0;
     if (a.source === b.source) penalty += CONTRAST_SOURCE;
     if (a.kind === b.kind) penalty += CONTRAST_KIND;
-    if (a.base === b.base) penalty += CONTRAST_TITLE;
+    if (a.family === b.family) penalty += CONTRAST_TITLE;
     return penalty;
   }
 
@@ -469,15 +513,14 @@
     const ring = new Array(n).fill(null);
 
     // Best item goes under the marker, unless that is what is already playing.
-    let first = 0;
+    let first = -1;
     for (let i = 0; i < n; i += 1) {
-      if (chosen[i].uri !== currentUri) { first = i; break; }
+      if (chosen[i].uri === currentUri) continue;
+      if (first === -1 || chosen[i].score > chosen[first].score) first = i;
     }
+    if (first === -1) first = 0;
     ring[0] = chosen[first];
     const remaining = chosen.filter((_, i) => i !== first);
-    let top = 0;
-    for (const item of chosen) if (item.score > top) top = item.score;
-    if (top <= 0) top = 1;
 
     // Fill 1, n-1, 2, n-2, ... so both directions away from slot 0 are shaped
     // first, then the far side of the wheel.
@@ -494,7 +537,7 @@
       let bestValue = -Infinity;
       for (let i = 0; i < remaining.length; i += 1) {
         const item = remaining[i];
-        const value = item.score / top - contrastPenalty(item, before) - contrastPenalty(item, after);
+        const value = item.score - contrastPenalty(item, before) - contrastPenalty(item, after);
         if (value > bestValue) { bestValue = value; bestIndex = i; }
       }
       ring[slot] = remaining.splice(bestIndex, 1)[0];
@@ -503,37 +546,57 @@
     return repairRing(ring);
   }
 
-  // If two members of the same family still ended up side by side (usually
-  // because the pool had three Daily Mixes), swap one with a safe slot. Slot 0
-  // never moves, so the best item and the "not now playing" rule survive.
+  // If members of the same family still ended up side by side, re-walk the ring
+  // once, keeping slot 0 fixed and preferring the order the contrast pass chose.
+  // A ring can hold at most floor(n/2) members of one family without neighbours
+  // repeating, so if the selection obeyed that cap this always finds a layout.
+  // With a degenerate pool (almost everything from one family) it gives up and
+  // returns the best-effort ring instead.
   function repairRing(ring) {
     const n = ring.length;
-    const clashes = (index) => {
-      const prev = ring[(index - 1 + n) % n];
-      const next = ring[(index + 1) % n];
-      return (prev && prev.base === ring[index].base) || (next && next.base === ring[index].base);
+    if (n < 3) return ring;
+    let conflicts = false;
+    for (let i = 0; i < n; i += 1) {
+      if (ring[i].family === ring[(i + 1) % n].family) { conflicts = true; break; }
+    }
+    if (!conflicts) return ring;
+
+    const counts = new Map();
+    for (const item of ring) bump(counts, item.family, 1);
+    let largest = 0;
+    for (const count of counts.values()) if (count > largest) largest = count;
+    if (largest > Math.floor(n / 2)) return ring;
+
+    const fixed = ring[0];
+    // Try the largest family first; that is the one that must be spread out.
+    // Within a family, keep the contrast pass's order.
+    const rest = ring.slice(1)
+      .map((item, index) => ({ item, index }))
+      .sort((a, b) => counts.get(b.item.family) - counts.get(a.item.family) || a.index - b.index)
+      .map((entry) => entry.item);
+    const used = new Array(rest.length).fill(false);
+    const out = [fixed];
+    let nodes = 0;
+
+    const place = (position) => {
+      if (position === n) return true;
+      nodes += 1;
+      if (nodes > 20000) return false;
+      for (let i = 0; i < rest.length; i += 1) {
+        if (used[i]) continue;
+        const item = rest[i];
+        if (out[position - 1].family === item.family) continue;
+        if (position === n - 1 && fixed.family === item.family) continue;
+        used[i] = true;
+        out.push(item);
+        if (place(position + 1)) return true;
+        out.pop();
+        used[i] = false;
+      }
+      return false;
     };
 
-    for (let pass = 0; pass < 4; pass += 1) {
-      let changed = false;
-      for (let i = 0; i < n; i += 1) {
-        const j = (i + 1) % n;
-        if (ring[i].base !== ring[j].base) continue;
-        const movable = j === 0 ? i : j;
-        for (let k = 1; k < n; k += 1) {
-          if (k === movable || k === i || k === j) continue;
-          if (ring[k].base === ring[movable].base) continue;
-          const swap = ring[k];
-          ring[k] = ring[movable];
-          ring[movable] = swap;
-          if (!clashes(movable) && !clashes(k)) { changed = true; break; }
-          ring[movable] = ring[k];
-          ring[k] = swap;
-        }
-      }
-      if (!changed) break;
-    }
-    return ring;
+    return place(1) ? out : ring;
   }
 
   // ---------------- the public entry point ----------------
@@ -542,7 +605,8 @@
     const list = Array.isArray(candidates) ? candidates : [];
     const ctx = context || {};
     const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
-    const slots = Math.max(MIN_SLOTS, Math.min(MAX_SLOTS, Number.isFinite(ctx.slots) ? Math.floor(ctx.slots) : DEFAULT_SLOTS));
+    const slots = Number.isFinite(ctx.slots) ? Math.max(0, Math.min(MAX_SLOTS, Math.floor(ctx.slots))) : DEFAULT_SLOTS;
+    if (slots === 0) return [];
     const currentUri = typeof ctx.currentUri === 'string' ? ctx.currentUri : null;
 
     const merged = mergeCandidates(list);
@@ -578,7 +642,7 @@
       ownerIsSpotify: item.ownerIsSpotify,
       pinned: item.pinned,
       score: item.score,
-      reason: item.reason,
+      reason: reasonFor(item, item.signals, item.flags, env, item.historyPlayed),
     }));
   }
 
