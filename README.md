@@ -1,35 +1,60 @@
 # Tess Music
 
-Tess Music restyles the Spotify desktop app so it feels like Apple Music. It is part of the Tess project.
+Spotify, redesigned for the Mac. Tess gives the real Spotify desktop app an Apple-Music-grade interface, so
+everything Spotify has (your library, Daily Mixes, downloads, lossless, lyrics, Canvas, Jam) keeps working.
 
-It is a [Spicetify](https://spicetify.app) theme, so everything Spotify has keeps working: downloads, Daily Mixes, lossless audio, Spotify's lyrics, and Canvas videos. Tess Music changes four things:
+## Install
 
-- **Playing bar.** A floating glass bar replaces Spotify's bottom bar. Click the artwork to open the full-screen player.
-- **Full-screen player.** A moving background drawn from the album art, the song's Canvas video in place of the cover when it has one, and Spotify's lyrics highlighted in time with the song.
-- **Album and playlist pages.** A cleaner header, Play as a pill button, and hairline track rows.
-- **Artist pages.** A tall header with the artist's name centered and a looping Canvas video from one of their top songs.
-
-Home and the rest of Spotify stay as Spotify made them.
-
-## Try it
-
-You need Spotify for Mac and [Homebrew](https://brew.sh).
+You need a Mac (macOS 12+) with the Spotify desktop app installed and signed in. In Terminal:
 
 ```sh
-brew install spicetify-cli
-spicetify                                   # creates ~/.config/spicetify
-ln -sfn "$PWD/theme/Tess" ~/.config/spicetify/Themes/Tess
-spicetify config current_theme Tess color_scheme base inject_theme_js 1
-spicetify backup apply
+curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | sh
 ```
 
-After you edit anything in `theme/Tess`, run `tools/reload.sh`. It pushes the theme into Spotify and restarts Spotify with a debug port open, so `tools/cdp.mjs` can inspect the running app and take screenshots.
+Spotify reopens with Tess and a short welcome to pick your defaults. Tess updates itself when Spotify starts, and a
+small helper puts it back after Spotify updates itself. **Tess Mini**, a miniplayer that floats over every app, comes
+with it (macOS 13+).
 
-To put Spotify back the way it was, run `spicetify restore`.
+Update or repair with the same line. Remove everything and put Spotify back to stock:
 
-## Layout
+```sh
+curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/uninstall.sh | sh
+```
 
-- `theme/Tess/user.css`: all styling
-- `theme/Tess/theme.js`: the playing bar, the full-screen player, lyrics sync, Canvas video playback, and the artist page video
-- `tools/`: the reload script and the DevTools driver
-- The first mockups are on the `prototype/mockups` branch.
+## What's in it
+
+- A floating glass playing bar; a full-screen player with synced lyrics, Artwork / Video / Vinyl modes and a queue
+  Cover Flow
+- Home: a greeting, **The Dial** (a ring of picks you spin), "On this day"
+- Library: a timeline in the sidebar, **Glass Shelves** when expanded
+- Artist pages with a full-height looping video; playlist pages with a cover wall and who's-in-it
+- ⌘K search, Spotify's real right-click menus, Liquid-Glass surfaces, a window that takes the music's colours
+- Settings → Theme for every option
+
+## Credits
+
+- **Spicetify** — Tess is applied by `patcher/`, a fork of [Spicetify CLI](https://github.com/spicetify/cli)
+  © the Spicetify contributors, under the **GNU Lesser General Public License v2.1** (`patcher/LICENSE`,
+  `patcher/NOTICE.md`). Its history is kept in this repo; our changes are listed in `patcher/NOTICE.md`. All credit
+  for the patching engine and the Spotify API wrapper belongs to the Spicetify project.
+- The Dial's picking algorithm was designed with DeepSeek (`theme/Tess/src/dial-pick.js`, `docs/dial-algorithm.md`).
+- Spotify is a trademark of Spotify AB. Tess is not affiliated with or endorsed by Spotify.
+
+Tess modifies the Spotify app's interface files on your Mac. It never touches your account or downloads.
+Spotify's User Guidelines say not to modify the client; no action against theme users is documented, but the risk is
+yours to judge.
+
+## For development
+
+| Path | What |
+|---|---|
+| `theme/Tess/src/` | theme source (`core`, `home`, `playlist`, `dial-pick`); `tools/build.mjs` joins them into `user.css` / `theme.js` |
+| `theme/loader/` | the self-updating, signature-checking loader the installer writes into Spotify |
+| `installer/` | `install.sh`, `uninstall.sh` (test against a copy: `TESS_TEST=1 TESS_SPOTIFY=/path/Spotify.app`) |
+| `mini/` | Tess Mini (SwiftUI) |
+| `patcher/` | the Spicetify CLI fork |
+| `tools/` | `hot.mjs` (live reload), `cdp.mjs` / `cdp-input.mjs` (drive the app), `release.mjs`, audits, profiling |
+| `docs/` | research notes, the feedback checklist, what's left |
+| branches `stable`, `beta` | the signed release bundles the loader downloads (written by `tools/release.mjs`) |
+
+Release: `node tools/release.mjs X.Y.Z [stable|beta]` (needs the signing key in `~/.config/tess-signing/`).

@@ -8,7 +8,7 @@ Spotify has (your library, Daily Mixes, downloads, lossless, lyrics, Jam) is sti
 You need a Mac (macOS 12+) with the Spotify desktop app installed and signed in. Open Terminal and run:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-releases/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | sh
 ```
 
 That's all. Spotify reopens with Tess and a short welcome to pick your defaults. Tess updates itself every time Spotify
@@ -27,7 +27,7 @@ open it, macOS asks to let it control Spotify — choose **Allow**.
 ## What it does, honestly
 
 Tess changes how the Spotify desktop app looks by patching the app's interface files on your Mac (using
-[tess-patcher](https://github.com/Flame119052/tess-patcher), a fork of Spicetify). It never touches your account,
+[tess-patcher](https://github.com/Flame119052/tess-music/tree/main/patcher), a fork of Spicetify). It never touches your account,
 password or downloads. Spotify's User Guidelines say not to modify the client; no action against theme users or
 authors is documented, but the risk is yours to judge. Spotify updates remove Tess for a few seconds until the helper
 puts it back.

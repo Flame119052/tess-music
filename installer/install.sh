@@ -1,11 +1,11 @@
 #!/bin/sh
 # Tess Music installer for macOS.
-#   curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-releases/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | sh
 # Installs Tess into the Spotify desktop app, a helper that re-applies it after Spotify updates, and Tess Mini.
 # Nothing else to set up; run it again any time to repair. Remove with: ~/Library/Application\ Support/Tess/tess uninstall
 set -e
 
-REPO="Flame119052/tess-releases"
+REPO="Flame119052/tess-music"
 DL="https://github.com/$REPO/releases/latest/download"
 HOME_TESS="$HOME/Library/Application Support/Tess"
 CONF="$HOME/.config/tess-patcher"
@@ -187,8 +187,8 @@ fi
 cat > "$HOME_TESS/tess" <<'EOF'
 #!/bin/sh
 case "$1" in
-  update|repair) curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-releases/main/install.sh | sh ;;
-  uninstall) curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-releases/main/uninstall.sh | sh ;;
+  update|repair) curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | sh ;;
+  uninstall) curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/uninstall.sh | sh ;;
   *) echo "usage: tess update | repair | uninstall" ;;
 esac
 EOF

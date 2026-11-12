@@ -6,3 +6,4 @@ xcuserdata/
 .env
 .opencode/
 .build/
+.zcode/

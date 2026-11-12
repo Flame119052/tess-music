@@ -1,6 +1,6 @@
 #!/bin/sh
 # Removes Tess Music and puts Spotify back to stock.
-#   curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-releases/main/uninstall.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/uninstall.sh | sh
 HOME_TESS="$HOME/Library/Application Support/Tess"
 PATCHER="$HOME_TESS/bin/patcher/tess-patcher"
 echo; printf '\033[1m%s\033[0m\n\n' "Removing Tess Music"

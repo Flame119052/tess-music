@@ -4,7 +4,7 @@
 // the copy that came with the installer (appended below as TESS_BASELINE).
 (async function tessLoader() {
   const PUBLIC_KEY = '__TESS_PUBLIC_KEY__'; // raw Ed25519 public key, base64
-  const REPO = 'Flame119052/tess-releases';
+  const REPO = 'Flame119052/tess-music';
   const channel = (() => { try { return JSON.parse(localStorage.getItem('tess:settings') || '{}').channel || 'stable'; } catch { return 'stable'; } })();
   const SOURCES = [
     `https://raw.githubusercontent.com/${REPO}/${channel}/dist/`,
