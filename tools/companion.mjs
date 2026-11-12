@@ -88,6 +88,7 @@ function check() {
   ok(sources.includes('setPositionState'), 'lock-screen timeline wired');
   ok(read('src/remote.js').includes("!== '0'"), 'background listening on by default');
   ok(read('src/sync.js').includes('anchor'), 'optimistic anchors in place');
+  ok(read('src/dial.js').includes('37i9dQZF1EYkqdzj48dyYq'), 'the DJ is on the ring');
 
   console.log(fails.length ? `\n${fails.length} check(s) failed` : '\nall checks pass');
   process.exit(fails.length ? 1 : 0);

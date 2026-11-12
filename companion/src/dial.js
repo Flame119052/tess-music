@@ -46,6 +46,13 @@ window.TessDial = (function () {
       TessAPI.topTracks('long_term').catch(() => null),
     ]);
     const out = [];
+    // The DJ has no public API listing it in the library, but it is just a Spotify playlist — the desktop
+    // theme hardcodes it for the same reason, and the picker gives it the top slot.
+    out.push({
+      uri: 'spotify:playlist:37i9dQZF1EYkqdzj48dyYq', title: 'DJ', subtitle: 'Music and commentary picked for you',
+      img: 'https://lexicon-assets.spotifycdn.com/DJ-Beta-CoverArt-300.jpg', source: 'dj', kind: 'dj',
+      shelfIndex: null, position: 0, lastPlayedAt: null, addedAt: null, ownerIsSpotify: true, pinned: false,
+    });
 
     const topList = (topRecent?.items?.length ? topRecent.items : topAll?.items) || [];
     if (topList.length >= 5) {
