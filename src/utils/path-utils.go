@@ -96,7 +96,7 @@ func GetSpicetifyFolder() string {
 	if runtime.GOOS == "windows" {
 		parent := os.Getenv("APPDATA")
 
-		result = filepath.Join(parent, "spicetify")
+		result = filepath.Join(parent, "tess-patcher")
 	} else if runtime.GOOS == "linux" {
 		parent, isAvailable := os.LookupEnv("XDG_CONFIG_HOME")
 
@@ -105,12 +105,12 @@ func GetSpicetifyFolder() string {
 			CheckExistAndCreate(parent)
 		}
 
-		result = filepath.Join(parent, "spicetify")
+		result = filepath.Join(parent, "tess-patcher")
 	} else if runtime.GOOS == "darwin" {
 		parent := filepath.Join(os.Getenv("HOME"), ".config")
 		CheckExistAndCreate(parent)
 
-		result = filepath.Join(parent, "spicetify")
+		result = filepath.Join(parent, "tess-patcher")
 	}
 
 	return result
@@ -127,7 +127,7 @@ func GetStateFolder(name string) string {
 	if runtime.GOOS == "windows" {
 		parent := os.Getenv("APPDATA")
 
-		result = filepath.Join(parent, "spicetify")
+		result = filepath.Join(parent, "tess-patcher")
 	} else if runtime.GOOS == "linux" {
 		parent, isAvailable := os.LookupEnv("XDG_STATE_HOME")
 
@@ -136,12 +136,12 @@ func GetStateFolder(name string) string {
 			CheckExistAndCreate(parent)
 		}
 
-		result = filepath.Join(parent, "spicetify")
+		result = filepath.Join(parent, "tess-patcher")
 	} else if runtime.GOOS == "darwin" {
 		parent := filepath.Join(os.Getenv("HOME"), ".local", "state")
 		CheckExistAndCreate(parent)
 
-		result = filepath.Join(parent, "spicetify")
+		result = filepath.Join(parent, "tess-patcher")
 	}
 
 	return GetSubFolder(result, name)

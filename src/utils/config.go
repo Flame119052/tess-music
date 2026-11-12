@@ -16,14 +16,14 @@ var (
 		"Setting": {
 			"spotify_path":           "",
 			"prefs_path":             "",
-			"current_theme":          "",
-			"color_scheme":           "",
+			"current_theme":          "Tess",
+			"color_scheme":           "base",
 			"inject_theme_js":        "1",
 			"inject_css":             "1",
 			"replace_colors":         "1",
 			"overwrite_assets":       "0",
 			"spotify_launch_flags":   "",
-			"check_spicetify_update": "1",
+			"check_spicetify_update": "0",
 			"always_enable_devtools": "0",
 		},
 		"Preprocesses": {
