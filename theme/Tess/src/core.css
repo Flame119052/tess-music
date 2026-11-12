@@ -2538,3 +2538,224 @@ html.tess .Root > div > div:has([data-testid="now-playing-bar"]),
 html.tess div:has(> [data-testid="now-playing-bar"]) {
   background: transparent !important;
 }
+
+/* ================= full-size library: Glass Shelves ================= */
+#tess-timeline.shelves .tt-river-head {
+  display: block;
+  margin-top: -44px;
+  padding: 18px 40px 4px;
+}
+#tess-timeline.shelves .tt-river-head h2 {
+  margin: 0;
+  font: 800 clamp(34px, 3.4vw, 52px)/1.02 var(--tess-font);
+  letter-spacing: -0.03em;
+}
+#tess-timeline.shelves .tt-river-head p {
+  margin: 6px 0 0;
+  font: 500 13px/1 var(--tess-font);
+  color: rgba(255, 255, 255, 0.6);
+}
+#tess-timeline.shelves .tt-bar {
+  max-width: 560px;
+  padding: 14px 40px 4px;
+}
+#tess-timeline.shelves .tt-list {
+  display: block;
+  padding: 10px 40px 120px;
+  overflow-y: auto;
+}
+.ts-shelf {
+  position: relative;
+  margin: 26px 0 8px;
+}
+.ts-shelf header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.ts-shelf h3 {
+  margin: 0;
+  font: 750 22px/1.1 var(--tess-font);
+  letter-spacing: -0.015em;
+}
+.ts-shelf header small {
+  font: 600 12px/1 var(--tess-font);
+  color: rgba(255, 255, 255, 0.5);
+}
+.ts-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 5px;
+  min-height: 236px;
+  padding: 0 18px 14px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.ts-row::-webkit-scrollbar {
+  display: none;
+}
+/* the shelf itself: a thick slab of glass with a bright front edge */
+.ts-plank {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 16px;
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.08) 40%, rgba(255, 255, 255, 0.14));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.2),
+    0 14px 30px rgba(0, 0, 0, 0.4);
+  -webkit-backdrop-filter: blur(12px) saturate(1.6);
+  backdrop-filter: blur(12px) saturate(1.6);
+  pointer-events: none;
+}
+/* a record standing on the shelf */
+#tess-timeline .ts-sleeve {
+  --spine: 70, 70, 80;
+  position: relative;
+  flex: none;
+  display: block;
+  width: 38px;
+  height: 214px;
+  padding: 0;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: width 0.55s var(--tess-spring), transform 0.45s var(--tess-spring);
+}
+#tess-timeline .ts-sleeve::before,
+#tess-timeline .ts-sleeve::after {
+  display: none;
+}
+/* spine: cover colour, a printed-cardboard sheen, title running up, a tiny cover at the foot */
+.ts-spine {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0 7px;
+  border-radius: 4px;
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, 0.32), rgba(255, 255, 255, 0.12) 22%, rgba(255, 255, 255, 0.02) 60%, rgba(0, 0, 0, 0.28)),
+    rgb(var(--spine));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12), 0 6px 14px rgba(0, 0, 0, 0.35);
+  transition: opacity 0.3s;
+}
+.ts-spine b {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  max-height: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 700 12px/1 var(--tess-font);
+  letter-spacing: 0.01em;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+.ts-thumb {
+  width: 26px;
+  height: 26px;
+  border-radius: 3px;
+  background: center / cover;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+/* the sleeve front and its record, hidden behind the spine until pulled out */
+.ts-cover {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 214px;
+  height: 214px;
+  border-radius: 6px;
+  background: center / cover;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+  opacity: 0;
+  transform: scale(0.96);
+  transition: opacity 0.3s, transform 0.5s var(--tess-spring);
+}
+.ts-disc {
+  position: absolute;
+  left: 14px;
+  bottom: 7px;
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, rgb(var(--spine)) 0 17%, #111 17.5% 19%, transparent 19.5%),
+    repeating-radial-gradient(circle, #0e0e11 0 1.4px, #1c1c21 1.4px 2.8px);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transition: transform 0.6s var(--tess-spring), opacity 0.3s;
+}
+#tess-timeline .ts-sleeve:hover,
+#tess-timeline .ts-sleeve:focus-visible {
+  width: 272px;
+  transform: translateY(-10px);
+  z-index: 2;
+}
+#tess-timeline .ts-sleeve:hover .ts-spine,
+#tess-timeline .ts-sleeve:focus-visible .ts-spine {
+  opacity: 0;
+}
+#tess-timeline .ts-sleeve:hover .ts-cover,
+#tess-timeline .ts-sleeve:focus-visible .ts-cover {
+  opacity: 1;
+  transform: none;
+}
+#tess-timeline .ts-sleeve:hover .ts-disc,
+#tess-timeline .ts-sleeve:focus-visible .ts-disc {
+  opacity: 1;
+  transform: translateX(56px) rotate(40deg);
+}
+#tess-timeline .ts-sleeve.ts-pinned .ts-spine {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4), 0 6px 14px rgba(0, 0, 0, 0.35);
+}
+#tess-timeline .ts-sleeve.playing .ts-spine {
+  box-shadow: inset 0 0 0 2px var(--tess-accent), 0 0 18px rgba(30, 215, 96, 0.45);
+}
+#tess-timeline .ts-sleeve.ts-local .ts-spine {
+  background: linear-gradient(180deg, #2a9d5c, #1ed760);
+}
+/* artists stand as portraits on little glass stands */
+#tess-timeline .ts-artist {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 130px;
+  padding: 0;
+  cursor: pointer;
+  transition: transform 0.45s var(--tess-spring);
+}
+#tess-timeline .ts-artist::before,
+#tess-timeline .ts-artist::after {
+  display: none;
+}
+.ts-face {
+  width: 118px;
+  height: 118px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08) center / cover;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+.ts-artist b {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 650 13px/1.2 var(--tess-font);
+  text-align: center;
+}
+#tess-timeline .ts-artist:hover {
+  transform: translateY(-8px) scale(1.04);
+}
+#tess-timeline .ts-artist.playing .ts-face {
+  box-shadow: 0 0 0 2px var(--tess-accent), 0 0 24px rgba(30, 215, 96, 0.45);
+}

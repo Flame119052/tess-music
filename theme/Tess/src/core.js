@@ -1131,6 +1131,8 @@
 
   function renderTimeline() {
     renderChips();
+    if (html.classList.contains('tess-lib-wide')) { renderShelves(); return; }
+    timeline.classList.remove('shelves');
     const needle = ttSearch.value.trim().toLowerCase();
     const shown = libItems.filter((i) => libFilter.has(kindOf(i)) && (!needle || i.name.toLowerCase().includes(needle)));
     shown.sort((a, b) => (b.pinned - a.pinned) || String(b.lastPlayedAt || '').localeCompare(String(a.lastPlayedAt || '')));
@@ -1226,6 +1228,92 @@
     e.preventDefault();
     ttList.scrollLeft += e.deltaY * 1.4;
   }, { passive: false });
+
+  // ---------------- full-size library: Glass Shelves ----------------
+  // One glass shelf per kind. Each record stands by its spine: a strip in the cover's own colour with the title
+  // running up it and a small cover at the foot, like a real sleeve on a shelf. Hover (or focus) slides the sleeve
+  // out to show the whole cover, with the record peeking from it. Artists stand as round portraits.
+  const spineColors = (() => { try { return JSON.parse(localStorage.getItem('tess:spines') || '{}'); } catch { return {}; } })();
+  let spineSaveTimer = 0;
+  function spineColor(url, apply) {
+    if (spineColors[url]) { apply(spineColors[url]); return; }
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const c = document.createElement('canvas'); c.width = c.height = 6;
+        const x = c.getContext('2d'); x.drawImage(img, 0, 0, 6, 6);
+        const d = x.getImageData(0, 0, 6, 6).data;
+        // the most colourful of the cover's tones, not the muddy average
+        let best = [40, 40, 46], score = -1;
+        for (let i = 0; i < d.length; i += 4) {
+          const r = d[i], g = d[i + 1], b = d[i + 2];
+          const sat = Math.max(r, g, b) - Math.min(r, g, b), lum = (r + g + b) / 3;
+          const sc = sat * (1 - Math.abs(lum - 120) / 160);
+          if (sc > score) { score = sc; best = [r, g, b]; }
+        }
+        spineColors[url] = best;
+        clearTimeout(spineSaveTimer);
+        spineSaveTimer = setTimeout(() => { try { localStorage.setItem('tess:spines', JSON.stringify(spineColors)); } catch {} }, 1500);
+        apply(best);
+      } catch {}
+    };
+    img.src = url;
+  }
+  const SHELVES = [
+    ['Playlists', (k) => k === 'mine' || k === 'others' || k === 'spotify' || k === 'blend' || k === 'folder' || k === 'local'],
+    ['Albums', (k) => k === 'album'],
+    ['Artists', (k) => k === 'artist'],
+    ['Podcasts & books', (k) => k === 'show' || k === 'audiobook'],
+    ['Events', (k) => k === 'event'],
+  ];
+  function renderShelves() {
+    timeline.classList.remove('river');
+    timeline.classList.add('shelves');
+    q(timeline, '.tt-ruler')?.remove();
+    const needle = ttSearch.value.trim().toLowerCase();
+    const shown = libItems.filter((i) => libFilter.has(kindOf(i)) && (!needle || i.name.toLowerCase().includes(needle)));
+    shown.sort((a, b) => (b.pinned - a.pinned) || String(b.lastPlayedAt || '').localeCompare(String(a.lastPlayedAt || '')));
+    const kinds = shown.reduce((m, i) => { const k = kindOf(i); m[k] = (m[k] || 0) + 1; return m; }, {});
+    q(timeline, '.tt-river-sub').textContent = `${shown.length} items · ${kinds.artist || 0} artists · ${shown.length - (kinds.artist || 0) - (kinds.album || 0)} playlists · ${kinds.album || 0} albums`;
+    const frag = document.createDocumentFragment();
+    for (const [label, test] of SHELVES) {
+      const items = shown.filter((i) => test(kindOf(i)));
+      if (!items.length) continue;
+      const shelf = el('<section class="ts-shelf"><header><h3></h3><small></small></header><div class="ts-row"></div><i class="ts-plank"></i></section>');
+      q(shelf, 'h3').textContent = label;
+      q(shelf, 'small').textContent = items.length;
+      const row = q(shelf, '.ts-row');
+      for (const it of items) {
+        const img = libImage(it);
+        const isArtist = it.type === 'artist';
+        const rec = el(isArtist
+          ? '<div class="tt-item ts-artist" tabindex="0"><span class="ts-face"></span><b></b></div>'
+          : '<div class="tt-item ts-sleeve" tabindex="0"><span class="ts-disc"></span><span class="ts-cover"></span><span class="ts-spine"><b></b><i class="ts-thumb"></i></span></div>');
+        rec.dataset.uri = it.uri;
+        rec.dataset.name = it.name;
+        rec.title = `${it.name} — ${subOf(it)}`;
+        q(rec, 'b').textContent = it.name;
+        if (isArtist) {
+          if (img) q(rec, '.ts-face').style.backgroundImage = `url("${img}")`;
+        } else {
+          if (img) {
+            q(rec, '.ts-cover').style.backgroundImage = `url("${img}")`;
+            q(rec, '.ts-thumb').style.backgroundImage = `url("${img}")`;
+            spineColor(img, (c) => rec.style.setProperty('--spine', c.join(',')));
+          } else rec.classList.add('ts-local');
+          if (it.pinned) rec.classList.add('ts-pinned');
+        }
+        rec.onclick = () => Spicetify.Platform.History.push(libPath(it.uri));
+        rec.ondblclick = () => Spicetify.Player.playUri(it.uri);
+        rec.onkeydown = (e) => { if (e.key === 'Enter') rec.onclick(); };
+        row.appendChild(rec);
+      }
+      frag.appendChild(shelf);
+    }
+    ttList.replaceChildren(frag);
+    markTimeline();
+  }
 
   function markTimeline() {
     const ctx = P.data?.context?.uri || P.data?.context_uri || '';
