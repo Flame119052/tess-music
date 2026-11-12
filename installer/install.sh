@@ -24,8 +24,10 @@ MACOS=$(sw_vers -productVersion)
 step "macOS $MACOS on $(uname -m)"
 
 # --- Spotify -----------------------------------------------------------------------------------------------------
-SPOTIFY=""
-for p in "/Applications/Spotify.app" "$HOME/Applications/Spotify.app"; do [ -d "$p" ] && SPOTIFY="$p" && break; done
+SPOTIFY="${TESS_SPOTIFY:-}"   # TESS_SPOTIFY / TESS_TEST=1 are for testing against a copy of Spotify
+if [ -z "$SPOTIFY" ]; then
+  for p in "/Applications/Spotify.app" "$HOME/Applications/Spotify.app"; do [ -d "$p" ] && SPOTIFY="$p" && break; done
+fi
 [ -n "$SPOTIFY" ] || fail "Spotify isn't installed. Get the desktop app from https://www.spotify.com/download/mac/ , open it once and sign in, then run this again."
 SPV=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$SPOTIFY/Contents/Info.plist" 2>/dev/null || echo 0)
 if ! ver_ge "$SPV" "$MIN_SPOTIFY"; then
@@ -33,6 +35,7 @@ if ! ver_ge "$SPV" "$MIN_SPOTIFY"; then
   fail "Spotify $SPV is too old for Tess (needs $MIN_SPOTIFY or newer). In Spotify open the Spotify menu → About Spotify (or Check for Updates), update, then run this again."
 fi
 step "Spotify $SPV"
+i=0; while pgrep -f "Install Spotify" >/dev/null && [ $i -lt 120 ]; do [ $i -eq 0 ] && step "Waiting for Spotify's installer to finish…"; sleep 2; i=$((i+1)); done
 if [ ! -f "$HOME/Library/Application Support/Spotify/prefs" ]; then
   step "Opening Spotify once so it can set itself up…"
   open -a "$SPOTIFY"; i=0
@@ -62,7 +65,7 @@ mkdir -p "$HOME_TESS"; touch "$HOME_TESS/.installing"
 
 # --- quit Spotify, undo any earlier patching ---------------------------------------------------------------------
 WAS_RUNNING=""
-if pgrep -x Spotify >/dev/null; then
+if [ -z "$TESS_TEST" ] && pgrep -x Spotify >/dev/null; then
   WAS_RUNNING=1; step "Closing Spotify"
   osascript -e 'tell application "Spotify" to quit' >/dev/null 2>&1 || true
   i=0; while pgrep -x Spotify >/dev/null && [ $i -lt 40 ]; do sleep 0.5; i=$((i+1)); done
@@ -70,11 +73,23 @@ if pgrep -x Spotify >/dev/null; then
 fi
 if [ -d "$SPOTIFY/Contents/Resources/Apps/xpui" ]; then
   # Spotify was already modified (an earlier Tess, or Spicetify): put it back to stock first
-  if [ -d "$CONF/Backup" ]; then "$PATCHER" restore >/dev/null 2>&1 || true
-  elif command -v spicetify >/dev/null 2>&1; then step "Spicetify found: restoring stock Spotify first"; spicetify restore >/dev/null 2>&1 || true
+  if [ -f "$CONF/config-xpui.ini" ]; then "$PATCHER" config spotify_path "$SPOTIFY/Contents/Resources" >/dev/null 2>&1; "$PATCHER" restore >/dev/null 2>&1 || true
+  elif [ -z "$TESS_TEST" ] && command -v spicetify >/dev/null 2>&1 && spicetify -c 2>/dev/null | xargs grep -q "spotify_path *= *$SPOTIFY" 2>/dev/null; then step "Spicetify found: restoring stock Spotify first"; spicetify restore >/dev/null 2>&1 || true
   fi
   [ -d "$SPOTIFY/Contents/Resources/Apps/xpui" ] && fail "Spotify has been modified by another tool. Reinstall Spotify from https://www.spotify.com/download/mac/ and run this again."
 fi
+
+# --- keep the original interface files, so nothing can be lost ------------------------------------------------------
+APPS="$SPOTIFY/Contents/Resources/Apps"
+[ -f "$APPS/xpui.spa" ] || fail "Spotify's files look incomplete. Reinstall Spotify from https://www.spotify.com/download/mac/ and run this again."
+ORIG="$HOME_TESS/original-$SPV"
+rm -rf "$HOME_TESS"/original-*
+ditto "$APPS" "$ORIG" || fail "Couldn't make a safety copy of Spotify's files; nothing was changed."
+put_back() {
+  rm -rf "$APPS"
+  ditto "$ORIG" "$APPS"
+  rm -f "$HOME_TESS/.installing"
+}
 
 # --- install the theme --------------------------------------------------------------------------------------------
 step "Installing Tess into Spotify"
@@ -89,16 +104,20 @@ tar -xzf "$TMP/theme.tgz" -C "$CONF/Themes"
 "$PATCHER" config check_spicetify_update 0 >/dev/null
 rm -rf "$CONF/Backup" 2>/dev/null || true
 if ! "$PATCHER" backup apply --no-restart >"$TMP/apply.log" 2>&1; then
-  "$PATCHER" restore >/dev/null 2>&1 || true
-  rm -f "$HOME_TESS/.installing"
+  put_back
   if grep -q "operation not permitted" "$TMP/apply.log"; then
     fail "macOS blocked Terminal from updating Spotify. Open System Settings > Privacy & Security > App Management, turn on your terminal app, then run this again."
   fi
-  tail -5 "$TMP/apply.log"
-  fail "Couldn't apply Tess to Spotify $SPV. Spotify was left unchanged."
+  tail -5 "$TMP/apply.log" 2>/dev/null || true
+  fail "Couldn't apply Tess to Spotify $SPV. Spotify was put back exactly as it was."
 fi
-[ -d "$SPOTIFY/Contents/Resources/Apps/xpui" ] || fail "Tess didn't apply. Spotify was left unchanged; please report this."
+if [ ! -f "$APPS/xpui/index.html" ] || ! grep -q "spicetifyWrapper" "$APPS/xpui/index.html"; then
+  put_back
+  fail "Tess didn't apply cleanly. Spotify was put back exactly as it was; please report this."
+fi
 rm -f "$HOME_TESS/.installing"
+
+if [ -n "$TESS_TEST" ]; then echo; bold "Test install into $SPOTIFY finished."; exit 0; fi
 
 # --- the guard: re-apply after Spotify updates itself -----------------------------------------------------------------
 step "Keeping Tess on through Spotify updates"
