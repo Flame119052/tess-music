@@ -98,7 +98,7 @@
   const route = () => Spicetify.Platform.History.location?.pathname || '';
 
   // ---------------- settings ----------------
-  const DEFAULTS = { npStyle: 'cover', coverVideo: true, panelVideo: true, artistVideo: true, tintWindow: true, sideLyrics: true, circadian: true };
+  const DEFAULTS = { videoFullscreen: true, npStyle: 'cover', coverVideo: true, panelVideo: true, artistVideo: true, tintWindow: true, sideLyrics: true, circadian: true };
   const settings = (() => {
     try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('tess:settings') || '{}') }; } catch { return { ...DEFAULTS }; }
   })();
@@ -120,6 +120,7 @@
     ['artistVideo', 'Moving video on artist pages', 'Fills the top of an artist’s page with a Canvas from their top songs; it blurs as you scroll.'],
     ['sideLyrics', 'Live lyrics in the Now Playing panel', 'Synced lyrics that follow the song. Off shows Spotify’s preview card.'],
     ['tintWindow', 'Tint the window with the artwork colours', 'The panels pick up the colours of what’s playing.'],
+    ['videoFullscreen', 'Music videos open full screen', 'Switch to video fills the screen with the video; Switch to audio brings you back to the Tess player.'],
     ['circadian', 'Follow the time of day', 'Warm in the morning, neutral midday, golden in the evening, dim and low in blue at night.'],
   ];
   const settingChanged = () => { saveSettings(); applySettings(); syncTrack(); onRoute(); window.dispatchEvent(new Event('tess:settings')); };
@@ -1030,6 +1031,24 @@
       playCanvas(v, fileId).then((ok) => sideCover.classList.toggle('has-canvas', ok && v.dataset.fileId === fileId));
     });
   }
+  // Music videos (copy-protected, so they play in Spotify's own video view): "Switch to video" goes straight to the
+  // video full screen; "Switch to audio" comes back to Tess's full-screen player instead of Spotify's lyrics view.
+  const findBtn = (re) => [...document.querySelectorAll('button')].find((b) => re.test(b.getAttribute('aria-label') || b.textContent || ''));
+  listen(document, 'click', (e) => {
+    const b = e.target instanceof Element && e.target.closest('button');
+    if (!b || b.closest('#tess-np, #tess-bar')) return;
+    const label = (b.getAttribute('aria-label') || b.textContent || '').trim();
+    if (/^switch to video$/i.test(label)) {
+      if (npOpen) closeNP();
+      waitFor(() => findBtn(/^enter full ?screen$/i), 4000).then((fs) => { if (settings.videoFullscreen !== false) fs?.click(); });
+    } else if (/^switch to audio$/i.test(label)) {
+      setTimeout(async () => {
+        if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
+        (await waitFor(() => findBtn(/^(minimize|hide) now playing view$/i), 1500))?.click();
+        openNP('lyrics');
+      }, 350);
+    }
+  }, true);
   // Spotify's own "Expand Now Playing view" and the lyrics buttons open Spotify's old full-screen views; Tess's instead
   listen(document, 'click', (e) => {
     const b = e.target instanceof Element && e.target.closest('button');
