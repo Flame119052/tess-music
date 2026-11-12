@@ -483,7 +483,11 @@
   // the artwork fills it, controls float on liquid glass, the current lyric line sits on top. It resizes from a
   // square "tile" to a slim "strip" depending on how you shape the window.
   let mini = null;
+  // Tess Mini (the native app) floats over every app and Space; fall back to the in-app window if it isn't installed
+  const MINI = 'http://127.0.0.1:38411';
+  let nativeMini = false;
   async function openMini() {
+    try { await fetch(MINI + '/toggle', { mode: 'no-cors' }); nativeMini = true; return; } catch { nativeMini = false; }
     if (mini && !mini.closed) { mini.focus(); return; }
     if (!window.documentPictureInPicture) { spotifyButton('[data-testid="pip-toggle-button"]')?.click(); return; }
     mini = await documentPictureInPicture.requestWindow({ width: 340, height: 380 });
@@ -639,6 +643,14 @@
     return ans;
   }
 
+  let pushedLine = null;
+  function pushMiniLyric(text) {
+    if (!nativeMini || text === pushedLine) return;
+    pushedLine = text;
+    fetch(MINI + '/lyric', { method: 'POST', mode: 'no-cors', body: text }).catch(() => { nativeMini = false; });
+  }
+  // find out once whether Tess Mini is installed
+  fetch(MINI + '/ping', { mode: 'no-cors' }).then(() => { nativeMini = true; }).catch(() => {});
   const LEAD_MS = 120;
   function updateLyrics(ms) {
     if (!lyrics.lines.length || lyrics.sync === 'UNSYNCED') return;
@@ -646,6 +658,7 @@
     lastLine = -1;
     const t = ms + LEAD_MS;
     const i = lineAt(t);
+    pushMiniLyric(i >= 0 ? lyrics.lines[i].text : '');
     for (const v of views) {
       if (!v.active()) continue;
       const nodes = v.lines.children;
