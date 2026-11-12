@@ -793,6 +793,7 @@
 
   const timeline = el(`
     <section id="tess-timeline" aria-label="Your Library">
+      <header class="tt-river-head"><h2>Your Library</h2><p class="tt-river-sub"></p></header>
       <div class="tt-bar">
         <label class="tt-search"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="5"/><path d="M11 11l3.5 3.5"/></svg><input type="search" placeholder="Search" aria-label="Search your library"></label>
         <button class="tt-filter" aria-haspopup="true" aria-expanded="false"><svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M1.5 3h13l-5 6v4.5l-3 1.5V9z"/></svg><span>Show</span><i></i></button>
@@ -887,14 +888,34 @@
     const shown = libItems.filter((i) => libFilter.has(kindOf(i)) && (!needle || i.name.toLowerCase().includes(needle)));
     shown.sort((a, b) => (b.pinned - a.pinned) || String(b.lastPlayedAt || '').localeCompare(String(a.lastPlayedAt || '')));
     const frag = document.createDocumentFragment();
+    const wide = html.classList.contains('tess-lib-wide');
+    timeline.classList.toggle('river', wide);
+    if (wide) {
+      const kinds = shown.reduce((m, i) => { const k = kindOf(i); m[k] = (m[k] || 0) + 1; return m; }, {});
+      q(timeline, '.tt-river-sub').textContent = `${shown.length} items · ${(kinds.artist || 0)} artists · ${(kinds.mine || 0) + (kinds.others || 0) + (kinds.spotify || 0) + (kinds.blend || 0)} playlists · ${kinds.album || 0} albums`;
+    }
     let group = '';
+    let chapter = null;
+    let ruler = wide ? el('<div class="tt-ruler"></div>') : null;
     for (const it of shown) {
       const g = groupOf(it);
       if (g !== group) {
         group = g;
-        const h = el('<div class="tt-group" role="presentation"></div>');
-        h.textContent = g;
-        frag.appendChild(h);
+        if (wide) {
+          chapter = el('<section class="tt-chapter"><h3></h3><small></small><div class="tt-covers"></div></section>');
+          q(chapter, 'h3').textContent = g;
+          q(chapter, 'small').textContent = `${shown.filter((x) => groupOf(x) === g).length}`;
+          frag.appendChild(chapter);
+          const tick = el('<button class="tt-tick"><i></i><span></span></button>');
+          q(tick, 'span').textContent = g;
+          const target = chapter;
+          tick.onclick = () => target.scrollIntoView({ behavior: 'smooth', inline: 'start', block: 'nearest' });
+          ruler.appendChild(tick);
+        } else {
+          const h = el('<div class="tt-group" role="presentation"></div>');
+          h.textContent = g;
+          frag.appendChild(h);
+        }
       }
       const row = el('<div class="tt-item" role="listitem" tabindex="0"><span class="tt-art"></span><span class="tt-text"><b></b><small></small></span></div>');
       row.dataset.uri = it.uri;
@@ -910,8 +931,14 @@
       row.onclick = () => Spicetify.Platform.History.push(libPath(it.uri));
       row.ondblclick = () => Spicetify.Player.playUri(it.uri);
       row.onkeydown = (e) => { if (e.key === 'Enter') row.onclick(); };
-      frag.appendChild(row);
+      if (wide && chapter) {
+        const covers = q(chapter, '.tt-covers');
+        if (!covers.children.length) row.classList.add('lead');
+        covers.appendChild(row);
+      } else frag.appendChild(row);
     }
+    q(timeline, '.tt-ruler')?.remove();
+    if (ruler) timeline.appendChild(ruler);
     if (!shown.length) {
       const empty = el('<div class="tt-empty"></div>');
       empty.textContent = libItems.length ? 'Nothing matches. Change what’s shown with the filter above.' : '';
@@ -919,12 +946,44 @@
     }
     ttList.replaceChildren(frag);
     markTimeline();
+    requestAnimationFrame(flow);
   }
+
+  // Cover Flow: in the river, covers turn toward you as they pass the middle (transforms only, once per frame
+  // while scrolling); the mouse wheel moves through time sideways.
+  let flowQueued = false;
+  function flow() {
+    flowQueued = false;
+    if (!timeline.classList.contains('river')) return;
+    // two rows of covers fill the height the river has
+    const cell = Math.max(130, Math.min(380, Math.floor((ttList.clientHeight - 170) / 2)));
+    ttList.style.setProperty('--cell', cell + 'px');
+    const box = ttList.getBoundingClientRect();
+    const mid = box.left + box.width / 2;
+    for (const c of ttList.querySelectorAll('.tt-item')) {
+      const r = c.getBoundingClientRect();
+      if (r.right < box.left - 200 || r.left > box.right + 200) continue;
+      const d = Math.max(-1, Math.min(1, (r.left + r.width / 2 - mid) / (box.width / 2)));
+      c.style.setProperty('--ry', (-d * 18).toFixed(1) + 'deg');
+      c.style.setProperty('--tz', (-Math.abs(d) * 60).toFixed(0) + 'px');
+    }
+    const ticks = timeline.querySelectorAll('.tt-tick');
+    const chapters = ttList.querySelectorAll('.tt-chapter');
+    let active = 0;
+    chapters.forEach((ch, i) => { if (ch.getBoundingClientRect().left < mid) active = i; });
+    ticks.forEach((t, i) => t.classList.toggle('on', i === active));
+  }
+  listen(ttList, 'scroll', () => { if (!flowQueued) { flowQueued = true; requestAnimationFrame(flow); } }, { passive: true });
+  listen(ttList, 'wheel', (e) => {
+    if (!timeline.classList.contains('river') || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+    e.preventDefault();
+    ttList.scrollLeft += e.deltaY * 1.4;
+  }, { passive: false });
 
   function markTimeline() {
     const ctx = P.data?.context?.uri || P.data?.context_uri || '';
     const here = route();
-    for (const row of ttList.children) {
+    for (const row of ttList.querySelectorAll('.tt-item')) {
       const u = row.dataset.uri;
       if (!u) continue;
       row.classList.toggle('playing', !!ctx && (ctx === u || (u === 'spotify:local-files' && /local-files/.test(ctx))));
@@ -944,7 +1003,9 @@
     const lib = document.getElementById('Desktop_LeftSidebar_Id');
     if (!lib) return;
     const width = lib.getBoundingClientRect().width;
+    const wasWide = html.classList.contains('tess-lib-wide');
     html.classList.toggle('tess-lib-wide', width > 640);
+    if (wasWide !== html.classList.contains('tess-lib-wide') && libItems.length) renderTimeline();
     html.classList.toggle('tess-lib-rail', width < 160);
     const head = lib.querySelector('header')?.parentElement;
     const listBlock = head?.nextElementSibling && head.nextElementSibling !== timeline ? head.nextElementSibling : timeline.nextElementSibling;

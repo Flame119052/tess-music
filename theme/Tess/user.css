@@ -1939,62 +1939,203 @@ html.tess.tess-artist.tess-hero-wait .before-scroll-node > div {
   display: none;
 }
 
-/* ================= expanded library: the timeline as a cover wall ================= */
+/* ================= expanded library: the Time River ================= */
 #tess-timeline {
   view-transition-name: tess-lib;
 }
-html.tess-lib-wide .tt-bar {
-  max-width: 560px;
-  padding: 6px 24px 10px;
+.tt-river-head {
+  display: none;
 }
-html.tess-lib-wide .tt-pop {
-  left: 24px;
+#tess-timeline.river .tt-river-head {
+  display: block;
+  padding: 18px 32px 4px;
+}
+#tess-timeline.river .tt-river-head h2 {
+  margin: 0;
+  font: 800 clamp(34px, 3.4vw, 52px)/1.02 var(--tess-font);
+  letter-spacing: -0.03em;
+  background: linear-gradient(90deg, #fff 30%, rgba(255, 255, 255, 0.55));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+#tess-timeline.river .tt-river-head p {
+  margin: 6px 0 0;
+  font: 500 13px/1 var(--tess-font);
+  color: rgba(255, 255, 255, 0.55);
+}
+#tess-timeline.river .tt-bar {
+  max-width: 560px;
+  padding: 14px 32px 6px;
+}
+#tess-timeline.river .tt-pop {
+  left: 32px;
   right: auto;
+  top: 150px;
   width: 520px;
 }
-html.tess-lib-wide .tt-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  column-gap: 18px;
-  row-gap: 6px;
-  align-content: start;
-  padding: 0 24px 60px;
-}
-html.tess-lib-wide .tt-group {
-  grid-column: 1 / -1;
-  padding: 22px 0 8px;
-  font-size: 12px;
-}
-html.tess-lib-wide .tt-group::before {
-  display: none;
-}
-html.tess-lib-wide .tt-item {
-  flex-direction: column;
+/* the river: chapters flow left to right, newest first */
+#tess-timeline.river .tt-list {
+  display: flex;
   align-items: stretch;
-  gap: 9px;
-  padding: 10px;
-  border-radius: 14px;
-  contain-intrinsic-size: auto 230px;
+  gap: 56px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 18px 40px 140px;
+  perspective: 1400px;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 10px, #000 calc(100% - 60px), transparent);
+  mask-image: linear-gradient(90deg, transparent 0, #000 10px, #000 calc(100% - 60px), transparent);
 }
-html.tess-lib-wide .tt-item::before,
-html.tess-lib-wide .tt-item::after {
+#tess-timeline.river .tt-list::-webkit-scrollbar {
   display: none;
 }
-html.tess-lib-wide .tt-art {
+.tt-chapter {
+  flex: none;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  scroll-snap-align: start;
+}
+.tt-chapter h3 {
+  margin: 0;
+  font: 750 26px/1.1 var(--tess-font);
+  letter-spacing: -0.02em;
+  color: #fff;
+}
+.tt-chapter > small {
+  margin: 4px 0 16px;
+  font: 600 11px/1 var(--tess-font);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+}
+.tt-chapter > small::after {
+  content: " items";
+}
+/* two rows of covers; the chapter's most recent item is a big lead tile */
+.tt-covers {
+  display: grid;
+  grid-auto-flow: column dense;
+  grid-template-rows: repeat(2, var(--cell, clamp(150px, 15vh, 210px)));
+  grid-auto-columns: var(--cell, clamp(150px, 15vh, 210px));
+  gap: 16px;
+  transform-style: preserve-3d;
+}
+#tess-timeline.river .tt-item {
+  --ry: 0deg;
+  --tz: 0px;
+  position: relative;
+  display: block;
+  padding: 0;
+  border-radius: 16px;
+  transform: rotateY(var(--ry)) translateZ(var(--tz));
+  transition: transform 0.5s var(--tess-spring);
+}
+#tess-timeline.river .tt-item.lead {
+  grid-row: span 2;
+  grid-column: span 2;
+}
+#tess-timeline.river .tt-item::before,
+#tess-timeline.river .tt-item::after {
+  display: none;
+}
+#tess-timeline.river .tt-art {
+  position: absolute;
+  inset: 0;
   width: 100%;
-  height: auto;
-  aspect-ratio: 1;
-  border-radius: 12px;
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+  height: 100%;
+  border-radius: 16px;
+  box-shadow: 0 22px 44px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
-html.tess-lib-wide .tt-item:hover .tt-art {
-  transform: translateY(-3px);
+#tess-timeline.river .tt-item.round .tt-art {
+  border-radius: 50%;
 }
-html.tess-lib-wide .tt-item.playing .tt-art {
-  box-shadow: 0 0 0 2px var(--tess-accent), 0 0 26px rgba(30, 215, 96, 0.4), 0 10px 26px rgba(0, 0, 0, 0.45);
+/* the name sits on the artwork on a soft scrim, Apple-style */
+#tess-timeline.river .tt-text {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 26px 12px 11px;
+  border-radius: 0 0 16px 16px;
+  background: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.72));
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.25s, transform 0.3s var(--tess-spring);
 }
-html.tess-lib-wide .tt-text b {
-  font-size: 14px;
+#tess-timeline.river .tt-item.lead .tt-text,
+#tess-timeline.river .tt-item:hover .tt-text,
+#tess-timeline.river .tt-item:focus-visible .tt-text {
+  opacity: 1;
+  transform: none;
+}
+#tess-timeline.river .tt-item.round .tt-text {
+  border-radius: 0 0 999px 999px;
+  text-align: center;
+}
+#tess-timeline.river .tt-item.lead .tt-text b {
+  font-size: 20px;
+  font-weight: 750;
+}
+#tess-timeline.river .tt-item:hover {
+  transform: rotateY(0deg) translateZ(30px) scale(1.03);
+  z-index: 2;
+}
+#tess-timeline.river .tt-item:hover .tt-art {
+  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+#tess-timeline.river .tt-item.playing .tt-art {
+  box-shadow: 0 0 0 2px var(--tess-accent), 0 0 40px rgba(30, 215, 96, 0.45), 0 22px 44px rgba(0, 0, 0, 0.5);
+}
+/* the time ruler: one tick per chapter, the one in view glows */
+.tt-ruler {
+  position: absolute;
+  left: 40px;
+  right: 40px;
+  bottom: 92px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tt-tick {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font: 600 11px/1 var(--tess-font);
+  color: rgba(255, 255, 255, 0.45);
+  transition: color 0.2s, background 0.2s;
+}
+.tt-tick i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.tt-tick:hover {
+  color: #fff;
+}
+.tt-tick.on {
+  color: #111;
+  background: rgba(255, 255, 255, 0.9);
+}
+html:not(.tess-lib-wide) .tt-ruler {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  #tess-timeline.river .tt-item { transform: none !important; }
 }
 /* expanding / collapsing morphs the library instead of jumping */
 ::view-transition-group(tess-lib) {
@@ -2118,6 +2259,14 @@ html.tess .Root__right-sidebar-peek :has(> * > :is(a[href^="/album/"], a[href^="
 html.tess .Root__right-sidebar-peek :has(> * > * > a[href^="/artist/"]) {
   -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 6px, #000 calc(100% - 10px), transparent 100%) !important;
   mask-image: linear-gradient(90deg, transparent 0, #000 6px, #000 calc(100% - 10px), transparent 100%) !important;
+}
+
+/* in the river, the big title replaces Spotify's small one (Create and the size buttons stay) */
+html.tess-lib-wide #Desktop_LeftSidebar_Id header h1 {
+  visibility: hidden;
+}
+#tess-timeline.river .tt-river-head {
+  margin-top: -44px;
 }
 
 /* ================= Home ("Listen Now") ================= */
