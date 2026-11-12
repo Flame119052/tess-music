@@ -39,7 +39,17 @@
     if (stale()) return domWatch.disconnect();
     for (const fn of placers) { try { fn(); } catch {} }
   };
-  const domWatch = new MutationObserver(() => { if (!placeQueued) { placeQueued = true; requestAnimationFrame(runPlacers); } });
+  // Ignore changes that can't affect placement: the player clock ticking, and Tess's own pieces updating.
+  const IGNORE = '[data-testid="now-playing-bar"], #tess-bar, #tess-np, #tess-timeline, .tess-side-lyrics, .tess-cover-wrap, #tess-dial, #tess-otd, #tess-dna, .tess-marquee';
+  const relevant = (records) => records.some((m) => {
+    const t = m.target.nodeType === 1 ? m.target : m.target.parentElement;
+    return t && !t.closest(IGNORE);
+  });
+  const domWatch = new MutationObserver((records) => {
+    if (placeQueued || !relevant(records)) return;
+    placeQueued = true;
+    requestAnimationFrame(runPlacers);
+  });
   const startWatch = () => { const root = document.querySelector('.Root') || document.body; domWatch.observe(root, { childList: true, subtree: true }); };
   onDispose(() => domWatch.disconnect());
   const onDraw = (fn, backupMs = 2500) => { placers.push(fn); every(backupMs, fn); };
@@ -505,7 +515,17 @@
           nodes[j].classList.toggle('far', d > 3);
         }
         const target = nodes[Math.max(i, 0)];
-        if (target) v.lines.style.transform = `translateY(${-target.offsetTop}px)`;
+        if (target) {
+          let shift = target.offsetTop;
+          // in the small panel card, never scroll past the point where the last line reaches the card's bottom,
+          // so the end of a song (and its closing "• • •") still shows the final lyrics instead of empty space
+          if (v.lines.classList.contains('tsl-lines')) {
+            const win = v.lines.parentElement.clientHeight;
+            const start = v.lines.offsetTop;
+            shift = Math.max(0, Math.min(shift, v.lines.scrollHeight + start - win + 12));
+          }
+          v.lines.style.transform = `translateY(${-shift}px)`;
+        }
       }
       if (i >= 0) {
         const l = lyrics.lines[i];

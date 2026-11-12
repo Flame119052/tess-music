@@ -2029,18 +2029,18 @@ html.tess #main-view .main-view-container {
 /* artist header: Photo / Video, remembered per artist */
 .tess-hero-switch {
   position: absolute;
-  top: 18px;
-  right: 22px;
-  z-index: 5;
+  top: 22px;
+  right: 24px;
+  z-index: 30;
   display: flex;
   gap: 2px;
   padding: 3px;
   border-radius: 999px;
-  background: rgba(20, 20, 24, 0.45);
+  background: rgba(16, 16, 20, 0.62);
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
-  opacity: 0.55;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16), 0 6px 18px rgba(0, 0, 0, 0.3);
+  opacity: 0.9;
   transition: opacity 0.25s;
 }
 .tess-hero-switch:hover {
@@ -2079,13 +2079,11 @@ html.tess.tess-artist .tess-hero-bg {
    cards are a light frost over the window's colour. Menus, dialogs and tooltips live outside the panels and keep
    the solid palette above, so they stay readable. */
 html.tess :is(#main-view, #Desktop_LeftSidebar_Id, .Root__right-sidebar-peek) {
-  --background-base: transparent;
   --background-elevated-base: rgba(255, 255, 255, 0.055);
   --background-elevated-highlight: rgba(255, 255, 255, 0.09);
   --background-elevated-press: rgba(255, 255, 255, 0.04);
   --background-highlight: rgba(255, 255, 255, 0.07);
   --background-press: rgba(255, 255, 255, 0.04);
-  --spice-main: transparent;
   --spice-main-elevated: rgba(255, 255, 255, 0.055);
   --spice-card: rgba(255, 255, 255, 0.055);
   --spice-highlight: rgba(255, 255, 255, 0.07);
@@ -2094,10 +2092,29 @@ html.tess :is(#main-view, #Desktop_LeftSidebar_Id, .Root__right-sidebar-peek) {
 }
 /* Spotify draws icons on its green buttons in the page-background colour; inside the panels that is now clear,
    so the green buttons get it back as solid black */
-html.tess :is(#main-view, #Desktop_LeftSidebar_Id, .Root__right-sidebar-peek) :is([data-encore-id="buttonPrimary"], [class*="button-primary__inner"]) {
-  --background-base: #000;
-  --text-base: #000;
-}
 html.tess :is(#main-view, #Desktop_LeftSidebar_Id, .Root__right-sidebar-peek) [class*="button-primary__inner"] {
   color: #000 !important;
+}
+/* tooltips (e.g. hovering the collapsed library): one background, no coloured boxes behind lines of text */
+html.tess :is([role="tooltip"], .encore-tooltip, [data-tippy-root] [class*="tooltip"], [data-tippy-root] [class*="Tooltip"]) * {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+html.tess :is([role="tooltip"], .encore-tooltip, [data-tippy-root] [class*="tooltip"], [data-tippy-root] [class*="Tooltip"]) {
+  padding: 6px 10px !important;
+  font-family: var(--tess-font) !important;
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+}
+
+/* the playlist page paints its own page colour under the track list; clear it so the panel glass shows */
+html.tess .playlist-playlist-playlistContent,
+html.tess [data-testid="playlist-page"] > div:not(.main-entityHeader-container) {
+  background-color: transparent !important;
+}
+/* Spotify's fade mask on the panel's song title and artist resolves fully clear under Tess; give it real stops */
+html.tess .Root__right-sidebar-peek :has(> * > :is(a[href^="/album/"], a[href^="/artist/"], a[href^="/episode/"], a[href^="/show/"])),
+html.tess .Root__right-sidebar-peek :has(> * > * > a[href^="/artist/"]) {
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 6px, #000 calc(100% - 10px), transparent 100%) !important;
+  mask-image: linear-gradient(90deg, transparent 0, #000 6px, #000 calc(100% - 10px), transparent 100%) !important;
 }
