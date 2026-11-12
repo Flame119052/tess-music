@@ -881,6 +881,133 @@
   P.addEventListener('songchange', onLibSong);
   onDispose(() => P.removeEventListener('songchange', onLibSong));
 
+  // ---------------- ⌘K spotlight ----------------
+  // A floating search over everything: instant results as you type, arrows to move, Enter to play a song or open
+  // anything else, ⌘Enter to play an album/playlist/artist straight away. Empty, it offers what you played last.
+  const spot = mount(el(`
+    <div id="tess-spot" hidden>
+      <div class="ts-panel" role="dialog" aria-label="Search">
+        <label class="ts-field"><svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="7" cy="7" r="5"/><path d="M11 11l3.5 3.5"/></svg><input placeholder="Search songs, artists, albums, playlists" aria-label="Search"><kbd>esc</kbd></label>
+        <div class="ts-results" role="listbox"></div>
+        <div class="ts-foot"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>↵</kbd> play song / open</span><span><kbd>⌘</kbd><kbd>↵</kbd> play</span></div>
+      </div>
+    </div>`));
+  const spotInput = q(spot, 'input');
+  const spotList = q(spot, '.ts-results');
+  let spotItems = [];
+  let spotSel = 0;
+  let spotSeq = 0;
+  const typeLabel = { Artist: 'Artist', Album: 'Album', Track: 'Song', Playlist: 'Playlist', Podcast: 'Podcast', Episode: 'Episode', Audiobook: 'Audiobook' };
+  function openSpot() {
+    spot.hidden = false;
+    spotInput.value = '';
+    spotInput.focus();
+    runSpot('');
+  }
+  function closeSpot() { spot.hidden = true; }
+  function drawSpot() {
+    spotList.replaceChildren(...spotItems.map((it, i) => {
+      const row = el('<div class="ts-row" role="option"><span class="ts-art"><img alt=""></span><span class="ts-text"><b></b><small></small></span><span class="ts-kind"></span></div>');
+      row.setAttribute('aria-selected', String(i === spotSel));
+      if (it.img) q(row, 'img').src = it.img;
+      if (it.round) row.classList.add('round');
+      q(row, 'b').textContent = it.name;
+      q(row, 'small').textContent = it.sub;
+      q(row, '.ts-kind').textContent = it.kind;
+      row.onmouseenter = () => { spotSel = i; spotList.querySelectorAll('.ts-row').forEach((r, k) => r.setAttribute('aria-selected', String(k === i))); };
+      row.onclick = (e) => actSpot(it, e.metaKey || e.ctrlKey);
+      return row;
+    }));
+    if (!spotItems.length && spotInput.value.trim()) spotList.appendChild(el('<p class="ts-empty">No results</p>'));
+  }
+  async function runSpot(term) {
+    const seq = ++spotSeq;
+    if (!term.trim()) {
+      try {
+        const recent = await Spicetify.Platform.RecentlyPlayedAPI.getContexts();
+        if (seq !== spotSeq) return;
+        spotItems = (recent || []).slice(0, 8).map((c) => ({ uri: c.uri, name: c.name, sub: 'Played recently', kind: (c.type || '').replace(/^./, (x) => x.toUpperCase()), img: imageUrl(c.images?.[0]?.url || ''), round: c.type === 'artist' }));
+      } catch { spotItems = []; }
+    } else {
+      try {
+        const r = await Spicetify.GraphQL.Request(Spicetify.GraphQL.Definitions.searchModalResults, { searchTerm: term, offset: 0, limit: 10, numberOfTopResults: 10, includeAudiobooks: true, includeArtistHasConcertsField: false, includePreReleases: false, includeLocalConcertsField: false, includeAuthors: false });
+        if (seq !== spotSeq) return;
+        spotItems = (r?.data?.searchV2?.topResultsV2?.itemsV2 || []).map((x) => {
+          const d = x.item?.data || {};
+          return {
+            uri: d.uri,
+            name: d.name || d.profile?.name || '',
+            sub: d.artists?.items?.map((a) => a.profile?.name).join(', ') || d.ownerV2?.data?.name || d.publisher?.name || '',
+            kind: typeLabel[d.__typename] || d.__typename || '',
+            img: d.albumOfTrack?.coverArt?.sources?.[0]?.url || d.coverArt?.sources?.[0]?.url || d.visuals?.avatarImage?.sources?.[0]?.url || d.images?.items?.[0]?.sources?.[0]?.url || '',
+            round: d.__typename === 'Artist',
+            isTrack: d.__typename === 'Track',
+          };
+        }).filter((i) => i.uri && i.name);
+      } catch { spotItems = []; }
+    }
+    spotSel = 0;
+    drawSpot();
+  }
+  function actSpot(it, playNow) {
+    if (!it) return;
+    closeSpot();
+    if (it.isTrack || playNow) Spicetify.Player.playUri(it.uri);
+    else Spicetify.Platform.History.push(Spicetify.URI.fromString(it.uri).toURLPath(true));
+  }
+  let spotTimer = 0;
+  listen(spotInput, 'input', () => { clearTimeout(spotTimer); spotTimer = setTimeout(() => runSpot(spotInput.value), 140); });
+  listen(spotInput, 'keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!spotItems.length) return;
+      spotSel = (spotSel + (e.key === 'ArrowDown' ? 1 : -1) + spotItems.length) % spotItems.length;
+      drawSpot();
+      spotList.children[spotSel]?.scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'Enter') { e.preventDefault(); actSpot(spotItems[spotSel], e.metaKey || e.ctrlKey); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeSpot(); }
+  });
+  listen(spot, 'pointerdown', (e) => { if (e.target === spot) closeSpot(); });
+  listen(document, 'keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); e.stopPropagation(); spot.hidden ? openSpot() : closeSpot(); }
+  }, true);
+
+  // ---------------- cover-to-page transition ----------------
+  // Click a cover anywhere and it flies into the header of the album or playlist that opens (View Transitions).
+  let pendingCover = null;
+  listen(document, 'pointerdown', (e) => {
+    const holder = e.target instanceof Element && e.target.closest('[data-encore-id="card"], [data-encore-id="listRow"], [role="row"], .tt-item, .td-cover, .view-homeShortcutsGrid-shortcut, .td-open');
+    const img = holder?.classList.contains('td-open') ? document.querySelector('.td-cover.on img') : holder?.querySelector('img');
+    const art = !img && holder?.querySelector('.tt-art');
+    pendingCover = img || art ? { node: img || art, at: performance.now() } : null;
+  }, true);
+  const History = Spicetify.Platform.History;
+  const originalPush = History.push;
+  const waitFor = (find, ms) => new Promise((resolve) => {
+    const t0 = performance.now();
+    const tick = () => { const n = find(); if (n || performance.now() - t0 > ms) resolve(n || null); else requestAnimationFrame(tick); };
+    tick();
+  });
+  History.push = function tessPush(to, ...rest) {
+    const path = typeof to === 'string' ? to : to?.pathname || '';
+    const cover = pendingCover && performance.now() - pendingCover.at < 1200 ? pendingCover.node : null;
+    pendingCover = null;
+    if (!cover || !document.startViewTransition || document.hidden || !/^\/(album|playlist|collection)\b/.test(path) || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      return originalPush.call(this, to, ...rest);
+    }
+    let dest = null;
+    cover.style.viewTransitionName = 'tess-cover';
+    const vt = document.startViewTransition(async () => {
+      cover.style.viewTransitionName = '';
+      originalPush.call(this, to, ...rest);
+      dest = await waitFor(() => document.querySelector('.main-entityHeader-imageContainer img, .main-entityHeader-image'), 700);
+      if (dest) dest.style.viewTransitionName = 'tess-cover';
+    });
+    vt.ready.catch(() => {});
+    vt.finished.catch(() => {}).finally(() => { if (dest) dest.style.viewTransitionName = ''; cover.style.viewTransitionName = ''; });
+  };
+  onDispose(() => { History.push = originalPush; });
+
   // ---------------- artist pages: full-height motion header ----------------
   const canvasCache = new Map();
   // A song's Canvas: from the player's data when it's the current song, otherwise asked of Spotify.

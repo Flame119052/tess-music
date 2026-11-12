@@ -882,6 +882,133 @@
   P.addEventListener('songchange', onLibSong);
   onDispose(() => P.removeEventListener('songchange', onLibSong));
 
+  // ---------------- ⌘K spotlight ----------------
+  // A floating search over everything: instant results as you type, arrows to move, Enter to play a song or open
+  // anything else, ⌘Enter to play an album/playlist/artist straight away. Empty, it offers what you played last.
+  const spot = mount(el(`
+    <div id="tess-spot" hidden>
+      <div class="ts-panel" role="dialog" aria-label="Search">
+        <label class="ts-field"><svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="7" cy="7" r="5"/><path d="M11 11l3.5 3.5"/></svg><input placeholder="Search songs, artists, albums, playlists" aria-label="Search"><kbd>esc</kbd></label>
+        <div class="ts-results" role="listbox"></div>
+        <div class="ts-foot"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>↵</kbd> play song / open</span><span><kbd>⌘</kbd><kbd>↵</kbd> play</span></div>
+      </div>
+    </div>`));
+  const spotInput = q(spot, 'input');
+  const spotList = q(spot, '.ts-results');
+  let spotItems = [];
+  let spotSel = 0;
+  let spotSeq = 0;
+  const typeLabel = { Artist: 'Artist', Album: 'Album', Track: 'Song', Playlist: 'Playlist', Podcast: 'Podcast', Episode: 'Episode', Audiobook: 'Audiobook' };
+  function openSpot() {
+    spot.hidden = false;
+    spotInput.value = '';
+    spotInput.focus();
+    runSpot('');
+  }
+  function closeSpot() { spot.hidden = true; }
+  function drawSpot() {
+    spotList.replaceChildren(...spotItems.map((it, i) => {
+      const row = el('<div class="ts-row" role="option"><span class="ts-art"><img alt=""></span><span class="ts-text"><b></b><small></small></span><span class="ts-kind"></span></div>');
+      row.setAttribute('aria-selected', String(i === spotSel));
+      if (it.img) q(row, 'img').src = it.img;
+      if (it.round) row.classList.add('round');
+      q(row, 'b').textContent = it.name;
+      q(row, 'small').textContent = it.sub;
+      q(row, '.ts-kind').textContent = it.kind;
+      row.onmouseenter = () => { spotSel = i; spotList.querySelectorAll('.ts-row').forEach((r, k) => r.setAttribute('aria-selected', String(k === i))); };
+      row.onclick = (e) => actSpot(it, e.metaKey || e.ctrlKey);
+      return row;
+    }));
+    if (!spotItems.length && spotInput.value.trim()) spotList.appendChild(el('<p class="ts-empty">No results</p>'));
+  }
+  async function runSpot(term) {
+    const seq = ++spotSeq;
+    if (!term.trim()) {
+      try {
+        const recent = await Spicetify.Platform.RecentlyPlayedAPI.getContexts();
+        if (seq !== spotSeq) return;
+        spotItems = (recent || []).slice(0, 8).map((c) => ({ uri: c.uri, name: c.name, sub: 'Played recently', kind: (c.type || '').replace(/^./, (x) => x.toUpperCase()), img: imageUrl(c.images?.[0]?.url || ''), round: c.type === 'artist' }));
+      } catch { spotItems = []; }
+    } else {
+      try {
+        const r = await Spicetify.GraphQL.Request(Spicetify.GraphQL.Definitions.searchModalResults, { searchTerm: term, offset: 0, limit: 10, numberOfTopResults: 10, includeAudiobooks: true, includeArtistHasConcertsField: false, includePreReleases: false, includeLocalConcertsField: false, includeAuthors: false });
+        if (seq !== spotSeq) return;
+        spotItems = (r?.data?.searchV2?.topResultsV2?.itemsV2 || []).map((x) => {
+          const d = x.item?.data || {};
+          return {
+            uri: d.uri,
+            name: d.name || d.profile?.name || '',
+            sub: d.artists?.items?.map((a) => a.profile?.name).join(', ') || d.ownerV2?.data?.name || d.publisher?.name || '',
+            kind: typeLabel[d.__typename] || d.__typename || '',
+            img: d.albumOfTrack?.coverArt?.sources?.[0]?.url || d.coverArt?.sources?.[0]?.url || d.visuals?.avatarImage?.sources?.[0]?.url || d.images?.items?.[0]?.sources?.[0]?.url || '',
+            round: d.__typename === 'Artist',
+            isTrack: d.__typename === 'Track',
+          };
+        }).filter((i) => i.uri && i.name);
+      } catch { spotItems = []; }
+    }
+    spotSel = 0;
+    drawSpot();
+  }
+  function actSpot(it, playNow) {
+    if (!it) return;
+    closeSpot();
+    if (it.isTrack || playNow) Spicetify.Player.playUri(it.uri);
+    else Spicetify.Platform.History.push(Spicetify.URI.fromString(it.uri).toURLPath(true));
+  }
+  let spotTimer = 0;
+  listen(spotInput, 'input', () => { clearTimeout(spotTimer); spotTimer = setTimeout(() => runSpot(spotInput.value), 140); });
+  listen(spotInput, 'keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!spotItems.length) return;
+      spotSel = (spotSel + (e.key === 'ArrowDown' ? 1 : -1) + spotItems.length) % spotItems.length;
+      drawSpot();
+      spotList.children[spotSel]?.scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'Enter') { e.preventDefault(); actSpot(spotItems[spotSel], e.metaKey || e.ctrlKey); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeSpot(); }
+  });
+  listen(spot, 'pointerdown', (e) => { if (e.target === spot) closeSpot(); });
+  listen(document, 'keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); e.stopPropagation(); spot.hidden ? openSpot() : closeSpot(); }
+  }, true);
+
+  // ---------------- cover-to-page transition ----------------
+  // Click a cover anywhere and it flies into the header of the album or playlist that opens (View Transitions).
+  let pendingCover = null;
+  listen(document, 'pointerdown', (e) => {
+    const holder = e.target instanceof Element && e.target.closest('[data-encore-id="card"], [data-encore-id="listRow"], [role="row"], .tt-item, .td-cover, .view-homeShortcutsGrid-shortcut, .td-open');
+    const img = holder?.classList.contains('td-open') ? document.querySelector('.td-cover.on img') : holder?.querySelector('img');
+    const art = !img && holder?.querySelector('.tt-art');
+    pendingCover = img || art ? { node: img || art, at: performance.now() } : null;
+  }, true);
+  const History = Spicetify.Platform.History;
+  const originalPush = History.push;
+  const waitFor = (find, ms) => new Promise((resolve) => {
+    const t0 = performance.now();
+    const tick = () => { const n = find(); if (n || performance.now() - t0 > ms) resolve(n || null); else requestAnimationFrame(tick); };
+    tick();
+  });
+  History.push = function tessPush(to, ...rest) {
+    const path = typeof to === 'string' ? to : to?.pathname || '';
+    const cover = pendingCover && performance.now() - pendingCover.at < 1200 ? pendingCover.node : null;
+    pendingCover = null;
+    if (!cover || !document.startViewTransition || document.hidden || !/^\/(album|playlist|collection)\b/.test(path) || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      return originalPush.call(this, to, ...rest);
+    }
+    let dest = null;
+    cover.style.viewTransitionName = 'tess-cover';
+    const vt = document.startViewTransition(async () => {
+      cover.style.viewTransitionName = '';
+      originalPush.call(this, to, ...rest);
+      dest = await waitFor(() => document.querySelector('.main-entityHeader-imageContainer img, .main-entityHeader-image'), 700);
+      if (dest) dest.style.viewTransitionName = 'tess-cover';
+    });
+    vt.ready.catch(() => {});
+    vt.finished.catch(() => {}).finally(() => { if (dest) dest.style.viewTransitionName = ''; cover.style.viewTransitionName = ''; });
+  };
+  onDispose(() => { History.push = originalPush; });
+
   // ---------------- artist pages: full-height motion header ----------------
   const canvasCache = new Map();
   // A song's Canvas: from the player's data when it's the current song, otherwise asked of Spotify.
@@ -1117,7 +1244,7 @@
 
   // Ring shape and stability.
   const SOURCE_SHARE = 0.25; // at most a quarter of the ring from one source
-  const KIND_SHARE = 0.5; // at most half the ring from one kind
+  const KIND_SHARE = 0.65; // at most about two thirds of the ring from one kind
   const MAX_ARTISTS = 2;
   const SCORE_QUANTUM = 1; // round scores to whole points before tie-breaking
   const DAY_TIE = 0.6; // day-seeded nudge inside one point
@@ -1225,7 +1352,7 @@
           addedAt,
           ownerIsSpotify: !!c.ownerIsSpotify,
           pinned: !!c.pinned,
-          sources: c.source ? [c.source] : [],
+          sources: [source],
           isDj: c.source === 'dj',
         });
         continue;
@@ -1238,7 +1365,7 @@
       if (!current.subtitle && c.subtitle) current.subtitle = c.subtitle;
       if (!current.img && c.img) current.img = c.img;
       if (SOURCE_RANK[source] < SOURCE_RANK[current.source]) current.source = source;
-      if (c.source && !current.sources.includes(c.source)) current.sources.push(c.source);
+      if (!current.sources.includes(source)) current.sources.push(source);
       if (shelfIndex !== null && (current.shelfIndex === null || shelfIndex < current.shelfIndex)) current.shelfIndex = shelfIndex;
       if (position !== null && (current.position === null || position < current.position)) current.position = position;
       if (lastPlayedAt !== null && (current.lastPlayedAt === null || lastPlayedAt > current.lastPlayedAt)) current.lastPlayedAt = lastPlayedAt;
@@ -1247,6 +1374,7 @@
       current.pinned = current.pinned || !!c.pinned;
       current.isDj = current.isDj || c.source === 'dj';
     }
+    for (const item of byUri.values()) item.family = familyOf(item.title) || item.uri;
     return Array.from(byUri.values());
   }
 
@@ -1318,7 +1446,7 @@
     if (item.isDj) return 'Your DJ, ready right now';
     if (signals.discoverWeekly && env.weekday === 1) return 'Your Monday discovery';
     if (signals.releaseRadar && env.weekday === 5) return 'New releases for Friday';
-    if (signals.daylist) return 'Your ' + WEEKDAYS[env.weekday] + ' ' + env.bucket + ' daylist';
+    if (signals.daylist) return 'Your ' + titleCase(WEEKDAYS[env.weekday]) + ' ' + env.bucket + ' daylist';
     if (item.source === 'timeOfDay') {
       if (signals.bucket === env.bucket && signals.weekday === env.weekday) {
         return 'Your ' + titleCase(WEEKDAYS[env.weekday]) + ' ' + env.bucket + ' mix';
@@ -1417,6 +1545,7 @@
         kind: item.kind,
         source: item.source,
         sources: item.sources,
+        family: item.family,
         shelfIndex: item.shelfIndex,
         position: item.position,
         lastPlayedAt: item.lastPlayedAt,
@@ -1438,10 +1567,12 @@
   function selectItems(ranked, slots, currentUri) {
     const perSource = Math.max(2, Math.floor(slots * SOURCE_SHARE));
     const perKind = Math.max(3, Math.ceil(slots * KIND_SHARE));
+    const perFamily = Math.max(1, Math.floor(slots / 2));
     const chosen = [];
     const chosenUris = new Set();
     const sourceCount = new Map();
     const kindCount = new Map();
+    const familyCount = new Map();
     let artists = 0;
 
     const allowed = (item, strict) => {
@@ -1450,6 +1581,7 @@
       if (!strict) return true;
       if ((sourceCount.get(item.source) || 0) >= perSource) return false;
       if ((kindCount.get(item.kind) || 0) >= perKind) return false;
+      if ((familyCount.get(item.family) || 0) >= perFamily) return false;
       return true;
     };
     const take = (item) => {
@@ -1457,6 +1589,7 @@
       chosenUris.add(item.uri);
       bump(sourceCount, item.source, 1);
       bump(kindCount, item.kind, 1);
+      bump(familyCount, item.family, 1);
       if (item.kind === 'artist') artists += 1;
     };
     const release = (index) => {
@@ -1464,6 +1597,7 @@
       chosenUris.delete(item.uri);
       bump(sourceCount, item.source, -1);
       bump(kindCount, item.kind, -1);
+      bump(familyCount, item.family, -1);
       if (item.kind === 'artist') artists -= 1;
       return item;
     };
@@ -1483,26 +1617,62 @@
     if (best) mustKeep.add(best.uri);
     if (currentUri) mustKeep.add(currentUri);
 
+    // Would this candidate fit if `removed` left the ring first? Used so the
+    // discovery/comfort guarantee can normally keep every cap intact.
+    const fitsAfter = (candidate, removed) => {
+      const artistAfter = artists - (removed.kind === 'artist' ? 1 : 0);
+      if (candidate.kind === 'artist' && artistAfter >= MAX_ARTISTS) return false;
+      const sourceAfter = (sourceCount.get(candidate.source) || 0) - (removed.source === candidate.source ? 1 : 0);
+      if (sourceAfter >= perSource) return false;
+      const kindAfter = (kindCount.get(candidate.kind) || 0) - (removed.kind === candidate.kind ? 1 : 0);
+      if (kindAfter >= perKind) return false;
+      const familyAfter = (familyCount.get(candidate.family) || 0) - (removed.family === candidate.family ? 1 : 0);
+      if (familyAfter >= perFamily) return false;
+      return true;
+    };
+
     // Guarantee at least one discovery and one familiar item when the pool has
     // one, even if the caps squeezed them out. Swap out the weakest eligible
     // item, never one that satisfies a guarantee already secured.
-    for (const need of ['discovery', 'comfort']) {
-      if (chosen.some((item) => item.flags[need])) continue;
-      let replacement = -1;
+    const swapIn = (need) => {
+      if (chosen.some((item) => item.flags[need])) return;
+      const wanted = ranked.filter((item) => item.flags[need] && !chosenUris.has(item.uri));
+      if (!wanted.length) return;
+
       for (let i = chosen.length - 1; i >= 0; i -= 1) {
-        if (!chosen[i].isDj && !mustKeep.has(chosen[i].uri)) { replacement = i; break; }
+        const removed = chosen[i];
+        if (removed.isDj || mustKeep.has(removed.uri)) continue;
+        for (const candidate of wanted) {
+          if (!fitsAfter(candidate, removed)) continue;
+          release(i);
+          take(candidate);
+          mustKeep.add(candidate.uri);
+          return;
+        }
       }
-      const candidate = ranked.find((item) => item.flags[need] && !chosenUris.has(item.uri));
-      if (!candidate) continue;
-      if (replacement === -1) {
-        if (chosen.length < slots) { take(candidate); mustKeep.add(candidate.uri); }
-        continue;
+
+      if (chosen.length < slots) {
+        take(wanted[0]);
+        mustKeep.add(wanted[0].uri);
+        return;
       }
+
+      // Crowded ring: the guarantee matters more than perfect balance.
+      let replacement = -1;
+      let lowest = Infinity;
+      for (let i = 0; i < chosen.length; i += 1) {
+        const item = chosen[i];
+        if (item.isDj || mustKeep.has(item.uri)) continue;
+        if (item.score < lowest) { lowest = item.score; replacement = i; }
+      }
+      if (replacement === -1) return;
       const removed = release(replacement);
-      // This is the one place balance gives way: the guarantee matters more.
-      if (allowed(candidate, false)) { take(candidate); mustKeep.add(candidate.uri); }
+      const candidate = wanted.find((item) => allowed(item, false));
+      if (candidate) { take(candidate); mustKeep.add(candidate.uri); }
       else take(removed);
-    }
+    };
+    swapIn('discovery');
+    swapIn('comfort');
 
     // If caps left holes, fill with the best remaining items. Source and kind
     // balance is a preference; the artist cap stays hard.
@@ -1523,14 +1693,13 @@
     let penalty = 0;
     if (a.source === b.source) penalty += CONTRAST_SOURCE;
     if (a.kind === b.kind) penalty += CONTRAST_KIND;
-    if (a.base === b.base) penalty += CONTRAST_TITLE;
+    if (a.family === b.family) penalty += CONTRAST_TITLE;
     return penalty;
   }
 
   function orderRing(chosen, currentUri) {
     const n = chosen.length;
     if (!n) return [];
-    for (const item of chosen) item.base = familyOf(item.title) || item.uri;
     const ring = new Array(n).fill(null);
 
     // Best item goes under the marker, unless that is what is already playing.
@@ -1575,18 +1744,18 @@
     const clashes = (index) => {
       const prev = ring[(index - 1 + n) % n];
       const next = ring[(index + 1) % n];
-      return (prev && prev.base === ring[index].base) || (next && next.base === ring[index].base);
+      return (prev && prev.family === ring[index].family) || (next && next.family === ring[index].family);
     };
 
     for (let pass = 0; pass < 4; pass += 1) {
       let changed = false;
       for (let i = 0; i < n; i += 1) {
         const j = (i + 1) % n;
-        if (ring[i].base !== ring[j].base) continue;
+        if (ring[i].family !== ring[j].family) continue;
         const movable = j === 0 ? i : j;
         for (let k = 1; k < n; k += 1) {
           if (k === movable || k === i || k === j) continue;
-          if (ring[k].base === ring[movable].base) continue;
+          if (ring[k].family === ring[movable].family) continue;
           const swap = ring[k];
           ring[k] = ring[movable];
           ring[movable] = swap;
