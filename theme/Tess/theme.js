@@ -267,6 +267,9 @@
     back.classList.add('on');
     auroraCanvases[auroraFront].classList.remove('on');
     auroraFront = 1 - auroraFront;
+    // the same picture also becomes the page's own background, so every panel and the top bar sit on it
+    // regardless of how Spotify stacks its layers
+    html.style.setProperty('--tess-aurora', `url("${back.toDataURL()}")`);
   }
   every(60000, paintAurora); // picks up the next part of the day
 
