@@ -1,0 +1,476 @@
+/* Tess Music — Home Page Redesign (Apple Music "Listen Now") */
+
+/* ================= 1. Masthead ================= */
+#tess-home-masthead {
+  padding-top: 24px;
+  padding-bottom: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  position: relative;
+  z-index: 2;
+}
+
+.tess-masthead-eyebrow {
+  font-family: var(--tess-font);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--tess-faint, rgba(255, 255, 255, 0.38));
+  line-height: 1.2;
+}
+
+.tess-masthead-greeting {
+  font-family: var(--tess-font);
+  font-size: clamp(30px, 3vw, 42px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.12;
+  color: #ffffff;
+  margin: 0;
+}
+
+/* ================= 2. Frosted Segmented Control (Chips) ================= */
+div.w2WpffC3sNc7GAWa4JVW,
+div:has(> .contentSpacing button[data-encore-id="chip"]) {
+  background: transparent !important;
+  padding-top: 8px !important;
+  padding-bottom: 14px !important;
+}
+
+/* Reset outer list/scroll wrappers */
+div.w2WpffC3sNc7GAWa4JVW [role="list"],
+div.w2WpffC3sNc7GAWa4JVW .JIrO_Kklclbf_mnPX9Dh {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* The actual segmented pill capsule */
+div.w2WpffC3sNc7GAWa4JVW div.ka2rn3DIgumRDdiAUrdT,
+div.w2WpffC3sNc7GAWa4JVW div:has(> [data-carousel-item] > button[data-encore-id="chip"]),
+.tess-chips-segmented {
+  display: inline-flex !important;
+  align-items: center !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  backdrop-filter: blur(24px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(180%) !important;
+  border: 1px solid var(--tess-hairline, rgba(255, 255, 255, 0.08)) !important;
+  border-radius: 999px !important;
+  padding: 3px !important;
+  gap: 2px !important;
+  width: fit-content !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+}
+
+div.w2WpffC3sNc7GAWa4JVW [data-carousel-item] {
+  display: inline-flex !important;
+}
+
+/* Button & inner states */
+div.w2WpffC3sNc7GAWa4JVW button[data-encore-id="chip"],
+button[data-encore-id="chip"] {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 999px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  cursor: pointer !important;
+  outline: none !important;
+}
+
+div.w2WpffC3sNc7GAWa4JVW button[data-encore-id="chip"] .e-101040-legacy-chip__inner,
+div.w2WpffC3sNc7GAWa4JVW button[data-encore-id="chip"] > span,
+button[data-encore-id="chip"] .e-101040-legacy-chip__inner {
+  background: transparent !important;
+  color: var(--tess-dim, rgba(255, 255, 255, 0.65)) !important;
+  font-family: var(--tess-font) !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  padding: 5px 14px !important;
+  border-radius: 999px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  transition: all 0.2s var(--tess-spring) !important;
+}
+
+/* Selected state: frosted white glass pill */
+div.w2WpffC3sNc7GAWa4JVW button[data-encore-id="chip"][aria-checked="true"] .e-101040-legacy-chip__inner,
+div.w2WpffC3sNc7GAWa4JVW button[data-encore-id="chip"].e-101040-legacy-chip--selected .e-101040-legacy-chip__inner,
+button[data-encore-id="chip"][aria-checked="true"] .e-101040-legacy-chip__inner {
+  background: rgba(255, 255, 255, 0.22) !important;
+  color: #ffffff !important;
+  font-weight: 600 !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25), inset 0 0 0 1px rgba(255, 255, 255, 0.15) !important;
+}
+
+/* Hover state */
+div.w2WpffC3sNc7GAWa4JVW button[data-encore-id="chip"]:not([aria-checked="true"]):hover .e-101040-legacy-chip__inner,
+button[data-encore-id="chip"]:not([aria-checked="true"]):hover .e-101040-legacy-chip__inner {
+  color: #ffffff !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* ================= 3. Featured Hero Card ================= */
+#tess-home-hero {
+  position: relative;
+  overflow: hidden;
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.02) 60%, rgba(0, 0, 0, 0.4) 100%), #141417;
+  border: 1px solid var(--tess-hairline, rgba(255, 255, 255, 0.08));
+  box-shadow: 0 16px 40px -10px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  margin-bottom: 28px;
+  cursor: pointer;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease, transform 0.25s var(--tess-spring);
+}
+
+#tess-home-hero:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 20px 48px -10px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  transform: translateY(-2px);
+}
+
+.tess-hero-ambient {
+  position: absolute;
+  right: -20px;
+  top: -20px;
+  width: 420px;
+  height: 420px;
+  background-size: cover;
+  background-position: center;
+  filter: blur(56px) saturate(160%);
+  opacity: 0.65;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 0;
+  transform: translateZ(0);
+}
+
+.tess-hero-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 30px 34px;
+  gap: 32px;
+  background: radial-gradient(circle at 85% 50%, transparent 0%, rgba(20, 20, 23, 0.35) 100%);
+}
+
+.tess-hero-details {
+  flex: 1;
+  min-width: 0;
+}
+
+.tess-hero-badge {
+  font-family: var(--tess-font);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--tess-accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+}
+
+.tess-hero-badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tess-accent);
+  box-shadow: 0 0 8px var(--tess-accent);
+}
+
+.tess-hero-title {
+  font-family: var(--tess-font);
+  font-size: clamp(24px, 2.5vw, 34px);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  color: #ffffff;
+  line-height: 1.15;
+  margin: 0 0 8px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tess-hero-subtitle {
+  font-family: var(--tess-font);
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--tess-dim);
+  line-height: 1.45;
+  max-width: 540px;
+  margin: 0 0 24px 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.tess-hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.tess-hero-btn {
+  font-family: var(--tess-font);
+  font-size: 13.5px;
+  font-weight: 600;
+  padding: 10px 22px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  outline: none;
+  transition: transform 0.2s var(--tess-spring), background 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+/* Glass Play pill */
+.tess-hero-btn-play {
+  background: rgba(255, 255, 255, 0.22);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  color: #ffffff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.tess-hero-btn-play:hover {
+  transform: scale(1.04);
+  background: rgba(255, 255, 255, 0.32);
+  border-color: rgba(255, 255, 255, 0.38);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.tess-hero-btn-play:active {
+  transform: scale(0.98);
+}
+
+/* Glass Open pill */
+.tess-hero-btn-open {
+  background: rgba(255, 255, 255, 0.09);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
+}
+
+.tess-hero-btn-open:hover {
+  transform: scale(1.04);
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.24);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+}
+
+.tess-hero-btn-open:active {
+  transform: scale(0.98);
+}
+
+.tess-hero-art-wrapper {
+  flex-shrink: 0;
+}
+
+.tess-hero-art {
+  width: 196px;
+  height: 196px;
+  border-radius: 14px;
+  object-fit: cover;
+  box-shadow: 0 16px 36px -8px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.12);
+  display: block;
+  transition: transform 0.3s var(--tess-spring);
+}
+
+#tess-home-hero:hover .tess-hero-art {
+  transform: scale(1.03);
+}
+
+/* ================= 4. Shortcut Tiles ================= */
+.view-homeShortcutsGrid-shortcut {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border-radius: 12px !important;
+  border: 1px solid var(--tess-hairline, rgba(255, 255, 255, 0.07)) !important;
+  backdrop-filter: blur(16px) !important;
+  -webkit-backdrop-filter: blur(16px) !important;
+  overflow: hidden !important;
+  box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+  transition: background 0.2s ease, transform 0.25s var(--tess-spring), box-shadow 0.2s ease, border-color 0.2s ease !important;
+}
+
+.view-homeShortcutsGrid-shortcut:hover {
+  background: rgba(255, 255, 255, 0.09) !important;
+  transform: translateY(-2px) !important;
+  box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+}
+
+.view-homeShortcutsGrid-imageContainer,
+.view-homeShortcutsGrid-imageWrapper,
+.view-homeShortcutsGrid-image {
+  border-radius: 8px !important;
+  overflow: hidden !important;
+}
+
+.view-homeShortcutsGrid-imageHolder {
+  margin: 6px !important;
+  border-radius: 8px !important;
+}
+
+.view-homeShortcutsGrid-shortcut button,
+.view-homeShortcutsGrid-shortcut [data-encore-id="buttonPrimary"] {
+  opacity: 0 !important;
+  transform: scale(0.85) !important;
+  transition: opacity 0.2s ease, transform 0.25s var(--tess-spring) !important;
+  border-radius: 999px !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45) !important;
+}
+
+.view-homeShortcutsGrid-shortcut:hover button,
+.view-homeShortcutsGrid-shortcut:hover [data-encore-id="buttonPrimary"] {
+  opacity: 1 !important;
+  transform: scale(1) !important;
+}
+
+/* ================= 5. Shelves Horizontal Scroll & Cards ================= */
+[data-testid="component-shelf"] div:has(> [role="grid"]),
+[data-testid="component-shelf"] .JIrO_Kklclbf_mnPX9Dh {
+  scroll-snap-type: x mandatory !important;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+  scroll-behavior: smooth !important;
+  mask-image: linear-gradient(to right, black calc(100% - 36px), transparent 100%) !important;
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - 36px), transparent 100%) !important;
+}
+
+[data-testid="component-shelf"] div:has(> [role="grid"])::-webkit-scrollbar,
+[data-testid="component-shelf"] .JIrO_Kklclbf_mnPX9Dh::-webkit-scrollbar {
+  display: none !important;
+}
+
+[data-testid="component-shelf"] [data-encore-id="card"],
+[data-testid="component-shelf"] .main-card-cardContainer,
+[data-testid="component-shelf"] [role="gridcell"] {
+  scroll-snap-align: start !important;
+}
+
+[data-testid="component-shelf"] [data-encore-id="card"],
+[data-testid="component-shelf"] .main-card-cardContainer {
+  border-radius: 12px !important;
+  background: rgba(255, 255, 255, 0.03) !important;
+  border: 1px solid transparent !important;
+  transition: transform 0.25s var(--tess-spring), box-shadow 0.25s ease, background 0.2s ease, border-color 0.2s ease !important;
+}
+
+[data-testid="component-shelf"] [data-encore-id="card"]:hover,
+[data-testid="component-shelf"] .main-card-cardContainer:hover {
+  transform: translateY(-4px) scale(1.02) !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 16px 32px -8px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
+}
+
+[data-testid="component-shelf"] .main-card-imageContainer img {
+  border-radius: 8px !important;
+  box-shadow: 0 8px 20px -4px rgba(0, 0, 0, 0.4) !important;
+}
+
+[data-testid="component-shelf"] .main-card-PlayButtonContainer {
+  opacity: 0 !important;
+  transform: translateY(6px) scale(0.9) !important;
+  transition: opacity 0.2s ease, transform 0.25s var(--tess-spring) !important;
+  pointer-events: none !important;
+}
+
+[data-testid="component-shelf"] [data-encore-id="card"]:hover .main-card-PlayButtonContainer,
+[data-testid="component-shelf"] .main-card-cardContainer:hover .main-card-PlayButtonContainer {
+  opacity: 1 !important;
+  transform: translateY(0) scale(1) !important;
+  pointer-events: auto !important;
+}
+
+/* ================= 6. Hide Ads ================= */
+[data-testid="home-ads-container"] {
+  display: none !important;
+}
+
+/* ================= 7. Staggered Animations & Spacing ================= */
+html.tess .main-view-container__scroll-node-child {
+  padding-bottom: 96px !important;
+}
+
+@keyframes tessFadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.tess-home-active #tess-home-masthead {
+  animation: tessFadeInUp 0.5s var(--tess-spring) 0.05s both;
+}
+
+.tess-home-active div.w2WpffC3sNc7GAWa4JVW,
+.tess-home-active div:has(> .contentSpacing button[data-encore-id="chip"]) {
+  animation: tessFadeInUp 0.5s var(--tess-spring) 0.12s both;
+}
+
+.tess-home-active #tess-home-hero {
+  animation: tessFadeInUp 0.55s var(--tess-spring) 0.18s both;
+}
+
+.tess-home-active .view-homeShortcutsGrid-shortcuts {
+  animation: tessFadeInUp 0.5s var(--tess-spring) 0.24s both;
+}
+
+.tess-home-active [data-testid="component-shelf"]:nth-of-type(1) {
+  animation: tessFadeInUp 0.55s var(--tess-spring) 0.3s both;
+}
+
+.tess-home-active [data-testid="component-shelf"]:nth-of-type(2) {
+  animation: tessFadeInUp 0.55s var(--tess-spring) 0.36s both;
+}
+
+.tess-home-active [data-testid="component-shelf"]:nth-of-type(n+3) {
+  animation: tessFadeInUp 0.55s var(--tess-spring) 0.42s both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tess-home-active #tess-home-masthead,
+  .tess-home-active div.w2WpffC3sNc7GAWa4JVW,
+  .tess-home-active #tess-home-hero,
+  .tess-home-active .view-homeShortcutsGrid-shortcuts,
+  .tess-home-active [data-testid="component-shelf"] {
+    animation: none !important;
+  }
+}
+
+/* ================= 8. Responsive Narrow Layout ================= */
+@media (max-width: 720px) {
+  .tess-hero-inner {
+    flex-direction: column-reverse;
+    align-items: flex-start;
+    padding: 24px;
+    gap: 20px;
+  }
+  .tess-hero-art {
+    width: 140px;
+    height: 140px;
+  }
+  .tess-hero-subtitle {
+    margin-bottom: 18px;
+  }
+}
