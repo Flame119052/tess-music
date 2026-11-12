@@ -6,9 +6,14 @@
 set -e
 
 REPO="Flame119052/tess-music"
-DL="https://github.com/$REPO/releases/latest/download"
 HOME_TESS="$HOME/Library/Application Support/Tess"
 CONF="$HOME/.config/tess-patcher"
+if [ -n "$TESS_TEST" ]; then
+  # a test install must not touch the real Tess: its own folders, its own patcher settings, a copy of Spotify
+  [ -n "$TESS_HOME" ] && [ -n "$TESS_CONFIG" ] && [ -n "$TESS_SPOTIFY" ] || { echo "TESS_TEST needs TESS_HOME, TESS_CONFIG and TESS_SPOTIFY"; exit 1; }
+  HOME_TESS="$TESS_HOME"; CONF="$TESS_CONFIG"
+  export SPICETIFY_CONFIG="$TESS_CONFIG" SPICETIFY_STATE="$TESS_CONFIG/state"
+fi
 MIN_SPOTIFY="1.2.40"
 
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
@@ -48,16 +53,25 @@ if [ ! -w "$SPOTIFY/Contents/Resources" ]; then
 fi
 
 # --- download --------------------------------------------------------------------------------------------------
+# The signed parts list says which file of each part is current; every download is checked against it.
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 step "Downloading Tess"
-curl -fsSL "$DL/tess-patcher-macos-universal.tar.gz" -o "$TMP/patcher.tgz" || fail "Download failed. Check your connection and try again."
-curl -fsSL "$DL/tess-theme.tar.gz" -o "$TMP/theme.tgz" || fail "Download failed. Check your connection and try again."
-curl -fsSL "$DL/tess-mini.zip" -o "$TMP/mini.zip" || true
+CH="${TESS_PARTS_CHANNEL:-stable}"
+getlist() { curl -fsSL -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/dist/$1?ref=$CH" -o "$TMP/$1" \
+  || curl -fsSL "https://raw.githubusercontent.com/$REPO/$CH/dist/$1" -o "$TMP/$1"; }
+getlist components.txt && getlist components.sig || fail "Download failed. Check your connection and try again."
+part() { awk -v n="$1" '$1 == n { print $'"$2"' }' "$TMP/components.txt"; }
+fetch() { curl -fsSL "$(part "$1" 3)" -o "$2" && [ "$(shasum -a 256 "$2" | cut -d' ' -f1)" = "$(part "$1" 2)" ]; }
+fetch patcher "$TMP/patcher.tgz" || fail "Download failed. Check your connection and try again."
+mkdir -p "$TMP/p" && tar -xzf "$TMP/patcher.tgz" -C "$TMP/p"
+"$TMP/p/tess-verify" "$TMP/components.txt" "$(tr -d '\n' < "$TMP/components.sig")" || fail "Tess's download didn't pass its signature check, so nothing was installed."
+fetch theme "$TMP/theme.tgz" || fail "Download failed. Check your connection and try again."
+fetch updater "$TMP/updater.sh" || fail "Download failed. Check your connection and try again."
+fetch mini "$TMP/mini.zip" || rm -f "$TMP/mini.zip"
 mkdir -p "$HOME_TESS/bin"
-rm -rf "$HOME_TESS/bin/patcher"; mkdir -p "$HOME_TESS/bin/patcher"
-tar -xzf "$TMP/patcher.tgz" -C "$HOME_TESS/bin/patcher"
+rm -rf "$HOME_TESS/bin/patcher"; ditto "$TMP/p" "$HOME_TESS/bin/patcher"
 PATCHER="$HOME_TESS/bin/patcher/tess-patcher"
-chmod +x "$PATCHER"
+chmod +x "$PATCHER" "$HOME_TESS/bin/patcher/tess-verify"
 
 # --- pause the update helper while we work (it must never run at the same time) --------------------------------------
 launchctl bootout "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 || true
@@ -116,45 +130,25 @@ if [ ! -f "$APPS/xpui/index.html" ] || ! grep -q "spicetifyWrapper" "$APPS/xpui/
   put_back
   fail "Tess didn't apply cleanly. Spotify was put back exactly as it was; please report this."
 fi
+# --- the updater: keeps every part of Tess current from now on, and puts Tess back after Spotify updates --------------
+cp "$TMP/updater.sh" "$HOME_TESS/updater.sh"; chmod +x "$HOME_TESS/updater.sh"
+{ echo "SPOTIFY='$SPOTIFY'"; [ -n "$TESS_TEST" ] && echo "TESS_CONFIG='$CONF'"; } > "$HOME_TESS/updater.env"
+mkdir -p "$HOME_TESS/state"
+for n in patcher theme updater mini; do [ "$n" = mini ] && [ ! -s "$TMP/mini.zip" ] && continue; part $n 2 > "$HOME_TESS/state/$n"; done
+rm -f "$HOME_TESS/reapply.sh"
 rm -f "$HOME_TESS/.installing"
 
 if [ -n "$TESS_TEST" ]; then echo; bold "Test install into $SPOTIFY finished."; exit 0; fi
 
-# --- the guard: re-apply after Spotify updates itself -----------------------------------------------------------------
-step "Keeping Tess on through Spotify updates"
-cat > "$HOME_TESS/reapply.sh" <<EOF
-#!/bin/zsh
-# Re-applies Tess after Spotify updates itself. It never restores or deletes anything: it only acts on a clean,
-# just-updated Spotify, and tells you if macOS doesn't let it.
-APPS="$SPOTIFY/Contents/Resources/Apps"
-LOCK="$HOME_TESS/.installing"
-[ -e "\$LOCK" ] && exit 0
-[ -f "\$APPS/xpui.spa" ] || exit 0
-[ -d "\$APPS/xpui" ] && exit 0
-sleep 8
-{ [ -f "\$APPS/xpui.spa" ] && [ ! -d "\$APPS/xpui" ]; } || exit 0
-touch "\$LOCK"
-echo "\$(date) Spotify updated; re-applying Tess" >> "$HOME_TESS/guard.log"
-running=\$(pgrep -x Spotify >/dev/null && echo 1)
-if "$PATCHER" backup apply --no-restart >> "$HOME_TESS/guard.log" 2>&1 && [ -d "\$APPS/xpui" ]; then
-  if [ -n "\$running" ]; then
-    osascript -e 'tell application "Spotify" to quit' >/dev/null 2>&1
-    for i in {1..40}; do pgrep -x Spotify >/dev/null || break; sleep 0.5; done
-    open -a "$SPOTIFY"
-  fi
-else
-  osascript -e 'display notification "Spotify updated. Run the Tess install line again to bring Tess back." with title "Tess Music"' >/dev/null 2>&1
-fi
-rm -f "\$LOCK"
-EOF
-chmod +x "$HOME_TESS/reapply.sh"
+# --- the helper that runs the updater -----------------------------------------------------------------------------
+step "Keeping Tess up to date, and on through Spotify updates"
 mkdir -p "$HOME/Library/LaunchAgents"
 cat > "$HOME/Library/LaunchAgents/music.tess.guard.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>music.tess.guard</string>
-<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$HOME_TESS/reapply.sh</string></array>
+<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$HOME_TESS/updater.sh</string></array>
 <key>WatchPaths</key><array><string>$SPOTIFY/Contents/Resources/Apps</string></array>
 <key>StartInterval</key><integer>300</integer>
 <key>RunAtLoad</key><true/>

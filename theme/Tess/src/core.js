@@ -2193,4 +2193,6 @@
   sweepStale();
   placeTimeline();
   onRoute();
+  // tells the loader this release started cleanly, so it can be kept as the last good copy
+  window.__tessReady = true;
 })();
