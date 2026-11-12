@@ -2074,3 +2074,30 @@ html.tess.tess-artist .before-scroll-node > div:has(> .tess-hero-bg) {
 html.tess.tess-artist .tess-hero-bg {
   height: auto !important;
 }
+
+/* Inside the three panels Spotify's surface colours are glass, not paint: the page background is clear and its
+   cards are a light frost over the window's colour. Menus, dialogs and tooltips live outside the panels and keep
+   the solid palette above, so they stay readable. */
+html.tess :is(#main-view, #Desktop_LeftSidebar_Id, .Root__right-sidebar-peek) {
+  --background-base: transparent;
+  --background-elevated-base: rgba(255, 255, 255, 0.055);
+  --background-elevated-highlight: rgba(255, 255, 255, 0.09);
+  --background-elevated-press: rgba(255, 255, 255, 0.04);
+  --background-highlight: rgba(255, 255, 255, 0.07);
+  --background-press: rgba(255, 255, 255, 0.04);
+  --spice-main: transparent;
+  --spice-main-elevated: rgba(255, 255, 255, 0.055);
+  --spice-card: rgba(255, 255, 255, 0.055);
+  --spice-highlight: rgba(255, 255, 255, 0.07);
+  --spice-highlight-elevated: rgba(255, 255, 255, 0.09);
+  --spice-sidebar: transparent;
+}
+/* Spotify draws icons on its green buttons in the page-background colour; inside the panels that is now clear,
+   so the green buttons get it back as solid black */
+html.tess :is(#main-view, #Desktop_LeftSidebar_Id, .Root__right-sidebar-peek) :is([data-encore-id="buttonPrimary"], [class*="button-primary__inner"]) {
+  --background-base: #000;
+  --text-base: #000;
+}
+html.tess :is(#main-view, #Desktop_LeftSidebar_Id, .Root__right-sidebar-peek) [class*="button-primary__inner"] {
+  color: #000 !important;
+}
