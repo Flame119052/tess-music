@@ -109,7 +109,8 @@ try { run('git', ['-C', out, 'commit', '-q', '-m', `Tess ${version} (${channel})
 run('git', ['-C', out, 'push', '-q', '-u', 'origin', channel]);
 // Installs from 0.1.0 have a loader that reads Flame119052/tess-releases. Keep that repo as a mirror of each channel
 // (never archive it), or those users stop getting updates.
-run('git', ['-C', out, 'push', '-q', '--force', 'https://github.com/Flame119052/tess-releases.git', `HEAD:refs/heads/${channel}`]);
+const mirror = process.env.TESS_MIRROR_TOKEN ? `https://x-access-token:${process.env.TESS_MIRROR_TOKEN}@github.com/Flame119052/tess-releases.git` : 'https://github.com/Flame119052/tess-releases.git';
+try { run('git', ['-C', out, 'push', '-q', '--force', mirror, `HEAD:refs/heads/${channel}`]); } catch { console.error('mirror push to tess-releases failed; 0.1.0 installs will not see this release'); }
 const assets = [`${build}tess-theme.tar.gz`, `${build}tess-mini.zip`, `${build}tess-patcher-macos-universal.tar.gz`, `${build}tess-updater.sh`];
 try {
   run('gh', ['release', 'create', `v${version}`, ...assets, '-R', 'Flame119052/tess-music', '--target', channel, '-t', `Tess ${version}`, '-n', `Tess ${version}. Install: curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | sh`, ...(channel === 'beta' ? ['--prerelease'] : ['--latest'])]);

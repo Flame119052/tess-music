@@ -54,7 +54,9 @@ touch "$STAMP"
 [ -x "$VERIFY" ] || exit 0
 CHANNEL="${TESS_PARTS_CHANNEL:-stable}"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"; rm -f "$LOCK"' EXIT
-get() { curl -fsSL --max-time 60 -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/dist/$1?ref=$CHANNEL" -o "$2"; }
+# GitHub's API is read live but allows 60 reads an hour per network; the raw file address is the fallback
+get() { curl -fsSL --max-time 60 -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/dist/$1?ref=$CHANNEL" -o "$2" \
+  || curl -fsSL --max-time 60 "https://raw.githubusercontent.com/$REPO/$CHANNEL/dist/$1" -o "$2"; }
 get components.txt "$TMP/components.txt" && get components.sig "$TMP/components.sig" || exit 0
 if ! "$VERIFY" "$TMP/components.txt" "$(tr -d '\n' < "$TMP/components.sig")"; then
   log "parts list failed its signature check; ignored"
