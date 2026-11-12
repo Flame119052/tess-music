@@ -98,7 +98,7 @@
   const route = () => Spicetify.Platform.History.location?.pathname || '';
 
   // ---------------- settings ----------------
-  const DEFAULTS = { coverVideo: true, panelVideo: true, artistVideo: true, tintWindow: true, sideLyrics: true, circadian: true };
+  const DEFAULTS = { npStyle: 'cover', coverVideo: true, panelVideo: true, artistVideo: true, tintWindow: true, sideLyrics: true, circadian: true };
   const settings = (() => {
     try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('tess:settings') || '{}') }; } catch { return { ...DEFAULTS }; }
   })();
@@ -293,6 +293,7 @@
         <button class="tb-lyrics" aria-label="Lyrics">${I.lyrics}</button>
         <button class="tb-queue" aria-label="Queue">${I.queue}</button>
         <button class="tb-devices" aria-label="Connect to a device">${I.devices}</button>
+        <button class="tb-mini" aria-label="Open Miniplayer">${I.mini}</button>
         <div class="tb-vol">${I.volume}<input type="range" min="0" max="1" step="0.01" aria-label="Volume"></div>
       </div>
     </div>`));
@@ -312,6 +313,7 @@
   q(bar, '.tb-art').onclick = () => openNP('lyrics');
   q(bar, '.tb-lyrics').onclick = () => openNP('lyrics');
   q(bar, '.tb-queue').onclick = () => spotifyButton('[data-testid="control-button-queue"]')?.click();
+  q(bar, '.tb-mini').onclick = () => openMini();
   q(bar, '.tb-devices').onclick = () => spotifyButton('button[aria-label="Connect to a device"]')?.click();
   q(bar, '.tb-prog').onclick = (e) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -332,11 +334,14 @@
         <button class="tn-devices" aria-label="Connect to a device">${I.devices}</button>
         <input class="tn-vol" type="range" min="0" max="1" step="0.01" aria-label="Volume">
         <span class="tn-volicon">${I.volume}</span>
+        <button class="tn-style" aria-label="Cover or vinyl"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9.5"/><circle cx="12" cy="12" r="3"/><path d="M12 5.5a6.5 6.5 0 0 1 6.5 6.5"/></svg></button>
         <button class="tn-gear" aria-label="Tess Music settings">${I.gear}</button>
       </div>
       <div class="tn-stage">
         <div class="tn-player">
-          <div class="tn-cover"><img alt=""><video muted loop playsinline></video></div>
+          <div class="tn-flow" aria-hidden="true"></div>
+          <div class="tn-cover"><img alt=""><video muted loop playsinline></video><i class="tn-spindle"></i></div>
+          <svg class="tn-arm" viewBox="0 0 60 220" aria-hidden="true"><circle cx="30" cy="22" r="18" fill="rgba(255,255,255,.18)" stroke="rgba(255,255,255,.5)"/><circle cx="30" cy="22" r="6" fill="#ddd"/><path d="M30 22 L30 170 L44 200" stroke="#e8e8ea" stroke-width="5" fill="none" stroke-linecap="round"/><rect x="36" y="194" width="16" height="22" rx="3" fill="#cfcfd4"/></svg>
           <div class="tn-meta">
             <div class="tn-text"><h2></h2><p class="tess-marquee"><span></span></p></div>
             <button class="tn-round tn-heart" aria-label="Add to playlist">${I.unsaved}</button>
@@ -363,6 +368,7 @@
 
   let npOpen = false;
   function openNP(mode) {
+    renderFlow();
     npOpen = true;
     setMode(mode || 'lyrics');
     np.classList.add('open');
@@ -388,7 +394,37 @@
     requestAnimationFrame(fitMarquees);
   }
   q(np, '.tn-close').onclick = closeNP;
-  q(np, '.tn-mini').onclick = () => { closeNP(); spotifyButton('[data-testid="pip-toggle-button"]')?.click(); };
+  q(np, '.tn-mini').onclick = () => { closeNP(); openMini(); };
+  // Cover or Vinyl, remembered
+  const applyNpStyle = () => np.classList.toggle('vinyl', settings.npStyle === 'vinyl');
+  q(np, '.tn-style').onclick = () => { settings.npStyle = settings.npStyle === 'vinyl' ? 'cover' : 'vinyl'; saveSettings(); applyNpStyle(); };
+  applyNpStyle();
+
+  // Cover Flow of the queue around the cover: what played before on the left, what's next on the right.
+  // Click a card to jump to it.
+  function renderFlow() {
+    const st = Spicetify.Platform.PlayerAPI.getState?.() || {};
+    const prev = (st.previousItems || []).slice(-2);
+    const next = (st.nextItems || []).filter((t) => t.uri?.startsWith('spotify:track') || t.uri?.startsWith('spotify:episode')).slice(0, 3);
+    const flow = q(np, '.tn-flow');
+    const cards = [...prev.map((t, i) => [t, i - prev.length]), ...next.map((t, i) => [t, i + 1])];
+    flow.replaceChildren(...cards.map(([t, k]) => {
+      const c = el('<button class="tn-card"><img alt=""><span><b></b><small></small></span></button>');
+      const a = Math.abs(k), dir = Math.sign(k);
+      // fanned out to each side, turned toward the middle, further ones smaller and dimmer
+      c.style.transform = `translateX(${dir * (30 + a * 22)}%) translateZ(${-a * 200}px) rotateY(${-dir * 42}deg)`;
+      c.style.opacity = String(1 - a * 0.25);
+      c.style.zIndex = String(10 - a);
+      q(c, 'img').src = imageUrl(t.images?.[0]?.url || t.album?.images?.[0]?.url || '');
+      q(c, 'b').textContent = t.name || '';
+      q(c, 'small').textContent = (t.artists || []).map((a) => a.name).join(', ');
+      c.onclick = async () => {
+        if (k < 0) { for (let n = 0; n < -k; n++) await P.back(); }
+        else { for (let n = 0; n < k; n++) await P.next(); }
+      };
+      return c;
+    }));
+  }
   q(np, '.tn-devices').onclick = () => spotifyButton('button[aria-label="Connect to a device"]')?.click();
   q(np, '.tn-gear').onclick = openSettings;
   q(np, '.tn-lyr').onclick = () => setMode(np.classList.contains('mode-lyrics') ? 'none' : 'lyrics');
@@ -426,6 +462,89 @@
     }
   }
   listen(window, 'resize', fitMarquees);
+
+  // ---------------- Tess miniplayer ----------------
+  // A small always-on-top window (Document Picture-in-Picture, the same thing Spotify's own miniplayer uses):
+  // the artwork fills it, controls float on liquid glass, the current lyric line sits on top. It resizes from a
+  // square "tile" to a slim "strip" depending on how you shape the window.
+  let mini = null;
+  async function openMini() {
+    if (mini && !mini.closed) { mini.focus(); return; }
+    if (!window.documentPictureInPicture) { spotifyButton('[data-testid="pip-toggle-button"]')?.click(); return; }
+    mini = await documentPictureInPicture.requestWindow({ width: 340, height: 380 });
+    const d = mini.document;
+    const css = d.createElement('style');
+    css.textContent = MINI_CSS;
+    d.head.appendChild(css);
+    d.body.innerHTML = `
+      <div class="m-art"><img alt=""><div class="m-glow"></div></div>
+      <div class="m-lyric"></div>
+      <div class="m-glass">
+        <div class="m-text"><b></b><small></small></div>
+        <div class="m-prog"><i></i></div>
+        <div class="m-ctl">
+          <button class="m-prev" aria-label="Previous">${I.prev}</button>
+          <button class="m-play" aria-label="Play or pause">${I.pause}</button>
+          <button class="m-next" aria-label="Next">${I.next}</button>
+        </div>
+      </div>`;
+    const mq = (sel) => d.querySelector(sel);
+    mq('.m-prev').onclick = () => P.back();
+    mq('.m-next').onclick = () => P.next();
+    mq('.m-play').onclick = () => P.togglePlay();
+    mq('.m-prog').onclick = (e) => { const r = e.currentTarget.getBoundingClientRect(); P.seek(Math.round(((e.clientX - r.left) / r.width) * P.getDuration())); };
+    mq('.m-art').ondblclick = () => { window.focus(); openNP('lyrics'); };
+    const sync = () => {
+      if (!mini || mini.closed) return;
+      mq('.m-art img').src = artUrl();
+      mq('.m-text b').textContent = item()?.name || meta().title || '';
+      mq('.m-text small').textContent = meta().artist_name || '';
+      mq('.m-play').innerHTML = P.isPlaying() ? I.pause : I.play;
+    };
+    const tick = () => {
+      if (!mini || mini.closed) return;
+      const ms = P.getProgress();
+      mq('.m-prog i').style.width = Math.min(100, (ms / (P.getDuration() || 1)) * 100) + '%';
+      const i = lyrics.lines.length && lyrics.sync !== 'UNSYNCED' ? lineAt(ms + 120) : -1;
+      const text = i >= 0 ? lyrics.lines[i].text : '';
+      if (mq('.m-lyric').textContent !== text) mq('.m-lyric').textContent = text;
+      d.body.classList.toggle('strip', mini.innerHeight < 200);
+    };
+    sync();
+    const id = setInterval(tick, 250);
+    P.addEventListener('songchange', sync);
+    P.addEventListener('onplaypause', sync);
+    mini.addEventListener('pagehide', () => { clearInterval(id); P.removeEventListener('songchange', sync); P.removeEventListener('onplaypause', sync); mini = null; });
+  }
+  onDispose(() => { try { mini?.close(); } catch {} });
+  const MINI_CSS = `
+    *{box-sizing:border-box;margin:0}
+    html,body{height:100%;background:#0b0b0e;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;overflow:hidden;user-select:none}
+    .m-art{position:absolute;inset:0}
+    .m-art img{width:100%;height:100%;object-fit:cover;display:block}
+    .m-glow{position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,.25),transparent 30%,transparent 45%,rgba(0,0,0,.55))}
+    .m-lyric{position:absolute;left:16px;right:16px;top:14px;font-weight:750;font-size:17px;line-height:1.25;text-shadow:0 2px 14px rgba(0,0,0,.6);transition:opacity .3s}
+    .m-lyric:empty{opacity:0}
+    .m-glass{position:absolute;left:10px;right:10px;bottom:10px;padding:12px 14px 10px;border-radius:22px;
+      background:linear-gradient(180deg,rgba(255,255,255,.16),rgba(255,255,255,.06));
+      -webkit-backdrop-filter:blur(26px) saturate(1.9);backdrop-filter:blur(26px) saturate(1.9);
+      box-shadow:inset 0 1px 0 rgba(255,255,255,.35),inset 0 -1px 0 rgba(0,0,0,.2),inset 0 0 0 1px rgba(255,255,255,.12),0 10px 30px rgba(0,0,0,.35)}
+    .m-text{display:flex;flex-direction:column;gap:2px;min-width:0}
+    .m-text b,.m-text small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .m-text b{font-size:15px;font-weight:700}
+    .m-text small{font-size:12.5px;color:rgba(255,255,255,.75)}
+    .m-prog{position:relative;height:4px;margin:10px 0 8px;border-radius:2px;background:rgba(255,255,255,.25);cursor:pointer}
+    .m-prog::before{content:"";position:absolute;inset:-7px 0}
+    .m-prog i{display:block;height:100%;width:0;border-radius:2px;background:#fff}
+    .m-ctl{display:flex;justify-content:center;align-items:center;gap:30px}
+    button{all:unset;cursor:pointer;display:grid;place-items:center;color:#fff;transition:transform .2s}
+    button:active{transform:scale(.88)}
+    .m-play svg{width:20px;height:22px}
+    body.strip .m-lyric{display:none}
+    body.strip .m-glass{top:8px;bottom:8px;left:8px;right:8px;display:grid;grid-template-columns:1fr auto;grid-template-rows:auto auto;align-items:center;column-gap:12px;padding:8px 14px}
+    body.strip .m-prog{grid-column:1/-1;margin:6px 0 0}
+    body.strip .m-ctl{gap:18px}
+  `;
 
   // ---------------- lyrics (Spotify's own, time-synced) ----------------
   let lyrics = { uri: null, sync: 'NONE', lines: [] };
@@ -568,6 +687,7 @@
   listen(document, 'click', (e) => {
     const b = e.target instanceof Element && e.target.closest('button');
     const label = b?.getAttribute('aria-label') || '';
+    if (b?.dataset.testid === 'pip-toggle-button' && !b.closest('#tess-bar, #tess-np')) { e.preventDefault(); e.stopImmediatePropagation(); openMini(); return; }
     if (!/^(Expand Now Playing view|Lyrics|Open lyrics|Show lyrics)$/i.test(label) || b.closest('#tess-bar, #tess-np, .tess-side-lyrics')) return;
     e.preventDefault();
     e.stopImmediatePropagation();
@@ -714,6 +834,7 @@
       });
     });
     loadLyrics();
+    if (npOpen) renderFlow();
     syncSideCover();
     if (npOpen) renderQueue();
     syncState();

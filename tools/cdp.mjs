@@ -9,7 +9,7 @@ ws.onmessage = e => { const m = JSON.parse(e.data); if (pending.has(m.id)) { pen
 await new Promise(r => ws.onopen = r);
 const send = (method, params = {}) => new Promise(r => { pending.set(++id, r); ws.send(JSON.stringify({ id, method, params })); });
 if (cmd === 'eval') {
-  const r = await send('Runtime.evaluate', { expression: arg, awaitPromise: true, returnByValue: true });
+  const r = await send('Runtime.evaluate', { expression: arg, awaitPromise: true, returnByValue: true, userGesture: true });
   const v = r.result?.result?.value ?? r.result?.exceptionDetails ?? r.result;
   console.log(typeof v === 'string' ? v : JSON.stringify(v, null, 1));
 } else if (cmd === 'shot') {
