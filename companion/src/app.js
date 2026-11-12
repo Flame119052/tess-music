@@ -85,7 +85,6 @@ window.TessApp = (function () {
   function openDevices() {
     const box = el('<div><h3 class="tc-sheet-title">Play on</h3><div class="tc-devs"></div></div>');
     const list = box.querySelector('.tc-devs');
-    const chosen = localStorage.getItem('tc:device');
     const row = (label, sub, active, onClick) => {
       const r = el('<button class="tc-row tc-rowbtn"><span><b></b><small></small></span><span class="tc-dot"></span></button>');
       r.querySelector('b').textContent = label;
@@ -94,19 +93,23 @@ window.TessApp = (function () {
       r.onclick = onClick;
       return r;
     };
-    list.appendChild(row('Automatic', 'Let Spotify pick the active device', !chosen, () => { TessSync.setTargetDevice(null); closeSheet(); }));
-    for (const d of TessSync.state.devices) {
-      list.appendChild(row(d.name, d.type + (d.is_restricted ? ' · unavailable' : ''), chosen === d.id, () => { TessSync.transfer(d.id); toast('Playing on ' + d.name); closeSheet(); }));
-    }
-    const foot = el('<p class="tc-foot">Devices appear when Spotify is running on them.</p>');
-    list.appendChild(foot);
-    TessSync.loadDevices().then(() => {
+    function draw() {
       if (!sheet || !sheet.isConnected) return;
+      const chosen = localStorage.getItem('tc:device');
+      list.replaceChildren();
+      list.appendChild(row('Automatic', 'Let Spotify pick the active device', !chosen, () => { TessSync.setTargetDevice(null); closeSheet(); }));
       for (const d of TessSync.state.devices) {
-        if ([...list.children].some((r) => r.querySelector('b')?.textContent === d.name)) continue;
-        list.insertBefore(row(d.name, d.type + (d.is_restricted ? ' · unavailable' : ''), chosen === d.id, () => { TessSync.transfer(d.id); toast('Playing on ' + d.name); closeSheet(); }), foot);
+        const here = d.id && d.id === TessSync.state.localDeviceId;
+        list.appendChild(row(d.name, (here ? 'This device · ' : '') + d.type + (d.is_restricted ? ' · unavailable' : ''), chosen === d.id, () => {
+          TessSync.transfer(d.id);
+          toast(here ? 'Playing right here' : 'Playing on ' + d.name);
+          closeSheet();
+        }));
       }
-    });
+      list.appendChild(el('<p class="tc-foot">Devices appear when Spotify is running on them. "Tess" is this browser, once it has connected.</p>'));
+    }
+    draw();
+    TessSync.loadDevices().then(draw);
     openSheet(box);
   }
 

@@ -24,6 +24,8 @@ window.TessSync = (function () {
     shuffle: false,
     repeat: 'off',
     saved: false,
+    localDeviceId: null, // this browser, once the Web Playback SDK has connected it as a device
+    localReady: false,
   };
   let targetDevice = localStorage.getItem('tc:device') || null;
 
@@ -137,6 +139,69 @@ window.TessSync = (function () {
     emit();
   }
 
+  // ---------- in-app playback: Spotify's Web Playback SDK ----------
+  // The existing system with the DRM inside (FairPlay through EME on iOS Safari, Widevine on Android
+  // Chrome). Once connected, this browser is a Connect device named Tess: it can play full tracks itself,
+  // and every flow here — transfer, play with a device target — reaches it like any other device. iOS
+  // quirks live in two places: audio starts only when activateElement() runs inside your tap, and volume
+  // is not settable (always reports 1).
+  let sdkPlayer = null;
+  let sdkLoaded = false;
+  function loadSdk() {
+    if (sdkLoaded) return;
+    sdkLoaded = true;
+    window.onSpotifyWebPlaybackSDKReady = initSdk;
+    const s = document.createElement('script');
+    s.src = 'https://sdk.scdn.co/spotify-player.js';
+    s.async = true;
+    document.head.appendChild(s);
+  }
+  async function initSdk() {
+    try {
+      sdkPlayer = new window.Spotify.Player({
+        name: 'Tess',
+        volume: 0.8,
+        getOAuthToken: (cb) => TessAuth.token().then(cb).catch(() => {}),
+      });
+      sdkPlayer.addListener('initialization_error', () => { state.localReady = false; emit(); });
+      sdkPlayer.addListener('account_error', () => { state.localReady = false; emit(); });
+      sdkPlayer.addListener('ready', ({ device_id }) => {
+        state.localDeviceId = device_id;
+        state.localReady = true;
+        emit();
+        loadDevices();
+      });
+      sdkPlayer.addListener('not_ready', () => { state.localReady = false; emit(); });
+      // the local player's own truth: instant when Tess is the device that's playing
+      sdkPlayer.addListener('player_state_changed', (ps) => {
+        if (!ps?.track_window?.current_track) return;
+        const cur = ps.track_window.current_track;
+        const uri = cur.uri;
+        if (uri && uri !== state.track?.uri) {
+          state.track = {
+            id: uri.split(':')[2], uri, name: cur.name || '',
+            artists: (cur.artists || []).map((a) => a.name),
+            album: cur.album ? { name: cur.album.name, uri: cur.album.uri, images: (cur.album.images || []).map((i) => ({ url: i.url, width: i.width })) } : null,
+            duration_ms: ps.duration || 0, loading: true,
+          };
+          state.saved = false;
+          TessAPI.track(state.track.id)
+            .then((t) => { if (t && state.track?.id === t.id) { state.track = shapeTrack(t); checkSaved(); emit(); } })
+            .catch(() => {});
+        }
+        if (ps.duration) state.duration = ps.duration;
+        anchor(ps.position, !ps.paused);
+        state.active = true;
+        state.ready = true;
+        emit();
+      });
+      await sdkPlayer.connect();
+    } catch {
+      state.localReady = false;
+      emit();
+    }
+  }
+
   // ---------- actions: optimistic first, command second, confirmation third ----------
   const deviceArg = () => targetDevice || undefined;
 
@@ -164,6 +229,7 @@ window.TessSync = (function () {
     const start = (deviceId) => TessAPI.play(deviceId, body);
     try {
       await start(deviceArg());
+      if (targetDevice === state.localDeviceId) { try { sdkPlayer?.activateElement?.(); } catch {} }
     } catch {
       // no active device: hand playback to the first one that will take it
       try {
@@ -229,6 +295,8 @@ window.TessSync = (function () {
     setTargetDevice(id);
     emit();
     try { await TessAPI.transfer([id], state.playing); } catch {}
+    // iOS: after a transfer to this browser the audio only starts inside the same tap
+    if (id === state.localDeviceId) { try { sdkPlayer?.activateElement?.(); } catch {} }
     setTimeout(refresh, 700);
   }
 
@@ -236,6 +304,7 @@ window.TessSync = (function () {
     refresh();
     loadDevices();
     openDealer();
+    loadSdk(); // this browser joins the device list as "Tess"; play here whenever you want
     setInterval(() => { if (!document.hidden) refresh(); }, 1500);        // the fallback and drift-corrector
     setInterval(() => { if (!document.hidden) loadDevices(); }, 30000);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) { refresh(); loadDevices(); } });

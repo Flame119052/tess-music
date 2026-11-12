@@ -83,6 +83,8 @@ function check() {
   ok(!/client_secret/i.test(sources), 'no client secret anywhere');
   ok(!/\bTODO\b|\bFIXME\b/.test(read('index.html') + sources + read('styles.css')), 'no TODOs left behind');
   ok(sources.includes('wss://dealer.spotify.com'), 'dealer push socket wired');
+  ok(sources.includes('sdk.scdn.co/spotify-player.js'), 'Web Playback SDK wired for in-app playback');
+  ok(sources.includes('activateElement'), 'iOS activateElement after transfer wired');
   ok(sources.includes('setPositionState'), 'lock-screen timeline wired');
   ok(read('src/remote.js').includes("!== '0'"), 'background listening on by default');
   ok(read('src/sync.js').includes('anchor'), 'optimistic anchors in place');
