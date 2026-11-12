@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Tess">
+<meta name="theme-color" content="#07070a">
+<title>Tess</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="aurora" aria-hidden="true"><canvas width="96" height="54"></canvas></div>
+<div id="app"></div>
+<script src="src/dial-pick.js"></script>
+<script src="src/auth.js"></script>
+<script src="src/api.js"></script>
+<script src="src/aurora.js"></script>
+<script src="src/sync.js"></script>
+<script src="src/remote.js"></script>
+<script src="src/dial.js"></script>
+<script src="src/views.js"></script>
+<script src="src/player.js"></script>
+<script src="src/app.js"></script>
+<script>
+if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
+</script>
+</body>
+</html>
