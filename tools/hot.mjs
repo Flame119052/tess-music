@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
+execFileSync('node', [fileURLToPath(new URL('build.mjs', import.meta.url))], { stdio: 'inherit' });
+
 const root = fileURLToPath(new URL('..', import.meta.url));
 const css = readFileSync(root + 'theme/Tess/user.css', 'utf8');
 const js = readFileSync(root + 'theme/Tess/theme.js', 'utf8');

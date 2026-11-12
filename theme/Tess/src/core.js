@@ -1,0 +1,897 @@
+// Tess Music — Spicetify theme script.
+// Adds the floating playing bar, the full-screen Now Playing view with synced lyrics,
+// the artwork-tinted window, Tess settings, and the full-height artist header.
+// Everything reads from and drives Spotify's own player.
+(async function tess() {
+  window.__tess?.dispose?.();
+  const disposers = [];
+  const onDispose = (fn) => disposers.push(fn);
+  window.__tess = { dispose: () => disposers.splice(0).reverse().forEach((fn) => { try { fn(); } catch {} }) };
+
+  const ready = () =>
+    window.Spicetify?.Player?.data !== undefined &&
+    Spicetify.Platform?.History &&
+    Spicetify.CosmosAsync &&
+    Spicetify.GraphQL?.Definitions &&
+    document.querySelector('[data-testid="now-playing-bar"]');
+  while (!ready()) await new Promise((r) => setTimeout(r, 300));
+
+  const P = Spicetify.Player;
+  const el = (html) => {
+    const t = document.createElement('template');
+    t.innerHTML = html.trim();
+    return t.content.firstElementChild;
+  };
+  const mount = (node, parent = document.body) => { parent.appendChild(node); onDispose(() => node.remove()); return node; };
+  // timers do nothing while the window is hidden or minimised
+  const every = (ms, fn) => { const id = setInterval(() => { if (!document.hidden) fn(); }, ms); onDispose(() => clearInterval(id)); };
+  const listen = (target, type, fn, opts) => { target.addEventListener(type, fn, opts); onDispose(() => target.removeEventListener(type, fn, opts)); };
+  const imageUrl = (u) => (u && u.startsWith('spotify:image:') ? 'https://i.scdn.co/image/' + u.split(':')[2] : u || '');
+  // Blurred-artwork backgrounds are painted small on a canvas and stretched by the GPU. It looks like a huge
+  // CSS blur but costs a tiny fraction of the GPU memory and work.
+  const artImages = new Map();
+  const trackCanvasCache = new Map();
+  function loadArt(url) {
+    if (!url) return Promise.resolve(null);
+    if (!artImages.has(url)) {
+      artImages.set(url, new Promise((r) => { const i = new Image(); i.crossOrigin = 'anonymous'; i.onload = () => r(i); i.onerror = () => r(null); i.src = url; }));
+      if (artImages.size > 6) artImages.delete(artImages.keys().next().value);
+    }
+    return artImages.get(url);
+  }
+  const GLOW_LAYERS = [[0.5, 0.5, 1.5, 0.85, 1 / 70], [0.7, 0.5, 1.1, 0.55, -1 / 95], [0.25, 0.75, 0.9, 0.45, 1 / 120]];
+  function paintGlow(canvas, img, seconds, layers = GLOW_LAYERS) {
+    const ctx = canvas.getContext('2d');
+    const { width: w, height: h } = canvas;
+    ctx.filter = 'none';
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#0b0b0d';
+    ctx.fillRect(0, 0, w, h);
+    if (!img) return;
+    ctx.filter = 'blur(5px) saturate(160%)';
+    for (const [cx, cy, size, alpha, speed] of layers) {
+      const d = size * Math.max(w, h);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(cx * w, cy * h);
+      ctx.rotate(seconds * speed * 2 * Math.PI);
+      ctx.drawImage(img, -d / 2, -d / 2, d, d);
+      ctx.restore();
+    }
+  }
+  const item = () => P.data?.item;
+  const meta = () => item()?.metadata || {};
+  const artUrl = () => imageUrl(meta().image_xlarge_url || meta().image_large_url || meta().image_url);
+  const fmt = (ms) => {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  };
+  const spotifyButton = (sel) => document.querySelector(`[data-testid="now-playing-bar"] ${sel}`);
+  const route = () => Spicetify.Platform.History.location?.pathname || '';
+
+  // ---------------- settings ----------------
+  const DEFAULTS = { coverVideo: true, panelVideo: true, artistVideo: true, tintWindow: true, sideLyrics: true };
+  const settings = (() => {
+    try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('tess:settings') || '{}') }; } catch { return { ...DEFAULTS }; }
+  })();
+  const saveSettings = () => { try { localStorage.setItem('tess:settings', JSON.stringify(settings)); } catch {} };
+
+  const html = document.documentElement;
+  html.classList.add('tess');
+  onDispose(() => html.classList.remove('tess', 'tess-artist', 'tess-tint', 'tess-hero-light'));
+  const applySettings = () => {
+    html.classList.toggle('tess-tint', settings.tintWindow);
+    html.classList.toggle('tess-side-lyrics-off', !settings.sideLyrics);
+  };
+  applySettings();
+
+  // Tess's options live in Spotify's own Settings page, in a "Theme" section built from Spotify's row markup.
+  const THEME_ROWS = [
+    ['coverVideo', 'Animated artwork in the full-screen player', 'Plays the song’s looping Canvas video in place of the album art when it has one.'],
+    ['panelVideo', 'Animated artwork in the Now Playing panel', 'Loops the Canvas inside the square cover in the right-hand panel.'],
+    ['artistVideo', 'Moving video on artist pages', 'Fills the top of an artist’s page with a Canvas from their top songs; it blurs as you scroll.'],
+    ['sideLyrics', 'Live lyrics in the Now Playing panel', 'Synced lyrics that follow the song. Off shows Spotify’s preview card.'],
+    ['tintWindow', 'Tint the window with the artwork colours', 'The panels pick up the colours of what’s playing.'],
+  ];
+  const settingChanged = () => { saveSettings(); applySettings(); syncTrack(); onRoute(); };
+  function buildThemeSection() {
+    if (!route().startsWith('/preferences') || document.getElementById('tess-theme-settings')) return;
+    const sections = [...document.querySelectorAll('#main-view h2')].map((h) => h.parentElement).filter((sct) => sct.querySelector('[data-settings-row]'));
+    const template = sections.find((sct) => sct.querySelector('[data-settings-row] input[type="checkbox"]'));
+    if (!template || sections.length < 2) return;
+    const section = template.cloneNode(true);
+    section.id = 'tess-theme-settings';
+    section.querySelector('h2').textContent = 'Theme';
+    const rowTemplate = section.querySelector('[data-settings-row]:has(input[type="checkbox"])');
+    section.querySelectorAll('[data-settings-row]').forEach((r) => r.remove());
+    const divider = section.querySelector('hr');
+    for (const [key, title, hint] of THEME_ROWS) {
+      const row = rowTemplate.cloneNode(true);
+      const id = 'tess.settings.' + key;
+      const textBox = row.querySelector('label[for]').parentElement;
+      textBox.innerHTML = '';
+      const label = el('<label class="e-101040-text encore-text-body-small encore-internal-color-text-base" data-encore-id="text"></label>');
+      label.htmlFor = id;
+      label.textContent = title;
+      const sub = el('<span class="e-101040-text encore-text-marginal encore-internal-color-text-subdued tess-set-hint" data-encore-id="text"></span>');
+      sub.textContent = hint;
+      textBox.append(label, sub);
+      const input = row.querySelector('input[type="checkbox"]');
+      input.id = id;
+      input.checked = !!settings[key];
+      input.onchange = () => { settings[key] = input.checked; settingChanged(); };
+      divider ? divider.before(row) : section.appendChild(row);
+    }
+    sections[1].before(section);
+    onDispose(() => section.remove());
+    if (pendingThemeScroll) { pendingThemeScroll = false; section.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  }
+  let pendingThemeScroll = false;
+  function openSettings() {
+    pendingThemeScroll = true;
+    if (typeof closeNP === 'function') closeNP();
+    if (!route().startsWith('/preferences')) Spicetify.Platform.History.push('/preferences');
+    else { document.getElementById('tess-theme-settings')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); pendingThemeScroll = false; }
+  }
+  every(600, buildThemeSection);
+  if (Spicetify.Menu?.Item) {
+    const menuItem = new Spicetify.Menu.Item('Tess Music settings', false, openSettings);
+    menuItem.register();
+    onDispose(() => menuItem.deregister());
+  }
+
+  const I = {
+    shuffle: '<svg viewBox="0 0 26 22" width="18" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5h4c6 0 8 12 14 12h3M2 17h4c2.5 0 4-2 5.5-4.5M14.5 9.5C16 7 17.5 5 20 5h3M20 2l3 3-3 3M20 14l3 3-3 3"/></svg>',
+    repeat: '<svg viewBox="0 0 26 22" width="18" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10V9a4 4 0 0 1 4-4h14M19 2l3 3-3 3M22 12v1a4 4 0 0 1-4 4H4M7 20l-3-3 3-3"/></svg>',
+    prev: '<svg viewBox="0 0 44 28" width="26" height="17" fill="currentColor"><path d="M21 3v22L4 14zM40 3v22L23 14z"/></svg>',
+    next: '<svg viewBox="0 0 44 28" width="26" height="17" fill="currentColor"><path d="M4 3v22l17-11zM23 3v22l17-11z"/></svg>',
+    pause: '<svg viewBox="0 0 34 36" width="16" height="18" fill="currentColor"><rect x="5" y="3" width="8" height="30" rx="2"/><rect x="21" y="3" width="8" height="30" rx="2"/></svg>',
+    play: '<svg viewBox="0 0 34 36" width="16" height="18" fill="currentColor"><path d="M7 3.5v29a1.5 1.5 0 0 0 2.3 1.3l22-14.5a1.5 1.5 0 0 0 0-2.6L9.3 2.2A1.5 1.5 0 0 0 7 3.5z"/></svg>',
+    lyrics: '<svg viewBox="0 0 24 22" width="19" height="17" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 1.5C6.2 1.5 1.5 5.3 1.5 10c0 2.7 1.5 5.1 3.9 6.6L4.5 20.5l4.3-2.3c1 .3 2.1.4 3.2.4 5.8 0 10.5-3.8 10.5-8.6S17.8 1.5 12 1.5z"/><path d="M7.5 8.5h3v2.5c0 1.3-.6 2.2-1.8 2.6M13.5 8.5h3v2.5c0 1.3-.6 2.2-1.8 2.6" stroke-width="1.5"/></svg>',
+    queue: '<svg viewBox="0 0 22 16" width="19" height="15" fill="currentColor"><circle cx="2" cy="2" r="1.6"/><circle cx="2" cy="8" r="1.6"/><circle cx="2" cy="14" r="1.6"/><rect x="6" y="1" width="16" height="2" rx="1"/><rect x="6" y="7" width="16" height="2" rx="1"/><rect x="6" y="13" width="16" height="2" rx="1"/></svg>',
+    devices: '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M6.2 15.6a7.6 7.6 0 1 1 11.6 0"/><path d="M8.9 13.2a4.1 4.1 0 1 1 6.2 0"/><circle cx="12" cy="10" r="1.4" fill="currentColor" stroke="none"/><path d="M12 15.4l3.6 4.6H8.4z" fill="currentColor" stroke="none"/></svg>',
+    volume: '<svg viewBox="0 0 26 22" width="20" height="18" fill="currentColor"><path d="M3 8h4l6-5v16l-6-5H3z"/><path d="M16 7a5 5 0 0 1 0 8M19 4a9 9 0 0 1 0 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    close: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+    mini: '<svg viewBox="0 0 26 22" width="19" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="1.5" y="1.5" width="17" height="13" rx="3"/><rect x="10" y="9" width="14.5" height="11" rx="2.5" fill="currentColor"/></svg>',
+    gear: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v2.6M12 18.9v2.6M21.5 12h-2.6M5.1 12H2.5M18.7 5.3l-1.8 1.8M7.1 16.9l-1.8 1.8M18.7 18.7l-1.8-1.8M7.1 7.1L5.3 5.3"/></svg>',
+    saved: '<svg viewBox="0 0 24 24" width="17" height="17"><circle cx="12" cy="12" r="10" fill="currentColor"/><path d="M7.5 12.3l3 3 6-6.3" fill="none" stroke="#000" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    unsaved: '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 7.5v9M7.5 12h9" stroke-linecap="round"/></svg>',
+    expand: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/></svg>',
+    more: '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>',
+  };
+
+  // ---------------- window tint (album colors behind the panels) ----------------
+  const ambient = mount(el('<div id="tess-ambient" aria-hidden="true"><canvas width="64" height="36"></canvas></div>'));
+  const ambientCanvas = ambient.querySelector('canvas');
+
+  // ---------------- floating playing bar ----------------
+  const bar = mount(el(`
+    <div id="tess-bar" role="region" aria-label="Now playing">
+      <div class="tb-ctl">
+        <button class="tb-shuffle" aria-label="Shuffle">${I.shuffle}</button>
+        <button class="tb-prev" aria-label="Previous">${I.prev}</button>
+        <button class="tb-play" aria-label="Play or pause">${I.play}</button>
+        <button class="tb-next" aria-label="Next">${I.next}</button>
+        <button class="tb-repeat" aria-label="Repeat">${I.repeat}</button>
+      </div>
+      <div class="tb-now">
+        <button class="tb-art" aria-label="Open full screen player"><img alt=""></button>
+        <div class="tb-meta">
+          <div class="tb-title"><span></span><button class="tb-heart" aria-label="Add to playlist">${I.unsaved}</button></div>
+          <div class="tb-sub tess-marquee"><span></span></div>
+        </div>
+        <div class="tb-prog"><i></i></div>
+      </div>
+      <div class="tb-tools">
+        <span class="tb-quality"></span>
+        <button class="tb-lyrics" aria-label="Lyrics">${I.lyrics}</button>
+        <button class="tb-queue" aria-label="Queue">${I.queue}</button>
+        <button class="tb-devices" aria-label="Connect to a device">${I.devices}</button>
+        <div class="tb-vol">${I.volume}<input type="range" min="0" max="1" step="0.01" aria-label="Volume"></div>
+      </div>
+    </div>`));
+
+  const q = (root, s) => root.querySelector(s);
+  const saveButton = () =>
+    [...document.querySelectorAll('[data-testid="now-playing-widget-v2"] button, [data-testid="now-playing-widget"] button')]
+      .find((b) => /playlist|liked songs/i.test(b.getAttribute('aria-label') || ''));
+  const toggleSave = () => { saveButton()?.click(); setTimeout(syncState, 400); };
+
+  q(bar, '.tb-play').onclick = () => P.togglePlay();
+  q(bar, '.tb-prev').onclick = () => P.back();
+  q(bar, '.tb-next').onclick = () => P.next();
+  q(bar, '.tb-shuffle').onclick = () => { P.toggleShuffle(); setTimeout(syncState, 150); };
+  q(bar, '.tb-repeat').onclick = () => { P.toggleRepeat(); setTimeout(syncState, 150); };
+  q(bar, '.tb-heart').onclick = toggleSave;
+  q(bar, '.tb-art').onclick = () => openNP('lyrics');
+  q(bar, '.tb-lyrics').onclick = () => openNP('lyrics');
+  q(bar, '.tb-queue').onclick = () => spotifyButton('[data-testid="control-button-queue"]')?.click();
+  q(bar, '.tb-devices').onclick = () => spotifyButton('button[aria-label="Connect to a device"]')?.click();
+  q(bar, '.tb-prog').onclick = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    P.seek(Math.round(((e.clientX - r.left) / r.width) * P.getDuration()));
+  };
+  const barVol = q(bar, '.tb-vol input');
+  barVol.oninput = () => P.setVolume(Number(barVol.value));
+
+  // ---------------- full-screen now playing ----------------
+  const np = mount(el(`
+    <div id="tess-np" class="mode-lyrics" aria-hidden="true">
+      <div class="tn-bg"><canvas class="tn-glow" width="128" height="72"></canvas><div class="tn-shade"></div></div>
+      <div class="tn-pill tl">
+        <button class="tn-close" aria-label="Close">${I.close}</button>
+        <button class="tn-mini" aria-label="Open Miniplayer">${I.mini}</button>
+      </div>
+      <div class="tn-pill tr">
+        <button class="tn-devices" aria-label="Connect to a device">${I.devices}</button>
+        <input class="tn-vol" type="range" min="0" max="1" step="0.01" aria-label="Volume">
+        <span class="tn-volicon">${I.volume}</span>
+        <button class="tn-gear" aria-label="Tess Music settings">${I.gear}</button>
+      </div>
+      <div class="tn-stage">
+        <div class="tn-player">
+          <div class="tn-cover"><img alt=""><video muted loop playsinline></video></div>
+          <div class="tn-meta">
+            <div class="tn-text"><h2></h2><p class="tess-marquee"><span></span></p></div>
+            <button class="tn-round tn-heart" aria-label="Add to playlist">${I.unsaved}</button>
+            <button class="tn-round tn-more" aria-label="Go to album">${I.more}</button>
+          </div>
+          <div class="tn-scrub"><i></i></div>
+          <div class="tn-times"><span class="tn-cur">0:00</span><span class="tn-quality"></span><span class="tn-rem">-0:00</span></div>
+          <div class="tn-btns">
+            <button class="tn-shuffle tn-sm" aria-label="Shuffle">${I.shuffle}</button>
+            <button class="tn-prev" aria-label="Previous">${I.prev}</button>
+            <button class="tn-play" aria-label="Play or pause">${I.pause}</button>
+            <button class="tn-next" aria-label="Next">${I.next}</button>
+            <button class="tn-repeat tn-sm" aria-label="Repeat">${I.repeat}</button>
+          </div>
+        </div>
+        <div class="tn-lyrics"><div class="tn-lines"></div><div class="tn-note"></div></div>
+        <div class="tn-queue"><h4>Playing Next</h4><div class="tn-qlist"></div></div>
+      </div>
+      <div class="tn-pill br">
+        <button class="tn-lyr on" aria-label="Lyrics">${I.lyrics}</button>
+        <button class="tn-q" aria-label="Playing next">${I.queue}</button>
+      </div>
+    </div>`));
+
+  let npOpen = false;
+  function openNP(mode) {
+    npOpen = true;
+    setMode(mode || 'lyrics');
+    np.classList.add('open');
+    np.setAttribute('aria-hidden', 'false');
+    renderQueue();
+    requestAnimationFrame(fitMarquees);
+    if (np.classList.contains('has-canvas')) q(np, '.tn-cover video').play().catch(() => {});
+    loop();
+  }
+  function closeNP() {
+    npOpen = false;
+    np.classList.remove('open');
+    q(np, '.tn-cover video').pause();
+    np.setAttribute('aria-hidden', 'true');
+  }
+  function setMode(m) {
+    np.classList.remove('mode-lyrics', 'mode-queue', 'mode-none');
+    np.classList.add('mode-' + m);
+    q(np, '.tn-lyr').classList.toggle('on', m === 'lyrics');
+    q(np, '.tn-q').classList.toggle('on', m === 'queue');
+    if (m === 'queue') renderQueue();
+    lastLine = -2;
+    requestAnimationFrame(fitMarquees);
+  }
+  q(np, '.tn-close').onclick = closeNP;
+  q(np, '.tn-mini').onclick = () => { closeNP(); spotifyButton('[data-testid="pip-toggle-button"]')?.click(); };
+  q(np, '.tn-devices').onclick = () => spotifyButton('button[aria-label="Connect to a device"]')?.click();
+  q(np, '.tn-gear').onclick = openSettings;
+  q(np, '.tn-lyr').onclick = () => setMode(np.classList.contains('mode-lyrics') ? 'none' : 'lyrics');
+  q(np, '.tn-q').onclick = () => setMode(np.classList.contains('mode-queue') ? 'none' : 'queue');
+  q(np, '.tn-play').onclick = () => P.togglePlay();
+  q(np, '.tn-prev').onclick = () => P.back();
+  q(np, '.tn-next').onclick = () => P.next();
+  q(np, '.tn-shuffle').onclick = () => { P.toggleShuffle(); setTimeout(syncState, 150); };
+  q(np, '.tn-repeat').onclick = () => { P.toggleRepeat(); setTimeout(syncState, 150); };
+  q(np, '.tn-heart').onclick = toggleSave;
+  q(np, '.tn-more').onclick = () => {
+    const uri = item()?.album?.uri;
+    if (uri) { closeNP(); Spicetify.Platform.History.push('/album/' + uri.split(':')[2]); }
+  };
+  q(np, '.tn-scrub').onclick = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    P.seek(Math.round(((e.clientX - r.left) / r.width) * P.getDuration()));
+  };
+  const npVol = q(np, '.tn-vol');
+  npVol.oninput = () => P.setVolume(Number(npVol.value));
+  listen(document, 'keydown', (e) => {
+    if (!npOpen) return;
+    if (e.key === 'Escape') closeNP();
+    if (e.key === ' ' && e.target === document.body) { e.preventDefault(); P.togglePlay(); }
+  });
+
+  // A subtitle only scrolls when it is too long to fit.
+  function fitMarquees() {
+    for (const box of document.querySelectorAll('.tess-marquee')) {
+      const span = box.firstElementChild;
+      if (!span) continue;
+      const overflow = span.scrollWidth - box.clientWidth;
+      box.classList.toggle('scrolling', overflow > 4);
+      box.style.setProperty('--tess-marquee-shift', `-${Math.max(0, overflow + 24)}px`);
+    }
+  }
+  listen(window, 'resize', fitMarquees);
+
+  // ---------------- lyrics (Spotify's own, time-synced) ----------------
+  let lyrics = { uri: null, sync: 'NONE', lines: [] };
+  let lastLine = -2;
+  const linesEl = q(np, '.tn-lines');
+  const noteEl = q(np, '.tn-note');
+
+  async function loadLyrics() {
+    const uri = item()?.uri;
+    if (!uri || uri === lyrics.uri) return;
+    lyrics = { uri, sync: 'LOADING', lines: [] };
+    linesEl.innerHTML = '';
+    noteEl.textContent = '';
+    lastLine = -2;
+    try {
+      const id = uri.split(':')[2];
+      const res = await Spicetify.CosmosAsync.get(
+        `https://spclient.wg.spotify.com/color-lyrics/v2/track/${id}?format=json&vocalRemoval=false&market=from_token`
+      );
+      if (item()?.uri !== uri) return;
+      const raw = res?.lyrics?.lines || [];
+      lyrics = {
+        uri,
+        sync: res?.lyrics?.syncType || 'UNSYNCED',
+        lines: raw.map((l, i) => ({
+          start: Number(l.startTimeMs),
+          end: Number(raw[i + 1]?.startTimeMs ?? P.getDuration()),
+          text: (l.words || '').trim(),
+        })),
+      };
+    } catch {
+      if (item()?.uri !== uri) return;
+      lyrics = { uri, sync: 'NONE', lines: [] };
+    }
+    renderLyrics();
+  }
+
+  // The same synced lines drive two views: the full-screen player and the card in the right panel.
+  const side = el(`
+    <div class="tess-side-lyrics" hidden>
+      <div class="tsl-head"><span>Lyrics</span><button class="tsl-open" aria-label="Open lyrics full screen">${I.expand}</button></div>
+      <div class="tsl-window"><div class="tsl-lines"></div></div>
+    </div>`);
+  onDispose(() => side.remove());
+  const views = [
+    { lines: linesEl, last: -2, active: () => npOpen && np.classList.contains('mode-lyrics') },
+    { lines: q(side, '.tsl-lines'), last: -2, active: () => side.isConnected && !npOpen },
+  ];
+  q(side, '.tsl-open').onclick = () => openNP('lyrics');
+
+  function renderLyrics() {
+    np.classList.toggle('unsynced', lyrics.sync === 'UNSYNCED');
+    side.classList.toggle('unsynced', lyrics.sync === 'UNSYNCED');
+    side.hidden = !lyrics.lines.length;
+    noteEl.textContent = lyrics.lines.length || lyrics.sync === 'LOADING' ? '' : 'Lyrics aren’t available for this song';
+    for (const v of views) {
+      v.lines.innerHTML = '';
+      v.lines.style.transform = '';
+      v.last = -2;
+      for (const l of lyrics.lines) {
+        const isGap = !l.text || /^♪+$/.test(l.text.replace(/\s/g, ''));
+        const line = el(`<div class="tn-line${isGap ? ' gap' : ''}"></div>`);
+        line.textContent = isGap ? '• • •' : l.text;
+        if (lyrics.sync !== 'UNSYNCED') line.onclick = () => P.seek(l.start + 1);
+        v.lines.appendChild(line);
+      }
+    }
+    lastLine = -2;
+  }
+
+  function lineAt(ms) {
+    let lo = 0, hi = lyrics.lines.length - 1, ans = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (lyrics.lines[mid].start <= ms) { ans = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    return ans;
+  }
+
+  const LEAD_MS = 120;
+  function updateLyrics(ms) {
+    if (!lyrics.lines.length || lyrics.sync === 'UNSYNCED') return;
+    if (lastLine === -2) views.forEach((v) => (v.last = -2));
+    lastLine = -1;
+    const t = ms + LEAD_MS;
+    const i = lineAt(t);
+    for (const v of views) {
+      if (!v.active()) continue;
+      const nodes = v.lines.children;
+      if (i !== v.last) {
+        v.last = i;
+        for (let j = 0; j < nodes.length; j++) {
+          const d = Math.abs(j - Math.max(i, 0));
+          nodes[j].classList.toggle('on', j === i);
+          nodes[j].classList.toggle('past', j < i);
+          // blur only the few lines around the current one; far lines just dim (no filter, no extra GPU layer)
+          nodes[j].style.filter = j === i || d > 3 ? 'none' : `blur(${(d * 0.8).toFixed(1)}px)`;
+          nodes[j].classList.toggle('far', d > 3);
+        }
+        const target = nodes[Math.max(i, 0)];
+        if (target) v.lines.style.transform = `translateY(${-target.offsetTop}px)`;
+      }
+      if (i >= 0) {
+        const l = lyrics.lines[i];
+        const span = Math.max(400, l.end - l.start);
+        const p = Math.min(1, Math.max(0, (t - l.start) / Math.min(span, 400 + l.text.length * 130)));
+        nodes[i]?.style.setProperty('--p', (p * 100).toFixed(1) + '%');
+      }
+    }
+  }
+
+  // Spotify swaps its cover for a tall Canvas it often can't play here; Tess always shows the square cover,
+  // with the Canvas looping inside it when the setting is on, like Apple Music's animated artwork.
+  const coverWrap = el(`<div class="tess-cover-wrap"><button class="tess-side-cover" aria-label="Open full screen player"><img alt=""><video class="tess-video" muted loop playsinline></video></button></div>`);
+  const sideCover = q(coverWrap, '.tess-side-cover');
+  onDispose(() => coverWrap.remove());
+  onDispose(() => document.querySelectorAll('.tess-npv-root, .tess-npv-col').forEach((n) => n.classList.remove('tess-npv-root', 'tess-npv-col')));
+  function syncSideCover() {
+    q(sideCover, 'img').src = artUrl();
+    const uri = item()?.uri;
+    const v = q(sideCover, 'video');
+    sideCover.classList.remove('has-canvas');
+    if (!sideCover.isConnected) return;
+    (settings.panelVideo ? trackCanvas(uri) : Promise.resolve('')).then((fileId) => {
+      if (item()?.uri !== uri) return;
+      playCanvas(v, fileId).then((ok) => sideCover.classList.toggle('has-canvas', ok && v.dataset.fileId === fileId));
+    });
+  }
+  listen(document, 'click', (e) => {
+    if (!(e.target instanceof Element) || !e.target.closest('.Root__right-sidebar-peek [data-testid="cover-art-slot"], .tess-side-cover')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openNP('lyrics');
+  }, true);
+
+  // Put the Tess lyrics card in place of Spotify's preview, and make the cover open the full-screen player.
+  every(800, () => {
+    const spotifyLyrics = document.querySelector('.Root__right-sidebar-peek [data-testid="lyrics-npv-section"]');
+    if (spotifyLyrics && side.nextElementSibling !== spotifyLyrics) {
+      spotifyLyrics.before(side);
+      views[1].last = -2;
+    }
+    // Tess owns the top of the panel: one square cover (Canvas inside it), whatever Spotify would show there
+    // (cover, tall Canvas, music video). The panel's own text column stays as it is.
+    let column = null;
+    for (let a = side.parentElement; a && a.parentElement && a.closest('.Root__right-sidebar-peek'); a = a.parentElement) {
+      if (a.parentElement.querySelector(':scope > :not(:has(.tess-side-lyrics)) :is([data-testid="cover-art-slot"], video), :scope > .tess-cover-wrap')) { column = a; break; }
+    }
+    if (column) {
+      const root = column.parentElement;
+      column.classList.add('tess-npv-col');
+      root.classList.add('tess-npv-root');
+      if (root.firstElementChild !== coverWrap) { root.prepend(coverWrap); syncSideCover(); }
+      // after "Switch to video" Spotify plays the music video here; let it show, framed like the cover
+      const videoMode = [...column.querySelectorAll('button')].some((b) => /switch to audio/i.test(b.textContent || b.getAttribute('aria-label') || ''));
+      root.classList.toggle('tess-mv-mode', videoMode);
+    }
+  });
+
+  // ---------------- queue ----------------
+  function renderQueue() {
+    const list = q(np, '.tn-qlist');
+    const next = (Spicetify.Queue?.nextTracks || []).filter((t) => t?.contextTrack?.metadata?.title).slice(0, 30);
+    list.innerHTML = '';
+    if (!next.length) {
+      list.appendChild(el('<p class="tn-qempty">Nothing queued. Spotify Autoplay picks what comes next.</p>'));
+      return;
+    }
+    for (const t of next) {
+      const m = t.contextTrack.metadata;
+      const row = el('<div class="tn-qrow"><img alt=""><div><b></b><span></span></div></div>');
+      row.querySelector('img').src = imageUrl(m.image_url || m.image_small_url);
+      row.querySelector('b').textContent = m.title;
+      row.querySelector('span').textContent = m.artist_name || '';
+      list.appendChild(row);
+    }
+  }
+
+  // ---------------- canvas video ----------------
+  // Spotify's built-in Chromium cannot decode the H.264 canvas MP4s, so this does what
+  // Spotify's own player does: read the video manifest and feed the VP9 WebM segments to MediaSource.
+  const manifestCache = new Map();
+  async function playCanvas(video, fileId) {
+    const release = () => { if (video._tessUrl) { URL.revokeObjectURL(video._tessUrl); video._tessUrl = null; } };
+    if (!fileId) { delete video.dataset.fileId; release(); video.removeAttribute('src'); video.load(); return false; }
+    if (video.dataset.fileId === fileId && video.readyState >= 2) return true;
+    video.dataset.fileId = fileId;
+    try {
+      let m = manifestCache.get(fileId);
+      if (!m) {
+        m = await Spicetify.CosmosAsync.get(`https://spclient.wg.spotify.com/manifests/v9/json/sources/${fileId}/options/supports_drm`);
+        manifestCache.set(fileId, m);
+      }
+      const c = m.contents[0];
+      const profile = c.profiles
+        .filter((p) => p.file_type === 'webm' && p.video_codec === 'vp9' && p.video_height <= 1280)
+        .sort((a, b) => b.video_height - a.video_height)[0];
+      if (!profile) return false;
+      const base = m.base_urls[0];
+      const fill = (tpl, ts) => base + tpl.replace('{{profile_id}}', profile.id).replace('{{file_type}}', 'webm').replace('{{segment_timestamp}}', ts);
+      const urls = [fill(m.initialization_template)];
+      for (let t = 0; t * 1000 < c.end_time_millis; t += c.segment_length) urls.push(fill(m.segment_template, t));
+      const ms = new MediaSource();
+      release();
+      video._tessUrl = URL.createObjectURL(ms);
+      video.src = video._tessUrl;
+      await new Promise((r) => ms.addEventListener('sourceopen', r, { once: true }));
+      if (video.dataset.fileId !== fileId) return false;
+      const sb = ms.addSourceBuffer('video/webm; codecs="vp9"');
+      for (const u of urls) {
+        const buf = await (await fetch(u)).arrayBuffer();
+        if (video.dataset.fileId !== fileId) return false;
+        await new Promise((r) => { sb.addEventListener('updateend', r, { once: true }); sb.appendBuffer(buf); });
+      }
+      ms.endOfStream();
+      video.loop = true;
+      video.muted = true;
+      await video.play().catch(() => {});
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // ---------------- state sync ----------------
+  function syncTrack() {
+    const m = meta();
+    const art = artUrl();
+    const title = m.title || item()?.name || '';
+    const album = m.album_title || '';
+    const sub = album && album.toLowerCase() !== title.toLowerCase() ? `${m.artist_name} — ${album}` : m.artist_name || '';
+    q(bar, '.tb-art img').src = art;
+    q(bar, '.tb-title span').textContent = title;
+    q(bar, '.tb-sub span').textContent = sub;
+    q(np, '.tn-cover img').src = art;
+    q(np, '.tn-text h2').textContent = title;
+    q(np, '.tn-text p span').textContent = sub;
+    const artCss = art ? `url("${art}")` : 'none';
+    np.style.setProperty('--art', artCss);
+    loadArt(art).then((img) => {
+      if (artUrl() !== art) return;
+      npArt = img;
+      paintGlow(q(np, '.tn-glow'), img, performance.now() / 1000);
+      // the window tint is static: fade out, repaint, fade in
+      ambientCanvas.style.opacity = '0';
+      setTimeout(() => { paintGlow(ambientCanvas, img, 0); ambientCanvas.style.opacity = ''; }, 350);
+    });
+    const video = q(np, '.tn-cover video');
+    const uri = item()?.uri;
+    np.classList.remove('has-canvas');
+    (settings.coverVideo ? trackCanvas(uri) : Promise.resolve('')).then((fileId) => {
+      if (item()?.uri !== uri) return;
+      playCanvas(video, fileId).then((ok) => {
+        np.classList.toggle('has-canvas', ok && video.dataset.fileId === fileId);
+        if (!npOpen) video.pause();
+      });
+    });
+    loadLyrics();
+    syncSideCover();
+    if (npOpen) renderQueue();
+    syncState();
+    requestAnimationFrame(fitMarquees);
+  }
+
+  function syncState() {
+    const playing = P.isPlaying();
+    q(bar, '.tb-play').innerHTML = playing ? I.pause : I.play;
+    q(np, '.tn-play').innerHTML = playing ? I.pause : I.play;
+    np.classList.toggle('paused', !playing);
+    const shuffle = P.getShuffle();
+    const repeat = P.getRepeat();
+    for (const b of [q(bar, '.tb-shuffle'), q(np, '.tn-shuffle')]) b.classList.toggle('active', !!shuffle);
+    for (const b of [q(bar, '.tb-repeat'), q(np, '.tn-repeat')]) {
+      b.classList.toggle('active', repeat > 0);
+      b.classList.toggle('one', repeat === 2);
+    }
+    const sb = saveButton();
+    const saved = sb ? /bright-accent/.test(sb.className) : P.getHeart();
+    for (const b of [q(bar, '.tb-heart'), q(np, '.tn-heart')]) {
+      b.classList.toggle('active', saved);
+      b.innerHTML = saved ? I.saved : I.unsaved;
+      b.setAttribute('aria-label', saved ? 'Saved — change where it is saved' : 'Add to playlist');
+    }
+    const vol = P.getVolume();
+    barVol.value = vol;
+    npVol.value = vol;
+    const quality = document.querySelector('[data-testid="context-item-info-quality"]')?.textContent?.trim() || '';
+    q(bar, '.tb-quality').textContent = quality;
+    q(np, '.tn-quality').textContent = quality;
+  }
+
+  function syncProgress() {
+    const ms = P.getProgress();
+    const dur = P.getDuration() || 1;
+    const pct = Math.min(100, (ms / dur) * 100) + '%';
+    q(bar, '.tb-prog i').style.width = pct;
+    if (npOpen) {
+      q(np, '.tn-scrub i').style.width = pct;
+      q(np, '.tn-cur').textContent = fmt(ms);
+      q(np, '.tn-rem').textContent = '-' + fmt(dur - ms);
+      updateLyrics(ms);
+    }
+  }
+
+  let alive = true;
+  onDispose(() => { alive = false; });
+  let npArt = null;
+  let lastGlow = 0;
+  function loop(now = performance.now()) {
+    if (!npOpen || !alive) return;
+    if (P.isPlaying() && now - lastGlow > 42) { lastGlow = now; paintGlow(q(np, '.tn-glow'), npArt, now / 1000); }
+    syncProgress();
+    requestAnimationFrame(loop);
+  }
+
+  const onSong = () => setTimeout(syncTrack, 50);
+  P.addEventListener('songchange', onSong);
+  onDispose(() => P.removeEventListener('songchange', onSong));
+  P.addEventListener('onplaypause', syncState);
+  onDispose(() => P.removeEventListener('onplaypause', syncState));
+  every(250, () => { if (!npOpen) { syncProgress(); updateLyrics(P.getProgress()); } });
+  // coming back to the window: resume the full-screen Canvas if the player is open (Spotify pauses videos while hidden)
+  listen(document, 'visibilitychange', () => {
+    if (!document.hidden && npOpen && np.classList.contains('has-canvas')) q(np, '.tn-cover video').play().catch(() => {});
+  });
+  every(2000, syncState);
+  syncTrack();
+
+  // ---------------- library: a pinned dock, Arc/Dia style ----------------
+  // Pinned items leave the list and sit as artwork tiles above it, always in reach.
+  // Click opens, double-click plays; whatever is playing glows.
+  const dock = el('<section id="tess-dock" aria-label="Pinned"><div class="td-grid"></div></section>');
+  onDispose(() => dock.remove());
+  onDispose(() => document.querySelectorAll('.tess-pinned-row').forEach((n) => n.classList.remove('tess-pinned-row')));
+  let pins = [];
+  const pinImage = (it) => {
+    const u = it.images?.[0]?.url || '';
+    if (u.startsWith('spotify:mosaic:')) return 'https://mosaic.scdn.co/300/' + u.split(':').slice(2).join('');
+    if (u.startsWith('spotify:image:')) return imageUrl(u);
+    return u.startsWith('http') ? u : '';
+  };
+  const rowUri = (u) => (u === 'spotify:local-files' ? 'spotify:collection:local-files' : u);
+  const pagePath = (u) => {
+    if (u === 'spotify:local-files') return '/collection/local-files';
+    const [, type, id] = u.split(':');
+    return `/${type}/${id}`;
+  };
+  async function loadPins() {
+    try {
+      const r = await Spicetify.Platform.LibraryAPI.getContents({ limit: 60, offset: 0 });
+      const next = (r.items || []).filter((i) => i.pinned && i.uri);
+      if (JSON.stringify(next.map((i) => i.uri + i.name)) === JSON.stringify(pins.map((i) => i.uri + i.name))) return;
+      pins = next;
+      renderDock();
+    } catch {}
+  }
+  function renderDock() {
+    const grid = q(dock, '.td-grid');
+    grid.innerHTML = '';
+    dock.hidden = !pins.length;
+    for (const it of pins) {
+      const img = pinImage(it);
+      const tile = el(`<button class="td-tile" data-uri=""><span class="td-art"></span><span class="td-name"></span><span class="td-eq"><i></i><i></i><i></i></span></button>`);
+      tile.dataset.uri = it.uri;
+      tile.title = it.name;
+      q(tile, '.td-name').textContent = it.name;
+      const art = q(tile, '.td-art');
+      if (img) art.style.backgroundImage = `url("${img}")`;
+      else art.classList.add('td-local');
+      tile.onclick = () => Spicetify.Platform.History.push(pagePath(it.uri));
+      tile.ondblclick = () => Spicetify.Player.playUri(it.uri);
+      grid.appendChild(tile);
+    }
+    markDock();
+  }
+  function markDock() {
+    const ctx = P.data?.context?.uri || P.data?.context_uri || '';
+    for (const t of dock.querySelectorAll('.td-tile')) {
+      const u = t.dataset.uri;
+      t.classList.toggle('playing', !!ctx && (ctx === u || (u === 'spotify:local-files' && /local-files/.test(ctx))));
+      t.classList.toggle('paused', !P.isPlaying());
+      t.classList.toggle('here', route() === pagePath(u));
+    }
+    // artwork wrappers that Spotify draws square get Tess's rounded corners; artist circles stay circles
+    for (const w of document.querySelectorAll('#Desktop_LeftSidebar_Id [data-encore-id="listRow"] div:has(> img):not([data-tess-shape])')) {
+      w.dataset.tessShape = '1';
+      if (!getComputedStyle(w).borderTopLeftRadius.includes('%')) w.classList.add('tess-sq');
+    }
+    const pinned = new Set(pins.map((i) => 'listrow-title-' + rowUri(i.uri)));
+    for (const row of document.querySelectorAll('#Desktop_LeftSidebar_Id [role="row"]')) {
+      const id = row.querySelector('[id^="listrow-title-"]')?.id;
+      row.classList.toggle('tess-pinned-row', !!id && pinned.has(id));
+    }
+  }
+  const placeDock = () => {
+    const head = document.querySelector('#Desktop_LeftSidebar_Id header')?.parentElement;
+    if (head && dock.previousElementSibling !== head) head.after(dock);
+    markDock();
+  };
+  every(700, placeDock);
+  placeDock();
+  every(6000, loadPins);
+  loadPins();
+
+  // ---------------- artist pages: full-height motion header ----------------
+  const canvasCache = new Map();
+  // A song's Canvas: from the player's data when it's the current song, otherwise asked of Spotify.
+  async function trackCanvas(trackUri) {
+    if (!trackUri) return '';
+    const m = item()?.uri === trackUri ? meta() : {};
+    if (m['canvas.fileId'] && String(m['canvas.type'] || '').startsWith('VIDEO')) return m['canvas.fileId'];
+    if (!trackCanvasCache.has(trackUri)) {
+      trackCanvasCache.set(trackUri, Spicetify.GraphQL.Request(Spicetify.GraphQL.Definitions.canvas, { trackUri })
+        .then((c) => { const cv = c?.data?.trackUnion?.canvas; return cv?.fileId && String(cv.type).startsWith('VIDEO') ? cv.fileId : ''; })
+        .catch(() => ''));
+      if (trackCanvasCache.size > 40) trackCanvasCache.delete(trackCanvasCache.keys().next().value);
+    }
+    return trackCanvasCache.get(trackUri);
+  }
+
+  // Spotify keeps decoding its own Canvas in the panel even though Tess hides it; stop it whenever it starts.
+  listen(document, 'play', (e) => {
+    const v = e.target;
+    if (v instanceof HTMLVideoElement && !v.matches('.tess-video, .tess-hero-video, #tess-np video') && v.closest('.Root__right-sidebar-peek') && !v.checkVisibility()) v.pause();
+  }, true);
+  async function artistCanvas(artistUri) {
+    if (canvasCache.has(artistUri)) return canvasCache.get(artistUri);
+    let fileId = '';
+    try {
+      const r = await Spicetify.GraphQL.Request(Spicetify.GraphQL.Definitions.queryArtistOverview, {
+        uri: artistUri, locale: '', includePrerelease: false,
+      });
+      const tracks = r?.data?.artistUnion?.discography?.topTracks?.items || [];
+      for (const t of tracks.slice(0, 6)) {
+        const c = await Spicetify.GraphQL.Request(Spicetify.GraphQL.Definitions.canvas, { trackUri: t.track.uri });
+        const cv = c?.data?.trackUnion?.canvas;
+        if (cv?.fileId && String(cv.type).startsWith('VIDEO')) { fileId = cv.fileId; break; }
+      }
+    } catch {}
+    canvasCache.set(artistUri, fileId);
+    return fileId;
+  }
+
+  function findHeaderBackground() {
+    const root = document.querySelector('.before-scroll-node');
+    if (!root) return null;
+    return [...root.querySelectorAll('div')].find((d) => /url\(/.test(getComputedStyle(d).backgroundImage));
+  }
+
+  // Light or dark text, picked from how bright the bottom of the header is.
+  const probe = document.createElement('canvas');
+  probe.width = 32;
+  probe.height = 12;
+  function headerIsLight(source) {
+    try {
+      const ctx = probe.getContext('2d', { willReadFrequently: true });
+      const w = source.videoWidth || source.naturalWidth;
+      const h = source.videoHeight || source.naturalHeight;
+      if (!w || !h) return null;
+      ctx.drawImage(source, 0, h * 0.62, w, h * 0.3, 0, 0, 32, 12);
+      const d = ctx.getImageData(0, 0, 32, 12).data;
+      let sum = 0;
+      for (let i = 0; i < d.length; i += 4) sum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+      return sum / (d.length / 4) > 168;
+    } catch {
+      return null;
+    }
+  }
+
+  let heroTimer = 0;
+  onDispose(() => clearInterval(heroTimer));
+  function setHeroHeight() {
+    const mv = document.querySelector('#main-view');
+    if (!mv) return;
+    // end the header so the play/follow row sits just above the floating bar on the first screen
+    const page = document.querySelector('[data-testid="artist-page"]');
+    const hdr = page?.querySelector('.main-entityHeader-container');
+    const bar = document.getElementById('tess-bar')?.getBoundingClientRect();
+    const r = mv.getBoundingClientRect();
+    if (!hdr) return html.style.setProperty('--tess-hero-h', Math.round(r.height) + 'px');
+    let scroller = hdr.parentElement;
+    while (scroller && !/auto|scroll/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
+    const top0 = hdr.getBoundingClientRect().top + (scroller?.scrollTop || 0);
+    const limit = (bar ? bar.top : r.bottom - 80) - 12;
+    const actions = page.querySelector('[data-testid="action-bar"]')?.getBoundingClientRect().height || 104;
+    html.style.setProperty('--tess-hero-h', Math.round(limit - actions - top0) + 'px');
+  }
+  onDispose(() => html.style.removeProperty('--tess-hero-h'));
+
+  async function onRoute() {
+    const path = route();
+    const isArtist = path.startsWith('/artist/');
+    html.classList.toggle('tess-artist', isArtist);
+    html.classList.toggle('tess-on-settings', path.startsWith('/preferences'));
+    html.classList.remove('tess-hero-light', 'tess-hero-past');
+    html.style.setProperty('--tess-scroll-p', '0');
+    clearInterval(heroTimer);
+    if (!isArtist) return;
+    setHeroHeight();
+    const artistUri = 'spotify:artist:' + path.split('/')[2];
+    let bg = null;
+    for (let tries = 0; tries < 25 && !bg; tries++) {
+      bg = findHeaderBackground();
+      if (!bg) await new Promise((r) => setTimeout(r, 200));
+    }
+    if (!bg || route() !== path) return;
+    bg.classList.add('tess-hero-bg');
+    const fitHero = () => {
+      setHeroHeight();
+      // the video stays behind the whole page, like Apple Music; scrolling blurs and dims it instead of cutting it off
+      const mv = document.querySelector('#main-view');
+      if (!mv || !bg.isConnected) return;
+      const h = Math.round(mv.getBoundingClientRect().bottom - bg.parentElement.getBoundingClientRect().top);
+      if (h > 0) {
+        bg.style.setProperty('height', h + 'px', 'important');
+        bg.parentElement.style.setProperty('height', h + 'px', 'important');
+      }
+    };
+    fitHero();
+    heroScroll(artistScroller());
+    setTimeout(fitHero, 400);
+    setTimeout(fitHero, 1200);
+
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const light = headerIsLight(img);
+      if (light !== null && route() === path) html.classList.toggle('tess-hero-light', light);
+    };
+    img.src = (getComputedStyle(bg).backgroundImage.match(/url\("?(.*?)"?\)/) || [])[1] || '';
+
+    let v = bg.querySelector('video.tess-hero-video');
+    if (!settings.artistVideo) { v?.remove(); return; }
+    const fileId = await artistCanvas(artistUri);
+    if (!fileId || route() !== path) return;
+    if (!v) {
+      v = el('<video class="tess-hero-video" muted loop playsinline></video>');
+      bg.appendChild(v);
+    }
+    v.classList.remove('ready');
+    if (await playCanvas(v, fileId)) {
+      v.classList.add('ready');
+      heroTimer = setInterval(() => {
+        if (!v.isConnected) return clearInterval(heroTimer);
+        // reading pixels back from the GPU isn't free: only while the title is over the video and the window is visible
+        if (document.hidden || heroP > 0.4) return;
+        const light = headerIsLight(v);
+        if (light !== null) html.classList.toggle('tess-hero-light', light);
+      }, 4000);
+    }
+  }
+  // Scroll drives two things on artist pages: Spotify's top strip stays hidden while the hero fills the page,
+  // and --tess-scroll-p (0 at the top, 1 once the header is gone) blurs and dims the video behind.
+  let heroP = 0;
+  function heroScroll(scroller) {
+    if (!html.classList.contains('tess-artist') || !scroller?.contains(document.querySelector('[data-testid="artist-page"]'))) return;
+    const hero = parseInt(getComputedStyle(html).getPropertyValue('--tess-hero-h')) || 600;
+    html.classList.toggle('tess-hero-past', scroller.scrollTop > hero - 160);
+    heroP = Math.min(1, Math.max(0, scroller.scrollTop / (hero * 0.75)));
+    html.style.setProperty('--tess-scroll-p', heroP.toFixed(3));
+    // once the video is a soft blur there's no point decoding it
+    const v = document.querySelector('video.tess-hero-video.ready');
+    if (v) { if (heroP > 0.97) { if (!v.paused) v.pause(); } else if (v.paused && !document.hidden) v.play().catch(() => {}); }
+  }
+  const artistScroller = () => {
+    let e = document.querySelector('[data-testid="artist-page"]');
+    while (e && !/auto|scroll/.test(getComputedStyle(e).overflowY)) e = e.parentElement;
+    return e;
+  };
+  listen(document, 'scroll', (e) => { if (e.target instanceof Element) heroScroll(e.target); }, { capture: true, passive: true });
+  const unlisten = Spicetify.Platform.History.listen(() => setTimeout(onRoute, 50));
+  onDispose(() => typeof unlisten === 'function' && unlisten());
+  listen(window, 'resize', () => { setHeroHeight(); setTimeout(onRoute, 100); });
+  onRoute();
+})();

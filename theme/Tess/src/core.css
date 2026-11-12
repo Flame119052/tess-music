@@ -1,0 +1,1355 @@
+/* Tess Music — Spicetify theme styles.
+   Spotify's layout and home stay as they are. This file restyles the playing bar,
+   album and playlist pages, and artist pages, and styles the full-screen player. */
+
+:root {
+  --tess-accent: #1ed760;
+  --tess-glass: rgba(48, 48, 52, 0.62);
+  --tess-glass-line: rgba(255, 255, 255, 0.13);
+  --tess-pill: rgba(255, 255, 255, 0.12);
+  --tess-text: #fff;
+  --tess-dim: rgba(255, 255, 255, 0.62);
+  --tess-faint: rgba(255, 255, 255, 0.38);
+  --tess-spring: cubic-bezier(0.2, 0.9, 0.25, 1.04);
+  --tess-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", sans-serif;
+}
+
+/* ================= playing bar =================
+   Spotify's own bar stays mounted (its popovers for devices and the queue still anchor to it)
+   but is invisible; the Tess bar floats above the content in its place. */
+html.tess aside[data-testid="now-playing-bar"] {
+  position: fixed !important;
+  left: 50% !important;
+  bottom: 18px !important;
+  width: min(820px, calc(100vw - 48px)) !important;
+  transform: translateX(-50%);
+  opacity: 0 !important;
+  pointer-events: none !important;
+  z-index: -1 !important;
+}
+html.tess .Root__top-container,
+html.tess .Root {
+  grid-template-rows: auto 1fr 0 !important;
+}
+html.tess .main-view-container__scroll-node-child {
+  padding-bottom: 96px;
+}
+
+#tess-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 50;
+  width: min(820px, calc(100vw - 48px));
+  height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 20px 0 22px;
+  border-radius: 999px;
+  background: rgba(34, 34, 38, 0.72);
+  backdrop-filter: blur(24px) saturate(1.8);
+  -webkit-backdrop-filter: blur(24px) saturate(1.8);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.25),
+    0 18px 50px rgba(0, 0, 0, 0.5);
+  color: var(--tess-text);
+  font-family: var(--tess-font);
+}
+#tess-bar button,
+#tess-np button {
+  all: unset;
+  cursor: pointer;
+  display: inline-grid;
+  place-items: center;
+  color: inherit;
+  transition: transform 0.25s var(--tess-spring), color 0.2s, opacity 0.2s;
+}
+#tess-bar button:active,
+#tess-np button:active {
+  transform: scale(0.86);
+}
+#tess-bar svg,
+#tess-np svg {
+  display: block;
+}
+.tb-ctl {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  flex: none;
+}
+#tess-bar .tb-shuffle,
+#tess-bar .tb-repeat {
+  color: var(--tess-faint);
+}
+#tess-bar .tb-shuffle.active,
+#tess-bar .tb-repeat.active,
+#tess-np .tn-shuffle.active,
+#tess-np .tn-repeat.active {
+  color: var(--tess-accent);
+}
+.tb-repeat.one::after,
+.tn-repeat.one::after {
+  content: "1";
+  font-size: 8px;
+  font-weight: 800;
+  position: absolute;
+  margin: -12px 0 0 14px;
+}
+.tb-now {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px 0 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+.tb-art img {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.tb-art:hover img {
+  transform: scale(1.06);
+  transition: transform 0.3s var(--tess-spring);
+}
+.tb-meta {
+  min-width: 0;
+  flex: 1;
+  margin-top: -2px;
+  line-height: 1.25;
+}
+.tb-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.tb-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#tess-bar .tb-heart,
+#tess-np .tn-heart {
+  color: var(--tess-faint);
+}
+#tess-bar .tb-heart.active,
+#tess-np .tn-heart.active {
+  color: var(--tess-accent);
+}
+.tb-sub {
+  font-size: 13px;
+  color: var(--tess-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent);
+}
+/* subtitles scroll only when they don't fit (the script adds .scrolling) */
+.tess-marquee {
+  -webkit-mask-image: none !important;
+}
+.tess-marquee span {
+  display: inline-block;
+  white-space: nowrap;
+}
+.tess-marquee.scrolling {
+  -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent) !important;
+}
+.tess-marquee.scrolling span {
+  animation: tess-marquee 14s linear infinite;
+}
+@keyframes tess-marquee {
+  0%, 20% { transform: translateX(0); }
+  80%, 100% { transform: translateX(var(--tess-marquee-shift, 0)); }
+}
+.tb-prog {
+  position: absolute;
+  left: 22px;
+  right: 22px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.18);
+  cursor: pointer;
+}
+.tb-prog::before {
+  content: "";
+  position: absolute;
+  inset: -6px 0;
+}
+.tb-prog i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.8);
+}
+.tb-tools {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  flex: none;
+}
+.tb-quality,
+.tn-quality {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--tess-accent);
+  text-transform: uppercase;
+}
+.tb-vol {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+#tess-bar input[type="range"],
+#tess-np input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+  margin: 0;
+}
+#tess-bar input[type="range"] {
+  width: 84px;
+}
+#tess-bar input[type="range"]::-webkit-slider-thumb,
+#tess-np input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+/* ================= full-screen now playing ================= */
+#tess-np {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  overflow: hidden;
+  background: #2b3a44;
+  color: var(--tess-text);
+  font-family: var(--tess-font);
+  opacity: 0;
+  visibility: hidden;
+  transform: scale(1.03);
+  transition: opacity 0.45s, transform 0.6s var(--tess-spring), visibility 0s 0.45s;
+}
+#tess-np.open {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition: opacity 0.45s, transform 0.6s var(--tess-spring), visibility 0s;
+}
+.tn-bg {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.tn-glow {
+  /* painted at 128x72 by the script and stretched: the stretch itself is the blur */
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.tn-shade {
+  position: absolute;
+  inset: 0;
+  background: rgba(20, 24, 30, 0.32);
+}
+
+.tn-pill {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 40px;
+  padding: 0 14px;
+  border-radius: 20px;
+  background: var(--tess-pill);
+  backdrop-filter: blur(24px) saturate(1.6);
+  -webkit-backdrop-filter: blur(24px) saturate(1.6);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+.tn-pill.tl { top: 12px; left: 92px; }
+.tn-pill.tr { top: 16px; right: 16px; }
+.tn-pill.br { bottom: 18px; right: 18px; padding: 0 5px; gap: 4px; }
+#tess-np .tn-pill.br button {
+  width: 36px;
+  height: 30px;
+  border-radius: 15px;
+  color: var(--tess-dim);
+}
+#tess-np .tn-pill.br button.on {
+  background: rgba(255, 255, 255, 0.92);
+  color: #26323b;
+}
+.tn-vol { width: 170px; }
+#tess-np .tn-gear { color: var(--tess-dim); }
+#tess-np .tn-gear:hover { color: #fff; }
+
+.tn-stage {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: center;
+}
+.tn-player {
+  justify-self: center;
+  width: min(600px, 34vw, 56vh);
+  transition: width 0.6s var(--tess-spring);
+}
+#tess-np.mode-none .tn-stage { grid-template-columns: 1fr; }
+#tess-np.mode-none .tn-player { width: min(680px, 64vh); }
+#tess-np.mode-none .tn-lyrics,
+#tess-np.mode-none .tn-queue { display: none; }
+
+.tn-cover {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.38), 0 4px 14px rgba(0, 0, 0, 0.25);
+  transition: transform 0.55s var(--tess-spring);
+}
+#tess-np.paused .tn-cover { transform: scale(0.86); }
+.tn-cover img,
+.tn-cover video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.tn-cover video { opacity: 0; transition: opacity 0.8s; }
+#tess-np.has-canvas .tn-cover video { opacity: 1; }
+
+.tn-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 24px;
+}
+.tn-text { flex: 1; min-width: 0; }
+.tn-text h2 {
+  margin: 0;
+  font-size: clamp(19px, 1.35vw, 26px);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tn-text p {
+  margin: 2px 0 0;
+  font-size: clamp(17px, 1.2vw, 23px);
+  color: var(--tess-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent);
+}
+#tess-np .tn-round {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.18);
+}
+.tn-scrub {
+  position: relative;
+  margin-top: 22px;
+  height: 7px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.22);
+  cursor: pointer;
+  transition: height 0.2s;
+}
+.tn-scrub:hover { height: 10px; }
+.tn-scrub i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.88);
+}
+.tn-times {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--tess-dim);
+  font-variant-numeric: tabular-nums;
+}
+.tn-btns {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 18px;
+}
+.tn-btns svg { width: auto; height: clamp(26px, 2vw, 36px); }
+#tess-np .tn-btns .tn-sm { color: var(--tess-dim); }
+.tn-btns .tn-sm svg { height: clamp(20px, 1.4vw, 26px); }
+.tn-btns .tn-play svg { height: clamp(32px, 2.4vw, 44px); }
+
+/* lyrics */
+.tn-lyrics {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 16%, #000 78%, transparent 100%);
+}
+.tn-lines {
+  position: absolute;
+  left: 0;
+  right: 7vw;
+  top: 36%;
+  transition: transform 0.85s var(--tess-spring);
+}
+.tn-line {
+  --p: 0%;
+  padding: 14px 0;
+  font-size: clamp(28px, 2.3vw, 52px);
+  font-weight: 800;
+  line-height: 1.18;
+  letter-spacing: -0.01em;
+  color: rgba(255, 255, 255, 0.36);
+  cursor: pointer;
+  transform-origin: left center;
+  transition: filter 0.7s, color 0.5s, transform 0.7s var(--tess-spring);
+}
+.tn-line:hover { color: rgba(255, 255, 255, 0.6); }
+.tn-line.past { color: rgba(255, 255, 255, 0.3); }
+.tn-line.on {
+  /* line-synced lyrics light the whole line, as Apple Music does; word timing is ticket #2 */
+  color: #fff;
+  transform: scale(1.02);
+}
+.tn-line.gap { letter-spacing: 0.25em; font-size: 28px; }
+#tess-np.unsynced .tn-lines { top: 12%; }
+#tess-np.unsynced .tn-line { color: rgba(255, 255, 255, 0.85); cursor: default; font-size: 28px; }
+.tn-note {
+  position: absolute;
+  top: 46%;
+  left: 0;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--tess-dim);
+}
+
+/* queue */
+.tn-queue {
+  display: none;
+  height: 100%;
+  overflow: auto;
+  padding: 96px 7vw 90px 0;
+}
+#tess-np.mode-queue .tn-lyrics { display: none; }
+#tess-np.mode-queue .tn-queue { display: block; }
+.tn-queue h4 { margin: 0 0 10px; font-size: 16px; font-weight: 700; }
+.tn-qrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+.tn-qrow:hover { background: rgba(255, 255, 255, 0.08); }
+.tn-qrow img { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; }
+.tn-qrow b { display: block; font-weight: 500; }
+.tn-qrow span { display: block; font-size: 12px; color: var(--tess-dim); }
+.tn-qempty { color: var(--tess-dim); font-size: 14px; }
+
+/* ================= album and playlist pages ================= */
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-entityHeader-container {
+  min-height: 0;
+}
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-entityHeader-contentWrapper {
+  align-items: flex-end;
+  gap: 32px;
+  padding-top: 40px;
+}
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) img.main-entityHeader-image {
+  border-radius: 10px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45), 0 3px 10px rgba(0, 0, 0, 0.3);
+}
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-entityHeader-imageContainer {
+  border-radius: 10px;
+  overflow: hidden;
+}
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-entityHeader-title h1 {
+  font-family: var(--tess-font) !important;
+  font-size: 30px !important;
+  font-weight: 700 !important;
+  line-height: 1.15 !important;
+  letter-spacing: -0.01em;
+  margin: 6px 0 2px;
+}
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-entityHeader-creatorWrapper,
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-entityHeader-creatorWrapper a {
+  font-size: 20px !important;
+  font-weight: 500 !important;
+  color: var(--tess-accent) !important;
+}
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-entityHeader-creatorWrapper img {
+  display: none;
+}
+
+/* Play and Shuffle as pill buttons under the header */
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) [data-testid="action-bar-row"] :is(button[aria-label="Play"], button[aria-label="Pause"]) {
+  width: 132px !important;
+  height: 40px !important;
+  border-radius: 10px !important;
+  background: rgba(255, 255, 255, 0.92) !important;
+}
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) [data-testid="action-bar-row"] :is(button[aria-label="Play"], button[aria-label="Pause"]) > span {
+  background: transparent !important;
+  color: #111 !important;
+  width: 100% !important;
+  height: 100% !important;
+  border-radius: 10px !important;
+  box-shadow: none !important;
+  transform: none !important;
+  gap: 8px;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+}
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) [data-testid="action-bar-row"] :is(button[aria-label="Play"]) > span::after {
+  content: "Play";
+  font: 600 15px var(--tess-font);
+}
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) [data-testid="action-bar-row"] :is(button[aria-label="Pause"]) > span::after {
+  content: "Pause";
+  font: 600 15px var(--tess-font);
+}
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) [data-testid="action-bar-row"] :is(button[aria-label="Play"], button[aria-label="Pause"]) svg {
+  width: 16px;
+  height: 16px;
+  fill: #111;
+}
+
+/* track list: hairline rows, rounded hover */
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-trackList-trackListRow {
+  border-radius: 8px;
+  position: relative;
+}
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-trackList-trackListRow::after {
+  content: "";
+  position: absolute;
+  left: 48px;
+  right: 12px;
+  bottom: 0;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.07);
+  pointer-events: none;
+}
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-trackList-trackListRow:hover::after {
+  opacity: 0;
+}
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-trackList-trackListHeader {
+  border-bottom-color: rgba(255, 255, 255, 0.07);
+}
+
+/* ================= artist pages =================
+   The header fills the whole view until you scroll, like Apple Music.
+   Text is white over dark video and dark over light video (the script adds .tess-hero-light). */
+html.tess.tess-artist [data-testid="artist-page"] .main-entityHeader-container {
+  min-height: var(--tess-hero-h, 80vh);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  background: none !important;
+}
+html.tess.tess-artist [data-testid="artist-page"] .main-entityHeader-contentWrapper {
+  justify-content: flex-end;
+  align-items: center;
+  text-align: center;
+  padding-bottom: 20px;
+  background: none !important;
+}
+html.tess.tess-artist [data-testid="artist-page"] .main-entityHeader-headerText {
+  align-items: center;
+  text-align: center;
+  width: 100%;
+}
+html.tess.tess-artist [data-testid="artist-page"] .main-entityHeader-title {
+  width: 100%;
+  text-align: center;
+}
+html.tess.tess-artist [data-testid="artist-page"] .main-entityHeader-title > span,
+html.tess.tess-artist [data-testid="artist-page"] .main-entityHeader-title h1 {
+  font-family: var(--tess-font) !important;
+  font-size: clamp(44px, 4.6vw, 76px) !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.01em !important;
+  line-height: 1.05 !important;
+}
+html.tess.tess-artist [data-testid="artist-page"] .main-entityHeader-headerText,
+html.tess.tess-artist [data-testid="artist-page"] .main-entityHeader-headerText * {
+  color: #fff !important;
+  text-shadow: 0 2px 22px rgba(0, 0, 0, 0.45);
+  transition: color 0.6s, text-shadow 0.6s;
+}
+html.tess.tess-artist.tess-hero-light [data-testid="artist-page"] .main-entityHeader-headerText,
+html.tess.tess-artist.tess-hero-light [data-testid="artist-page"] .main-entityHeader-headerText * {
+  color: #111 !important;
+  text-shadow: 0 1px 18px rgba(255, 255, 255, 0.4);
+}
+html.tess.tess-artist [data-testid="artist-page"] [data-testid="action-bar"] {
+  background: none !important;
+}
+html.tess.tess-artist [data-testid="artist-page"] [data-testid="action-bar-row"] {
+  justify-content: center;
+}
+html.tess.tess-artist [data-testid="artist-page"] [data-testid="action-bar-row"] button {
+  color: #fff;
+}
+html.tess.tess-artist.tess-hero-light [data-testid="artist-page"] [data-testid="action-bar-row"] button:not([aria-label="Play"]):not([aria-label="Pause"]) {
+  color: #111 !important;
+  border-color: rgba(0, 0, 0, 0.35) !important;
+}
+
+/* the header background: full height, slow drift, Canvas video on top, fade into the page */
+html.tess.tess-artist .tess-hero-bg {
+  overflow: hidden;
+  background-size: cover !important;
+  background-position: center 22% !important;
+  animation: tess-kenburns 28s ease-in-out infinite alternate;
+}
+@keyframes tess-kenburns {
+  from { transform: scale(1); }
+  to { transform: scale(1.08) translate(-1%, -1.5%); }
+}
+html.tess.tess-artist .tess-hero-bg::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.25) 0%, rgba(0, 0, 0, 0) 16%, rgba(0, 0, 0, 0) 45%, rgba(0, 0, 0, 0.5) 100%);
+  pointer-events: none;
+}
+html.tess.tess-artist.tess-hero-light .tess-hero-bg::after {
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.15) 0%, rgba(0, 0, 0, 0) 20%, rgba(0, 0, 0, 0) 100%);
+}
+.tess-hero-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 1.2s;
+}
+.tess-hero-video.ready {
+  opacity: 1;
+}
+html:not(.tess-artist) .tess-hero-video {
+  display: none;
+}
+
+/* ================= window tint and panels =================
+   Dia-style: one material for every panel, the window behind it tinted by the album art. */
+:root {
+  --tess-page: #121214;
+  --tess-panel: rgba(20, 20, 23, 0.6);
+  --tess-panel-solid: #141417;
+  --tess-hairline: rgba(255, 255, 255, 0.07);
+  --tess-radius: 14px;
+}
+#tess-ambient {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  background: #050506;
+  pointer-events: none;
+}
+#tess-ambient canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  transition: opacity 0.35s;
+}
+html.tess-tint #tess-ambient canvas {
+  opacity: 0.75;
+}
+html:not(.tess-tint) #tess-ambient {
+  display: none;
+}
+html.tess body,
+html.tess #main,
+html.tess .Root,
+html.tess .Root__top-container {
+  background: transparent !important;
+}
+html.tess #Desktop_LeftSidebar_Id,
+html.tess #main-view,
+html.tess .Root__right-sidebar-peek,
+html.tess .Root__right-sidebar-peek > aside {
+  background: var(--tess-panel-solid) !important;
+}
+html.tess.tess-tint #Desktop_LeftSidebar_Id,
+html.tess.tess-tint #main-view,
+html.tess.tess-tint .Root__right-sidebar-peek,
+html.tess.tess-tint .Root__right-sidebar-peek > aside {
+  background: var(--tess-panel) !important;
+}
+html.tess #Desktop_LeftSidebar_Id,
+html.tess #main-view,
+html.tess .Root__right-sidebar-peek {
+  border-radius: var(--tess-radius) !important;
+  box-shadow: inset 0 0 0 1px var(--tess-hairline);
+  overflow: hidden;
+}
+html.tess #main-view .main-view-container {
+  border-radius: var(--tess-radius);
+}
+
+/* one font across the app so Spotify's pages and Tess's surfaces match */
+html.tess body,
+html.tess button,
+html.tess input,
+html.tess [class*="encore-text"] {
+  font-family: var(--tess-font) !important;
+}
+
+/* ================= library sidebar ================= */
+html.tess #Desktop_LeftSidebar_Id h1 {
+  font-size: 15px !important;
+  font-weight: 650 !important;
+  letter-spacing: -0.01em;
+}
+html.tess #Desktop_LeftSidebar_Id button[aria-label="Create"] {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-radius: 999px !important;
+  box-shadow: inset 0 0 0 1px var(--tess-hairline);
+  transition: background 0.2s;
+}
+html.tess #Desktop_LeftSidebar_Id button[aria-label="Create"]:hover {
+  background: rgba(255, 255, 255, 0.14) !important;
+}
+/* filter chips: soft segmented pills */
+/* chips: style Spotify's own pill (the inner span), never a box around it, so there is exactly one shape */
+html.tess [data-encore-id="chip"] > span {
+  background: rgba(255, 255, 255, 0.07) !important;
+  border-radius: 999px !important;
+  box-shadow: inset 0 0 0 1px var(--tess-hairline);
+  font-size: 12.5px !important;
+  transition: background 0.2s, color 0.2s;
+}
+html.tess [data-encore-id="chip"]:hover > span {
+  background: rgba(255, 255, 255, 0.12) !important;
+}
+html.tess [data-encore-id="chip"][aria-checked="true"] > span,
+html.tess [role="option"][aria-selected="true"] [data-encore-id="chip"] > span {
+  background: rgba(255, 255, 255, 0.92) !important;
+  color: #111 !important;
+  box-shadow: none;
+}
+html.tess #Desktop_LeftSidebar_Id [role="search"] input {
+  border-radius: 9px !important;
+}
+/* rows: rounded, airy, a soft glow on what's playing */
+html.tess #Desktop_LeftSidebar_Id [data-encore-id="listRow"] {
+  border-radius: 11px !important;
+  transition: background 0.18s, transform 0.25s var(--tess-spring);
+}
+html.tess #Desktop_LeftSidebar_Id [data-encore-id="listRow"]:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+html.tess #Desktop_LeftSidebar_Id [data-encore-id="listRow"]:active {
+  transform: scale(0.985);
+}
+html.tess #Desktop_LeftSidebar_Id [role="row"][aria-selected="true"] [data-encore-id="listRow"],
+html.tess #Desktop_LeftSidebar_Id [data-encore-id="listRow"][aria-selected="true"] {
+  background: rgba(255, 255, 255, 0.1) !important;
+}
+html.tess #Desktop_LeftSidebar_Id [data-encore-id="listRow"]:has([data-encore-id="listRowTitle"][class*="bright-accent"]) {
+  background: linear-gradient(90deg, rgba(30, 215, 96, 0.16), rgba(30, 215, 96, 0.02) 70%) !important;
+  box-shadow: inset 0 0 0 1px rgba(30, 215, 96, 0.18);
+}
+html.tess #Desktop_LeftSidebar_Id [data-encore-id="listRow"] img {
+  border-radius: inherit !important;
+}
+html.tess #Desktop_LeftSidebar_Id .tess-sq {
+  border-radius: 8px !important;
+  overflow: hidden;
+}
+html.tess #Desktop_LeftSidebar_Id [data-encore-id="listRowTitle"] {
+  font-size: 14px !important;
+  font-weight: 550 !important;
+  letter-spacing: -0.005em;
+}
+html.tess #Desktop_LeftSidebar_Id [data-encore-id="listRowSubtitle"] {
+  font-size: 12px !important;
+  opacity: 0.85;
+}
+
+/* ================= now playing panel (right) ================= */
+html.tess .Root__right-sidebar-peek [data-testid="cover-art-slot"],
+html.tess .Root__right-sidebar-peek [data-testid="cover-art-slot"] * {
+  border-radius: 12px !important;
+}
+html.tess .Root__right-sidebar-peek [data-testid="cover-art-slot"] {
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+}
+html.tess .Root__right-sidebar-peek section,
+html.tess .Root__right-sidebar-peek [data-testid="lyrics-npv-section"] {
+  border-radius: var(--tess-radius) !important;
+  box-shadow: inset 0 0 0 1px var(--tess-hairline);
+}
+html.tess .Root__right-sidebar-peek section {
+  background: rgba(255, 255, 255, 0.05) !important;
+}
+html.tess .Root__right-sidebar-peek [data-encore-id="card"],
+html.tess .Root__right-sidebar-peek [data-encore-id="card"] img {
+  border-radius: 10px !important;
+}
+
+/* ================= Tess settings dialog ================= */
+.tess-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 420px;
+  font-family: var(--tess-font);
+}
+.tess-set-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 12px 4px;
+  border-bottom: 1px solid var(--tess-hairline);
+  cursor: pointer;
+}
+.tess-set-row:last-child {
+  border-bottom: 0;
+}
+.tess-set-row div {
+  flex: 1;
+}
+.tess-set-row b {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+}
+.tess-set-row span {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--tess-dim);
+}
+.tess-set-row input {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 40px;
+  height: 24px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.2);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.2s;
+  flex: none;
+}
+.tess-set-row input::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.25s var(--tess-spring);
+}
+.tess-set-row input:checked {
+  background: var(--tess-accent);
+}
+.tess-set-row input:checked::after {
+  transform: translateX(16px);
+}
+
+/* Spotify's sticky top strip stays clear over the hero and fades in once you scroll past it */
+html.tess.tess-artist .main-topBar-background {
+  transition: opacity 0.3s;
+}
+html.tess.tess-artist:not(.tess-hero-past) .main-topBar-background {
+  opacity: 0 !important;
+}
+
+/* Spotify lays its own artist colour over the picture as you scroll and under the play row; Tess keeps the video clean */
+html.tess.tess-artist .tess-hero-bg ~ * {
+  display: none !important;
+}
+html.tess.tess-artist [data-testid="artist-page"] [style*="--background-base-70"],
+html.tess.tess-artist [data-testid="artist-page"] div:has(> [style*="--background-base-70"]) {
+  background: none !important;
+}
+/* Apple Music's artist scroll: the video stays put behind the page and melts into a soft, dim blur as you scroll */
+html.tess.tess-artist .before-scroll-node > div:has(> .tess-hero-bg) {
+  overflow: hidden !important;
+}
+html.tess.tess-artist .tess-hero-bg {
+  inset: -60px !important;
+  width: auto !important;
+  filter:
+    blur(calc(var(--tess-scroll-p, 0) * 42px))
+    brightness(calc(1 - var(--tess-scroll-p, 0) * 0.6))
+    saturate(calc(1 + var(--tess-scroll-p, 0) * 0.25));
+  will-change: filter, transform;
+}
+html.tess.tess-artist .tess-hero-bg::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: rgb(16, 16, 19);
+  opacity: calc(var(--tess-scroll-p, 0) * 0.5);
+  pointer-events: none;
+}
+
+/* the sticky strip that appears once you scroll is the same glass as the panels, never a flat page colour */
+html.tess .main-topBar-background {
+  background: rgba(22, 22, 26, 0.72) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(1.6);
+  backdrop-filter: blur(24px) saturate(1.6);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+html.tess.tess-artist .before-scroll-node > [style*="background-color"] {
+  background: none !important;
+}
+html.tess.tess-artist .main-topBar-topbarContentContainer {
+  transition: opacity 0.3s;
+}
+html.tess.tess-artist:not(.tess-hero-past) .main-topBar-topbarContentContainer {
+  opacity: 0 !important;
+  pointer-events: none;
+}
+
+/* ================= right panel: Apple Music style ================= */
+
+.tess-side-lyrics {
+  position: relative;
+  margin: 4px 0 20px;
+  border-radius: var(--tess-radius);
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: inset 0 0 0 1px var(--tess-hairline);
+  font-family: var(--tess-font);
+}
+.tess-side-lyrics[hidden] {
+  display: none;
+}
+.tsl-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 0 16px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+}
+.tsl-open {
+  all: unset;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: rgba(255, 255, 255, 0.7);
+  transition: background 0.2s, color 0.2s, transform 0.25s var(--tess-spring);
+}
+.tsl-open:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+.tsl-open:active {
+  transform: scale(0.88);
+}
+.tsl-window {
+  position: relative;
+  height: 236px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 18%, #000 72%, transparent 100%);
+}
+.tsl-lines {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: 34%;
+  transition: transform 0.85s var(--tess-spring);
+}
+.tess-side-lyrics .tn-line {
+  padding: 6px 0;
+  font-size: 21px;
+  line-height: 1.2;
+}
+.tess-side-lyrics .tn-line.on {
+  transform: none;
+}
+.tess-side-lyrics .tn-line.gap {
+  font-size: 18px;
+}
+.tess-side-lyrics.unsynced .tsl-lines {
+  top: 8px;
+}
+.tess-side-lyrics.unsynced .tn-line {
+  color: rgba(255, 255, 255, 0.85);
+  cursor: default;
+  font-size: 17px;
+}
+
+/* the rest of the panel: one heading style, one card style */
+html.tess .Root__right-sidebar-peek {
+  font-family: var(--tess-font);
+}
+html.tess .Root__right-sidebar-peek [data-testid="cover-art-slot"] {
+  cursor: zoom-in;
+  transition: transform 0.35s var(--tess-spring), box-shadow 0.35s;
+}
+html.tess .Root__right-sidebar-peek [data-testid="cover-art-slot"]:hover {
+  transform: scale(1.012);
+  box-shadow: 0 24px 50px rgba(0, 0, 0, 0.55);
+}
+html.tess .Root__right-sidebar-peek h2,
+html.tess .Root__right-sidebar-peek [class*="encore-text-body-medium-bold"] {
+  font-size: 15px !important;
+  font-weight: 650 !important;
+  letter-spacing: -0.01em !important;
+}
+html.tess .Root__right-sidebar-peek [data-encore-id="card"],
+html.tess .Root__right-sidebar-peek section > div,
+html.tess .Root__right-sidebar-peek a[href^="/artist/"] > div:has(> img) {
+  border-radius: var(--tess-radius) !important;
+}
+html.tess .Root__right-sidebar-peek section,
+html.tess .Root__right-sidebar-peek [class*="AboutArtist"],
+html.tess .Root__right-sidebar-peek div:has(> div > [data-testid="cover-art-image"]) {
+  background: rgba(255, 255, 255, 0.045) !important;
+}
+html.tess .Root__right-sidebar-peek button[class*="legacy-button-secondary"],
+html.tess .Root__right-sidebar-peek button[data-encore-id="buttonSecondary"] {
+  border-radius: 999px !important;
+}
+
+/* the right panel's cover: always square, Canvas inside it */
+html.tess .tess-npv-root:not(.tess-mv-mode) > :not(.tess-cover-wrap):not(.tess-npv-col),
+html.tess .tess-npv-root:not(.tess-mv-mode) video:not(.tess-video),
+html.tess .tess-npv-root.tess-mv-mode > .tess-cover-wrap {
+  display: none !important;
+}
+html.tess .tess-npv-root.tess-mv-mode > :not(.tess-npv-col) {
+  border-radius: 12px;
+  overflow: hidden;
+}
+/* clear of the panel's header row, which floats over the top */
+.tess-cover-wrap {
+  padding: 64px 0 16px;
+}
+.tess-side-cover {
+  all: unset;
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: zoom-in;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45), inset 0 0 0 1px var(--tess-hairline);
+  transition: transform 0.35s var(--tess-spring), box-shadow 0.35s;
+}
+.tess-side-cover:hover {
+  transform: scale(1.012);
+  box-shadow: 0 24px 50px rgba(0, 0, 0, 0.55);
+}
+.tess-side-cover img,
+.tess-side-cover video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.tess-side-cover video {
+  opacity: 0;
+  transition: opacity 0.6s;
+}
+.tess-side-cover.has-canvas video {
+  opacity: 1;
+}
+
+/* Settings: the bar steps aside so it never covers a row */
+#tess-bar {
+  transition: opacity 0.35s, transform 0.45s var(--tess-spring);
+}
+html.tess-on-settings #tess-bar {
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 24px);
+}
+html.tess-on-settings .main-view-container__scroll-node-child {
+  padding-bottom: 24px;
+}
+#tess-theme-settings .tess-set-hint {
+  display: block;
+  margin-top: 2px;
+}
+#tess-theme-settings [data-settings-row] {
+  padding-block: 6px;
+}
+/* with live panel lyrics off, Spotify's own preview card comes back */
+html.tess-side-lyrics-off .tess-side-lyrics {
+  display: none !important;
+}
+html.tess:not(.tess-side-lyrics-off) .Root__right-sidebar-peek [data-testid="lyrics-npv-section"] {
+  display: none !important;
+}
+
+/* ================= queue (right panel) ================= */
+/* tabs become a segmented control */
+html.tess .Root__right-sidebar-peek [data-encore-id="tabList"] {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 0 1px var(--tess-hairline);
+}
+html.tess .Root__right-sidebar-peek [data-encore-id="tabItem"] {
+  padding: 5px 12px !important;
+  border-radius: 8px !important;
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  color: rgba(255, 255, 255, 0.65) !important;
+  transition: background 0.2s, color 0.2s;
+}
+html.tess .Root__right-sidebar-peek [data-encore-id="tabItem"]::after,
+html.tess .Root__right-sidebar-peek [data-encore-id="tabItem"]::before {
+  display: none !important;
+}
+html.tess .Root__right-sidebar-peek [data-encore-id="tabItem"][aria-selected="true"] {
+  background: rgba(255, 255, 255, 0.16) !important;
+  color: #fff !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+/* headings */
+html.tess #queue-panel h2,
+html.tess #history-panel h2 {
+  font-size: 13px !important;
+  font-weight: 650 !important;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5) !important;
+  margin-top: 6px;
+}
+/* rows */
+html.tess :is(#queue-panel, #history-panel) li[role="row"] [data-encore-id="listRow"] {
+  border-radius: 10px !important;
+  padding-block: 5px !important;
+  transition: background 0.18s;
+}
+html.tess :is(#queue-panel, #history-panel) li[role="row"] [data-encore-id="listRow"]:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+html.tess :is(#queue-panel, #history-panel) li[role="row"] div:has(> img) {
+  border-radius: 7px !important;
+  overflow: hidden;
+}
+html.tess :is(#queue-panel, #history-panel) li[role="row"] img {
+  border-radius: inherit !important;
+}
+html.tess :is(#queue-panel, #history-panel) [data-encore-id="listRowTitle"] {
+  font-size: 14px !important;
+  font-weight: 550 !important;
+  letter-spacing: -0.005em;
+}
+html.tess :is(#queue-panel, #history-panel) [data-encore-id="listRowSubtitle"] {
+  font-size: 12px !important;
+  opacity: 0.8;
+}
+html.tess :is(#queue-panel, #history-panel) li[role="row"] + li[role="row"] {
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+/* the Jam invite: a quiet glass card with a small white pill instead of a big green slab */
+html.tess #queue-panel div:has(> * > [data-encore-id="buttonPrimary"]):not(:has(ul)) {
+  background: rgba(255, 255, 255, 0.045) !important;
+  border-radius: var(--tess-radius) !important;
+  box-shadow: inset 0 0 0 1px var(--tess-hairline);
+}
+html.tess #queue-panel [data-encore-id="buttonPrimary"] > span,
+html.tess #queue-panel [data-encore-id="buttonPrimary"] {
+  background: #fff !important;
+  color: #111 !important;
+  border-radius: 999px !important;
+  min-block-size: 30px !important;
+  padding-block: 0 !important;
+  font-size: 13px !important;
+}
+
+/* ================= library: pinned dock ================= */
+#tess-dock {
+  flex: none;
+  padding: 2px 12px 10px;
+  border-bottom: 1px solid var(--tess-hairline);
+  font-family: var(--tess-font);
+}
+#tess-dock[hidden] {
+  display: none;
+}
+.td-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 10px;
+}
+.td-tile {
+  all: unset;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  cursor: pointer;
+  border-radius: 14px;
+  transition: transform 0.35s var(--tess-spring);
+}
+.td-tile:hover {
+  transform: translateY(-2px);
+}
+.td-tile:active {
+  transform: scale(0.95);
+}
+.td-art {
+  display: block;
+  aspect-ratio: 1;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.07) center / cover no-repeat;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  transition: box-shadow 0.3s;
+}
+.td-art.td-local {
+  background-image: linear-gradient(135deg, #2a9d5c, #1ed760);
+  position: relative;
+}
+.td-art.td-local::after {
+  content: "";
+  position: absolute;
+  inset: 32%;
+  background: rgba(255, 255, 255, 0.92);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 6.5A2.5 2.5 0 0 1 5.5 4h4l2 2h7A2.5 2.5 0 0 1 21 8.5v9a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.td-name {
+  font-size: 11.5px;
+  font-weight: 550;
+  line-height: 1.25;
+  color: rgba(255, 255, 255, 0.78);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+.td-tile.here .td-art {
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4), inset 0 0 0 2px rgba(255, 255, 255, 0.55);
+}
+.td-tile.playing .td-art {
+  box-shadow: 0 0 0 2px var(--tess-accent), 0 0 22px rgba(30, 215, 96, 0.45), 0 6px 18px rgba(0, 0, 0, 0.4);
+}
+.td-tile.playing .td-name {
+  color: var(--tess-accent);
+}
+/* tiny equaliser on the playing tile */
+.td-eq {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  display: none;
+  gap: 2px;
+  align-items: flex-end;
+  height: 12px;
+  padding: 3px 4px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+}
+.td-tile.playing .td-eq {
+  display: flex;
+}
+.td-eq i {
+  width: 2px;
+  height: 100%;
+  border-radius: 1px;
+  background: var(--tess-accent);
+  transform-origin: bottom;
+  animation: td-eq 0.9s ease-in-out infinite alternate;
+}
+.td-eq i:nth-child(2) { animation-delay: -0.3s; }
+.td-eq i:nth-child(3) { animation-delay: -0.6s; }
+.td-tile.paused .td-eq i { animation-play-state: paused; }
+@keyframes td-eq {
+  from { transform: scaleY(0.25); }
+  to { transform: scaleY(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .td-eq i { animation: none; }
+}
+/* pinned items live in the dock, not twice in the list */
+html.tess #Desktop_LeftSidebar_Id [role="row"].tess-pinned-row {
+  display: none !important;
+}
+
+/* lyric lines far from the current one: dimmer, never blurred */
+.tn-line.far {
+  opacity: 0.55;
+}
+/* the slow zoom is only for still photos; a playing video already moves */
+html.tess.tess-artist .tess-hero-bg:has(.tess-hero-video.ready) {
+  animation: none;
+}
+/* the closed full-screen player costs nothing */
+#tess-np:not(.open) .tn-glow {
+  display: none;
+}
+html.tess #queue-panel div:has(> [data-encore-id="buttonPrimary"]) {
+  background: none !important;
+}
+/* the library panel is one surface: its inner layer takes the outer corners and no paint of its own */
+html.tess #Desktop_LeftSidebar_Id > nav,
+html.tess #Desktop_LeftSidebar_Id > nav > div,
+html.tess #Desktop_LeftSidebar_Id > div {
+  border-radius: inherit !important;
+}
+html.tess #Desktop_LeftSidebar_Id > nav > div {
+  background: transparent !important;
+}

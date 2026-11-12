@@ -2,6 +2,7 @@
 # Push theme changes into Spotify and restart it with the debug port open.
 set -e
 cd "$(dirname "$0")/.."
+node tools/build.mjs
 node --check theme/Tess/theme.js
 spicetify refresh >/dev/null
 pkill -x Spotify || true
