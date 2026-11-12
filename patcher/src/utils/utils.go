@@ -1,0 +1,431 @@
+package utils
+
+import (
+	"archive/zip"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/go-ini/ini"
+)
+
+var regexpCache sync.Map
+
+func getRegexp(pattern string) *regexp.Regexp {
+	if cached, ok := regexpCache.Load(pattern); ok {
+		return cached.(*regexp.Regexp)
+	}
+	re := regexp.MustCompile(pattern)
+	actual, _ := regexpCache.LoadOrStore(pattern, re)
+	return actual.(*regexp.Regexp)
+}
+
+func extractSubmatches(input string, loc []int) []string {
+	submatches := make([]string, len(loc)/2)
+	for i := 0; i < len(loc); i += 2 {
+		if loc[i] >= 0 && loc[i+1] >= 0 {
+			submatches[i/2] = input[loc[i]:loc[i+1]]
+		}
+	}
+	return submatches
+}
+
+// CheckExistAndCreate checks folder existence
+// and makes that folder, recursively, if it does not exist
+func CheckExistAndCreate(dir string) {
+	_, err := os.Stat(dir)
+	if err != nil {
+		os.MkdirAll(dir, 0700)
+	}
+}
+
+// CheckExistAndDelete checks folder existence
+// and deletes that folder if it does exist
+func CheckExistAndDelete(dir string) {
+	_, err := os.Stat(dir)
+	if err == nil {
+		os.RemoveAll(dir)
+	}
+}
+
+// Unzip unzips zip
+func Unzip(src, dest string) error {
+	r, err := zip.OpenReader(src)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		fpath := filepath.Join(dest, f.Name)
+		if rel, err := filepath.Rel(dest, fpath); err != nil || !filepath.IsLocal(rel) {
+			return fmt.Errorf("illegal file path in zip: %s", f.Name)
+		}
+		if f.FileInfo().IsDir() {
+			os.MkdirAll(fpath, 0700)
+		} else {
+			var fdir string
+			if lastIndex := strings.LastIndex(fpath, string(os.PathSeparator)); lastIndex > -1 {
+				fdir = fpath[:lastIndex]
+			}
+
+			err = os.MkdirAll(fdir, 0700)
+			if err != nil {
+				log.Fatal(err)
+				return err
+			}
+
+			rc, err := f.Open()
+			if err != nil {
+				return err
+			}
+
+			outFile, err := os.OpenFile(
+				fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0700)
+			if err != nil {
+				rc.Close()
+				return err
+			}
+
+			_, err = io.Copy(outFile, rc)
+			outFile.Close()
+			rc.Close()
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// Copy .
+func Copy(src, dest string, recursive bool, filters []string) error {
+	dir, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	os.MkdirAll(dest, 0700)
+
+	for _, file := range dir {
+		fileName := file.Name()
+		fSrcPath := filepath.Join(src, fileName)
+
+		fDestPath := filepath.Join(dest, fileName)
+		if file.IsDir() && recursive {
+			os.MkdirAll(fDestPath, 0700)
+			if err = Copy(fSrcPath, fDestPath, true, filters); err != nil {
+				return err
+			}
+		} else {
+			if len(filters) > 0 {
+				isMatch := false
+
+				for _, filter := range filters {
+					if strings.Contains(fileName, filter) {
+						isMatch = true
+						break
+					}
+				}
+
+				if !isMatch {
+					continue
+				}
+			}
+
+			if err := CopyFile(fSrcPath, dest); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// CopyFile .
+func CopyFile(srcPath, dest string) error {
+	fSrc, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer fSrc.Close()
+
+	CheckExistAndCreate(dest)
+	destPath := filepath.Join(dest, filepath.Base(srcPath))
+	fDest, err := os.OpenFile(
+		destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0700)
+	if err != nil {
+		return err
+	}
+	defer fDest.Close()
+
+	_, err = io.Copy(fDest, fSrc)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Replace uses Regexp to find any matched from `input` with `regexpTerm`
+// and replaces them with `replaceTerm` then returns new string.
+func Replace(str *string, pattern string, repl func(submatches ...string) string) {
+	re := getRegexp(pattern)
+	input := *str
+	matches := re.FindAllStringSubmatchIndex(input, -1)
+	if len(matches) == 0 {
+		return
+	}
+
+	var b strings.Builder
+	b.Grow(len(input))
+	lastIndex := 0
+
+	for _, loc := range matches {
+		b.WriteString(input[lastIndex:loc[0]])
+		b.WriteString(repl(extractSubmatches(input, loc)...))
+		lastIndex = loc[1]
+	}
+	b.WriteString(input[lastIndex:])
+	*str = b.String()
+}
+
+func ReplaceOnce(str *string, pattern string, repl func(submatches ...string) string) {
+	re := getRegexp(pattern)
+	input := *str
+	loc := re.FindStringSubmatchIndex(input)
+	if loc == nil {
+		return
+	}
+
+	*str = input[:loc[0]] + repl(extractSubmatches(input, loc)...) + input[loc[1]:]
+}
+
+func ReplaceOnceWithPriority(str *string, patterns []string, repl func(index int, submatches ...string) string) {
+	input := *str
+	for i, pattern := range patterns {
+		re := getRegexp(pattern)
+		loc := re.FindStringSubmatchIndex(input)
+		if loc != nil {
+			*str = input[:loc[0]] + repl(i, extractSubmatches(input, loc)...) + input[loc[1]:]
+			break
+		}
+	}
+}
+
+func FindMatch(input string, regexpTerm string) [][]string {
+	re := getRegexp(regexpTerm)
+	matches := re.FindAllStringSubmatch(input, -1)
+	return matches
+}
+
+func FindFirstMatch(input string, regexpTerm string) []string {
+	re := getRegexp(regexpTerm)
+	return re.FindStringSubmatch(input)
+}
+
+func FindLastMatch(input string, regexpTerm string) []string {
+	re := getRegexp(regexpTerm)
+	matches := re.FindAllStringSubmatchIndex(input, -1)
+	if len(matches) > 0 {
+		return extractSubmatches(input, matches[len(matches)-1])
+	}
+	return nil
+}
+
+// ModifyFile opens file, changes file content by executing
+// `repl` callback function and writes new content.
+func ModifyFile(path string, repl func(string) string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		PrintError(err.Error())
+		return err
+	}
+
+	original := string(raw)
+	content := repl(original)
+	if content == original {
+		return nil
+	}
+
+	if err := os.WriteFile(path, []byte(content), 0700); err != nil {
+		PrintError(err.Error())
+		return err
+	}
+	return nil
+}
+
+// CreateFile creates a file with given path and content.
+func CreateFile(path string, content string) error {
+	err := os.WriteFile(path, []byte(content), 0600)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// GetSpotifyVersion .
+func GetSpotifyVersion(prefsPath string) string {
+	pref, err := ini.Load(prefsPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	rootSection, err := pref.GetSection("")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	version := rootSection.Key("app.last-launched-version")
+	return version.MustString("")
+}
+
+type SpotifyVersion [3]int
+
+func ParseSpotifyVersion(version string) SpotifyVersion {
+	var v SpotifyVersion
+	parts := strings.Split(version, ".")
+	for i := range min(len(parts), len(v)) {
+		v[i], _ = strconv.Atoi(parts[i])
+	}
+	return v
+}
+
+func (v SpotifyVersion) AtLeast(major, minor, patch int) bool {
+	return slices.Compare(v[:], []int{major, minor, patch}) >= 0
+}
+
+// GetExecutableDir returns directory of current process
+func GetExecutableDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	exeDir := filepath.Dir(exe)
+
+	if link, err := filepath.EvalSymlinks(exe); err == nil {
+		return filepath.Dir(link)
+	}
+
+	return exeDir
+}
+
+// GetJsHelperDir returns jsHelper directory in executable directory
+func GetJsHelperDir() string {
+	return filepath.Join(GetExecutableDir(), "jsHelper")
+}
+
+// PrependTime prepends current time string to text and returns new string
+func PrependTime(text string) string {
+	date := time.Now()
+	return fmt.Sprintf("%02d:%02d:%02d ", date.Hour(), date.Minute(), date.Second()) + text
+}
+
+// FindSymbol uses regexp from one or multiple clues to find variable or
+// function symbol in obfuscated code.
+func FindSymbol(debugInfo, content string, clues []string) []string {
+	for _, v := range clues {
+		re := getRegexp(v)
+		found := re.FindStringSubmatch(content)
+		if found != nil {
+			return found[1:]
+		}
+	}
+
+	if len(debugInfo) > 0 {
+		PrintError("Cannot find symbol for " + debugInfo)
+	}
+
+	return nil
+}
+
+// FindSymbolWithPattern uses regexp from one or multiple clues to find variable or
+// function symbol in obfuscated code. Returns the matched symbols and the pattern that matched.
+func FindSymbolWithPattern(debugInfo, content string, clues []string) ([]string, string) {
+	for _, v := range clues {
+		re := getRegexp(v)
+		found := re.FindStringSubmatch(content)
+		if found != nil {
+			return found[1:], v
+		}
+	}
+
+	if len(debugInfo) > 0 {
+		PrintError("Cannot find symbol for " + debugInfo)
+	}
+
+	return nil, ""
+}
+
+// CreateJunction creates a junction in Windows or a symlink in Linux/Mac.
+func CreateJunction(location, destination string) error {
+	CheckExistAndDelete(destination)
+	switch runtime.GOOS {
+	case "windows":
+		exec.Command("cmd", "/C", "rmdir", destination).Run()
+		return exec.Command("cmd", "/C", "mklink", "/J", destination, location).Run()
+	case "linux", "darwin":
+		return exec.Command("ln", "-Fsf", location, destination).Run()
+	}
+
+	return nil
+}
+
+func SeekToCloseParen(content string, regexpTerm string, leftChar, rightChar byte) string {
+	loc := getRegexp(regexpTerm).FindStringIndex(content)
+	if len(loc) > 0 {
+		start := loc[0]
+		end := start
+		count := 0
+		init := false
+
+		for end < len(content) {
+			switch content[end] {
+			case leftChar:
+				count += 1
+				init = true
+			case rightChar:
+				count -= 1
+			}
+			end += 1
+			if count == 0 && init {
+				return content[start:end]
+			}
+		}
+	}
+	return ""
+}
+
+type AppManifest struct {
+	Files          []string `json:"subfiles"`
+	ExtensionFiles []string `json:"subfiles_extension"`
+	Assets         []string `json:"assets"`
+}
+
+func GetAppManifest(app string) (AppManifest, string, error) {
+	customAppPath, err := GetCustomAppPath(app)
+	if err != nil {
+		PrintError(`Custom app "` + app + `" not found.`)
+		return AppManifest{}, customAppPath, err
+	}
+	manifestFileContent, err := os.ReadFile(filepath.Join(customAppPath, "manifest.json"))
+	if err != nil {
+		manifestFileContent = []byte{'{', '}'}
+	}
+	var manifestJson AppManifest
+	if err = json.Unmarshal(manifestFileContent, &manifestJson); err == nil {
+		return manifestJson, customAppPath, err
+	}
+	return manifestJson, customAppPath, err
+}
