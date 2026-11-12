@@ -6,7 +6,8 @@
   window.__tess?.dispose?.();
   const disposers = [];
   const onDispose = (fn) => disposers.push(fn);
-  window.__tess = { dispose: () => disposers.splice(0).reverse().forEach((fn) => { try { fn(); } catch {} }) };
+  const self = { dispose: () => disposers.splice(0).reverse().forEach((fn) => { try { fn(); } catch {} }) };
+  window.__tess = self;
 
   const ready = () =>
     window.Spicetify?.Player?.data !== undefined &&
@@ -15,6 +16,7 @@
     Spicetify.GraphQL?.Definitions &&
     document.querySelector('[data-testid="now-playing-bar"]');
   while (!ready()) await new Promise((r) => setTimeout(r, 300));
+  if (window.__tess !== self) return; // a newer copy started while this one waited
 
   const P = Spicetify.Player;
   const el = (html) => {
@@ -976,12 +978,15 @@
         }).filter((i) => i.uri && i.name);
       } catch { spotItems = []; }
     }
+    // last row: Spotify's full search page for everything else (songs lists, podcasts, profiles, genres)
+    if (term.trim()) spotItems.push({ uri: '', name: `See all results for “${term.trim()}”`, sub: 'Opens Spotify search', kind: '', img: '', all: term.trim() });
     spotSel = 0;
     drawSpot();
   }
   function actSpot(it, playNow) {
     if (!it) return;
     closeSpot();
+    if (it.all) { Spicetify.Platform.History.push('/search/' + encodeURIComponent(it.all)); return; }
     if (it.isTrack || playNow) Spicetify.Player.playUri(it.uri);
     else Spicetify.Platform.History.push(Spicetify.URI.fromString(it.uri).toURLPath(true));
   }
@@ -998,6 +1003,17 @@
     else if (e.key === 'Escape') { e.preventDefault(); closeSpot(); }
   });
   listen(spot, 'pointerdown', (e) => { if (e.target === spot) closeSpot(); });
+  // The top search box opens this panel too (Spotify's own dropdown stays closed); typing carries over.
+  listen(document, 'pointerdown', (e) => {
+    const input = e.target instanceof Element && e.target.closest('#global-nav-bar form[role="search"]') && document.querySelector('#global-nav-bar form[role="search"] input');
+    if (!input || e.target.closest('button')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openSpot();
+  }, true);
+  listen(document, 'focusin', (e) => {
+    if (e.target instanceof Element && e.target.matches('#global-nav-bar form[role="search"] input') && spot.hidden && !route().startsWith('/search')) { e.target.blur(); openSpot(); }
+  }, true);
   listen(document, 'keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); e.stopPropagation(); spot.hidden ? openSpot() : closeSpot(); }
   }, true);

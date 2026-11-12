@@ -57,14 +57,17 @@
   --spice-rgb-misc: 127, 127, 134;
 }
 /* Spotify's floating surfaces: one glass look for menus, dropdowns, dialogs and tooltips */
-html.tess #context-menu,
-html.tess [role="menu"]:not(#tess-menu),
-html.tess [data-tippy-root] .main-contextMenu-menu {
+html.tess [data-tippy-root] > div:first-child:has([role="menu"], form, #context-menu) {
   background: rgba(36, 36, 42, 0.94) !important;
   -webkit-backdrop-filter: blur(30px) saturate(1.6);
   backdrop-filter: blur(30px) saturate(1.6);
   border-radius: 12px !important;
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.09) !important;
+}
+/* everything inside a popup sits on that one glass layer (no box-in-box) */
+html.tess [data-tippy-root] > div:first-child :is(#context-menu, [role="menu"], form, ul) {
+  background: transparent !important;
+  box-shadow: none !important;
 }
 html.tess [role="dialog"] > div:first-child:not(:has([role="dialog"])),
 html.tess .GenericModal__overlay + *,
@@ -1224,31 +1227,39 @@ html.tess:not(.tess-side-lyrics-off) .Root__right-sidebar-peek [data-testid="lyr
 }
 
 /* ================= queue (right panel) ================= */
-/* tabs become a segmented control */
+/* tabs: the same pills as the filter chips everywhere else (white = selected) */
 html.tess .Root__right-sidebar-peek [data-encore-id="tabList"] {
   display: inline-flex;
-  gap: 2px;
-  padding: 3px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.07);
-  box-shadow: inset 0 0 0 1px var(--tess-hairline);
+  gap: 6px;
+  padding: 0;
+  background: none;
+  box-shadow: none;
 }
 html.tess .Root__right-sidebar-peek [data-encore-id="tabItem"] {
-  padding: 5px 12px !important;
-  border-radius: 8px !important;
+  height: 32px;
+  padding: 0 14px !important;
+  border-radius: 999px !important;
   font-size: 12.5px !important;
   font-weight: 600 !important;
-  color: rgba(255, 255, 255, 0.65) !important;
-  transition: background 0.2s, color 0.2s;
+  color: rgba(255, 255, 255, 0.82) !important;
+  background: rgba(255, 255, 255, 0.07) !important;
+  box-shadow: inset 0 0 0 1px var(--tess-hairline);
+  transition: background 0.2s, color 0.2s, transform 0.25s var(--tess-spring);
+}
+html.tess .Root__right-sidebar-peek [data-encore-id="tabItem"]:hover {
+  background: rgba(255, 255, 255, 0.12) !important;
+}
+html.tess .Root__right-sidebar-peek [data-encore-id="tabItem"]:active {
+  transform: scale(0.96);
 }
 html.tess .Root__right-sidebar-peek [data-encore-id="tabItem"]::after,
 html.tess .Root__right-sidebar-peek [data-encore-id="tabItem"]::before {
   display: none !important;
 }
 html.tess .Root__right-sidebar-peek [data-encore-id="tabItem"][aria-selected="true"] {
-  background: rgba(255, 255, 255, 0.16) !important;
-  color: #fff !important;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  background: rgba(255, 255, 255, 0.92) !important;
+  color: #111 !important;
+  box-shadow: none;
 }
 /* headings */
 html.tess #queue-panel h2,
@@ -1901,6 +1912,14 @@ html.tess.tess-artist .before-scroll-node > div {
 html.tess.tess-artist.tess-hero-wait .before-scroll-node > div {
   opacity: 0;
   transition: none;
+}
+
+.ts-row:has(.ts-art img:not([src])) .ts-art,
+.ts-row .ts-art:has(img[src=""]) {
+  background: rgba(255, 255, 255, 0.06) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-opacity='.7' stroke-width='1.5'%3E%3Ccircle cx='7' cy='7' r='4.5'/%3E%3Cpath d='M10.5 10.5l3 3'/%3E%3C/svg%3E") center / 20px no-repeat;
+}
+.ts-row .ts-art img:not([src]) {
+  display: none;
 }
 
 /* ================= Home ("Listen Now") ================= */

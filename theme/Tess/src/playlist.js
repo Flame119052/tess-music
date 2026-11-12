@@ -6,8 +6,11 @@
   window.__tessPlaylist?.dispose?.();
   const disposers = [];
   const onDispose = (fn) => disposers.push(fn);
-  window.__tessPlaylist = { dispose: () => disposers.splice(0).reverse().forEach((fn) => { try { fn(); } catch {} }) };
+  const self = {};
+  window.__tessPlaylist = self;
+  self.dispose = () => disposers.splice(0).reverse().forEach((fn) => { try { fn(); } catch {} });
   while (!window.Spicetify?.Platform?.PlaylistAPI || !Spicetify.Platform.History) await new Promise((r) => setTimeout(r, 300));
+  if (window.__tessPlaylist !== self) return; // a newer copy started while this one waited
 
   const route = () => Spicetify.Platform.History.location?.pathname || '';
   const el = (h) => { const t = document.createElement('template'); t.innerHTML = h.trim(); return t.content.firstElementChild; };

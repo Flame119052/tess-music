@@ -7,8 +7,11 @@
   window.__tessHome?.dispose?.();
   const disposers = [];
   const onDispose = (fn) => disposers.push(fn);
-  window.__tessHome = { dispose: () => disposers.splice(0).reverse().forEach((fn) => { try { fn(); } catch {} }) };
+  const self = {};
+  window.__tessHome = self;
+  self.dispose = () => disposers.splice(0).reverse().forEach((fn) => { try { fn(); } catch {} });
   while (!window.Spicetify?.Platform?.History || !Spicetify.Player) await new Promise((r) => setTimeout(r, 300));
+  if (window.__tessHome !== self) return; // a newer copy started while this one waited
 
   const P = Spicetify.Player;
   const html = document.documentElement;
@@ -365,6 +368,9 @@
 
   // ---------- placement ----------
   function render() {
+    if (window.__tessHome !== self) return;
+    // clear anything a stale copy of this script left behind
+    document.querySelectorAll('#tess-home-masthead, #tess-dial, #tess-otd').forEach((n) => { if (n !== masthead && n !== dial && n !== otd) n.remove(); });
     html.classList.toggle('tess-home', isHome());
     if (!isHome()) return;
     const page = document.querySelector('[data-testid="home-page"]');
