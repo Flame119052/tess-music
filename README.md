@@ -57,4 +57,11 @@ yours to judge.
 | `docs/` | research notes, the feedback checklist, what's left |
 | branches `stable`, `beta` | the signed release bundles the loader downloads (written by `tools/release.mjs`) |
 
-Release: `node tools/release.mjs X.Y.Z [stable|beta]` (needs the signing key in `~/.config/tess-signing/`).
+Release: every push to `main` that touches `theme/`, `mini/`, `patcher/` or `installer/updater.sh` ships to stable by
+itself (`.github/workflows/release.yml`, once the `TESS_SIGNING_KEY` and `TESS_MIRROR_TOKEN` secrets are set). By hand:
+`node tools/release.mjs auto|X.Y.Z [stable|beta]` (signing key in `~/.config/tess-signing/`).
+
+How installed Macs update: the look and features load fresh on every Spotify start (`theme/loader/`, which falls back to
+the last release that started cleanly). Every other part (the loader, patcher, Tess Mini, the updater itself) is kept
+current by `installer/updater.sh`, which macOS runs every few minutes; it installs only what changed, after checking the
+signed parts list. Installs from 0.1.0 read `Flame119052/tess-releases`, which each release mirrors; never archive it.
