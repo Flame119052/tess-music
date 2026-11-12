@@ -58,7 +58,7 @@ yours to judge.
 | branches `stable`, `beta` | the signed release bundles the loader downloads (written by `tools/release.mjs`) |
 
 Release: every push to `main` that touches `theme/`, `mini/`, `patcher/` or `installer/updater.sh` ships to stable by
-itself (`.github/workflows/release.yml`, once the `TESS_SIGNING_KEY` and `TESS_MIRROR_TOKEN` secrets are set). By hand:
+itself (`.github/workflows/release.yml`, once the `TESS_SIGNING_KEY` and `TESS_MIRROR_KEY` secrets are set). By hand:
 `node tools/release.mjs auto|X.Y.Z [stable|beta]` (signing key in `~/.config/tess-signing/`).
 
 How installed Macs update: the look and features load fresh on every Spotify start (`theme/loader/`, which falls back to

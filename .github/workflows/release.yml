@@ -2,7 +2,7 @@
 # Installed Macs pick it up by themselves: the look on the next Spotify start, the other parts within ~20 minutes.
 # Needs two repository secrets (Settings → Secrets and variables → Actions):
 #   TESS_SIGNING_KEY   the Ed25519 private key (PEM) that signs releases
-#   TESS_MIRROR_TOKEN  a token that can push to Flame119052/tess-releases (the mirror older installs read)
+#   TESS_MIRROR_KEY    an SSH deploy key with write access to Flame119052/tess-releases only (the mirror 0.1.x installs read)
 # Without them this workflow does nothing. Run it by hand from the Actions tab to ship to beta instead.
 name: release
 on:
@@ -35,9 +35,11 @@ jobs:
         if: steps.key.outputs.ok
         env:
           TESS_SIGNING_KEY: ${{ secrets.TESS_SIGNING_KEY }}
-          TESS_MIRROR_TOKEN: ${{ secrets.TESS_MIRROR_TOKEN }}
+          TESS_MIRROR_KEY: ${{ secrets.TESS_MIRROR_KEY }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          printf '%s\n' "$TESS_MIRROR_KEY" > "$RUNNER_TEMP/mirror" && chmod 600 "$RUNNER_TEMP/mirror"
+          export TESS_MIRROR_KEY_FILE="$RUNNER_TEMP/mirror"
           git config user.name "Tess release"
           git config user.email "actions@users.noreply.github.com"
           node tools/release.mjs auto "${{ github.event.inputs.channel || 'stable' }}"
