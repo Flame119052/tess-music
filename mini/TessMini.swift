@@ -196,22 +196,8 @@ struct Scrubber: View {
     GeometryReader { g in
       let p = dragging ?? (sp.livePosition / sp.track.duration)
       ZStack(alignment: .leading) {
-        if sp.lines.count > 2 {
-          // the lyric ribbon: one segment per sung line, filled as the song passes it
-          let posMs = p * sp.linesDuration
-          ForEach(Array(sp.lines.enumerated()), id: \.offset) { _, l in
-            let x = g.size.width * CGFloat(l.0 / sp.linesDuration)
-            let w = max(2, g.size.width * CGFloat((l.1 - l.0) / sp.linesDuration) - 1.5)
-            let on = posMs >= l.0 && posMs < l.1
-            Capsule().fill(.white.opacity(posMs >= l.0 ? 0.95 : 0.3))
-              .frame(width: w, height: on ? 7 : 4)
-              .shadow(color: .white.opacity(on ? 0.7 : 0), radius: 4)
-              .offset(x: x)
-          }
-        } else {
-          Capsule().fill(.white.opacity(0.25))
-          Capsule().fill(.white).frame(width: max(4, g.size.width * CGFloat(min(1, p))))
-        }
+        Capsule().fill(.white.opacity(0.25))
+        Capsule().fill(.white).frame(width: max(4, g.size.width * CGFloat(min(1, p))))
       }
       .frame(height: dragging == nil ? 4 : 7)
       .frame(maxHeight: .infinity)
