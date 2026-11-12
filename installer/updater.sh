@@ -25,6 +25,8 @@ spotify_running() { [ -z "$TESS_TEST" ] && pgrep -x Spotify >/dev/null; }
 [ -e "$LOCK" ] && [ -z "$(find "$LOCK" -mmin +30 2>/dev/null)" ] && exit 0   # another run or the installer is working
 touch "$LOCK"; trap 'rm -f "$LOCK"' EXIT
 mkdir -p "$STATE"
+# Tidy-ups for older installs. This script updates itself, so a change to how Tess is set up on a Mac goes here.
+rm -f "$HOME_TESS/reapply.sh"
 
 # --- 1. Spotify updated itself: its files are stock again, so apply Tess -------------------------------------------
 if [ -f "$APPS/xpui.spa" ] && [ ! -d "$APPS/xpui" ]; then

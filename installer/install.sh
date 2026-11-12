@@ -87,7 +87,7 @@ if [ -z "$TESS_TEST" ] && pgrep -x Spotify >/dev/null; then
 fi
 if [ -d "$SPOTIFY/Contents/Resources/Apps/xpui" ]; then
   # Spotify was already modified (an earlier Tess, or Spicetify): put it back to stock first
-  if [ -f "$CONF/config-xpui.ini" ]; then "$PATCHER" config spotify_path "$SPOTIFY/Contents/Resources" >/dev/null 2>&1; "$PATCHER" restore >/dev/null 2>&1 || true
+  if [ -f "$CONF/config-xpui.ini" ]; then "$PATCHER" config spotify_path "$SPOTIFY/Contents/Resources" >/dev/null 2>&1; "$PATCHER" restore --no-restart >/dev/null 2>&1 || true
   elif [ -z "$TESS_TEST" ] && command -v spicetify >/dev/null 2>&1 && spicetify -c 2>/dev/null | xargs grep -q "spotify_path *= *$SPOTIFY" 2>/dev/null; then step "Spicetify found: restoring stock Spotify first"; spicetify restore >/dev/null 2>&1 || true
   fi
   [ -d "$SPOTIFY/Contents/Resources/Apps/xpui" ] && fail "Spotify has been modified by another tool. Reinstall Spotify from https://www.spotify.com/download/mac/ and run this again."

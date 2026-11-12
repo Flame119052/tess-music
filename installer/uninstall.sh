@@ -9,7 +9,7 @@ for a in music.tess.guard music.tess.mini; do
   rm -f "$HOME/Library/LaunchAgents/$a.plist"
 done
 if pgrep -x Spotify >/dev/null; then osascript -e 'tell application "Spotify" to quit' >/dev/null 2>&1; sleep 2; fi
-[ -x "$PATCHER" ] && "$PATCHER" restore >/dev/null 2>&1 || true
+[ -x "$PATCHER" ] && "$PATCHER" restore --no-restart >/dev/null 2>&1 || true
 rm -rf "$HOME/Applications/Tess Mini.app" "$HOME_TESS" "$HOME/.config/tess-patcher"
 echo "  Spotify is back to normal. (Your Spotify account, library and downloads were never touched.)"
 echo

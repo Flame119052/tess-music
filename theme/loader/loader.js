@@ -3,6 +3,7 @@
 // runs it and remembers it. If the network or the check fails it runs the last good copy, and if there is none,
 // the copy that came with the installer (appended below as TESS_BASELINE).
 (async function tessLoader() {
+  window.__tessLoader = 2; // the theme uses this to tell a current install from an old 0.1.0 one
   const PUBLIC_KEY = '__TESS_PUBLIC_KEY__'; // raw Ed25519 public key, base64
   const REPO = 'Flame119052/tess-music';
   const channel = (() => { try { return JSON.parse(localStorage.getItem('tess:settings') || '{}').channel || 'stable'; } catch { return 'stable'; } })();
