@@ -509,11 +509,21 @@ html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-e
   letter-spacing: -0.01em;
   margin: 6px 0 2px;
 }
+/* the byline: one size, one weight family, no green — the name reads first, everything else is quiet */
 html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-entityHeader-creatorWrapper,
-html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-entityHeader-creatorWrapper a {
-  font-size: 20px !important;
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-entityHeader-creatorWrapper * {
+  font-size: 15px !important;
   font-weight: 500 !important;
-  color: var(--tess-accent) !important;
+  color: rgba(255, 255, 255, 0.72) !important;
+}
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-entityHeader-creatorWrapper a {
+  font-weight: 650 !important;
+  color: #fff !important;
+}
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-entityHeader-metaData,
+html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-entityHeader-metaData * {
+  font-size: 13.5px !important;
+  color: rgba(255, 255, 255, 0.72) !important;
 }
 html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-entityHeader-creatorWrapper img {
   display: none;
@@ -999,15 +1009,16 @@ html.tess.tess-artist:not(.tess-hero-past) .main-topBar-topbarContentContainer {
 }
 .tsl-window {
   position: relative;
-  height: 236px;
+  height: 220px;
   overflow: hidden;
-  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 18%, #000 72%, transparent 100%);
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 12%, #000 72%, transparent 100%);
 }
 .tsl-lines {
   position: absolute;
   left: 16px;
   right: 16px;
-  top: 34%;
+  /* the current line sits near the top, one faded line of context above it, no empty band */
+  top: 18%;
   transition: transform 0.85s var(--tess-spring);
 }
 .tess-side-lyrics .tn-line {
@@ -1352,4 +1363,39 @@ html.tess #Desktop_LeftSidebar_Id > div {
 }
 html.tess #Desktop_LeftSidebar_Id > nav > div {
   background: transparent !important;
+}
+
+/* ================= album & playlist colour ================= */
+/* Spotify paints three separate colour layers here, which leaves a hard edge part-way down as you scroll.
+   Tess keeps one: the page colour stays fixed at the top of the view and melts into the panel, at any scroll. */
+html.tess :is([data-testid="playlist-page"], [data-testid="album-page"]) [style*="--background-base-70"] {
+  background: none !important;
+}
+html.tess:not(.tess-artist) .before-scroll-node [data-testid="overscroll-background"] {
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, rgba(0, 0, 0, 0.55) 35%, transparent 80%);
+  mask-image: linear-gradient(180deg, #000 0%, rgba(0, 0, 0, 0.55) 35%, transparent 80%);
+}
+html.tess:not(.tess-artist) .before-scroll-node [data-testid="background-image"],
+html.tess:not(.tess-artist) .before-scroll-node [data-testid="background-image"] + * {
+  -webkit-mask-image: linear-gradient(180deg, #000 30%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 30%, transparent 100%);
+}
+/* the sticky column header (# / Title / Album) gets glass once it sticks, so rows never show through it */
+html.tess .main-trackList-trackListHeader[class*="stuck"],
+html.tess .main-trackList-trackListHeader {
+  background: transparent;
+}
+html.tess .main-trackList-trackListHeader.tess-stuck {
+  background: rgba(22, 22, 26, 0.82) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(1.5);
+  backdrop-filter: blur(20px) saturate(1.5);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* expanded library sits over the page: solid, and the covered page stops painting */
+html.tess.tess-lib-wide #Desktop_LeftSidebar_Id {
+  background: rgb(19, 19, 22) !important;
+}
+html.tess.tess-lib-wide #main-view {
+  visibility: hidden;
 }

@@ -70,7 +70,7 @@
   const route = () => Spicetify.Platform.History.location?.pathname || '';
 
   // ---------------- settings ----------------
-  const DEFAULTS = { coverVideo: true, panelVideo: true, artistVideo: true, tintWindow: true, sideLyrics: true };
+  const DEFAULTS = { coverVideo: true, panelVideo: true, artistVideo: true, tintWindow: true, sideLyrics: true, homeRecent: true };
   const settings = (() => {
     try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('tess:settings') || '{}') }; } catch { return { ...DEFAULTS }; }
   })();
@@ -92,8 +92,9 @@
     ['artistVideo', 'Moving video on artist pages', 'Fills the top of an artist’s page with a Canvas from their top songs; it blurs as you scroll.'],
     ['sideLyrics', 'Live lyrics in the Now Playing panel', 'Synced lyrics that follow the song. Off shows Spotify’s preview card.'],
     ['tintWindow', 'Tint the window with the artwork colours', 'The panels pick up the colours of what’s playing.'],
+    ['homeRecent', 'Home: recently played beside the DJ', 'On shows what you played last. Off shows your Made For You mixes.'],
   ];
-  const settingChanged = () => { saveSettings(); applySettings(); syncTrack(); onRoute(); };
+  const settingChanged = () => { saveSettings(); applySettings(); syncTrack(); onRoute(); window.dispatchEvent(new Event('tess:settings')); };
   function buildThemeSection() {
     if (!route().startsWith('/preferences') || document.getElementById('tess-theme-settings')) return;
     const sections = [...document.querySelectorAll('#main-view h2')].map((h) => h.parentElement).filter((sct) => sct.querySelector('[data-settings-row]'));
@@ -717,9 +718,17 @@
   const placeDock = () => {
     const head = document.querySelector('#Desktop_LeftSidebar_Id header')?.parentElement;
     if (head && dock.previousElementSibling !== head) head.after(dock);
+    const lib = document.getElementById('Desktop_LeftSidebar_Id');
+    if (lib) html.classList.toggle('tess-lib-wide', lib.getBoundingClientRect().width > 640);
     markDock();
   };
   every(700, placeDock);
+  // Expanded library: Spotify lays it over the page, so it must be a solid surface (and the page under it can stop drawing).
+  const libResize = new ResizeObserver(([entry]) => html.classList.toggle('tess-lib-wide', entry.contentRect.width > 640));
+  const watchLib = () => { const lib = document.getElementById('Desktop_LeftSidebar_Id'); if (lib && !lib.dataset.tessWatched) { lib.dataset.tessWatched = '1'; libResize.observe(lib); } };
+  watchLib();
+  every(2000, watchLib);
+  onDispose(() => { libResize.disconnect(); html.classList.remove('tess-lib-wide'); document.querySelectorAll('[data-tess-watched]').forEach((n) => delete n.dataset.tessWatched); });
   placeDock();
   every(6000, loadPins);
   loadPins();
@@ -889,7 +898,13 @@
     while (e && !/auto|scroll/.test(getComputedStyle(e).overflowY)) e = e.parentElement;
     return e;
   };
-  listen(document, 'scroll', (e) => { if (e.target instanceof Element) heroScroll(e.target); }, { capture: true, passive: true });
+  listen(document, 'scroll', (e) => {
+    if (!(e.target instanceof Element)) return;
+    heroScroll(e.target);
+    // track lists: the sticky column header turns to glass only while it is actually stuck
+    const head = e.target.querySelector?.('.main-trackList-trackListHeader');
+    if (head) head.classList.toggle('tess-stuck', head.getBoundingClientRect().top <= parseFloat(getComputedStyle(head).top) + e.target.getBoundingClientRect().top + 1 && e.target.scrollTop > 0);
+  }, { capture: true, passive: true });
   const unlisten = Spicetify.Platform.History.listen(() => setTimeout(onRoute, 50));
   onDispose(() => typeof unlisten === 'function' && unlisten());
   listen(window, 'resize', () => { setHeroHeight(); setTimeout(onRoute, 100); });
