@@ -1729,7 +1729,7 @@ html.tess #global-nav-bar > div > div:last-child button {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 #tess-ambient::after {
-  background: radial-gradient(140% 110% at 50% 35%, transparent 55%, rgba(0, 0, 0, 0.32));
+  background: radial-gradient(160% 120% at 50% 40%, transparent 60%, rgba(0, 0, 0, 0.22));
 }
 
 /* cover-to-page: the clicked cover flies into the new page's header; the rest cross-fades quickly */

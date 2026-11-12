@@ -229,11 +229,22 @@
   function paintFields(canvas, colors, seed) {
     const x = canvas.getContext('2d');
     const w = canvas.width, h = canvas.height;
+    // the whole window carries the colour: a dim wash of the average first (no black corners), then the fields,
+    // placed evenly round the window so every panel sits over some of the light
+    const avg = [0, 1, 2].map((j) => colors.reduce((t, c) => t + c[j], 0) / colors.length);
     x.filter = 'none';
-    x.fillStyle = '#07070a';
+    x.fillStyle = `rgb(${avg.map((v) => Math.round(v * 0.32)).join(',')})`;
     x.fillRect(0, 0, w, h);
     x.filter = 'blur(9px) saturate(140%)';
+    const spots = [[0.18, 0.3], [0.82, 0.28], [0.3, 0.8], [0.78, 0.78]];
     colors.forEach((c, i) => {
+      const a = seed + i * 1.7;
+      x.fillStyle = `rgba(${c.map(Math.round).join(',')},0.9)`;
+      x.beginPath();
+      x.ellipse(w * (spots[i % 4][0] + 0.08 * Math.cos(a)), h * (spots[i % 4][1] + 0.08 * Math.sin(a)), w * 0.38, h * 0.5, a, 0, Math.PI * 2);
+      x.fill();
+    });
+    if (false) colors.forEach((c, i) => {
       const a = seed + i * 1.7;
       x.fillStyle = `rgba(${c.map(Math.round).join(',')},0.95)`;
       x.beginPath();
@@ -553,6 +564,15 @@
       playCanvas(v, fileId).then((ok) => sideCover.classList.toggle('has-canvas', ok && v.dataset.fileId === fileId));
     });
   }
+  // Spotify's own "Expand Now Playing view" and the lyrics buttons open Spotify's old full-screen views; Tess's instead
+  listen(document, 'click', (e) => {
+    const b = e.target instanceof Element && e.target.closest('button');
+    const label = b?.getAttribute('aria-label') || '';
+    if (!/^(Expand Now Playing view|Lyrics|Open lyrics|Show lyrics)$/i.test(label) || b.closest('#tess-bar, #tess-np, .tess-side-lyrics')) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    openNP('lyrics');
+  }, true);
   listen(document, 'click', (e) => {
     if (!(e.target instanceof Element) || !e.target.closest('.Root__right-sidebar-peek [data-testid="cover-art-slot"], .tess-side-cover')) return;
     e.preventDefault();
