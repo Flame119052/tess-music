@@ -77,6 +77,9 @@ run('tar', ['-C', `${pdir}pkg`, '-czf', `${build}tess-patcher-macos-universal.ta
 run('git', ['-C', out, 'add', '-A']);
 try { run('git', ['-C', out, 'commit', '-q', '-m', `Tess ${version} (${channel})`]); } catch {}
 run('git', ['-C', out, 'push', '-q', '-u', 'origin', channel]);
+// Installs from 0.1.0 have a loader that reads Flame119052/tess-releases. Keep that repo as a mirror of each channel
+// (never archive it), or those users stop getting updates.
+run('git', ['-C', out, 'push', '-q', '--force', 'https://github.com/Flame119052/tess-releases.git', `HEAD:refs/heads/${channel}`]);
 const assets = [`${build}tess-theme.tar.gz`, `${build}tess-mini.zip`, `${build}tess-patcher-macos-universal.tar.gz`];
 try {
   run('gh', ['release', 'create', `v${version}`, ...assets, '-R', 'Flame119052/tess-music', '--target', channel, '-t', `Tess ${version}`, '-n', `Tess ${version}. Install: curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | sh`, ...(channel === 'beta' ? ['--prerelease'] : ['--latest'])]);
