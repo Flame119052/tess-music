@@ -491,3 +491,13 @@ html.tess.tess-home #main-view main > div > [style*="background-color"]:first-ch
   transition: font-size 0.18s ease-out, opacity 0.15s, max-height 0.18s, margin 0.18s !important;
   text-shadow: 0 1px 12px rgba(0, 0, 0, 0.25);
 }
+
+/* pinned header: content scrolling under it melts into a soft frosted blur, so the title always reads, without a
+   heavy dark band */
+.tess-home-sticky > .tess-sticky-glass {
+  background: linear-gradient(180deg, rgba(20, 20, 24, 0.5), rgba(20, 20, 24, 0.36)) !important;
+  -webkit-backdrop-filter: blur(34px) saturate(1.6) !important;
+  backdrop-filter: blur(34px) saturate(1.6) !important;
+  -webkit-mask-image: linear-gradient(180deg, #000 82%, transparent);
+  mask-image: linear-gradient(180deg, #000 82%, transparent);
+}

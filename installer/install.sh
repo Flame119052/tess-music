@@ -102,6 +102,7 @@ tar -xzf "$TMP/theme.tgz" -C "$CONF/Themes"
 "$PATCHER" config color_scheme base >/dev/null
 "$PATCHER" config inject_theme_js 1 >/dev/null
 "$PATCHER" config check_spicetify_update 0 >/dev/null
+"$PATCHER" config home_config 0 >/dev/null
 rm -rf "$CONF/Backup" 2>/dev/null || true
 if ! "$PATCHER" backup apply --no-restart >"$TMP/apply.log" 2>&1; then
   put_back

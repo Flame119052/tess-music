@@ -36,7 +36,7 @@ var (
 			"extensions":            "",
 			"custom_apps":           "",
 			"sidebar_config":        "0",
-			"home_config":           "1",
+			"home_config":           "0",
 			"experimental_features": "1",
 		},
 		"Patch": {},

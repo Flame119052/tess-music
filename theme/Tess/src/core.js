@@ -1465,7 +1465,7 @@
   // without pulling every record out. Transforms only, once a frame.
   let magQueued = false, magX = 0, magRow = null;
   listen(ttList, 'mousemove', (e) => {
-    const row = e.target.closest?.('.ts-row');
+    const row = e.target.closest?.('.ts-shelfrow');
     if (!row) return;
     magRow = row; magX = e.clientX;
     if (!magQueued) { magQueued = true; requestAnimationFrame(magnify); }
@@ -1504,10 +1504,10 @@
     for (const [label, test] of SHELVES) {
       const items = shown.filter((i) => test(kindOf(i)));
       if (!items.length) continue;
-      const shelf = el('<section class="ts-shelf"><header><h3></h3><small></small></header><div class="ts-row"></div><i class="ts-plank"></i></section>');
+      const shelf = el('<section class="ts-shelf"><header><h3></h3><small></small></header><div class="ts-shelfrow"></div><i class="ts-plank"></i></section>');
       q(shelf, 'h3').textContent = label;
       q(shelf, 'small').textContent = items.length;
-      const row = q(shelf, '.ts-row');
+      const row = q(shelf, '.ts-shelfrow');
       for (const it of items) {
         const img = libImage(it);
         const isArtist = it.type === 'artist';
@@ -1936,12 +1936,14 @@
   }
   onDispose(() => html.style.removeProperty('--tess-hero-h'));
 
+  let lastArtistPage = null;
   async function onRoute() {
     const path = route();
     const isArtist = path.startsWith('/artist/');
     html.classList.toggle('tess-artist', isArtist);
     html.classList.toggle('tess-on-settings', path.startsWith('/preferences'));
-    html.classList.remove('tess-hero-light', 'tess-hero-past');
+    html.classList.remove('tess-hero-light', 'tess-hero-past', 'tess-artist-portrait');
+    document.querySelectorAll('.tess-hero-made').forEach((n) => n.remove());
     html.style.setProperty('--tess-scroll-p', '0');
     clearInterval(heroTimer);
     if (!isArtist) {
@@ -1971,10 +1973,36 @@
       v.playsInline = true;
       return (await playCanvas(v, fileId)) ? v : null;
     })() : Promise.resolve(null);
+    // wait for the NEW artist's page; right after a route change the previous page is still in the DOM
+    const oldPage = lastArtistPage;
+    for (let t = 0; t < 60; t++) {
+      const pg = document.querySelector('[data-testid="artist-page"]');
+      if (pg && pg !== oldPage && pg.querySelector('.main-entityHeader-container')) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    lastArtistPage = document.querySelector('[data-testid="artist-page"]');
+    if (route() !== path) return;
     let bg = null;
     for (let tries = 0; tries < 60 && !bg; tries++) {
+      // Spotify marks artists without a header photo with a "Norm" header: stop waiting for one
+      if (tries > 8 && document.querySelector('[data-testid="artist-page"] .main-entityHeader-container img')) break;
       bg = findHeaderBackground();
       if (!bg) await new Promise((r) => setTimeout(r, tries < 20 ? 50 : 200));
+    }
+    if (!bg && route() === path) {
+      // No header photo (smaller artists): build one from their portrait, softly blurred and enlarged, so the page
+      // still opens on a full-height picture; the portrait itself is centred above the name.
+      const hdr = document.querySelector('[data-testid="artist-page"] .main-entityHeader-container');
+      const portrait = hdr?.querySelector('img')?.src;
+      const holder = document.querySelector('.before-scroll-node');
+      if (hdr && portrait && holder) {
+        holder.querySelectorAll('.tess-hero-made').forEach((n) => n.remove());
+        const wrap = el('<div class="tess-hero-made"><div class="tess-hero-bg tess-hero-portrait"></div></div>');
+        wrap.firstElementChild.style.backgroundImage = `url("${portrait}")`;
+        holder.appendChild(wrap);
+        html.classList.add('tess-artist-portrait');
+        bg = wrap.firstElementChild;
+      }
     }
     if (!bg || route() !== path) { unwait(); return; }
     bg.classList.add('tess-hero-bg');

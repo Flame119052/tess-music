@@ -2524,7 +2524,8 @@ html.tess .tess-liquid {
   border: 0 !important;
 }
 /* text and icons on clear glass need a soft shadow to stay legible over any picture */
-html.tess .tess-liquid :is(svg, span, b, small, input, a) {
+html.tess .tess-liquid:not(.ts-panel) > :is(svg, span, b, small, input, a),
+html.tess #tess-bar.tess-liquid :is(svg, .tb-meta) {
   filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.35));
 }
 /* the specular highlight: a light sweep across the top that follows the curvature */
@@ -2599,7 +2600,7 @@ html.tess div:has(> [data-testid="now-playing-bar"]) {
   font: 600 12px/1 var(--tess-font);
   color: rgba(255, 255, 255, 0.5);
 }
-.ts-row {
+.ts-shelfrow {
   display: flex;
   align-items: flex-end;
   gap: 5px;
@@ -2609,7 +2610,7 @@ html.tess div:has(> [data-testid="now-playing-bar"]) {
   overflow-y: hidden;
   scrollbar-width: none;
 }
-.ts-row::-webkit-scrollbar {
+.ts-shelfrow::-webkit-scrollbar {
   display: none;
 }
 /* the shelf itself: a thick slab of glass with a bright front edge */
@@ -2997,6 +2998,77 @@ html.tess ::-webkit-scrollbar-track {
 #tess-np .tn-ribbon,
 #tess-np .tn-peek {
   display: none !important;
+}
+
+/* Spotify's zoom radio marks in Settings: no boxes behind the labels */
+html.tess [data-testid="settings-zoom"] *, html.tess #desktop\.settings\.zoom ~ * label, html.tess [role="radiogroup"] label {
+  background: transparent !important;
+}
+
+/* artists without a header photo: their portrait, blurred and enlarged, fills the page; a crisp copy sits above the name */
+.tess-hero-made {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+html.tess.tess-artist .tess-hero-bg.tess-hero-portrait {
+  position: absolute;
+  inset: -60px;
+  background-size: cover;
+  background-position: center 30%;
+  filter: blur(calc(28px + var(--tess-scroll-p, 0) * 30px)) saturate(1.4) brightness(calc(0.78 - var(--tess-scroll-p, 0) * 0.3)) !important;
+  transform: scale(1.15);
+  animation: none;
+}
+html.tess.tess-artist-portrait [data-testid="artist-page"] .main-entityHeader-container {
+  flex-direction: column !important;
+  align-items: center !important;
+}
+html.tess.tess-artist-portrait [data-testid="artist-page"] .main-entityHeader-imageContainer,
+html.tess.tess-artist-portrait [data-testid="artist-page"] .main-entityHeader-image {
+  position: static !important;
+  width: clamp(150px, 16vw, 230px) !important;
+  height: clamp(150px, 16vw, 230px) !important;
+  margin: 0 auto 18px !important;
+  border-radius: 50%;
+  box-shadow: 0 30px 70px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+html.tess.tess-artist-portrait [data-testid="artist-page"] .main-entityHeader-headerText {
+  align-items: center;
+}
+/* Spotify paints a flat colour block over the header when an artist has no photo; the portrait hero replaces it */
+html.tess.tess-artist-portrait [data-testid="artist-page"] .main-entityHeader-container > div:not(.main-entityHeader-contentWrapper):not(.main-entityHeader-imageContainer):not(.tess-hero-switch),
+html.tess.tess-artist-portrait [data-testid="artist-page"] .main-entityHeader-container [style*="background-color"] {
+  background: transparent !important;
+}
+html.tess.tess-artist-portrait [data-testid="artist-page"] .main-entityHeader-container {
+  justify-content: flex-end !important;
+}
+html.tess.tess-artist-portrait [data-testid="artist-page"] .main-entityHeader-imageContainer {
+  margin: 0 auto 18px !important;
+}
+/* portrait mode: centre the portrait above the name */
+html.tess.tess-artist-portrait [data-testid="artist-page"] .main-entityHeader-container {
+  position: relative;
+}
+html.tess.tess-artist-portrait [data-testid="artist-page"] .main-entityHeader-imageContainer {
+  position: absolute !important;
+  left: 50% !important;
+  bottom: 236px !important;
+  transform: translateX(-50%);
+  margin: 0 !important;
+}
+/* Spotify's artist-colour block behind the play row (and the page colour under it) stay clear over the hero */
+html.tess.tess-artist [data-testid="artist-page"] div:has(> [data-testid="action-bar"]) > [style*="background-color"]:empty,
+html.tess.tess-artist [data-testid="artist-page"] [style*="background-color"]:empty {
+  background: transparent !important;
+}
+html.tess.tess-artist [data-testid="artist-page"] div:has(> [data-testid="action-bar"]) {
+  background-color: transparent !important;
+}
+html.tess.tess-artist [data-testid="artist-page"] div:has(> .T2XRKvkWneSSMSOCEo40),
+html.tess.tess-artist [data-testid="artist-page"] div:has(> [style*="background-color"]:empty) {
+  background-color: transparent !important;
 }
 
 /* ================= Home ("Listen Now") ================= */
@@ -3491,6 +3563,16 @@ html.tess.tess-home #main-view main > div > [style*="background-color"]:first-ch
 #tess-home-masthead .thm-title {
   transition: font-size 0.18s ease-out, opacity 0.15s, max-height 0.18s, margin 0.18s !important;
   text-shadow: 0 1px 12px rgba(0, 0, 0, 0.25);
+}
+
+/* pinned header: content scrolling under it melts into a soft frosted blur, so the title always reads, without a
+   heavy dark band */
+.tess-home-sticky > .tess-sticky-glass {
+  background: linear-gradient(180deg, rgba(20, 20, 24, 0.5), rgba(20, 20, 24, 0.36)) !important;
+  -webkit-backdrop-filter: blur(34px) saturate(1.6) !important;
+  backdrop-filter: blur(34px) saturate(1.6) !important;
+  -webkit-mask-image: linear-gradient(180deg, #000 82%, transparent);
+  mask-image: linear-gradient(180deg, #000 82%, transparent);
 }
 
 /* ================= playlist pages ================= */
