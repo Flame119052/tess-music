@@ -425,8 +425,11 @@
   }
   const onSong = () => {
     if (!dial.isConnected || !items.length) return;
-    const at = items.findIndex((i) => i.uri === P.data?.context?.uri);
-    if (at >= 0 && at !== index && !drag) turnTo(at); else select(index);
+    const cur = P.data?.context?.uri;
+    const at = items.findIndex((i) => i.uri === cur);
+    if (at >= 0) { if (at !== index && !drag) turnTo(at); else select(index); return; }
+    // started from somewhere else (sidebar, search, a page): bring it onto the ring now and select it
+    if (cur) { lastRefresh = 0; shownKey = ''; refreshDial(); } else select(index);
   };
   P.addEventListener('songchange', onSong);
   P.addEventListener('onplaypause', onSong);

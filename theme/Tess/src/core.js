@@ -232,10 +232,10 @@
   // artwork drifts a little faster, muted artwork calmer; it holds still while paused.
   const DAYPARTS = [
     // [from hour, tone rgb, how much tone to mix in, brightness, blue kept]
-    [5, [255, 176, 110], 0.22, 1.05, 0.95],  // morning: warm, gentle sunrise light
+    [5, [255, 176, 110], 0.15, 1.05, 0.96],  // morning: warm, gentle sunrise light
     [11, [200, 215, 235], 0.1, 1.08, 1],     // midday: clean, neutral, bright
-    [16, [255, 150, 90], 0.26, 1.0, 0.9],    // golden hour / evening: warm amber
-    [20, [120, 70, 60], 0.3, 0.72, 0.6],     // night: dim, warm, little blue
+    [16, [255, 150, 90], 0.16, 1.0, 0.92],   // golden hour / evening: warm amber
+    [20, [120, 70, 60], 0.12, 0.86, 0.82],   // night: a little dimmer and warmer, the song's colour still clear
   ];
   const daypart = () => {
     const h = new Date().getHours();
@@ -375,7 +375,9 @@
             <button class="tn-repeat tn-sm" aria-label="Repeat">${I.repeat}</button>
           </div>
         </div>
-        <div class="tn-lyrics"><div class="tn-lines"></div><div class="tn-note"></div></div>
+        <div class="tn-lyrics"><div class="tn-lines"></div><div class="tn-note"></div>
+          <div class="tn-sync" aria-label="Lyrics timing"><button data-d="-0.5" aria-label="Lyrics earlier">−</button><b>In sync</b><button data-d="0.5" aria-label="Lyrics later">+</button></div>
+        </div>
         <div class="tn-queue"><h4>Playing Next</h4><div class="tn-qlist"></div></div>
       </div>
       <div class="tn-pill br">
@@ -418,6 +420,8 @@
   const npLook = () => (settings.npStyle === 'vinyl' ? 'vinyl' : settings.coverVideo ? 'canvas' : 'cover');
   const applyNpStyle = () => {
     np.classList.toggle('vinyl', npLook() === 'vinyl');
+    armMeasured = false;
+    document.querySelector('.tess-cover-wrap')?.classList.toggle('vinyl', npLook() === 'vinyl');
     np.querySelectorAll('.tn-look button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.look === npLook())));
   };
   np.querySelectorAll('.tn-look button').forEach((b) => {
@@ -434,12 +438,31 @@
   // Vinyl tonearm: its angle is the track position (outer groove at the start, inner groove at the end), it rests
   // off the record while paused, and you can pick it up: drop it on the record to play from that spot, or lift it
   // off to pause.
-  const ARM_REST = -28, ARM_START = 2, ARM_END = 24;
+  let ARM_REST = -28, ARM_START = 2, ARM_END = 24;
+  var armMeasured = false;
+  // Measure where the stylus meets the record's outer edge and the label's edge (the arm swings about its pivot),
+  // so the start of the song is always the outer groove and the end is always the label, whatever the length.
+  function measureArm() {
+    const rec = q(np, '.tn-cover').getBoundingClientRect();
+    if (!rec.width) { armMeasured = false; return; }
+    const [px, py] = pivot();
+    const sc = (arm.clientWidth || 96) / 60;
+    const tx = (44 - 30) * sc, ty = (205 - 22) * sc;
+    const cx = rec.left + rec.width / 2, cy = rec.top + rec.height / 2;
+    const dist = (deg) => { const a = deg * Math.PI / 180; const x = px + tx * Math.cos(a) - ty * Math.sin(a); const y = py + tx * Math.sin(a) + ty * Math.cos(a); return Math.hypot(x - cx, y - cy); };
+    const find = (r) => { let best = 0, err = Infinity; for (let d = -40; d <= 80; d += 0.25) { const e = Math.abs(dist(d) - r); if (e < err) { err = e; best = d; } } return best; };
+    // the label edge, or as close to it as the arm can reach
+    let minD = Infinity; for (let d = -40; d <= 80; d += 0.5) minD = Math.min(minD, dist(d));
+    const outer = find(rec.width / 2 * 0.95), inner = find(Math.max(rec.width * 0.205, minD + 2));
+    ARM_START = Math.min(outer, inner); ARM_END = Math.max(outer, inner); ARM_REST = ARM_START - 26;
+  }
+  listen(window, 'resize', () => np.classList.contains('vinyl') && measureArm());
   const arm = q(np, '.tn-arm');
   let armDrag = null;
   const armAngleFor = (ms) => ARM_START + (ARM_END - ARM_START) * Math.min(1, ms / (P.getDuration() || 1));
   function placeArm(ms) {
     if (armDrag || !np.classList.contains('vinyl')) return;
+    if (!armMeasured) { armMeasured = true; measureArm(); }
     arm.style.transform = `rotate(${P.isPlaying() ? armAngleFor(ms) : ARM_REST}deg)`;
   }
   // the pivot from the arm's unrotated box (its rotated bounding box moves as it turns)
@@ -920,7 +943,31 @@
   // find out once whether Tess Mini is installed
   fetch(MINI + '/ping', { mode: 'no-cors' }).then(() => { nativeMini = true; }).catch(() => {});
   const LEAD_MS = 120;
+  // re-sync: a per-song offset you nudge with the ± buttons (remembered)
+  const syncOffsets = (() => { try { return JSON.parse(localStorage.getItem('tess:lyricSync') || '{}'); } catch { return {}; } })();
+  const syncOffset = () => syncOffsets[item()?.uri] || 0;
+  function nudgeSync(d) {
+    const u = item()?.uri; if (!u) return;
+    syncOffsets[u] = Math.round(((syncOffsets[u] || 0) + d) * 10) / 10;
+    if (!syncOffsets[u]) delete syncOffsets[u];
+    try { localStorage.setItem('tess:lyricSync', JSON.stringify(syncOffsets)); } catch {}
+    np.querySelectorAll('.tn-sync b').forEach((b) => { b.textContent = syncOffsets[u] ? `${syncOffsets[u] > 0 ? '+' : ''}${syncOffsets[u].toFixed(1)}s` : 'In sync'; });
+    lastLine = -2;
+  }
+  np.querySelectorAll('.tn-sync button').forEach((b) => { b.onclick = () => nudgeSync(+b.dataset.d); });
+  // scroll the lyrics yourself; they follow the song again 3 seconds after you stop
+  listen(q(np, '.tn-lyrics'), 'wheel', (e) => {
+    const v = views[0];
+    e.preventDefault();
+    v.manualOffset = Math.max(-200, Math.min(v.lines.scrollHeight, (v.manualUntil > performance.now() ? v.manualOffset : (v.lastShift || 0)) + e.deltaY));
+    v.manualUntil = performance.now() + 3000;
+    v.lines.style.transition = 'none';
+    v.lines.style.transform = `translateY(${-v.manualOffset}px)`;
+    clearTimeout(v.resume);
+    v.resume = setTimeout(() => { v.lines.style.transition = ''; v.manualUntil = 0; v.last = -2; lastLine = -2; }, 3000);
+  }, { passive: false });
   function updateLyrics(ms) {
+    ms += syncOffset() * 1000;
     if (!lyrics.lines.length || lyrics.sync === 'UNSYNCED') return;
     if (lastLine === -2) views.forEach((v) => (v.last = -2));
     lastLine = -1;
@@ -950,7 +997,8 @@
             const start = v.lines.offsetTop;
             shift = Math.max(0, Math.min(shift, v.lines.scrollHeight + start - win + 12));
           }
-          v.lines.style.transform = `translateY(${-shift}px)`;
+          v.lastShift = shift;
+          if (!(v.manualUntil > performance.now())) v.lines.style.transform = `translateY(${-shift}px)`;
         }
       }
       if (i >= 0) {
@@ -1024,7 +1072,7 @@
       const root = column.parentElement;
       column.classList.add('tess-npv-col');
       root.classList.add('tess-npv-root');
-      if (root.firstElementChild !== coverWrap) { root.prepend(coverWrap); syncSideCover(); }
+      if (root.firstElementChild !== coverWrap) { root.prepend(coverWrap); coverWrap.classList.toggle('vinyl', settings.npStyle === 'vinyl'); syncSideCover(); }
       // after "Switch to video" Spotify plays the music video here; let it show, framed like the cover
       const videoMode = [...column.querySelectorAll('button')].some((b) => /switch to audio/i.test(b.textContent || b.getAttribute('aria-label') || ''));
       root.classList.toggle('tess-mv-mode', videoMode);
