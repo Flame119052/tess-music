@@ -949,7 +949,27 @@
     vt.ready.catch(() => {});
     vt.finished.catch(() => {}).finally(() => { libMorphing = false; });
   }, true);
-  every(20000, loadLibrary);
+  // Spotify announces every library change (pin, unpin, save, remove, rename); reload right away on those,
+  // coalesced so a burst of changes is one reload. The slow timer is only a backup.
+  let libReloadQueued = false;
+  const onLibChange = (e) => {
+    // a pin or unpin carries its answer, so show it immediately; then confirm with one fresh read
+    const d = e?.data;
+    if (e?.type === 'update_pin' && d?.uri) {
+      const it = libItems.find((i) => i.uri === d.uri);
+      if (it && it.pinned !== d.isPinned) { it.pinned = d.isPinned; libSig = ''; renderTimeline(); }
+    }
+    if (libReloadQueued) return;
+    libReloadQueued = true;
+    Promise.resolve().then(() => { libReloadQueued = false; loadLibrary(); });
+  };
+  const LIB_EVENTS = ['update', 'update_pin', 'update_item', 'operation_complete'];
+  try {
+    const libEvents = Spicetify.Platform.LibraryAPI.getEvents();
+    for (const name of LIB_EVENTS) libEvents.addListener(name, onLibChange);
+    onDispose(() => { for (const name of LIB_EVENTS) libEvents.removeListener(name, onLibChange); });
+  } catch {}
+  every(60000, loadLibrary);
   loadLibrary();
   // what's playing lights up now; a few seconds later the library reloads so it moves to Today
   const onLibSong = () => { markTimeline(); setTimeout(loadLibrary, 3000); };
