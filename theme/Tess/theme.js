@@ -37,7 +37,7 @@
   const route = () => Spicetify.Platform.History.location?.pathname || '';
 
   // ---------------- settings ----------------
-  const DEFAULTS = { coverVideo: true, artistVideo: true, tintWindow: true };
+  const DEFAULTS = { coverVideo: true, panelVideo: true, artistVideo: true, tintWindow: true, sideLyrics: true };
   const settings = (() => {
     try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('tess:settings') || '{}') }; } catch { return { ...DEFAULTS }; }
   })();
@@ -46,27 +46,61 @@
   const html = document.documentElement;
   html.classList.add('tess');
   onDispose(() => html.classList.remove('tess', 'tess-artist', 'tess-tint', 'tess-hero-light'));
-  const applySettings = () => html.classList.toggle('tess-tint', settings.tintWindow);
+  const applySettings = () => {
+    html.classList.toggle('tess-tint', settings.tintWindow);
+    html.classList.toggle('tess-side-lyrics-off', !settings.sideLyrics);
+  };
   applySettings();
 
-  function openSettings() {
-    const rows = [
-      ['coverVideo', 'Canvas video in the full-screen player', 'Shows the song’s looping Canvas video in place of the album art when it has one.'],
-      ['artistVideo', 'Video on artist pages', 'Loops a Canvas video from the artist’s top songs behind their name.'],
-      ['tintWindow', 'Tint the window with the album colors', 'The panels pick up the colors of what’s playing.'],
-    ];
-    const box = el('<div class="tess-settings"></div>');
-    for (const [key, title, hint] of rows) {
-      const row = el('<label class="tess-set-row"><div><b></b><span></span></div><input type="checkbox" role="switch"></label>');
-      row.querySelector('b').textContent = title;
-      row.querySelector('span').textContent = hint;
-      const input = row.querySelector('input');
-      input.checked = settings[key];
-      input.onchange = () => { settings[key] = input.checked; saveSettings(); applySettings(); syncTrack(); onRoute(); };
-      box.appendChild(row);
+  // Tess's options live in Spotify's own Settings page, in a "Theme" section built from Spotify's row markup.
+  const THEME_ROWS = [
+    ['coverVideo', 'Animated artwork in the full-screen player', 'Plays the song’s looping Canvas video in place of the album art when it has one.'],
+    ['panelVideo', 'Animated artwork in the Now Playing panel', 'Loops the Canvas inside the square cover in the right-hand panel.'],
+    ['artistVideo', 'Moving video on artist pages', 'Fills the top of an artist’s page with a Canvas from their top songs; it blurs as you scroll.'],
+    ['sideLyrics', 'Live lyrics in the Now Playing panel', 'Synced lyrics that follow the song. Off shows Spotify’s preview card.'],
+    ['tintWindow', 'Tint the window with the artwork colours', 'The panels pick up the colours of what’s playing.'],
+  ];
+  const settingChanged = () => { saveSettings(); applySettings(); syncTrack(); onRoute(); };
+  function buildThemeSection() {
+    if (!route().startsWith('/preferences') || document.getElementById('tess-theme-settings')) return;
+    const sections = [...document.querySelectorAll('#main-view h2')].map((h) => h.parentElement).filter((sct) => sct.querySelector('[data-settings-row]'));
+    const template = sections.find((sct) => sct.querySelector('[data-settings-row] input[type="checkbox"]'));
+    if (!template || sections.length < 2) return;
+    const section = template.cloneNode(true);
+    section.id = 'tess-theme-settings';
+    section.querySelector('h2').textContent = 'Theme';
+    const rowTemplate = section.querySelector('[data-settings-row]:has(input[type="checkbox"])');
+    section.querySelectorAll('[data-settings-row]').forEach((r) => r.remove());
+    const divider = section.querySelector('hr');
+    for (const [key, title, hint] of THEME_ROWS) {
+      const row = rowTemplate.cloneNode(true);
+      const id = 'tess.settings.' + key;
+      const textBox = row.querySelector('label[for]').parentElement;
+      textBox.innerHTML = '';
+      const label = el('<label class="e-101040-text encore-text-body-small encore-internal-color-text-base" data-encore-id="text"></label>');
+      label.htmlFor = id;
+      label.textContent = title;
+      const sub = el('<span class="e-101040-text encore-text-marginal encore-internal-color-text-subdued tess-set-hint" data-encore-id="text"></span>');
+      sub.textContent = hint;
+      textBox.append(label, sub);
+      const input = row.querySelector('input[type="checkbox"]');
+      input.id = id;
+      input.checked = !!settings[key];
+      input.onchange = () => { settings[key] = input.checked; settingChanged(); };
+      divider ? divider.before(row) : section.appendChild(row);
     }
-    Spicetify.PopupModal.display({ title: 'Tess Music', content: box, isLarge: false });
+    sections[1].before(section);
+    onDispose(() => section.remove());
+    if (pendingThemeScroll) { pendingThemeScroll = false; section.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
   }
+  let pendingThemeScroll = false;
+  function openSettings() {
+    pendingThemeScroll = true;
+    if (typeof closeNP === 'function') closeNP();
+    if (!route().startsWith('/preferences')) Spicetify.Platform.History.push('/preferences');
+    else { document.getElementById('tess-theme-settings')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); pendingThemeScroll = false; }
+  }
+  every(600, buildThemeSection);
   if (Spicetify.Menu?.Item) {
     const menuItem = new Spicetify.Menu.Item('Tess Music settings', false, openSettings);
     menuItem.register();
@@ -82,7 +116,7 @@
     play: '<svg viewBox="0 0 34 36" width="16" height="18" fill="currentColor"><path d="M7 3.5v29a1.5 1.5 0 0 0 2.3 1.3l22-14.5a1.5 1.5 0 0 0 0-2.6L9.3 2.2A1.5 1.5 0 0 0 7 3.5z"/></svg>',
     lyrics: '<svg viewBox="0 0 24 22" width="19" height="17" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 1.5C6.2 1.5 1.5 5.3 1.5 10c0 2.7 1.5 5.1 3.9 6.6L4.5 20.5l4.3-2.3c1 .3 2.1.4 3.2.4 5.8 0 10.5-3.8 10.5-8.6S17.8 1.5 12 1.5z"/><path d="M7.5 8.5h3v2.5c0 1.3-.6 2.2-1.8 2.6M13.5 8.5h3v2.5c0 1.3-.6 2.2-1.8 2.6" stroke-width="1.5"/></svg>',
     queue: '<svg viewBox="0 0 22 16" width="19" height="15" fill="currentColor"><circle cx="2" cy="2" r="1.6"/><circle cx="2" cy="8" r="1.6"/><circle cx="2" cy="14" r="1.6"/><rect x="6" y="1" width="16" height="2" rx="1"/><rect x="6" y="7" width="16" height="2" rx="1"/><rect x="6" y="13" width="16" height="2" rx="1"/></svg>',
-    devices: '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="10" r="2.2"/><path d="M7.5 15a6.5 6.5 0 1 1 9 0M4.6 17.8a10.5 10.5 0 1 1 14.8 0"/><path d="M8 22h8l-4-5z" fill="currentColor" stroke="none"/></svg>',
+    devices: '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M6.2 15.6a7.6 7.6 0 1 1 11.6 0"/><path d="M8.9 13.2a4.1 4.1 0 1 1 6.2 0"/><circle cx="12" cy="10" r="1.4" fill="currentColor" stroke="none"/><path d="M12 15.4l3.6 4.6H8.4z" fill="currentColor" stroke="none"/></svg>',
     volume: '<svg viewBox="0 0 26 22" width="20" height="18" fill="currentColor"><path d="M3 8h4l6-5v16l-6-5H3z"/><path d="M16 7a5 5 0 0 1 0 8M19 4a9 9 0 0 1 0 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
     close: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
     mini: '<svg viewBox="0 0 26 22" width="19" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="1.5" y="1.5" width="17" height="13" rx="3"/><rect x="10" y="9" width="14.5" height="11" rx="2.5" fill="currentColor"/></svg>',
@@ -361,13 +395,14 @@
 
   // Spotify swaps its cover for a tall Canvas it often can't play here; Tess always shows the square cover,
   // with the Canvas looping inside it when the setting is on, like Apple Music's animated artwork.
-  const sideCover = el(`<button class="tess-side-cover" aria-label="Open full screen player"><img alt=""><video muted loop playsinline></video></button>`);
-  onDispose(() => sideCover.remove());
-  onDispose(() => document.querySelectorAll('.tess-slot').forEach((n) => n.classList.remove('tess-slot')));
+  const coverWrap = el(`<div class="tess-cover-wrap"><button class="tess-side-cover" aria-label="Open full screen player"><img alt=""><video class="tess-video" muted loop playsinline></video></button></div>`);
+  const sideCover = q(coverWrap, '.tess-side-cover');
+  onDispose(() => coverWrap.remove());
+  onDispose(() => document.querySelectorAll('.tess-npv-root, .tess-npv-col').forEach((n) => n.classList.remove('tess-npv-root', 'tess-npv-col')));
   function syncSideCover() {
     q(sideCover, 'img').src = artUrl();
     const m = meta();
-    const fileId = settings.coverVideo && String(m['canvas.type'] || '').startsWith('VIDEO') ? m['canvas.fileId'] : '';
+    const fileId = settings.panelVideo && String(m['canvas.type'] || '').startsWith('VIDEO') ? m['canvas.fileId'] : '';
     const v = q(sideCover, 'video');
     sideCover.classList.remove('has-canvas');
     if (sideCover.isConnected) playCanvas(v, fileId).then((ok) => sideCover.classList.toggle('has-canvas', ok && v.dataset.fileId === fileId));
@@ -386,16 +421,20 @@
       spotifyLyrics.before(side);
       views[1].last = -2;
     }
-    // the cover slot is the block above the panel's text column: it holds Spotify's cover or Canvas
-    let slot = null;
-    for (let a = side.parentElement; a && !slot && a.closest('.Root__right-sidebar-peek'); a = a.parentElement) {
-      const prev = a.previousElementSibling;
-      if (prev && (prev.classList.contains('tess-slot') || prev.querySelector('video, [data-testid="cover-art-slot"]'))) slot = prev;
+    // Tess owns the top of the panel: one square cover (Canvas inside it), whatever Spotify would show there
+    // (cover, tall Canvas, music video). The panel's own text column stays as it is.
+    let column = null;
+    for (let a = side.parentElement; a && a.parentElement && a.closest('.Root__right-sidebar-peek'); a = a.parentElement) {
+      if (a.parentElement.querySelector(':scope > :not(:has(.tess-side-lyrics)) :is([data-testid="cover-art-slot"], video), :scope > .tess-cover-wrap')) { column = a; break; }
     }
-    if (slot && sideCover.parentElement !== slot) {
-      slot.classList.add('tess-slot');
-      slot.appendChild(sideCover);
-      syncSideCover();
+    if (column) {
+      const root = column.parentElement;
+      column.classList.add('tess-npv-col');
+      root.classList.add('tess-npv-root');
+      if (root.firstElementChild !== coverWrap) { root.prepend(coverWrap); syncSideCover(); }
+      // after "Switch to video" Spotify plays the music video here; let it show, framed like the cover
+      const videoMode = [...column.querySelectorAll('button')].some((b) => /switch to audio/i.test(b.textContent || b.getAttribute('aria-label') || ''));
+      root.classList.toggle('tess-mv-mode', videoMode);
     }
   });
 
@@ -615,7 +654,9 @@
     const path = route();
     const isArtist = path.startsWith('/artist/');
     html.classList.toggle('tess-artist', isArtist);
+    html.classList.toggle('tess-on-settings', path.startsWith('/preferences'));
     html.classList.remove('tess-hero-light', 'tess-hero-past');
+    html.style.setProperty('--tess-scroll-p', '0');
     clearInterval(heroTimer);
     if (!isArtist) return;
     setHeroHeight();
@@ -629,16 +670,17 @@
     bg.classList.add('tess-hero-bg');
     const fitHero = () => {
       setHeroHeight();
-      const page = document.querySelector('[data-testid="artist-page"]');
-      const hdr = page?.querySelector('[data-testid="action-bar"]') || page?.querySelector('.main-entityHeader-container');
-      if (!hdr || !bg.isConnected) return;
-      const h = Math.round(hdr.getBoundingClientRect().bottom - bg.getBoundingClientRect().top);
+      // the video stays behind the whole page, like Apple Music; scrolling blurs and dims it instead of cutting it off
+      const mv = document.querySelector('#main-view');
+      if (!mv || !bg.isConnected) return;
+      const h = Math.round(mv.getBoundingClientRect().bottom - bg.parentElement.getBoundingClientRect().top);
       if (h > 0) {
         bg.style.setProperty('height', h + 'px', 'important');
         bg.parentElement.style.setProperty('height', h + 'px', 'important');
       }
     };
     fitHero();
+    heroScroll(artistScroller());
     setTimeout(fitHero, 400);
     setTimeout(fitHero, 1200);
 
@@ -668,17 +710,20 @@
       }, 1500);
     }
   }
-  // keep Spotify's coloured top strip hidden while the hero video fills the page
-  listen(document, 'scroll', (e) => {
-    if (!html.classList.contains('tess-artist') || !(e.target instanceof Element)) return;
+  // Scroll drives two things on artist pages: Spotify's top strip stays hidden while the hero fills the page,
+  // and --tess-scroll-p (0 at the top, 1 once the header is gone) blurs and dims the video behind.
+  function heroScroll(scroller) {
+    if (!html.classList.contains('tess-artist') || !scroller?.contains(document.querySelector('[data-testid="artist-page"]'))) return;
     const hero = parseInt(getComputedStyle(html).getPropertyValue('--tess-hero-h')) || 600;
-    html.classList.toggle('tess-hero-past', e.target.scrollTop > hero - 160);
-    // Spotify pins the header picture in place; move it with the page so the video scrolls away like the rest
-    const holder = document.querySelector('.tess-hero-bg')?.parentElement;
-    if (holder && e.target.contains(document.querySelector('[data-testid="artist-page"]'))) {
-      holder.style.transform = `translate3d(0, ${-e.target.scrollTop}px, 0)`;
-    }
-  }, { capture: true, passive: true });
+    html.classList.toggle('tess-hero-past', scroller.scrollTop > hero - 160);
+    html.style.setProperty('--tess-scroll-p', Math.min(1, Math.max(0, scroller.scrollTop / (hero * 0.75))).toFixed(3));
+  }
+  const artistScroller = () => {
+    let e = document.querySelector('[data-testid="artist-page"]');
+    while (e && !/auto|scroll/.test(getComputedStyle(e).overflowY)) e = e.parentElement;
+    return e;
+  };
+  listen(document, 'scroll', (e) => { if (e.target instanceof Element) heroScroll(e.target); }, { capture: true, passive: true });
   const unlisten = Spicetify.Platform.History.listen(() => setTimeout(onRoute, 50));
   onDispose(() => typeof unlisten === 'function' && unlisten());
   listen(window, 'resize', () => { setHeroHeight(); setTimeout(onRoute, 100); });

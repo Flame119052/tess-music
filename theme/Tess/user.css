@@ -48,7 +48,7 @@ html.tess .main-view-container__scroll-node-child {
   gap: 14px;
   padding: 0 20px 0 22px;
   border-radius: 999px;
-  background: rgba(38, 38, 42, 0.55);
+  background: rgba(34, 34, 38, 0.72);
   backdrop-filter: blur(36px) saturate(1.9);
   -webkit-backdrop-filter: blur(36px) saturate(1.9);
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -660,7 +660,7 @@ html.tess.tess-artist .tess-hero-bg::after {
   inset: 0;
   z-index: 1;
   background:
-    linear-gradient(180deg, rgba(0, 0, 0, 0.25) 0%, rgba(0, 0, 0, 0) 18%, rgba(0, 0, 0, 0) 58%, rgba(0, 0, 0, 0.35) 100%);
+    linear-gradient(180deg, rgba(0, 0, 0, 0.25) 0%, rgba(0, 0, 0, 0) 16%, rgba(0, 0, 0, 0) 45%, rgba(0, 0, 0, 0.5) 100%);
   pointer-events: none;
 }
 html.tess.tess-artist.tess-hero-light .tess-hero-bg::after {
@@ -913,13 +913,27 @@ html.tess.tess-artist [data-testid="artist-page"] [style*="--background-base-70"
 html.tess.tess-artist [data-testid="artist-page"] div:has(> [style*="--background-base-70"]) {
   background: none !important;
 }
-/* the video melts into whatever is behind the page instead of meeting a solid edge */
-html.tess.tess-artist .tess-hero-bg {
-  -webkit-mask-image: linear-gradient(180deg, #000 62%, transparent 100%);
-  mask-image: linear-gradient(180deg, #000 62%, transparent 100%);
+/* Apple Music's artist scroll: the video stays put behind the page and melts into a soft, dim blur as you scroll */
+html.tess.tess-artist .before-scroll-node > div:has(> .tess-hero-bg) {
+  overflow: hidden !important;
 }
-html.tess.tess-artist .before-scroll-node > div {
-  will-change: transform;
+html.tess.tess-artist .tess-hero-bg {
+  inset: -60px !important;
+  width: auto !important;
+  filter:
+    blur(calc(var(--tess-scroll-p, 0) * 42px))
+    brightness(calc(1 - var(--tess-scroll-p, 0) * 0.6))
+    saturate(calc(1 + var(--tess-scroll-p, 0) * 0.25));
+  will-change: filter, transform;
+}
+html.tess.tess-artist .tess-hero-bg::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: rgb(16, 16, 19);
+  opacity: calc(var(--tess-scroll-p, 0) * 0.5);
+  pointer-events: none;
 }
 
 /* the sticky strip that appears once you scroll is the same glass as the panels, never a flat page colour */
@@ -941,10 +955,7 @@ html.tess.tess-artist:not(.tess-hero-past) .main-topBar-topbarContentContainer {
 }
 
 /* ================= right panel: Apple Music style ================= */
-/* Spotify's preview card gives way to Tess's live lyrics */
-html.tess .Root__right-sidebar-peek [data-testid="lyrics-npv-section"] {
-  display: none !important;
-}
+
 .tess-side-lyrics {
   position: relative;
   margin: 4px 0 20px;
@@ -1053,11 +1064,18 @@ html.tess .Root__right-sidebar-peek button[data-encore-id="buttonSecondary"] {
 }
 
 /* the right panel's cover: always square, Canvas inside it */
-html.tess .tess-slot > :not(.tess-side-cover) {
+html.tess .tess-npv-root:not(.tess-mv-mode) > :not(.tess-cover-wrap):not(.tess-npv-col),
+html.tess .tess-npv-root:not(.tess-mv-mode) video:not(.tess-video),
+html.tess .tess-npv-root.tess-mv-mode > .tess-cover-wrap {
   display: none !important;
 }
-html.tess .tess-slot {
-  padding-top: 4px;
+html.tess .tess-npv-root.tess-mv-mode > :not(.tess-npv-col) {
+  border-radius: 12px;
+  overflow: hidden;
+}
+/* clear of the panel's header row, which floats over the top */
+.tess-cover-wrap {
+  padding: 64px 0 16px;
 }
 .tess-side-cover {
   all: unset;
@@ -1091,4 +1109,112 @@ html.tess .tess-slot {
 }
 .tess-side-cover.has-canvas video {
   opacity: 1;
+}
+
+/* Settings: the bar steps aside so it never covers a row */
+#tess-bar {
+  transition: opacity 0.35s, transform 0.45s var(--tess-spring);
+}
+html.tess-on-settings #tess-bar {
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 24px);
+}
+html.tess-on-settings .main-view-container__scroll-node-child {
+  padding-bottom: 24px;
+}
+#tess-theme-settings .tess-set-hint {
+  display: block;
+  margin-top: 2px;
+}
+#tess-theme-settings [data-settings-row] {
+  padding-block: 6px;
+}
+/* with live panel lyrics off, Spotify's own preview card comes back */
+html.tess-side-lyrics-off .tess-side-lyrics {
+  display: none !important;
+}
+html.tess:not(.tess-side-lyrics-off) .Root__right-sidebar-peek [data-testid="lyrics-npv-section"] {
+  display: none !important;
+}
+
+/* ================= queue (right panel) ================= */
+/* tabs become a segmented control */
+html.tess .Root__right-sidebar-peek [data-encore-id="tabList"] {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 0 1px var(--tess-hairline);
+}
+html.tess .Root__right-sidebar-peek [data-encore-id="tabItem"] {
+  padding: 5px 12px !important;
+  border-radius: 8px !important;
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  color: rgba(255, 255, 255, 0.65) !important;
+  transition: background 0.2s, color 0.2s;
+}
+html.tess .Root__right-sidebar-peek [data-encore-id="tabItem"]::after,
+html.tess .Root__right-sidebar-peek [data-encore-id="tabItem"]::before {
+  display: none !important;
+}
+html.tess .Root__right-sidebar-peek [data-encore-id="tabItem"][aria-selected="true"] {
+  background: rgba(255, 255, 255, 0.16) !important;
+  color: #fff !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+/* headings */
+html.tess #queue-panel h2,
+html.tess #history-panel h2 {
+  font-size: 13px !important;
+  font-weight: 650 !important;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5) !important;
+  margin-top: 6px;
+}
+/* rows */
+html.tess :is(#queue-panel, #history-panel) li[role="row"] [data-encore-id="listRow"] {
+  border-radius: 10px !important;
+  padding-block: 5px !important;
+  transition: background 0.18s;
+}
+html.tess :is(#queue-panel, #history-panel) li[role="row"] [data-encore-id="listRow"]:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+html.tess :is(#queue-panel, #history-panel) li[role="row"] img {
+  width: 44px !important;
+  height: 44px !important;
+  border-radius: 7px !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+html.tess :is(#queue-panel, #history-panel) [data-encore-id="listRowTitle"] {
+  font-size: 14px !important;
+  font-weight: 550 !important;
+  letter-spacing: -0.005em;
+}
+html.tess :is(#queue-panel, #history-panel) [data-encore-id="listRowSubtitle"] {
+  font-size: 12px !important;
+  opacity: 0.8;
+}
+html.tess :is(#queue-panel, #history-panel) li[role="row"] + li[role="row"] {
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+/* the Jam invite: a quiet glass card with a small white pill instead of a big green slab */
+html.tess #queue-panel div:has(> [data-encore-id="buttonPrimary"]),
+html.tess #queue-panel div:has(> * > [data-encore-id="buttonPrimary"]):not(:has(ul)) {
+  background: rgba(255, 255, 255, 0.045) !important;
+  border-radius: var(--tess-radius) !important;
+  box-shadow: inset 0 0 0 1px var(--tess-hairline);
+}
+html.tess #queue-panel [data-encore-id="buttonPrimary"] > span,
+html.tess #queue-panel [data-encore-id="buttonPrimary"] {
+  background: #fff !important;
+  color: #111 !important;
+  border-radius: 999px !important;
+  min-block-size: 30px !important;
+  padding-block: 0 !important;
+  font-size: 13px !important;
 }
