@@ -123,6 +123,7 @@
   ];
   const settingChanged = () => { saveSettings(); applySettings(); syncTrack(); onRoute(); window.dispatchEvent(new Event('tess:settings')); };
   function buildThemeSection() {
+
     if (!route().startsWith('/preferences') || document.getElementById('tess-theme-settings')) return;
     const sections = [...document.querySelectorAll('#main-view h2')].map((h) => h.parentElement).filter((sct) => sct.querySelector('[data-settings-row]'));
     const template = sections.find((sct) => sct.querySelector('[data-settings-row] input[type="checkbox"]'));
@@ -150,6 +151,16 @@
       input.onchange = () => { settings[key] = input.checked; settingChanged(); };
       divider ? divider.before(row) : section.appendChild(row);
     }
+    // version, update channel and the welcome again
+    const meta = el('<p class="tess-set-meta"></p>');
+    meta.textContent = `Tess ${window.__tessVersion || 'dev'} · ${settings.channel === 'beta' ? 'Beta updates' : 'Stable updates'} · `;
+    const ch = el('<button class="tess-set-link"></button>');
+    ch.textContent = settings.channel === 'beta' ? 'Switch to stable' : 'Get beta updates';
+    ch.onclick = () => { settings.channel = settings.channel === 'beta' ? 'stable' : 'beta'; saveSettings(); try { localStorage.removeItem('tess:bundle'); } catch {} location.reload(); };
+    const again = el('<button class="tess-set-link"> · Show welcome</button>');
+    again.onclick = () => { try { localStorage.removeItem('tess:onboarded'); } catch {} onboarding(); };
+    meta.append(ch, again);
+    section.querySelector('h2').after(meta);
     sections[1].before(section);
     onDispose(() => section.remove());
     if (pendingThemeScroll) { pendingThemeScroll = false; section.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
@@ -531,6 +542,73 @@
     }
   }
   listen(window, 'resize', fitMarquees);
+
+  // ---------------- first-run welcome ----------------
+  // A single glass sheet on first launch to pick the defaults; everything here is also in Settings → Theme.
+  function onboarding() {
+    let done = false;
+    try { done = !!localStorage.getItem('tess:onboarded'); } catch {}
+    if (done) return;
+    const sheet = mount(el(`
+      <div id="tess-welcome" role="dialog" aria-label="Welcome to Tess">
+        <div class="tw-card">
+          <div class="tw-step on" data-step="0">
+            <div class="tw-mark"></div>
+            <h1>Welcome to Tess</h1>
+            <p>Spotify, redesigned. Everything Spotify has is still here; it just looks and feels new. Pick a few things and you're set.</p>
+          </div>
+          <div class="tw-step" data-step="1">
+            <h2>Full-screen player</h2>
+            <p>What fills the left side when you open a song full screen.</p>
+            <div class="tw-choices" data-key="look">
+              <button data-v="cover"><i class="tw-ill tw-cover"></i>Artwork</button>
+              <button data-v="canvas"><i class="tw-ill tw-video"></i>Video</button>
+              <button data-v="vinyl"><i class="tw-ill tw-vinyl"></i>Vinyl</button>
+            </div>
+          </div>
+          <div class="tw-step" data-step="2">
+            <h2>The window</h2>
+            <div class="tw-toggles">
+              <label><span><b>Colour from the music</b><small>The window takes on the colours of what's playing.</small></span><input type="checkbox" data-key="tintWindow"></label>
+              <label><span><b>Follow the time of day</b><small>Warm mornings, neutral afternoons, low blue at night.</small></span><input type="checkbox" data-key="circadian"></label>
+              <label><span><b>Moving artist pages</b><small>Artist pages open on a looping video when there is one.</small></span><input type="checkbox" data-key="artistVideo"></label>
+              <label><span><b>Live lyrics beside the music</b><small>Synced lyrics in the Now Playing panel.</small></span><input type="checkbox" data-key="sideLyrics"></label>
+            </div>
+          </div>
+          <div class="tw-step" data-step="3">
+            <h2>You're all set</h2>
+            <p>Press <kbd>⌘</kbd><kbd>K</kbd> to search anything, drag the record arm in Vinyl mode, and use the miniplayer button in the bar for a player that floats over every app. Settings → Theme has everything else.</p>
+          </div>
+          <footer><span class="tw-dots"><i></i><i></i><i></i><i></i></span><button class="tw-skip">Skip</button><button class="tw-next">Continue</button></footer>
+        </div>
+      </div>`));
+    let step = 0;
+    const steps = sheet.querySelectorAll('.tw-step');
+    const show = () => {
+      steps.forEach((s, i) => s.classList.toggle('on', i === step));
+      sheet.querySelectorAll('.tw-dots i').forEach((d, i) => d.classList.toggle('on', i === step));
+      sheet.querySelector('.tw-next').textContent = step === steps.length - 1 ? 'Start listening' : 'Continue';
+    };
+    const look = () => (settings.npStyle === 'vinyl' ? 'vinyl' : settings.coverVideo ? 'canvas' : 'cover');
+    sheet.querySelectorAll('[data-key="look"] button').forEach((b) => {
+      b.setAttribute('aria-checked', String(b.dataset.v === look()));
+      b.onclick = () => {
+        settings.npStyle = b.dataset.v === 'vinyl' ? 'vinyl' : 'cover';
+        if (b.dataset.v !== 'vinyl') settings.coverVideo = b.dataset.v === 'canvas';
+        sheet.querySelectorAll('[data-key="look"] button').forEach((x) => x.setAttribute('aria-checked', String(x === b)));
+      };
+    });
+    sheet.querySelectorAll('input[data-key]').forEach((i) => { i.checked = !!settings[i.dataset.key]; i.onchange = () => { settings[i.dataset.key] = i.checked; }; });
+    const finish = () => {
+      saveSettings(); applySettings(); syncTrack(); onRoute();
+      try { localStorage.setItem('tess:onboarded', '1'); } catch {}
+      sheet.classList.add('bye');
+      setTimeout(() => sheet.remove(), 400);
+    };
+    sheet.querySelector('.tw-next').onclick = () => { if (step < steps.length - 1) { step++; show(); } else finish(); };
+    sheet.querySelector('.tw-skip').onclick = finish;
+    show();
+  }
 
   // ---------------- liquid glass ----------------
   // Apple's Liquid Glass bends what's behind it near its edges (a lens), keeps the middle clear, and catches light on
@@ -1987,6 +2065,7 @@
   listen(window, 'resize', () => { setHeroHeight(); setTimeout(onRoute, 100); });
   // for checking things from DevTools: window.__tessDebug.artistCanvas(uri), .playCanvas(video, fileId)
   self.debug = { artistCanvas, playCanvas, trackCanvas, onRoute: () => onRoute() };
+  onboarding();
   onDraw(applyGlass, 4000);
   applyGlass();
   startWatch();
