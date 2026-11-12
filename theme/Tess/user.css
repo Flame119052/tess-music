@@ -15,6 +15,78 @@
   --tess-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", sans-serif;
 }
 
+/* ================= palette =================
+   Spicetify feeds Spotify's colours from these. Without them every menu, dialog, dropdown and tooltip
+   is see-through. Kept here too (not only in color.ini) so they apply without re-installing the theme. */
+:root {
+  --spice-text: #ffffff;
+  --spice-subtext: #b3b3b8;
+  --spice-main: #101013;
+  --spice-main-elevated: #26262c;
+  --spice-highlight: #2e2e35;
+  --spice-highlight-elevated: #34343c;
+  --spice-sidebar: #141417;
+  --spice-player: #141417;
+  --spice-card: #26262c;
+  --spice-shadow: #000000;
+  --spice-selected-row: #ffffff;
+  --spice-button: #1ed760;
+  --spice-button-active: #1fdf64;
+  --spice-button-disabled: #535359;
+  --spice-tab-active: #34343c;
+  --spice-notification: #1ed760;
+  --spice-notification-error: #e22134;
+  --spice-misc: #7f7f86;
+  --spice-rgb-text: 255, 255, 255;
+  --spice-rgb-subtext: 179, 179, 184;
+  --spice-rgb-main: 16, 16, 19;
+  --spice-rgb-main-elevated: 38, 38, 44;
+  --spice-rgb-highlight: 46, 46, 53;
+  --spice-rgb-highlight-elevated: 52, 52, 60;
+  --spice-rgb-sidebar: 20, 20, 23;
+  --spice-rgb-player: 20, 20, 23;
+  --spice-rgb-card: 38, 38, 44;
+  --spice-rgb-shadow: 0, 0, 0;
+  --spice-rgb-selected-row: 255, 255, 255;
+  --spice-rgb-button: 30, 215, 96;
+  --spice-rgb-button-active: 31, 223, 100;
+  --spice-rgb-button-disabled: 83, 83, 89;
+  --spice-rgb-tab-active: 52, 52, 60;
+  --spice-rgb-notification: 30, 215, 96;
+  --spice-rgb-notification-error: 226, 33, 52;
+  --spice-rgb-misc: 127, 127, 134;
+}
+/* Spotify's floating surfaces: one glass look for menus, dropdowns, dialogs and tooltips */
+html.tess #context-menu,
+html.tess [role="menu"]:not(#tess-menu),
+html.tess [data-tippy-root] .main-contextMenu-menu {
+  background: rgba(36, 36, 42, 0.94) !important;
+  -webkit-backdrop-filter: blur(30px) saturate(1.6);
+  backdrop-filter: blur(30px) saturate(1.6);
+  border-radius: 12px !important;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.09) !important;
+}
+html.tess [role="dialog"] > div:first-child:not(:has([role="dialog"])),
+html.tess .GenericModal__overlay + *,
+html.tess .GenericModal {
+  background-color: #1f1f24;
+}
+html.tess .GenericModal__overlay {
+  background: rgba(0, 0, 0, 0.6) !important;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+html.tess [role="tooltip"],
+html.tess .encore-tooltip,
+html.tess [data-tippy-root] [class*="tooltip"] {
+  background: rgba(36, 36, 42, 0.96) !important;
+  color: #fff !important;
+  border-radius: 8px !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+
+
 /* ================= playing bar =================
    Spotify's own bar stays mounted (its popovers for devices and the queue still anchor to it)
    but is invisible; the Tess bar floats above the content in its place. */
