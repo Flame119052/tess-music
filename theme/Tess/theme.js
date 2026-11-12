@@ -165,6 +165,42 @@
   // ---------------- window tint (album colors behind the panels) ----------------
   const ambient = mount(el('<div id="tess-ambient" aria-hidden="true"><canvas width="64" height="36"></canvas></div>'));
   const ambientCanvas = ambient.querySelector('canvas');
+  ambientCanvas.width = 96;
+  ambientCanvas.height = 54;
+  // Aurora: soft light fields in the artwork's colours drifting slowly behind the panels. Painted at 96x54 about
+  // eight times a second and stretched by the GPU; it stops while the window is hidden or the tint is off.
+  let auroraColors = [[40, 50, 90], [70, 40, 90], [30, 60, 80], [20, 20, 30]];
+  let auroraShown = [...auroraColors.map((c) => [...c])];
+  function paletteOf(img) {
+    try {
+      const c = document.createElement('canvas');
+      c.width = c.height = 4;
+      const x = c.getContext('2d');
+      x.drawImage(img, 0, 0, 4, 4);
+      const d = x.getImageData(0, 0, 4, 4).data;
+      const out = [];
+      for (const k of [0, 12, 40, 52]) out.push([d[k], d[k + 1], d[k + 2]]);
+      return out;
+    } catch { return null; }
+  }
+  function paintAurora(t) {
+    const x = ambientCanvas.getContext('2d');
+    const w = 96, h = 54;
+    // ease the colours toward the new artwork instead of jumping
+    auroraShown = auroraShown.map((c, i) => c.map((v, j) => v + (auroraColors[i][j] - v) * 0.08));
+    x.filter = 'none';
+    x.fillStyle = '#07070a';
+    x.fillRect(0, 0, w, h);
+    x.filter = 'blur(9px) saturate(140%)';
+    auroraShown.forEach((c, i) => {
+      const a = t * 0.00009 * (i % 2 ? 1 : -1) + i * 1.7;
+      x.fillStyle = `rgba(${c.map(Math.round).join(',')},0.8)`;
+      x.beginPath();
+      x.ellipse(w * (0.5 + 0.4 * Math.cos(a)), h * (0.5 + 0.42 * Math.sin(a * 1.3)), w * 0.42, h * 0.55, a, 0, Math.PI * 2);
+      x.fill();
+    });
+  }
+  every(125, () => { if (settings.tintWindow) paintAurora(performance.now()); });
 
   // ---------------- floating playing bar ----------------
   const bar = mount(el(`
@@ -466,9 +502,18 @@
     }
     // Tess owns the top of the panel: one square cover (Canvas inside it), whatever Spotify would show there
     // (cover, tall Canvas, music video). The panel's own text column stays as it is.
+    // Found from the song title (always present), not the lyrics card (missing on songs without lyrics):
+    // the column is the title's ancestor whose previous sibling holds Spotify's cover, Canvas or our cover.
     let column = null;
-    for (let a = side.parentElement; a && a.parentElement && a.closest('.Root__right-sidebar-peek'); a = a.parentElement) {
-      if (a.parentElement.querySelector(':scope > :not(:has(.tess-side-lyrics)) :is([data-testid="cover-art-slot"], video), :scope > .tess-cover-wrap')) { column = a; break; }
+    const panel = document.querySelector('.Root__right-sidebar-peek');
+    const title = panel?.querySelector('a[href^="/album/"], a[href^="/episode/"], a[href^="/show/"]');
+    const start = side.isConnected && panel?.contains(side) ? side.parentElement : title;
+    for (let a = start; a && a.parentElement && panel?.contains(a.parentElement); a = a.parentElement) {
+      const prev = a.previousElementSibling;
+      // the media slot: Spotify's cover/Canvas, or (between Canvas loads) a tall block with no text in it
+      const isSlot = prev && (prev.classList.contains('tess-cover-wrap') || prev.querySelector('[data-testid="cover-art-slot"], video')
+        || (prev.getBoundingClientRect().height > 120 && !prev.textContent.trim()));
+      if (isSlot) { column = a; break; }
     }
     if (column) {
       const root = column.parentElement;
@@ -566,8 +611,7 @@
       npArt = img;
       paintGlow(q(np, '.tn-glow'), img, performance.now() / 1000);
       // the window tint is static: fade out, repaint, fade in
-      ambientCanvas.style.opacity = '0';
-      setTimeout(() => { paintGlow(ambientCanvas, img, 0); ambientCanvas.style.opacity = ''; }, 350);
+      auroraColors = paletteOf(img) || auroraColors;
     });
     const video = q(np, '.tn-cover video');
     const uri = item()?.uri;

@@ -710,7 +710,7 @@ html:not(.tess-artist) .tess-hero-video {
   transition: opacity 0.35s;
 }
 html.tess-tint #tess-ambient canvas {
-  opacity: 0.75;
+  opacity: 1;
 }
 html:not(.tess-tint) #tess-ambient {
   display: none;
@@ -1384,19 +1384,33 @@ html.tess:is(.tess-lib-wide, .tess-lib-rail) #tess-timeline {
   scrollbar-width: thin;
 }
 .tt-group {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  margin: 0 -10px;
-  padding: 12px 22px 7px 40px;
+  /* a quiet label sitting on the thread, not a bar */
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 8px 6px 4px;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.55);
-  background: rgba(30, 30, 36, 0.5);
-  -webkit-backdrop-filter: blur(18px) saturate(1.5);
-  backdrop-filter: blur(18px) saturate(1.5);
+  color: rgba(255, 255, 255, 0.5);
+}
+.tt-group::before {
+  content: "";
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-left: -1px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+.tt-group::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.1), transparent);
 }
 /* each row hangs off a thread on the left; its node lights up when it's playing */
 .tt-item {
@@ -1551,6 +1565,62 @@ html.tess.tess-lib-wide #Desktop_LeftSidebar_Id {
 }
 html.tess.tess-lib-wide #main-view {
   visibility: hidden;
+}
+
+/* ================= top bar: Home and search in the same glass as everything else ================= */
+html.tess #global-nav-bar button[aria-label="Home"],
+html.tess #global-nav-bar a[aria-label="Home"] {
+  background: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1), 0 6px 18px rgba(0, 0, 0, 0.25);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  backdrop-filter: blur(20px) saturate(1.6);
+  transition: background 0.2s, transform 0.25s var(--tess-spring);
+}
+html.tess #global-nav-bar button[aria-label="Home"]:hover {
+  background: rgba(255, 255, 255, 0.14) !important;
+  transform: scale(1.05);
+}
+html.tess #global-nav-bar form[role="search"] {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1), 0 6px 18px rgba(0, 0, 0, 0.25);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  backdrop-filter: blur(20px) saturate(1.6);
+  transition: background 0.2s, box-shadow 0.2s;
+}
+html.tess #global-nav-bar form[role="search"]:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+html.tess #global-nav-bar form[role="search"]:focus-within {
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28), 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+html.tess #global-nav-bar form[role="search"] input {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+/* the round buttons on the right (notifications, friends, profile) get the same glass */
+html.tess #global-nav-bar > div > div:last-child button {
+  border-radius: 50% !important;
+}
+
+/* ================= window background: aurora ================= */
+/* light fields from the artwork's colours (painted small by the script), film grain and a vignette on top */
+#tess-ambient::before,
+#tess-ambient::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+#tess-ambient::before {
+  opacity: 0.09;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+#tess-ambient::after {
+  background: radial-gradient(130% 100% at 50% 35%, transparent 45%, rgba(0, 0, 0, 0.6));
 }
 
 /* ================= Home ("Listen Now") ================= */
