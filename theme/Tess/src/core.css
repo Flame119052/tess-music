@@ -782,8 +782,7 @@ html:not(.tess-artist) .tess-hero-video {
   height: 124%;
   opacity: 0;
   transition: opacity 1.4s ease;
-  /* stepped: the drift is a few pixels a minute, so ~2 updates a second look identical to 60 and cost far less */
-  animation: tess-aurora-drift var(--drift, 60s) steps(150) infinite alternate;
+  animation: tess-aurora-drift var(--drift, 60s) ease-in-out infinite alternate;
   animation-play-state: paused;
   will-change: transform;
 }
@@ -2025,4 +2024,53 @@ html.tess .Root__right-sidebar-peek aside,
 html.tess .Root__right-sidebar-peek aside > div,
 html.tess #main-view .main-view-container {
   background-color: transparent !important;
+}
+
+/* artist header: Photo / Video, remembered per artist */
+.tess-hero-switch {
+  position: absolute;
+  top: 18px;
+  right: 22px;
+  z-index: 5;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(20, 20, 24, 0.45);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+  opacity: 0.55;
+  transition: opacity 0.25s;
+}
+.tess-hero-switch:hover {
+  opacity: 1;
+}
+.tess-hero-switch button {
+  all: unset;
+  cursor: pointer;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font: 600 12px/1 var(--tess-font);
+  color: rgba(255, 255, 255, 0.8);
+}
+.tess-hero-switch button[aria-checked="true"] {
+  background: rgba(255, 255, 255, 0.9);
+  color: #111;
+}
+
+/* only the visible aurora layer moves; the faded-out one holds still */
+#tess-ambient canvas:not(.on),
+.td-bg:not(.on) {
+  animation-play-state: paused !important;
+}
+
+/* artist picture/video always covers the whole page area, top to bottom, at any window size */
+html.tess.tess-artist .before-scroll-node > div:has(> .tess-hero-bg) {
+  position: absolute !important;
+  inset: 0 !important;
+  height: auto !important;
+}
+html.tess.tess-artist .tess-hero-bg {
+  height: auto !important;
 }

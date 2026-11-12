@@ -186,6 +186,9 @@
   const auroraCanvases = [...ambient.querySelectorAll('canvas')];
   let auroraFront = 0;
   let auroraColors = [[40, 50, 90], [70, 40, 90], [30, 60, 80], [20, 20, 30]];
+  // the window hums with the song's colours, or the artist's photo while you're on their page
+  let songColors = auroraColors;
+  let artistColors = null;
   function paletteOf(img) {
     try {
       const c = document.createElement('canvas');
@@ -627,7 +630,9 @@
       ms.endOfStream();
       video.loop = true;
       video.muted = true;
-      await video.play().catch(() => {});
+      video.autoplay = true;
+      // don't wait on play(): it can sit unresolved while the window is in the background
+      video.play().catch(() => {});
       return true;
     } catch {
       return false;
@@ -654,8 +659,8 @@
       npArt = img;
       paintGlow(q(np, '.tn-glow'), img, performance.now() / 1000);
       // the window tint is static: fade out, repaint, fade in
-      auroraColors = paletteOf(img) || auroraColors;
-      paintAurora();
+      songColors = paletteOf(img) || songColors;
+      if (!artistColors) { auroraColors = songColors; paintAurora(); }
     });
     const video = q(np, '.tn-cover video');
     const uri = item()?.uri;
@@ -1227,7 +1232,8 @@
         .catch(() => '')));
       fileId = found.find(Boolean) || '';
     } catch {}
-    canvasCache.set(artistUri, fileId);
+    // remember only real answers; a failed or empty lookup is retried next time
+    if (fileId) canvasCache.set(artistUri, fileId);
     return fileId;
   }
 
@@ -1285,20 +1291,31 @@
     html.classList.remove('tess-hero-light', 'tess-hero-past');
     html.style.setProperty('--tess-scroll-p', '0');
     clearInterval(heroTimer);
-    if (!isArtist) { html.classList.remove('tess-hero-wait'); return; }
+    if (!isArtist) {
+      html.classList.remove('tess-hero-wait');
+      if (artistColors) { artistColors = null; auroraColors = songColors; paintAurora(); }
+      return;
+    }
     setHeroHeight();
     const artistUri = 'spotify:artist:' + path.split('/')[2];
     // Start the video straight away, before Spotify has even drawn the header, into a video element that waits
     // offstage. Until it's ready (or we know there isn't one) the header picture stays hidden, so you go
     // straight from a dark page to the video instead of photo → cover → video.
-    const wantVideo = settings.artistVideo;
+    // Per artist you can pick Photo or Video (a small switch on the page); the default is the video.
+    const heroPrefs = (() => { try { return JSON.parse(localStorage.getItem('tess:heroPref') || '{}'); } catch { return {}; } })();
+    const wantVideo = settings.artistVideo && heroPrefs[artistUri] !== 'photo';
     html.classList.toggle('tess-hero-wait', wantVideo);
     const unwait = () => { if (route() === path) html.classList.remove('tess-hero-wait'); };
     setTimeout(unwait, 3000);
     const early = wantVideo ? (async () => {
       const fileId = await artistCanvas(artistUri);
       if (!fileId) return null;
-      const v = el('<video class="tess-hero-video" muted loop playsinline></video>');
+      // created in the page's own document: a template-made video is inert and never loads media
+      const v = document.createElement('video');
+      v.className = 'tess-hero-video';
+      v.muted = true;
+      v.loop = true;
+      v.playsInline = true;
       return (await playCanvas(v, fileId)) ? v : null;
     })() : Promise.resolve(null);
     let bg = null;
@@ -1308,16 +1325,34 @@
     }
     if (!bg || route() !== path) { unwait(); return; }
     bg.classList.add('tess-hero-bg');
+    // the Photo / Video switch, top right of the header; shown only when this artist has a video
+    document.querySelectorAll('.tess-hero-switch').forEach((n) => n.remove());
+    const hasVideo = settings.artistVideo && !!(await artistCanvas(artistUri));
+    if (hasVideo && route() === path) {
+      const sw = el('<div class="tess-hero-switch" role="radiogroup" aria-label="Header"><button data-v="photo">Photo</button><button data-v="video">Video</button></div>');
+      const current = heroPrefs[artistUri] === 'photo' ? 'photo' : 'video';
+      sw.querySelectorAll('button').forEach((b) => {
+        b.setAttribute('aria-checked', String(b.dataset.v === current));
+        b.onclick = () => {
+          const prefs = (() => { try { return JSON.parse(localStorage.getItem('tess:heroPref') || '{}'); } catch { return {}; } })();
+          if (b.dataset.v === 'photo') prefs[artistUri] = 'photo'; else delete prefs[artistUri];
+          try { localStorage.setItem('tess:heroPref', JSON.stringify(prefs)); } catch {}
+          onRoute();
+        };
+      });
+      (document.querySelector('[data-testid="artist-page"] .main-entityHeader-container') || bg.parentElement).appendChild(sw);
+      onDispose(() => sw.remove());
+    }
     const fitHero = () => {
       setHeroHeight();
       // the video stays behind the whole page, like Apple Music; scrolling blurs and dims it instead of cutting it off
       const mv = document.querySelector('#main-view');
       if (!mv || !bg.isConnected) return;
       const h = Math.round(mv.getBoundingClientRect().bottom - bg.parentElement.getBoundingClientRect().top);
-      if (h > 0) {
-        bg.style.setProperty('height', h + 'px', 'important');
-        bg.parentElement.style.setProperty('height', h + 'px', 'important');
-      }
+      // the picture fills the whole page area (CSS); clear any fixed height an older version set
+      bg.style.removeProperty('height');
+      bg.parentElement.style.removeProperty('height');
+      void h;
     };
     fitHero();
     heroScroll(artistScroller());
@@ -1327,6 +1362,7 @@
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
+      if (route() === path) { artistColors = paletteOf(img); if (artistColors) { auroraColors = artistColors; paintAurora(); } }
       const light = headerIsLight(img);
       if (light !== null && route() === path) html.classList.toggle('tess-hero-light', light);
     };
@@ -1375,9 +1411,11 @@
     const head = e.target.querySelector?.('.main-trackList-trackListHeader');
     if (head) head.classList.toggle('tess-stuck', head.getBoundingClientRect().top <= parseFloat(getComputedStyle(head).top) + e.target.getBoundingClientRect().top + 1 && e.target.scrollTop > 0);
   }, { capture: true, passive: true });
-  const unlisten = Spicetify.Platform.History.listen(() => requestAnimationFrame(onRoute));
+  const unlisten = Spicetify.Platform.History.listen(() => setTimeout(onRoute, 0));
   onDispose(() => typeof unlisten === 'function' && unlisten());
   listen(window, 'resize', () => { setHeroHeight(); setTimeout(onRoute, 100); });
+  // for checking things from DevTools: window.__tessDebug.artistCanvas(uri), .playCanvas(video, fileId)
+  self.debug = { artistCanvas, playCanvas, trackCanvas, onRoute: () => onRoute() };
   startWatch();
   sweepStale();
   placeTimeline();
