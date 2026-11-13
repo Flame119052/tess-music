@@ -24,4 +24,28 @@ if grep -nE '^[A-Za-z_]+=\$\((cat|grep|awk|find|ls) [^)]*\)$' installer/tess-ins
 #    or an earlier run stopped halfway
 (cd patcher && go test ./src/cmd/ -run Swap -count=1) || fail "swapApps tests"
 
+# 6. installed code reads promoted channels only. The public stub may live on main, but nothing it installs may read it.
+installed="installer/tess-install.sh installer/updater.sh installer/doctor.sh installer/rescue.sh installer/uninstall.sh theme/loader/loader.js"
+if grep -nE '(raw\.githubusercontent\.com/.*/main/|[?&]ref=main([^[:alnum:]_-]|$)|@main/)' $installed; then
+  fail "installed code reads main; use the Mac's promoted channel"
+fi
+
+# REPO may be repeated because each installed script is standalone, but every copy must name the same repository.
+repo_values=$(sed -n 's/^REPO="\([^"]*\)".*/\1/p' installer/*.sh | sort -u | wc -l | tr -d ' ')
+[ "$repo_values" -le 1 ] || fail "installer scripts have more than one REPO value"
+
+# Network bytes are downloaded to a file and checked before execution. Only the public one-line stub may show curl | sh.
+if grep -nE 'curl[^|]*\|[[:space:]]*([^[:space:]]+[[:space:]]+)*(sh|zsh)([[:space:];]|$)' installer/tess-install.sh installer/updater.sh installer/doctor.sh installer/rescue.sh installer/uninstall.sh; then
+  fail "an installed script pipes a download into a shell"
+fi
+if grep -nE '\|\|[[:space:]]*curl' installer/install.sh; then fail "the public stub falls back to another installer"; fi
+
+# The three shell swaps protect the same precious folder and must not drift.
+swap_hashes=$(
+  for f in installer/tess-install.sh installer/updater.sh installer/doctor.sh; do
+    awk '/^swap_apps\(\) \{/{copy=1} copy{print} copy && /^\}/{exit}' "$f" | shasum -a 256 | cut -d' ' -f1
+  done | sort -u | wc -l | tr -d ' '
+)
+[ "$swap_hashes" = 1 ] || fail "the three swap_apps bodies differ"
+
 echo "safety checks passed"

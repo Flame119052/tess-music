@@ -1,6 +1,5 @@
 #!/bin/sh
 # Tess Music installer for macOS.
-#   curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/stable/install.sh | sh
 # Installs Tess into the Spotify desktop app, a helper that re-applies it after Spotify updates, and Tess Mini.
 # Nothing else to set up; run it again any time to repair. Remove with: ~/Library/Application\ Support/Tess/tess uninstall
 set -e
