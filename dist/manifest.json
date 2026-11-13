@@ -1,10 +1,10 @@
 {
-  "version": "0.2.19",
+  "version": "0.2.20",
   "channel": "stable",
   "js": "theme.js",
   "css": "user.css",
   "sig": {
-    "js": "D75ZHCfeyrAPXJ2wbjJfYGHl/tQY7F/Mha+HjiCYLPPRSO9CmLN98rTENTXRMg2gfTRXNlPZAfuxdW7ktptnBQ==",
-    "css": "g1SlsQ0ql3g94Kw9iyvvRYbx7aYMd+3YxsdZfcrfiAuWI6LDK68nx97uBaaFezVFqy5DAbEPsJl7ThzCNSYqCg=="
+    "js": "mPT3MKs9ieYd4hEgIMV6eaYGzLW/UZYiVE4U4zE3HPNRtyHL/BjdLDYg1PUL/PyFcz2vhIXLZRTjeAx7IGZvBw==",
+    "css": "1X+M2FZJ9jPeaOXnldCcaNp8A4GgD4AXG/Y4KTJsBk6lNDP+QKiQVy7z80Vbe0kmps73yeLGRibPT8dG0b59AQ=="
   }
 }
