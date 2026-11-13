@@ -2,7 +2,9 @@
 
 Read this file before doing anything in this repo. It is the single source of instructions for every agent (Claude,
 Codex, opencode, any other) and for people. `CLAUDE.md` only points here. Design decisions live in `DESIGN.md`, how
-the pieces fit in `docs/architecture.md`, what is open in `docs/status.md` and GitHub issues.
+the pieces fit in `docs/architecture.md`, what is open in `docs/status.md` and GitHub issues, what comes next in
+`docs/roadmap.md`, why things are the way they are in `docs/decisions.md` (add an entry for every decision you take)
+and `docs/principles.md`.
 
 ## What Tess is
 

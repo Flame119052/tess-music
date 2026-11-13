@@ -36,12 +36,14 @@ helper blanked its Spotify).
 | #49 | Check on screen: About/Credits, tooltips, library morph, Tess Mini controls | Open. |
 | #50 | Test on other Macs (Intel, macOS 12–14, `~/Applications`, never-Spicetify) | Open. |
 | #51 | Installer: detect a hand-copied (DMG) Spotify that Gatekeeper refuses | Open. |
-| #52 | Licence for the repo | Waiting on Krish. |
+| #53 | Tell users about the rescue line; `tess rescue off`, `tess status` | Open (security). |
+| #54 | Purge old issue revisions and commit messages with personal details | Waiting on Krish. |
+| #55 | Back up the signing keys offline | Waiting on Krish (security). |
 
 Closed on 13 Nov: #13 (Dial picking), #29 (DJ button), #30 (top bar), #31 (vinyl arm), #32 (no lyrics), #33 (Settings
 and account menu), #35 (performance hill climb), #36 (a user's blanked Spotify + safe swap), #37 (doctor, reports,
 rescue), #38 (Home bar), #39 (progress line), #40 (queue cut-off), #41 (Back to now), #42 (design skills pass),
-#43 (dev channel), #44 (repo setup). Before that: #10–#26.
+#43 (dev channel), #44 (repo setup), #52 (MIT licence). Before that: #10–#26.
 
 ## Design asks still open
 
