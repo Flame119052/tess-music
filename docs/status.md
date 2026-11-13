@@ -28,9 +28,19 @@ Users on record (health inbox): Krish (dev), Kavya (stable, repaired 13 Nov afte
 | #3 | Lyrics when Spotify has none, and fixing them | Open (no-lyrics view done in #32; sourcing lyrics is not). |
 | #2 | Word-by-word lyric highlight | Deferred by Krish. |
 | #1 | Tess Music v1 (umbrella) | Umbrella. |
+| #45 | Library (full size): final decision on Glass Shelves | Waiting on Krish. |
+| #46 | Sidebar → full library: a more creative transition | Open. |
+| #47 | Liquid Glass: Apple-level polish | Open. |
+| #48 | Icons across the rest of Spotify | Open. |
+| #49 | Check on screen: About/Credits, tooltips, library morph, Tess Mini controls | Open. |
+| #50 | Test on other Macs (Intel, macOS 12–14, `~/Applications`, never-Spicetify) | Open. |
+| #51 | Installer: detect a hand-copied (DMG) Spotify that Gatekeeper refuses | Open. |
+| #52 | Licence for the repo | Waiting on Krish. |
 
 Closed on 13 Nov: #13 (Dial picking), #29 (DJ button), #30 (top bar), #31 (vinyl arm), #32 (no lyrics), #33 (Settings
-and account menu), #35 (performance hill climb). Before that: #10–#26.
+and account menu), #35 (performance hill climb), #36 (Kavya's blanked Spotify + safe swap), #37 (doctor, reports,
+rescue), #38 (Home bar), #39 (progress line), #40 (queue cut-off), #41 (Back to now), #42 (design skills pass),
+#43 (dev channel), #44 (repo setup). Before that: #10–#26.
 
 ## Design asks still open
 
