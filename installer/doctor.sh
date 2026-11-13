@@ -147,12 +147,9 @@ send() {
   [ ${#me} -ge 3 ] && sed -i '' "s|$me|user|g" "$TMP/body"
   [ -n "$host" ] && sed -i '' "s|$host|this-mac|g" "$TMP/body"
   sed -i '' -E 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/(email)/g' "$TMP/body"
-  /usr/bin/python3 - "$TMP/body" "$TMP/r.json" "$ID" "$kind" "$tv" "$SPV" "$(sw_vers -productVersion)" "${st[*]}" <<'PY' 2>/dev/null || return 1
-import json, sys
-body, out, i, kind, tess, spot, mac, status = sys.argv[1:9]
-json.dump({"install": i, "kind": kind, "tess": tess, "spotify": spot, "macos": mac, "status": status,
-           "body": open(body, errors="replace").read()[-22000:]}, open(out, "w"))
-PY
+  local jstr='BEGIN { ORS = ""; print "\"" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, ""); gsub(/[\001-\037]/, ""); print $0 "\\n" } END { print "\"" }'
+  printf '{"install":"%s","kind":"%s","tess":"%s","spotify":"%s","macos":"%s","status":%s,"body":%s}' "$ID" "$kind" "$tv" "$SPV" \
+    "$(sw_vers -productVersion)" "$(printf '%s' "${st[*]}" | awk "$jstr")" "$(tail -c 20000 "$TMP/body" | awk "$jstr")" > "$TMP/r.json" || return 1
   [ -n "$TESS_TEST" ] && { cp "$TMP/r.json" "$T/last-report.json"; return 0; }
   curl -fsS --max-time 30 -H "content-type: application/json" --data-binary @"$TMP/r.json" "$INBOX/v1/report" >/dev/null 2>&1
 }

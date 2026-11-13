@@ -68,7 +68,7 @@ kill $watchdog 2>/dev/null
 log "rescue order $serial finished (exit $rc)"
 # tell the inbox it ran, unless reports are off
 if [ ! -f "$T/reports-off" ] && [ -n "$id" ]; then
-  body=$(tail -c 6000 "$LOG" | sed "s|$HOME|~|g" | /usr/bin/python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' 2>/dev/null || echo '""')
+  body=$(tail -c 6000 "$LOG" | sed "s|$HOME|~|g" | awk 'BEGIN { ORS = ""; print "\"" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, ""); gsub(/[\001-\037]/, ""); print $0 "\\n" } END { print "\"" }')
   curl -fsS --max-time 30 -H "content-type: application/json" -d "{\"install\":\"$id\",\"kind\":\"rescue\",\"status\":\"order $serial exit $rc\",\"body\":$body}" "$INBOX/v1/report" >/dev/null 2>&1
 fi
 exit 0

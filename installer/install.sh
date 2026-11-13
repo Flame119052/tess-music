@@ -35,22 +35,23 @@ fail() {
 }
 # When an install fails, a short anonymous report goes to the Tess inbox so the problem can be fixed (no names, no
 # paths under your home folder, no account details). Turn reports off before installing: touch the file below.
+# JSON string from stdin, with only what every Mac has (awk)
+jstr() { awk 'BEGIN { ORS = ""; print "\"" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, ""); gsub(/[\001-\037]/, ""); print $0 "\\n" } END { print "\"" }'; }
 report_failure() {
   [ -n "$TESS_TEST" ] || [ -f "$HOME_TESS/reports-off" ] && return 0
-  command -v /usr/bin/python3 >/dev/null 2>&1 || return 0
   mkdir -p "$HOME_TESS" 2>/dev/null
   [ -f "$HOME_TESS/install-id" ] || od -An -tx1 -N16 /dev/urandom | tr -d ' \n' > "$HOME_TESS/install-id"
-  { echo "install failed: $1"; echo "spotify: ${SPOTIFY:-none}"
-    for a in /Applications/Spotify.app "$HOME/Applications/Spotify.app"; do echo "== $a"; ls -la "$a/Contents/Resources/Apps" 2>&1; done
+  body=$({ echo "install failed: $1"; echo "spotify: ${SPOTIFY:-none}"
+    for a in /Applications/Spotify.app "$HOME/Applications/Spotify.app"; do echo "== $a"; ls -la "$a/Contents/Resources" "$a/Contents/Resources/Apps" 2>&1 | head -60; done
     echo "== running"; ps -axo comm= 2>/dev/null | grep '/Spotify.app/Contents/MacOS/Spotify$'
-    echo "== tess"; ls -la "$HOME_TESS" "$HOME/.local/state/tess-patcher/Backup" 2>&1
+    echo "== tess"; ls -la "$HOME_TESS" "$HOME/.local/state/tess-patcher/Backup" "$HOME/.local/state/spicetify/Backup" 2>&1
+    grep -h "^version" "$HOME/.config/tess-patcher/config-xpui.ini" "$HOME/.config/spicetify/config-xpui.ini" 2>/dev/null
     command -v spicetify >/dev/null 2>&1 && echo "spicetify is installed"
-  } 2>&1 | sed -e "s|$HOME|~|g" -e "s|/Users/$(id -un)|~|g" | /usr/bin/python3 -c '
-import json, sys
-a = sys.argv
-print(json.dumps({"install": a[1], "kind": "install", "spotify": a[2], "macos": a[3], "status": a[4][:300], "body": sys.stdin.read()[-22000:]}))
-' "$(cat "$HOME_TESS/install-id")" "${SPV:-}" "${MACOS:-}" "$1" 2>/dev/null \
-  | curl -fsS --max-time 20 -H "content-type: application/json" --data-binary @- "$INBOX/v1/report" >/dev/null 2>&1 || true
+  } 2>&1 | sed -e "s|$HOME|~|g" -e "s|/Users/$(id -un)|~|g" | tail -c 20000 | jstr)
+  st=$(printf '%s' "$1" | cut -c1-300 | jstr)
+  printf '{"install":"%s","kind":"install","spotify":"%s","macos":"%s","status":%s,"body":%s}' \
+    "$(cat "$HOME_TESS/install-id")" "${SPV:-}" "${MACOS:-}" "$st" "$body" \
+    | curl -fsS --max-time 20 -H "content-type: application/json" --data-binary @- "$INBOX/v1/report" >/dev/null 2>&1 || true
 }
 ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | head -1)" = "$2" ]; }
 
@@ -67,7 +68,7 @@ if [ -z "$SPOTIFY" ]; then
   # the copy that is running wins; otherwise the first complete one; otherwise the first one found
   RUN=$(ps -axo comm= 2>/dev/null | sed -n 's|^\(.*/Spotify\.app\)/Contents/MacOS/Spotify$|\1|p' | head -1)
   for p in "$RUN" "/Applications/Spotify.app" "$HOME/Applications/Spotify.app"; do
-    [ -n "$p" ] && [ -d "$p/Contents/Resources/Apps" ] || continue
+    [ -n "$p" ] && [ -d "$p/Contents/MacOS" ] || continue
     if [ -f "$p/Contents/Resources/Apps/xpui.spa" ] || [ -d "$p/Contents/Resources/Apps/xpui" ]; then SPOTIFY="$p"; break; fi
     [ -n "$SPOTIFY" ] || SPOTIFY="$p"
   done
@@ -93,8 +94,18 @@ fi
 
 # Spotify's interface must be here (stock, or modified by an earlier Tess), or Tess's own safety copy of it
 A0="$SPOTIFY/Contents/Resources/Apps"
-[ -f "$A0/xpui.spa" ] || [ -d "$A0/xpui" ] || [ -f "$HOME_TESS/original-$SPV/xpui.spa" ] \
-  || fail "Spotify's files at $SPOTIFY look incomplete, so nothing was changed. If Spotify opens normally, it is running from another place: please report this."
+# Spotify's own interface files for this exact version, kept by an earlier Tess (its safety copy, or the patcher's
+# backup) or by Spicetify; used only when Spotify's are missing
+repair_source() {
+  [ -f "$HOME_TESS/original-$SPV/xpui.spa" ] && { echo "$HOME_TESS/original-$SPV"; return; }
+  for pair in "$HOME/.local/state/tess-patcher/Backup|$CONF/config-xpui.ini" "$HOME/.local/state/spicetify/Backup|$HOME/.config/spicetify/config-xpui.ini"; do
+    b=${pair%%|*}; c=${pair#*|}
+    [ -f "$b/xpui.spa" ] && grep -qE "^version *= *$SPV *$" "$c" 2>/dev/null && { echo "$b"; return; }
+  done
+}
+REPAIR=$(repair_source || true)
+[ -f "$A0/xpui.spa" ] || [ -d "$A0/xpui" ] || [ -n "$REPAIR" ] \
+  || fail "Spotify's files at $SPOTIFY are missing and there's no copy of them for Spotify $SPV on this Mac, so nothing was changed. Only reinstalling Spotify (https://www.spotify.com/download/mac/) brings them back; your account, library and downloads are kept."
 
 # --- download --------------------------------------------------------------------------------------------------
 # The signed parts list says which file of each part is current; every download is checked against it.
@@ -139,10 +150,11 @@ fi
 
 # --- keep the original interface files, so nothing can be lost ------------------------------------------------------
 APPS="$SPOTIFY/Contents/Resources/Apps"
-if [ ! -f "$APPS/xpui.spa" ] && [ -f "$HOME_TESS/original-$SPV/xpui.spa" ]; then
-  # an earlier Tess kept a copy of this exact Spotify version's own files: put them back
-  step "Putting back Spotify's own files from Tess's safety copy"
-  rm -rf "$APPS"; ditto "$HOME_TESS/original-$SPV" "$APPS" || fail "Couldn't put Spotify's files back."
+if [ ! -f "$APPS/xpui.spa" ] && [ -n "$REPAIR" ]; then
+  # put back this exact Spotify version's own interface files from the copy found above
+  step "Putting back Spotify's own files"
+  rm -rf "$APPS"; mkdir -p "$APPS"
+  for f in "$REPAIR"/*.spa; do cp "$f" "$APPS/" || fail "Couldn't put Spotify's files back."; done
 fi
 [ -f "$APPS/xpui.spa" ] || fail "Spotify's files look incomplete. Reinstall Spotify from https://www.spotify.com/download/mac/ and run this again."
 ORIG="$HOME_TESS/original-$SPV"
@@ -183,7 +195,7 @@ fi
 cp "$TMP/updater.sh" "$HOME_TESS/updater.sh"; chmod +x "$HOME_TESS/updater.sh"
 { echo "SPOTIFY='$SPOTIFY'"; [ -n "$TESS_TEST" ] && echo "TESS_CONFIG='$CONF'"; } > "$HOME_TESS/updater.env"
 mkdir -p "$HOME_TESS/state"
-OLD_MINI=$(cat "$HOME_TESS/state/mini" 2>/dev/null)
+OLD_MINI=$(cat "$HOME_TESS/state/mini" 2>/dev/null || true)
 for n in patcher theme updater mini doctor; do
   { [ "$n" = mini ] && [ ! -s "$TMP/mini.zip" ]; } || { [ "$n" = doctor ] && [ ! -s "$TMP/doctor.sh" ]; } && continue
   part $n 2 > "$HOME_TESS/state/$n"
