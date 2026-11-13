@@ -37,5 +37,11 @@ jobs:
         run: node tools/test-agent-review.mjs
       - name: Usage publisher tests
         run: node tools/test-usage-publish.mjs
+      - name: Trust tests (signed manifest, loader floor and cache, install stub, sandbox install)
+        run: |
+          node tools/test-manifest.mjs
+          node tools/test-loader.mjs
+          node tools/test-stub.mjs
+          node tools/test-install.mjs
       - name: Tools parse
         run: for f in tools/*.mjs; do node --check "$f"; done
