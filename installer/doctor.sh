@@ -136,10 +136,14 @@ if [ -d "$HOME/Applications/Tess Mini.app" ] && [ -f "$LA/music.tess.mini.plist"
   if loaded music.tess.mini; then ok "Tess Mini running"; st+=(mini=ok)
   else load music.tess.mini && fix "restarted Tess Mini"; st+=(mini=restarted); fi
 fi
-if [ -x "$T/rescue/tess-rescue-verify" ] && [ -f "$LA/music.tess.rescue.plist" ]; then
+rescue_fp=$(shasum -a 256 "$T/rescue/tess-rescue-verify" 2>/dev/null | cut -d' ' -f1)
+if [ -f "$T/rescue-off" ]; then
+  ok "rescue line is off by your choice"; st+=(rescue=off "rescue-verifier=${rescue_fp:-none}")
+elif [ -x "$T/rescue/tess-rescue-verify" ] && [ -f "$LA/music.tess.rescue.plist" ]; then
   if loaded music.tess.rescue; then ok "rescue line ready"; st+=(rescue=ok)
   else load music.tess.rescue && fix "restarted the rescue line"; st+=(rescue=restarted); fi
-else st+=(rescue=none); fi
+  st+=("rescue-verifier=${rescue_fp:-none}")
+else st+=(rescue=none "rescue-verifier=${rescue_fp:-none}"); fi
 
 # --- network ----------------------------------------------------------------------------------------------------------
 if curl -fsS --max-time 15 -o /dev/null https://api.github.com/zen 2>/dev/null || curl -fsS --max-time 15 -o /dev/null https://raw.githubusercontent.com 2>/dev/null; then ok "can reach updates"

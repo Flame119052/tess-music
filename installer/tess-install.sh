@@ -240,16 +240,91 @@ awk '$1 == "version" { print $2 }' "$TMP/components.txt" > "$HOME_TESS/state/ver
 cp "$TMP/installer.sh" "$HOME_TESS/installer.sh"; chmod +x "$HOME_TESS/installer.sh"
 cp "$TMP/uninstall.sh" "$HOME_TESS/uninstall.sh"; chmod +x "$HOME_TESS/uninstall.sh"
 [ -f "$HOME_TESS/install-id" ] || od -An -tx1 -N16 /dev/urandom | tr -d ' \n' > "$HOME_TESS/install-id"
-# the rescue line (see rescue.sh): its own copy, which updates never replace
-if [ -x "$HOME_TESS/bin/patcher/rescue/tess-rescue-verify" ] && [ ! -x "$HOME_TESS/rescue/tess-rescue-verify" ]; then
-  mkdir -p "$HOME_TESS/rescue"; cp "$HOME_TESS/bin/patcher/rescue/"* "$HOME_TESS/rescue/"
+# the rescue action list is installed once; its dedicated verifier can rotate with a signed patcher part
+RESCUE_SRC="$HOME_TESS/bin/patcher/rescue"
+if [ -x "$RESCUE_SRC/tess-rescue-verify" ] && [ -f "$RESCUE_SRC/rescue.sh" ]; then
+  mkdir -p "$HOME_TESS/rescue"; RESCUE_FRESH=""
+  if [ ! -x "$HOME_TESS/rescue/tess-rescue-verify" ]; then
+    cp "$RESCUE_SRC/tess-rescue-verify" "$HOME_TESS/rescue/tess-rescue-verify"; RESCUE_FRESH=1
+  elif [ "$(shasum -a 256 "$RESCUE_SRC/tess-rescue-verify" | cut -d' ' -f1)" != "$(shasum -a 256 "$HOME_TESS/rescue/tess-rescue-verify" | cut -d' ' -f1)" ]; then
+    cp "$RESCUE_SRC/tess-rescue-verify" "$HOME_TESS/rescue/tess-rescue-verify.new"
+    chmod +x "$HOME_TESS/rescue/tess-rescue-verify.new"
+    mv "$HOME_TESS/rescue/tess-rescue-verify.new" "$HOME_TESS/rescue/tess-rescue-verify"
+  fi
+  if [ ! -f "$HOME_TESS/rescue/rescue.sh" ]; then cp "$RESCUE_SRC/rescue.sh" "$HOME_TESS/rescue/rescue.sh"; RESCUE_FRESH=1; fi
   chmod +x "$HOME_TESS/rescue/tess-rescue-verify" "$HOME_TESS/rescue/rescue.sh"
-  TESS_HOME="$HOME_TESS" /bin/zsh "$HOME_TESS/rescue/rescue.sh" --adopt >/dev/null 2>&1 || true
+  [ -n "$RESCUE_FRESH" ] && TESS_HOME="$HOME_TESS" /bin/zsh "$HOME_TESS/rescue/rescue.sh" --adopt >/dev/null 2>&1 || true
 fi
 rm -f "$HOME_TESS/reapply.sh"
 rm -f "$HOME_TESS/.installing"
 
-if [ -n "$TESS_TEST" ]; then echo; bold "Test install into $SPOTIFY finished."; exit 0; fi
+# --- the tess command ----------------------------------------------------------------------------------------------
+cat > "$HOME_TESS/tess" <<'EOF'
+#!/bin/sh
+T="${TESS_HOME:-$HOME/Library/Application Support/Tess}"
+LA="${TESS_LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}"
+channel() {
+  CH=$(sed -n "s/^TESS_PARTS_CHANNEL='\(.*\)'$/\1/p" "$T/updater.env" 2>/dev/null)
+  echo "${CH:-stable}"
+}
+case "$1" in
+  update) /usr/bin/env TESS_FORCE=1 /bin/zsh "$T/updater.sh" ;;
+  repair) /usr/bin/env TESS_CHANNEL="$(channel)" /bin/sh "$T/installer.sh" ;;
+  uninstall) /bin/sh "$T/uninstall.sh" ;;
+  doctor) /bin/zsh "$T/doctor.sh" ;;
+  report) /bin/zsh "$T/doctor.sh" --report ;;
+  reports)
+    case "$2" in
+      off) touch "$T/reports-off"; echo "Health reports are off." ;;
+      on) rm -f "$T/reports-off"; echo "Health reports are on." ;;
+      *) [ -f "$T/reports-off" ] && echo "Health reports are off." || echo "Health reports are on. (tess reports off)" ;;
+    esac ;;
+  rescue)
+    case "$2" in
+      off)
+        touch "$T/rescue-off"
+        launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+        echo "The Tess rescue line is off. Updates will not turn it back on." ;;
+      on)
+        rm -f "$T/rescue-off"
+        [ -f "$LA/music.tess.rescue.plist" ] || /usr/bin/env TESS_FORCE=1 /bin/zsh "$T/updater.sh" >/dev/null 2>&1
+        launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+        launchctl bootstrap "gui/$(id -u)" "$LA/music.tess.rescue.plist" >/dev/null 2>&1 \
+          && echo "The Tess rescue line is on." || echo "The rescue line could not start; run tess doctor."
+        ;;
+      log) tail -100 "$T/rescue/rescue.log" 2>/dev/null || echo "No rescue orders have run." ;;
+      *) [ -f "$T/rescue-off" ] && echo "The Tess rescue line is off. (tess rescue on)" || echo "The Tess rescue line is on. (tess rescue off)" ;;
+    esac ;;
+  status)
+    VERSION=$(cat "$T/state/version" 2>/dev/null || echo unknown)
+    echo "Tess $VERSION ($(channel))"
+    launchctl print "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 && echo "Updater: running" || echo "Updater: stopped"
+    FP=$(shasum -a 256 "$T/rescue/tess-rescue-verify" 2>/dev/null | cut -d' ' -f1)
+    [ -n "$FP" ] || FP=not-installed
+    if [ -f "$T/rescue-off" ]; then
+      echo "Rescue: off (verifier SHA-256 $FP)"
+    elif launchctl print "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1; then
+      echo "Rescue: on, running (verifier SHA-256 $FP)"
+    else
+      echo "Rescue: on, stopped (verifier SHA-256 $FP)"
+    fi
+    [ -f "$T/reports-off" ] && echo "Reports: off" || echo "Reports: on"
+    ;;
+  *) echo "usage: tess doctor | report | reports on|off | rescue on|off|log | status | update | repair | uninstall" ;;
+esac
+EOF
+chmod +x "$HOME_TESS/tess"
+
+rescue_notice() {
+  echo "  Tess includes a rescue line limited to five actions: check, update, repair, restore Spotify, or uninstall Tess."
+  echo "  It accepts only orders signed by the owner's offline rescue key. Turn it off any time: \"$HOME_TESS/tess\" rescue off"
+}
+
+if [ -n "$TESS_TEST" ]; then
+  echo; bold "Test install into $SPOTIFY finished."
+  rescue_notice
+  exit 0
+fi
 
 # --- the helper that runs the updater -----------------------------------------------------------------------------
 step "Keeping Tess up to date, and on through Spotify updates"
@@ -268,7 +343,7 @@ EOF
 launchctl bootout "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.guard.plist" 2>/dev/null || true
 
-if [ -x "$HOME_TESS/rescue/rescue.sh" ]; then
+if [ -x "$HOME_TESS/rescue/rescue.sh" ] && [ ! -f "$HOME_TESS/rescue-off" ]; then
 cat > "$HOME/Library/LaunchAgents/music.tess.rescue.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -307,34 +382,12 @@ EOF
   launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.mini.plist" 2>/dev/null || true
 fi
 
-# --- the tess command (update / repair / uninstall) -----------------------------------------------------------------
-cat > "$HOME_TESS/tess" <<'EOF'
-#!/bin/sh
-T="$HOME/Library/Application Support/Tess"
-case "$1" in
-  update) /usr/bin/env TESS_FORCE=1 /bin/zsh "$T/updater.sh" ;;
-  repair)
-    CH=$(sed -n "s/^TESS_PARTS_CHANNEL='\(.*\)'$/\1/p" "$T/updater.env" 2>/dev/null)
-    /usr/bin/env TESS_CHANNEL="${CH:-stable}" /bin/sh "$T/installer.sh" ;;
-  uninstall) /bin/sh "$T/uninstall.sh" ;;
-  doctor) /bin/zsh "$T/doctor.sh" ;;
-  report) /bin/zsh "$T/doctor.sh" --report ;;
-  reports)
-    case "$2" in
-      off) touch "$T/reports-off"; echo "Health reports are off." ;;
-      on) rm -f "$T/reports-off"; echo "Health reports are on." ;;
-      *) [ -f "$T/reports-off" ] && echo "Health reports are off." || echo "Health reports are on. (tess reports off)" ;;
-    esac ;;
-  *) echo "usage: tess doctor | report | reports on|off | update | repair | uninstall" ;;
-esac
-EOF
-chmod +x "$HOME_TESS/tess"
-
 echo
 bold "Tess is installed."
 echo "  Spotify opens now. The theme updates itself; Spotify updates are handled for you."
 echo "  The first time you open the miniplayer, macOS asks to let Tess Mini control Spotify: choose Allow."
-  echo "  To remove it: \"$HOME_TESS/tess\" uninstall      If something looks wrong: \"$HOME_TESS/tess\" doctor"
+echo "  To remove it: \"$HOME_TESS/tess\" uninstall      If something looks wrong: \"$HOME_TESS/tess\" doctor"
+rescue_notice
 echo "  Tess sends a small anonymous health report (versions and errors, nothing personal) so problems get fixed."
 echo "  To turn that off: \"$HOME_TESS/tess\" reports off"
 echo

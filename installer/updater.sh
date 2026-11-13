@@ -35,13 +35,28 @@ rm -f "$HOME_TESS/reapply.sh"; find "$STATE" -name ".reapply-failed-*" -delete 2
 [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 500000 ] && tail -c 250000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
 [ -f "$HOME_TESS/install-id" ] || od -An -tx1 -N16 /dev/urandom | tr -d ' \n' > "$HOME_TESS/install-id"
 
-# The rescue line: installed once from the patcher package, then never replaced by updates (see rescue.sh)
+# The rescue action list stays local; the signed patcher part may rotate its dedicated verifier.
 install_rescue() {
   local src="$HOME_TESS/bin/patcher/rescue" dst="$HOME_TESS/rescue" pl="$HOME/Library/LaunchAgents/music.tess.rescue.plist"
-  [ -x "$dst/tess-rescue-verify" ] && [ -f "$dst/rescue.sh" ] && { [ -n "$TESS_TEST" ] || [ -f "$pl" ]; } && return 0
   [ -x "$src/tess-rescue-verify" ] && [ -f "$src/rescue.sh" ] || return 0
-  mkdir -p "$dst"; cp "$src/tess-rescue-verify" "$src/rescue.sh" "$dst/"; chmod +x "$dst/tess-rescue-verify" "$dst/rescue.sh"
-  /bin/zsh "$dst/rescue.sh" --adopt >/dev/null 2>&1   # orders published before this Mac had the rescue line are not run
+  local fresh=""
+  mkdir -p "$dst"
+  if [ ! -x "$dst/tess-rescue-verify" ]; then
+    cp "$src/tess-rescue-verify" "$dst/tess-rescue-verify"; fresh=1
+  elif [ "$(shasum -a 256 "$src/tess-rescue-verify" | cut -d' ' -f1)" != "$(shasum -a 256 "$dst/tess-rescue-verify" | cut -d' ' -f1)" ]; then
+    cp "$src/tess-rescue-verify" "$dst/tess-rescue-verify.new" && chmod +x "$dst/tess-rescue-verify.new" \
+      && mv "$dst/tess-rescue-verify.new" "$dst/tess-rescue-verify"
+    log "rescue verifier updated"
+  fi
+  [ -f "$dst/rescue.sh" ] || { cp "$src/rescue.sh" "$dst/rescue.sh"; fresh=1; }
+  chmod +x "$dst/tess-rescue-verify" "$dst/rescue.sh"
+  [ -n "$fresh" ] && /bin/zsh "$dst/rescue.sh" --adopt >/dev/null 2>&1
+  if [ -f "$HOME_TESS/rescue-off" ]; then
+    [ -n "$TESS_TEST" ] || launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1
+    log "rescue line stays off"
+    return 0
+  fi
+  [ -f "$pl" ] && return 0
   [ -n "$TESS_TEST" ] && { log "rescue line installed (test)"; return 0; }
   mkdir -p "$HOME/Library/LaunchAgents"
   printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \

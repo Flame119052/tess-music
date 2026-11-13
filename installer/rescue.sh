@@ -29,6 +29,7 @@ VERIFY="$R/tess-rescue-verify"
 LOG="$R/rescue.log"
 REPO="Flame119052/tess-music"
 INBOX="https://tess-music-player.janus.ing"
+[ -f "$T/rescue-off" ] && exit 0
 [ -x "$VERIFY" ] || exit 0
 mkdir -p "$R"
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
