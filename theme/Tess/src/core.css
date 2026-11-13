@@ -280,6 +280,22 @@ html.tess .main-view-container__scroll-node-child {
   gap: 15px;
   flex: none;
 }
+/* the DJ's button, shown while the DJ plays: its own colours, in a small circle */
+#tess-bar .tb-dj {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--dj, #0a59b8);
+  box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.18), 0 2px 8px rgba(0, 0, 0, 0.3);
+  transition: transform 0.15s;
+}
+#tess-bar .tb-dj[hidden] { display: none; }
+#tess-bar .tb-dj:hover { transform: scale(1.08); }
+#tess-bar .tb-dj:active { transform: scale(0.94); }
+#tess-bar .tb-dj svg { width: 14px; height: 14px; }
 .tb-quality,
 .tn-quality {
   font-size: 10px;

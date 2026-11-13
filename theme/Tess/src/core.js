@@ -328,6 +328,7 @@
       </div>
       <div class="tb-tools">
         <span class="tb-quality"></span>
+        <button class="tb-dj" aria-label="DJ: switch it up" title="DJ: switch it up" hidden></button>
         <button class="tb-lyrics" aria-label="Lyrics">${I.lyrics}</button>
         <button class="tb-queue" aria-label="Queue">${I.queue}</button>
         <button class="tb-devices" aria-label="Connect to a device">${I.devices}</button>
@@ -350,6 +351,11 @@
   q(bar, '.tb-heart').onclick = toggleSave;
   q(bar, '.tb-art').onclick = () => openNP('lyrics');
   q(bar, '.tb-lyrics').onclick = () => openNP('lyrics');
+  // While the DJ plays, Spotify's own bar has a DJ button (no label, the DJ's icon) that asks the DJ to switch it up.
+  // Tess shows its own copy of that button and clicks Spotify's, so it does exactly what Spotify's does.
+  const stockDj = () => [...document.querySelectorAll('[data-testid="now-playing-bar"] button:not([aria-label]):not([data-testid])')]
+    .find((b) => b.querySelector('svg'));
+  q(bar, '.tb-dj').onclick = () => stockDj()?.click();
   q(bar, '.tb-queue').onclick = () => spotifyButton('[data-testid="control-button-queue"]')?.click();
   q(bar, '.tb-mini').onclick = () => openMini();
   q(bar, '.tb-devices').onclick = () => spotifyButton('button[aria-label="Connect to a device"]')?.click();
@@ -1290,6 +1296,15 @@
     const quality = document.querySelector('[data-testid="context-item-info-quality"]')?.textContent?.trim() || '';
     if (q(bar, '.tb-quality').textContent !== quality) q(bar, '.tb-quality').textContent = quality;
     if (q(np, '.tn-quality').textContent !== quality) q(np, '.tn-quality').textContent = quality;
+    syncDj();
+  }
+  function syncDj() {
+    const b = q(bar, '.tb-dj'), sd = stockDj();
+    b.hidden = !sd;
+    if (!sd) return;
+    const svg = sd.querySelector('svg')?.outerHTML || '';
+    if (b.dataset.icon !== svg) { b.dataset.icon = svg; b.innerHTML = svg; }
+    b.style.setProperty('--dj', sd.style.backgroundColor || '');
   }
 
   function syncProgress() {
