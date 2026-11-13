@@ -1051,10 +1051,32 @@ html.tess.tess-artist .tess-hero-bg::before {
   pointer-events: none;
 }
 
+/* the strip and the page's name appear together (core.js bandTitle); artist pages have their own timing above */
+html.tess:not(.tess-artist) .main-topBar-background {
+  transition: opacity 0.25s;
+}
+html.tess:not(.tess-artist):not(.tess-titled) .main-topBar-background,
+html.tess:not(.tess-artist):not(.tess-titled) .main-topBar-topbarContentContainer {
+  opacity: 0 !important;
+  pointer-events: none;
+}
+html.tess:not(.tess-artist) .main-topBar-topbarContentContainer {
+  transition: opacity 0.25s;
+}
+html.tess.tess-titled:not(.tess-artist) .main-topBar-topbarContent,
+html.tess.tess-titled:not(.tess-artist) .main-topBar-topbarContent * {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+/* Spotify darkens the strip with its own black overlay on some pages (Liked Songs, profiles), which hid the page's
+   name; Tess's glass is the only background */
+html.tess .main-topBar-overlay {
+  display: none !important;
+}
 /* the sticky strip that appears once you scroll is the same glass as the panels, never a flat page colour */
 html.tess .main-topBar-background,
 html.tess .tess-sticky-glass {
-  background: rgba(30, 30, 36, 0.5) !important;
+  background: rgba(26, 26, 31, 0.78) !important;
   -webkit-backdrop-filter: blur(30px) saturate(1.8);
   backdrop-filter: blur(30px) saturate(1.8);
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
@@ -1663,10 +1685,11 @@ html.tess:not(.tess-artist) .before-scroll-node [data-testid="background-image"]
   mask-image: linear-gradient(180deg, #000 30%, transparent 100%);
 }
 /* the sticky column header (# / Title / Album) gets glass once it sticks, so rows never show through it */
-html.tess .main-trackList-trackListHeader[class*="stuck"],
 html.tess .main-trackList-trackListHeader {
   background: transparent;
 }
+/* glass from the moment Spotify itself marks it stuck, so rows never show through while scrolling */
+html.tess .main-trackList-trackListHeader.main-trackList-trackListHeaderStuck,
 html.tess .main-trackList-trackListHeader.tess-stuck {
   background: rgba(22, 22, 26, 0.82) !important;
   -webkit-backdrop-filter: blur(20px) saturate(1.5);

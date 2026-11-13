@@ -2091,7 +2091,7 @@
     const isArtist = path.startsWith('/artist/');
     html.classList.toggle('tess-artist', isArtist);
     html.classList.toggle('tess-on-settings', path.startsWith('/preferences'));
-    html.classList.remove('tess-hero-light', 'tess-hero-past', 'tess-artist-portrait');
+    html.classList.remove('tess-hero-light', 'tess-hero-past', 'tess-artist-portrait', 'tess-titled');
     document.querySelectorAll('.tess-hero-made').forEach((n) => n.remove());
     html.style.setProperty('--tess-scroll-p', '0');
     clearInterval(heroTimer);
@@ -2234,9 +2234,21 @@
     while (e && !/auto|scroll/.test(getComputedStyle(e).overflowY)) e = e.parentElement;
     return e;
   };
+  // The strip across the top of a page appears together with the page's name, once the page's own big title has
+  // scrolled up under it (Apple Music's way). Spotify showed its strip early and the name only later, so for a long
+  // stretch it was a blank band; on some pages the name never appeared.
+  function bandTitle(scroller) {
+    if (!scroller.closest?.('.main-view-container, #main-view') && !scroller.querySelector?.('.main-view-container')) return;
+    const band = document.querySelector('.main-topBar-container');
+    if (!band) return;
+    const title = scroller.querySelector('[data-testid="entityTitle"], .main-entityHeader-title, h1');
+    const past = title ? title.getBoundingClientRect().bottom < band.getBoundingClientRect().bottom + 4 : scroller.scrollTop > 240;
+    html.classList.toggle('tess-titled', past && scroller.scrollTop > 0);
+  }
   listen(document, 'scroll', (e) => {
     if (!(e.target instanceof Element)) return;
     heroScroll(e.target);
+    bandTitle(e.target);
     // track lists: the sticky column header turns to glass only while it is actually stuck
     const head = e.target.querySelector?.('.main-trackList-trackListHeader');
     if (head) head.classList.toggle('tess-stuck', head.getBoundingClientRect().top <= parseFloat(getComputedStyle(head).top) + e.target.getBoundingClientRect().top + 1 && e.target.scrollTop > 0);
