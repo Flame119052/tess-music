@@ -53,10 +53,21 @@ report_failure() {
     | curl -fsS --max-time 20 -H "content-type: application/json" --data-binary @- "$INBOX/v1/report" >/dev/null 2>&1 || true
 }
 ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | head -1)" = "$2" ]; }
-spotify_playing() { pmset -g assertions 2>/dev/null | awk 'BEGIN { IGNORECASE=1 } /Spotify/ && /(audio|playing)/ { found=1 } END { exit !found }'; }
+# Playing audio makes macOS hold a sleep assertion for Spotify, usually filed by coreaudiod "Created for PID: <Spotify>".
+# pmset needs no permission (osascript would ask every user). macOS awk has no IGNORECASE, so match both cases.
+spotify_playing() {
+  pids=" $(pgrep -f '/Spotify.app/Contents/' 2>/dev/null | tr '\n' ' ') "
+  pmset -g assertions 2>/dev/null | LC_ALL=C awk -v pids="$pids" '
+    /Created for PID:/ { n = $0; gsub(/[^0-9]/, "", n); if (n != "" && index(pids, " " n " ")) found = 1 }
+    /\(Spotify/ && /[Aa]udio|[Pp]laying/ { found = 1 }
+    END { exit !found }'
+}
 wait_for_idle() {
-  waiting=""
-  while spotify_playing; do
+  # Someone running the install line in Terminal wants it now; background repairs wait, but at most 30 minutes.
+  [ -t 1 ] && return 0
+  waiting=""; i=0
+  while spotify_playing && [ $i -lt 120 ]; do
+    i=$((i+1))
     [ -n "$waiting" ] || { step "Waiting for the current song to stop before restarting Spotify…"; waiting=1; }
     [ -e "$HOME_TESS/.installing" ] && touch "$HOME_TESS/.installing"
     sleep 15

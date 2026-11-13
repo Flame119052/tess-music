@@ -8,5 +8,8 @@ case "$CH" in stable|beta|dev) ;; *) echo "TESS_CHANNEL must be stable, beta or 
 T=$(mktemp) || exit 1
 trap 'rm -f "$T"' EXIT
 curl -fsSL --max-time 60 "https://raw.githubusercontent.com/Flame119052/tess-music/$CH/dist/install.sh" -o "$T" \
-  || { echo "Couldn't download Tess's promoted installer. Check your connection and channel, then try again."; exit 1; }
+  || curl -fsSL --max-time 60 "https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/tess-install.sh" -o "$T" \
+  || { echo "Couldn't download Tess's installer. Check your connection and try again."; exit 1; }
+# The main fallback stays until stable and beta carry dist/install.sh (they don't yet: the first promote adds it).
+# Remove it then (#56 A1); tools/check-safety.sh enforces that once stable has the file.
 TESS_CHANNEL="$CH" sh "$T"

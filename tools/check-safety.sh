@@ -38,7 +38,10 @@ repo_values=$(sed -n 's/^REPO="\([^"]*\)".*/\1/p' installer/*.sh | sort -u | wc 
 if grep -nE 'curl[^|]*\|[[:space:]]*([^[:space:]]+[[:space:]]+)*(sh|zsh)([[:space:];]|$)' installer/tess-install.sh installer/updater.sh installer/doctor.sh installer/rescue.sh installer/uninstall.sh installer/wake.sh; then
   fail "an installed script pipes a download into a shell"
 fi
-if grep -nE '\|\|[[:space:]]*curl' installer/install.sh; then fail "the public stub falls back to another installer"; fi
+# The stub's main fallback is allowed only while stable lacks dist/install.sh (before the first promote, #56 A1).
+if grep -nE '\|\|[[:space:]]*curl' installer/install.sh && git cat-file -e origin/stable:dist/install.sh 2>/dev/null; then
+  fail "the public stub falls back to another installer, but stable already has dist/install.sh; remove the fallback"
+fi
 
 # The three shell swaps protect the same precious folder and must not drift.
 swap_hashes=$(

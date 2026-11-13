@@ -32,7 +32,15 @@ report_parts_failure() {
 }
 notify() { [ -n "$TESS_TEST" ] || osascript -e "display notification \"$1\" with title \"Tess Music\"" >/dev/null 2>&1; }
 spotify_running() { { [ -n "$TESS_TEST" ] && [ "$TESS_TEST_SPOTIFY_RUNNING" = 1 ]; } || { [ -z "$TESS_TEST" ] && pgrep -x Spotify >/dev/null; }; }
-spotify_playing() { pmset -g assertions 2>/dev/null | awk 'BEGIN { IGNORECASE=1 } /Spotify/ && /(audio|playing)/ { found=1 } END { exit !found }'; }
+# Playing audio makes macOS hold a sleep assertion for Spotify, usually filed by coreaudiod "Created for PID: <Spotify>".
+# pmset needs no permission (osascript would ask every user). macOS awk has no IGNORECASE, so match both cases.
+spotify_playing() {
+  pids=" $(pgrep -f '/Spotify.app/Contents/' 2>/dev/null | tr '\n' ' ') "
+  pmset -g assertions 2>/dev/null | LC_ALL=C awk -v pids="$pids" '
+    /Created for PID:/ { n = $0; gsub(/[^0-9]/, "", n); if (n != "" && index(pids, " " n " ")) found = 1 }
+    /\(Spotify/ && /[Aa]udio|[Pp]laying/ { found = 1 }
+    END { exit !found }'
+}
 restart_spotify_when_idle() {
   spotify_running || { rm -f "$STATE/.restart-pending"; return 0; }
   if spotify_playing; then
