@@ -2,7 +2,7 @@
 # Remove the storage guard. Does not touch Spotify prefs, the symlinks, or any
 # downloaded files -- see docs/downloads.md for putting those back by hand.
 set -e
-LABEL="com.krishay.spotify-cache"
+LABEL="music.tess.spotify-cache"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 rm -f "$PLIST"

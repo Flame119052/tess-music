@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Keep Spotify's downloads and streaming cache on the Dell SSD, never the internal disk.
 
-Every 30 s (LaunchAgent com.krishay.spotify-cache) this does one of four things:
+Every 30 s (LaunchAgent music.tess.spotify-cache) this does one of four things:
 
   SSD mounted, Spotify running   -> keep the two symlinks aimed at the SSD.
   SSD mounted, Spotify quit      -> also restore storage.location in prefs.

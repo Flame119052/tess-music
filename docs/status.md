@@ -11,7 +11,8 @@ Last updated: 13 Nov 2026.
 | `stable` / `beta` | everyone else | 0.2.22 (promoted only when Krish says "ship it") |
 
 Promote: Actions → release → Run workflow → action `promote` (or `node tools/promote.mjs`).
-Users on record (health inbox): Krish (dev), Kavya (stable, repaired 13 Nov after the 0.1.0 helper blanked her Spotify).
+Installs on record (health inbox): the owner's Mac (dev) and one user's Mac (stable, repaired 13 Nov after the 0.1.0
+helper blanked its Spotify).
 
 ## Open issues (GitHub)
 
@@ -38,7 +39,7 @@ Users on record (health inbox): Krish (dev), Kavya (stable, repaired 13 Nov afte
 | #52 | Licence for the repo | Waiting on Krish. |
 
 Closed on 13 Nov: #13 (Dial picking), #29 (DJ button), #30 (top bar), #31 (vinyl arm), #32 (no lyrics), #33 (Settings
-and account menu), #35 (performance hill climb), #36 (Kavya's blanked Spotify + safe swap), #37 (doctor, reports,
+and account menu), #35 (performance hill climb), #36 (a user's blanked Spotify + safe swap), #37 (doctor, reports,
 rescue), #38 (Home bar), #39 (progress line), #40 (queue cut-off), #41 (Back to now), #42 (design skills pass),
 #43 (dev channel), #44 (repo setup). Before that: #10–#26.
 

@@ -4,7 +4,7 @@
 
 Downloads were pointed at the wrong kind of disk.
 
-Spotify was told to save offline songs in `/Users/krishay/Dell/Spotify`. That
+Spotify was told to save offline songs in `~/Dell/Spotify`. That
 folder is not a real disk — it is a network share, a window into the Dell
 server over Wi-Fi. Spotify could write its small index file there but never
 got a single song file onto it (the app itself reported 0 MB downloaded while
@@ -22,7 +22,7 @@ disk image was deleted in October.
 
 | Thing | Before | Now |
 | --- | --- | --- |
-| Download folder | `/Users/krishay/Dell/Spotify` (network share) | `/Volumes/DellSSD/Spotify` (the SSD) |
+| Download folder | `~/Dell/Spotify` (network share) | `/Volumes/DellSSD/Spotify` (the SSD) |
 | Download size cap | 1,536 MB | 40,960 MB (about 40 GB, room for all 591 songs at lossless) |
 | Spotify's fallback folder | symlink to a missing drive | symlink to `/Volumes/DellSSD/Spotify`, locked so Spotify can't replace it |
 | Streaming cache (temp files while listening) | symlink to a deleted disk image | symlink to `/Volumes/DellSSD/Spotify Streaming Cache` |
@@ -32,7 +32,7 @@ disk image was deleted in October.
 ## The guard, in plain terms
 
 A tiny script runs every 30 seconds under the same system entry as before
-(`com.krishay.spotify-cache`). Its whole job:
+(`music.tess.spotify-cache`). Its whole job:
 
 - **SSD connected:** make sure both pointers above still aim at the SSD, and
   while Spotify is closed, put the download folder back in Spotify's settings
@@ -60,19 +60,19 @@ The old helper's files were moved, not deleted:
 
 ```sh
 tools/downloads/uninstall.sh          # removes the guard
-launchctl bootout gui/$(id -u)/com.krishay.spotify-cache   # or just stop it once
+launchctl bootout gui/$(id -u)/music.tess.spotify-cache   # or just stop it once
 ```
 
 To put Spotify fully back to defaults afterwards: quit Spotify, then in
 `~/Library/Application Support/Spotify/prefs` set `storage.location` and
-`storage.last-location` to `"/Users/krishay/Library/Application Support/Spotify/PersistentCache/Storage"`,
+`storage.last-location` to `"$HOME/Library/Application Support/Spotify/PersistentCache/Storage"`,
 unlock and remove the two links (`chflags -h nouchg` then `rm` on
 `PersistentCache/Storage` and `~/Library/Caches/com.spotify.client/Data`).
 
 ## Left for you
 
 - Nothing needed for downloads — they resume on their own.
-- If you want the old empty folder gone: `/Users/krishay/Dell/Spotify` on the
+- If you want the old empty folder gone: `~/Dell/Spotify` on the
   Dell server holds only a 512-byte index file; safe to delete whenever.
 - Songs that were ever downloaded to the old "iMac II" drive stay there;
   nothing is copied over. Spotify re-downloads everything fresh to the SSD.

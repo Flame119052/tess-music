@@ -5,8 +5,8 @@
 set -e
 
 GUARD_DIR="$HOME/Library/Application Support/Spotify Storage Guard"
-PLIST="$HOME/Library/LaunchAgents/com.krishay.spotify-cache.plist"
-LABEL="com.krishay.spotify-cache"
+LABEL="music.tess.spotify-cache"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 SRC="$(cd "$(dirname "$0")" && pwd)/spotify_storage_guard.py"
 
 mkdir -p "$GUARD_DIR"
