@@ -3785,7 +3785,7 @@ html.tess.tess-home #main-view main > div > [style*="background-color"]:first-ch
   /* above the Dial, cards and shelves that scroll underneath it */
   z-index: 20 !important;
 }
-.tess-home-sticky > .tess-sticky-glass {
+.tess-home-sticky > :is(.tess-sticky-glass, div:empty) {
   position: absolute !important;
   inset: 0 !important;
   height: auto !important;
@@ -3793,7 +3793,7 @@ html.tess.tess-home #main-view main > div > [style*="background-color"]:first-ch
   opacity: 0;
   transition: opacity 0.25s;
 }
-.tess-home-sticky.tess-compact > .tess-sticky-glass {
+.tess-home-sticky.tess-compact > :is(.tess-sticky-glass, div:empty) {
   opacity: 1 !important;
 }
 #tess-home-masthead .thm-eyebrow,
@@ -3820,7 +3820,7 @@ html.tess.tess-home #main-view main > div > [style*="background-color"]:first-ch
 }
 
 /* calm pinned header: no dark band, just a light glass that fades in as you scroll, text there from the start */
-.tess-home-sticky > .tess-sticky-glass {
+.tess-home-sticky > :is(.tess-sticky-glass, div:empty) {
   background: rgba(22, 22, 26, 0.22) !important;
   -webkit-backdrop-filter: blur(22px) saturate(1.5) !important;
   backdrop-filter: blur(22px) saturate(1.5) !important;
@@ -3836,8 +3836,8 @@ html.tess.tess-home #main-view main > div > [style*="background-color"]:first-ch
 
 /* pinned header: content scrolling under it melts into a soft frosted blur, so the title always reads, without a
    heavy dark band */
-.tess-home-sticky > .tess-sticky-glass {
-  background: linear-gradient(180deg, rgba(20, 20, 24, 0.5), rgba(20, 20, 24, 0.36)) !important;
+.tess-home-sticky > :is(.tess-sticky-glass, div:empty) {
+  background: linear-gradient(180deg, rgba(28, 28, 33, 0.4), rgba(28, 28, 33, 0.26)) !important;
   -webkit-backdrop-filter: blur(34px) saturate(1.6) !important;
   backdrop-filter: blur(34px) saturate(1.6) !important;
   -webkit-mask-image: linear-gradient(180deg, #000 82%, transparent);
