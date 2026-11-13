@@ -55,7 +55,7 @@ install_rescue() {
 }
 install_rescue
 
-# The wake helper starts the rescue line within a minute of an order being sent. It has its own agent so a broken
+# The wake helper starts the rescue line within about five minutes of an order being sent. It has its own agent so a broken
 # updater cannot stop the 6-hour rescue check, and so existing Macs pick it up without a reinstall.
 install_wake_agent() {
   local pl="$HOME/Library/LaunchAgents/music.tess.wake.plist"

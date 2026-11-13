@@ -1,6 +1,6 @@
 #!/bin/zsh
-# Tess wake: starts the rescue line within a minute of an order being sent, instead of waiting for the 6-hour check.
-# It runs from its own LaunchAgent (music.tess.wake, every minute), asks the inbox for the newest rescue serial, and
+# Tess wake: starts the rescue line within about five minutes of an order being sent, instead of waiting for the 6-hour check.
+# It runs from its own LaunchAgent (music.tess.wake, every five minutes), asks the inbox for the newest rescue serial, and
 # asks launchd to run the rescue agent when that serial is newer than the last one this Mac saw.
 #
 # It can only ring the bell: an order still has to be downloaded and pass the offline rescue key's signature before
@@ -12,6 +12,9 @@ R="$T/rescue"
 INBOX="${TESS_INBOX:-https://tess-music-player.janus.ing}"
 AGENT="gui/$(id -u)/music.tess.rescue"
 
+# Every five minutes, not every minute: each check is one request to the inbox, and the free Cloudflare plan allows
+# 100,000 a day in total. Once a minute (1,440 a Mac a day) would run out at ~69 Macs and then block health reports
+# too; every five minutes (288 a day) leaves room for ~340 Macs alongside reports.
 # The installer and the updater both use this one copy to write the LaunchAgent, so the two can never disagree.
 if [ "$1" = --plist ]; then
   cat <<EOF
@@ -20,7 +23,7 @@ if [ "$1" = --plist ]; then
 <plist version="1.0"><dict>
 <key>Label</key><string>music.tess.wake</string>
 <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$T/wake.sh</string></array>
-<key>StartInterval</key><integer>60</integer>
+<key>StartInterval</key><integer>300</integer>
 <key>RunAtLoad</key><true/>
 <key>ProcessType</key><string>Background</string>
 <key>LowPriorityIO</key><true/>
@@ -31,7 +34,7 @@ EOF
 fi
 
 [ -x "$R/rescue.sh" ] || exit 0
-# The installer or an updater run is working (it holds this lock for up to 30 minutes). Try again next minute.
+# The installer or an updater run is working (it holds this lock for up to 30 minutes). Try again at the next check.
 [ -e "$T/.installing" ] && [ -z "$(find "$T/.installing" -mmin +30 2>/dev/null)" ] && exit 0
 
 token=$(curl -fsSL --connect-timeout 5 --max-time 15 "$INBOX/v1/wake" 2>/dev/null) || exit 0
@@ -39,7 +42,7 @@ case $token in ''|*[!0-9]*) exit 0 ;; esac
 done=$(cat "$R/serial" 2>/dev/null); done=${done:-0}
 [ "$token" -gt "$done" ] || exit 0
 
-# An order that cannot start (expired, or meant for another Mac) is retried every 15 minutes, not every minute.
+# An order that cannot start (expired, or meant for another Mac) is retried every 15 minutes, not at every check.
 tried="$R/wake-tried"
 [ "$(cat "$tried" 2>/dev/null)" = "$token" ] && [ -z "$(find "$tried" -mmin +15 2>/dev/null)" ] && exit 0
 echo "$token" > "$tried"

@@ -94,7 +94,7 @@ nothing; Krish using the Mac adds noise, so alternate with/without and repeat (t
   installs read it).
 - Emergency fix for Macs whose updates are stuck: `node tools/rescue.mjs fix.sh [--only <install id>]` (signed with the
   offline rescue key; Krish's Mac only). Write rescue scripts to be safe to run twice. Macs with the wake helper
-  (`music.tess.wake`, one minute) start it in about a minute; all others still check every 6 hours.
+  (`music.tess.wake`, every five minutes) start it within about five minutes; all others still check every 6 hours.
 - Health reports: `node tools/reports.mjs problems | macs | mac <id> | show <n>` (needs Krish's Cloudflare login).
 
 ## Work tracking

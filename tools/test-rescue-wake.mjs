@@ -136,7 +136,7 @@ try {
   const lint = spawnSync('plutil', ['-lint', plist], { encoding: 'utf8' });
   assert.equal(lint.status, 0, lint.stdout + lint.stderr);
   assert.match(plistRun.stdout, /<string>music\.tess\.wake<\/string>/);
-  assert.match(plistRun.stdout, /<integer>60<\/integer>/);
+  assert.match(plistRun.stdout, /<integer>300<\/integer>/);
   assert.match(plistRun.stdout, new RegExp(`<string>${tess.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/wake\\.sh</string>`));
 
   // 12. the updater installs the same agent from wake.sh (sandbox mode, so it never touches the real launchd)

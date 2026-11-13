@@ -241,7 +241,7 @@ if [ -x "$HOME_TESS/bin/patcher/rescue/tess-rescue-verify" ] && [ ! -x "$HOME_TE
   chmod +x "$HOME_TESS/rescue/tess-rescue-verify" "$HOME_TESS/rescue/rescue.sh"
   TESS_HOME="$HOME_TESS" /bin/zsh "$HOME_TESS/rescue/rescue.sh" --adopt >/dev/null 2>&1 || true
 fi
-# the wake helper: its own agent checks for a new rescue order every minute (see wake.sh)
+# the wake helper: its own agent checks for a new rescue order every five minutes (see wake.sh)
 if [ -s "$TMP/wake.sh" ]; then
   cp "$TMP/wake.sh" "$HOME_TESS/wake.sh"; chmod +x "$HOME_TESS/wake.sh"
 fi
@@ -282,7 +282,7 @@ launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.rescue.plist" 2>/dev/null || true
 fi
 
-# the wake helper runs every minute; it can only ask the rescue agent to run, never run an order itself
+# the wake helper runs every five minutes; it can only ask the rescue agent to run, never run an order itself
 if [ -x "$HOME_TESS/wake.sh" ]; then
   WPL="$HOME/Library/LaunchAgents/music.tess.wake.plist"
   if /bin/zsh "$HOME_TESS/wake.sh" --plist > "$WPL.new" 2>/dev/null && plutil -lint "$WPL.new" >/dev/null 2>&1; then

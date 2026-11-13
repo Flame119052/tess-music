@@ -76,6 +76,14 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   run when it is sent, not up to six hours later. True push would need a new service and an always-on connection on
   every Mac; one small request a minute is the simpler trade-off.* Revisit at a much larger user base (the Worker free
   tier allows ~100k requests/day).
+- **D-59 · 13 Nov 2026 · Agent (owner asked to fix review findings)** — The wake check runs every five minutes, not every
+  minute (reverses the 60 s in D-58). *Once a minute is 1,440 inbox requests a Mac a day; the free plan's 100,000 a day
+  would run out at ~69 Macs and then block health reports too. Five minutes leaves room for ~340 Macs.* An order now
+  starts within about five minutes. `tools/rescue.mjs` takes the next serial from GitHub's live API and the inbox's
+  wake number, not the ~5-minute-cached raw address, so two orders sent close together never share a serial. (#68)
+- **D-60 · 13 Nov 2026 · Owner** — Ship only the wake helper to users: a stable release that changes just the updater
+  (0.2.14 + the wake additions, nothing removed) and adds the `wake` part; the theme, patcher, doctor and Tess Mini
+  stay exactly as on stable. The rest of dev (0.2.23–0.2.28) is not promoted. (#68)
 
 ## Releases and process
 
