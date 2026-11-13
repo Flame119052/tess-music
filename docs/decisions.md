@@ -96,6 +96,18 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   keep the old script format; that's the owner's decision for those two Macs only, tracked privately. *"No user
   should get scripts giving me control over their Mac."* Trade-off: a problem none of the five actions can fix now
   needs a normal signed release instead of a one-off script. (#69)
+- **D-63 · 13 Nov 2026 · Owner** — Work moves issue → approach comment → PR → `dev` → `beta` → `stable`
+  (docs/workflow.md). Dev is live `main`, for the owner's Mac only. Krish *declaring a release* makes beta from every PR
+  merged since the last beta. Promoting copies beta to stable.
+  - Reviewer agents run on the owner's machines (self-hosted runners labelled `tess-agent`). They are started only by
+    allowlisted GitHub accounts tagging `@tess-review`, and only after CI passes.
+  - The review a change gets depends on which paths it touches. Docs changes get CI only. Normal changes get a lighter
+    PR review. Sensitive changes get the strong model on both the approach and the PR.
+  - The 5-minute wake check returns for everyone, because a rescue order can now only press D-62's five buttons. It
+    reads public raw files (no inbox cost) and starts the updater when a release is published, or the rescue line when
+    an order is. The updater itself runs every 30 minutes, restarts Spotify only when no music is playing, runs the
+    doctor after each update, and rolls back on failure.
+  - Supersedes D-32 (PRs are now the norm) and the "wake out of every release" part of D-61/D-62. (#71)
 
 ## Releases and process
 

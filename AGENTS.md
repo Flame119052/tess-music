@@ -25,7 +25,7 @@ Owner: Krish (GitHub `Flame119052`). Real users run it on their own Macs; treat 
 3. **Nothing reaches users untested.** Every push to `main` builds to the internal `dev` channel only (Krish's Mac).
    Users get a build only when it is promoted (Actions → release → `promote`, or `node tools/promote.mjs`) after Krish
    says "ship it". The public install line runs the last promoted installer.
-4. **Krish decides:** opening a pull request, promoting to users, installing outside skills or tools, anything with
+4. **Krish decides:** merging pull requests, declaring a release, promoting to users, installing outside skills or tools, anything with
    `sudo`, deleting data, and design directions he hasn't approved. Name one recommended option and ask.
 5. **Secrets stay secret.** Signing keys live in `~/.config/tess-signing/` (`chmod 600` on APFS with ownership) and
    GitHub Actions secrets, never in the repo, in chat, or in a `.env` on a `noowners`-mounted external drive. The
@@ -105,8 +105,10 @@ nothing; Krish using the Mac adds noise, so alternate with/without and repeat (t
 - Tag every issue using the 4-axis system in `docs/triage.md` (`P0`–`P3` priority, `area:*` category, type, workflow status) and assign it to the matching roadmap milestone.
 - Comment the evidence on the issue and close it when checked; leave it open (with why) when it needs a real-world
   event (e.g. #28 needs a real blocked Mac).
-- Work currently lands on `main` (transition to PRs → `dev` → `beta` → `stable` is tracked in #62 while approvers are TBD).
-  Small, focused commits; the message says what changed for the user and why, and ends with the issue number, e.g. `(#30)`.
+- Work follows [`docs/workflow.md`](docs/workflow.md): issue → approach comment → PR into `main` → dev → beta (Krish
+  declares a release) → stable (Krish promotes). Opening a PR is the normal path in this repo (D-63). Tag `@tess-review
+  approach` or `@tess-review pr` to call a reviewer agent; the tier (docs / normal / sensitive) decides which reviews a
+  change needs. Small, focused commits; the message says what changed for the user and why, and ends with the issue number, e.g. `(#30)`.
 - Update `docs/status.md` when something user-visible changes state.
 
 ## Communicating with Krish
