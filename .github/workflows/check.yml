@@ -22,5 +22,7 @@ jobs:
         run: cd patcher && go build ./... && go vet ./src/cmd/
       - name: Dial picking tests
         run: node tools/test-dial-pick.mjs
+      - name: Reviewer agent tests
+        run: node tools/test-agent-review.mjs
       - name: Tools parse
         run: for f in tools/*.mjs; do node --check "$f"; done

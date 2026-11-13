@@ -62,7 +62,7 @@ Its files go back to stock (`Apps/xpui.spa`). The updater notices (LaunchAgent W
 | Signed content | Ed25519 release key (CI secret + Krish's Mac) | tampered downloads |
 | Stable code signature | "Tess Music" self-signed identity | macOS re-asking for permissions every update |
 | Loader fallback | `theme/loader/loader.js` | a broken theme release |
-| Channels | `dev` → promote → `stable`/`beta` | untested builds reaching users |
+| Channels | `dev` → declare → `beta` → promote → `stable` | untested builds reaching users |
 | Rescue line | `installer/rescue.sh`, offline rescue key | updates stuck on a Mac |
 | Health reports | `doctor.sh` → inbox | problems nobody reports |
 
@@ -73,8 +73,11 @@ build theme → sign → build patcher (+ tess-verify, rescue verify), Tess Mini
 "Tess Music" identity → write `dist/` (manifest, theme, components list + signature, `install.sh`, `uninstall.sh`) to
 the `dev` branch → GitHub Release `vX.Y.Z` (prerelease, the part files) → mirror the branch to
 `Flame119052/tess-releases`.
-Promotion (`tools/promote.mjs`): copy `dev`'s `dist/` byte for byte to `stable` and `beta` (only the manifest's
-`channel` field changes; it isn't signed), mirror, mark the release latest.
+Declaration (`tools/declare.mjs`): copy `dev`'s `dist/` byte for byte to `beta` (only the unsigned manifest channel
+changes), copy the installer stub to the channel root, record the source `main` commit, and write release notes from
+every PR merged since the previous beta. Promotion (`tools/promote.mjs`): copy that exact beta to `stable`, including
+its notes and channel-root stub, mirror it, and mark the release latest. Both public-channel jobs use the protected
+GitHub `release` environment and support a no-write `--dry-run`.
 
 Install line: `installer/install.sh` (stub on `main`) → downloads `dist/install.sh` from the channel (`stable` unless
 `TESS_CHANNEL=dev|beta`) → runs it. It falls back to `main/installer/tess-install.sh` only if the channel has none.

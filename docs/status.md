@@ -8,9 +8,11 @@ Last updated: 13 Nov 2026.
 | Channel | Who follows it | Version |
 | --- | --- | --- |
 | `dev` | Krish's Mac (internal) | follows every push to `main` |
-| `stable` / `beta` | everyone else | 0.2.22 (promoted only when Krish says "ship it") |
+| `beta` | beta testers | 0.2.22 (changes only when Krish declares a release) |
+| `stable` | everyone else | 0.2.22 (changes only when Krish promotes the tested beta) |
 
-Promote: Actions → release → Run workflow → action `promote` (or `node tools/promote.mjs`).
+Declare: Actions → release → Run workflow → action `declare` (or `node tools/declare.mjs`). Promote the resulting
+beta with action `promote` (or `node tools/promote.mjs`).
 Installs on record (health inbox): the owner's Mac (dev) and one user's Mac (stable, repaired 13 Nov after the 0.1.0
 helper blanked its Spotify).
 
@@ -22,6 +24,7 @@ helper blanked its Spotify).
 | #68 | `P1` | `installer`, `release-ci` | Rescue line: start a new order within a minute instead of waiting up to six hours | Removed from Tess (owner: no remote-control helpers for users, #69). Exists only on two Macs by the owner's decision. |
 | #53 | `P1` | `installer` | Tell users about the rescue line; `tess rescue off`, `tess status` | Open; waiting on Krish (Phase 1). |
 | #54 | `P1` | `docs`, `release-ci` | Purge old issue revisions and commit messages with personal details | Waiting on Krish (Phase 1). |
+| #71 | `P1` | `installer`, `release-ci` | Issue → approach → PR → dev → beta → stable, with reviewer agents | Parts B–C implemented in PR; runner registration and repository settings remain owner steps. |
 | #62 | `P1` | `docs`, `release-ci` | Update docs & release flow for PRs → `dev` → `beta` → `stable` (approvers TBD) | Waiting on Krish (Phase 1). |
 | #28 | `P1` | `installer`, `patcher` | macOS App Management: ask once, never loop, approval survives updates | Shipped; `status: verify` on a real blocked Mac at next Spotify update. |
 | #7 | `P1` | `patcher`, `installer` | Survive Spotify updates | Done; waiting on Krish to confirm and close. |

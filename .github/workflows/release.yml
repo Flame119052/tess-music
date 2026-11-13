@@ -1,7 +1,5 @@
-# Every push to main that changes Tess is built, signed and published to the internal `dev` channel only: the
-# owner's Mac follows it, nobody else does. Users get a build only when it is promoted (Actions → release → Run
-# workflow → action: promote), which copies that exact dev build to stable and beta. Installed Macs then pick it up by
-# themselves: the look on the next Spotify start, the other parts within ~20 minutes.
+# Every relevant push to main builds the internal dev channel. A declaration copies dev to beta; a promotion copies
+# that beta to stable. The release environment puts both public-channel actions behind a human approval.
 # Needs repository secrets (Settings → Secrets and variables → Actions):
 #   TESS_SIGNING_KEY   the Ed25519 private key (PEM) that signs releases
 #   TESS_MIRROR_KEY    an SSH deploy key with write access to Flame119052/tess-releases only (the mirror 0.1.x installs read)
@@ -13,13 +11,22 @@ on:
     paths: ['theme/**', 'mini/**', 'patcher/**', 'installer/**', 'tools/release.mjs', 'tools/build.mjs', 'tools/check-safety.sh']
   workflow_dispatch:
     inputs:
-      action: { description: 'release (build to a channel) or promote (dev -> stable and beta)', default: 'promote', required: true }
-      channel: { description: 'for release: dev, beta or stable', default: 'dev', required: false }
-      version: { description: 'for promote: the version on dev to promote (empty = whatever dev has)', default: '', required: false }
+      action:
+        description: 'release (main -> dev), declare (dev -> beta), or promote (beta -> stable)'
+        type: choice
+        options: [release, declare, promote]
+        default: declare
+        required: true
+      version:
+        description: 'Expected source version (empty = current dev or beta)'
+        type: string
+        default: ''
+        required: false
 concurrency: { group: release, cancel-in-progress: false }
 permissions: { contents: write }
 jobs:
   release:
+    if: github.event_name == 'push' || inputs.action == 'release'
     runs-on: macos-latest
     steps:
       - name: Check the signing key is set
@@ -51,8 +58,58 @@ jobs:
           export TESS_MIRROR_KEY_FILE="$RUNNER_TEMP/mirror"
           git config user.name "Tess release"
           git config user.email "actions@users.noreply.github.com"
-          if [ "${{ github.event.inputs.action }}" = "promote" ]; then
-            node tools/promote.mjs ${{ github.event.inputs.version }}
+          node tools/release.mjs auto dev
+
+  declare:
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'declare'
+    runs-on: macos-latest
+    environment: release
+    env:
+      TESS_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Declare dev on beta
+        env:
+          TESS_MIRROR_KEY: ${{ secrets.TESS_MIRROR_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s\n' "$TESS_MIRROR_KEY" > "$RUNNER_TEMP/mirror"
+          chmod 600 "$RUNNER_TEMP/mirror"
+          export TESS_MIRROR_KEY_FILE="$RUNNER_TEMP/mirror"
+          git config user.name "Tess release"
+          git config user.email "actions@users.noreply.github.com"
+          if [ -n "$TESS_VERSION" ]; then
+            node tools/declare.mjs "$TESS_VERSION"
           else
-            node tools/release.mjs auto "${{ github.event.inputs.channel || 'dev' }}"
+            node tools/declare.mjs
+          fi
+
+  promote:
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'promote'
+    runs-on: macos-latest
+    environment: release
+    env:
+      TESS_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Promote beta to stable
+        env:
+          TESS_MIRROR_KEY: ${{ secrets.TESS_MIRROR_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s\n' "$TESS_MIRROR_KEY" > "$RUNNER_TEMP/mirror"
+          chmod 600 "$RUNNER_TEMP/mirror"
+          export TESS_MIRROR_KEY_FILE="$RUNNER_TEMP/mirror"
+          git config user.name "Tess release"
+          git config user.email "actions@users.noreply.github.com"
+          if [ -n "$TESS_VERSION" ]; then
+            node tools/promote.mjs "$TESS_VERSION"
+          else
+            node tools/promote.mjs
           fi

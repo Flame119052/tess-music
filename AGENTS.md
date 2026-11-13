@@ -50,7 +50,7 @@ Owner: Krish (GitHub `Flame119052`). Real users run it on their own Macs; treat 
 | `tools/` | Build, release, promote, rescue, reports, and every measuring tool (see below). |
 | `docs/` | Architecture, secrets & env (`secrets-and-env.md`), status, design rules, algorithms, research. |
 | `.env.example`, `.local/` | Safe env template (committed) and private machine-specific backup/secret notes (`.local/`, `.env`, `.dev.vars` — gitignored). |
-| `.github/workflows/release.yml` | Safety gate → build/sign → publish to `dev`; `promote` action → stable + beta. |
+| `.github/workflows/release.yml` | Safety gate → build/sign → `dev`; `declare` → beta; `promote` → stable. |
 
 ## Daily development loop (on Krish's Mac)
 
@@ -89,8 +89,9 @@ nothing; Krish using the Mac adds noise, so alternate with/without and repeat (t
 - `tools/check-safety.sh` must pass (CI runs it before every build).
 - Push to `main` → CI builds, signs (Ed25519 for content, the stable "Tess Music" code-signing identity for binaries)
   and publishes to `dev`. Krish's Mac picks it up (look: next Spotify start; other parts: within ~20 minutes).
-- Promote when Krish says so: `node tools/promote.mjs` (or the workflow's `promote` action). That copies the exact
-  dev build to `stable` and `beta` and mirrors to `Flame119052/tess-releases` (never archive that repo: 0.1.x
+- Declare when Krish says so: `node tools/declare.mjs` copies the exact dev build to beta and writes notes for every
+  PR merged since the previous beta. Promote with `node tools/promote.mjs` after beta is clean; it copies that exact
+  beta to stable. Both mirror their public channel to `Flame119052/tess-releases` (never archive that repo: 0.1.x
   installs read it).
 - Emergency fix for Macs whose updates are stuck: `node tools/rescue.mjs <check|update|repair|restore-spotify|uninstall>
   [--only <install id>]` (signed with the offline rescue key; Krish's Mac only). Rescue orders are those five Tess

@@ -137,6 +137,12 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
 - **D-41 · 13 Nov 2026 · Owner** — Standardize GitHub issue structure like large repos: 4-axis labels (`P0`–`P3`,
   `area:*`, type, status), phase milestones, plain-English titles for everyone, `CONTRIBUTING.md`, `CODEOWNERS`, and
   plain-language updates/explanations.
+- **D-64 · 13 Nov 2026 · Agent** — A beta records its source `main` commit in `release.json` and keeps its generated
+  notes in `RELEASE_NOTES.md`; the first declaration without that metadata uses the commit immediately before the
+  previous beta's publication time. Reviewer selection reads T3's local usage cache, skips a provider with any
+  exhausted quota window, and retries the next configured provider only when the CLI reports a usage limit.
+  *This makes later release-note ranges exact and keeps model fallback deterministic without a network usage query.*
+  Trade-off: the first declaration's range is time-based because old beta branches did not record their source.
 
 ## Design and performance
 
