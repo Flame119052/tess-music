@@ -52,7 +52,10 @@
   });
   const startWatch = () => { const root = document.querySelector('.Root') || document.body; domWatch.observe(root, { childList: true, subtree: true }); };
   onDispose(() => domWatch.disconnect());
-  const onDraw = (fn, backupMs = 2500) => { placers.push(fn); every(backupMs, fn); };
+  // placers run the moment Spotify draws; one shared slow timer is the backup for all of them (it used to be one
+  // timer per placer, a dozen of them waking the page several times a second between them)
+  const onDraw = (fn) => { placers.push(fn); };
+  every(3000, () => runPlacers());
   const listen = (target, type, fn, opts) => { target.addEventListener(type, fn, opts); onDispose(() => target.removeEventListener(type, fn, opts)); };
   const imageUrl = (u) => (u && u.startsWith('spotify:image:') ? 'https://i.scdn.co/image/' + u.split(':')[2] : u || '');
   // Blurred-artwork backgrounds are painted small on a canvas and stretched by the GPU. It looks like a huge
@@ -105,6 +108,22 @@
   const saveSettings = () => { try { localStorage.setItem('tess:settings', JSON.stringify(settings)); } catch {} };
 
   const html = document.documentElement;
+  // Spicetify's helper waits for parts of Spotify's old layout (history buttons, the old bottom bar) by searching the
+  // whole page about once a second until they appear. Spotify 1.3.9 renamed them, so those searches never ended:
+  // ~25 ms of work every second, forever. Hidden stand-ins under the old names let every wait finish at once.
+  if (!document.getElementById('tess-spicetify-anchors')) {
+    const anchors = document.createElement('div');
+    anchors.id = 'tess-spicetify-anchors';
+    anchors.hidden = true;
+    anchors.setAttribute('aria-hidden', 'true');
+    anchors.innerHTML = '<div class="main-globalNav-historyButtonsWrapper"><div class="main-globalNav-historyButtons"><button class="main-globalNav-icon" data-encore-id="buttonTertiary" tabindex="-1"></button></div></div>'
+      + '<div class="main-topBar-historyButtons"><button class="main-topBar-button" tabindex="-1"></button></div>'
+      + '<div class="main-nowPlayingBar-left"><div class="main-nowPlayingWidget-nowPlaying"></div></div>'
+      + '<div class="main-nowPlayingBar-right"><div><button class="main-genericButton-button" tabindex="-1"></button></div></div>'
+      + '<div class="volume-bar__icon-button"></div>'
+      + '<div class="main-actionButtons"><button class="main-actionButtons-button" tabindex="-1"></button></div>';
+    document.body.appendChild(anchors);
+  }
   html.classList.add('tess');
   onDispose(() => html.classList.remove('tess', 'tess-artist', 'tess-tint', 'tess-hero-light'));
   const applySettings = () => {
@@ -132,7 +151,7 @@
     if (!template || sections.length < 2) return;
     const section = template.cloneNode(true);
     section.id = 'tess-theme-settings';
-    section.querySelector('h2').textContent = 'Theme';
+    section.querySelector('h2').textContent = 'Tess Music';
     const rowTemplate = section.querySelector('[data-settings-row]:has(input[type="checkbox"])');
     section.querySelectorAll('[data-settings-row]').forEach((r) => r.remove());
     const divider = section.querySelector('hr');
@@ -155,26 +174,27 @@
     }
     // version, update channel and the welcome again
     const meta = el('<p class="tess-set-meta"></p>');
-    meta.textContent = `Tess ${window.__tessVersion || 'dev'} · ${settings.channel === 'beta' ? 'Beta updates' : 'Stable updates'} · `;
+    const chName = { beta: 'Beta updates', dev: 'Internal dev builds' }[settings.channel] || 'Stable updates';
+    meta.textContent = `Tess ${window.__tessVersion || 'dev'} · ${chName} · `;
     const ch = el('<button class="tess-set-link"></button>');
-    ch.textContent = settings.channel === 'beta' ? 'Switch to stable' : 'Get beta updates';
+    ch.textContent = settings.channel === 'beta' || settings.channel === 'dev' ? 'Switch to stable' : 'Get beta updates';
     // the loader reads the channel when Spotify starts; reloading the page here would break Spicetify, so ask for a restart
     ch.onclick = () => {
-      settings.channel = settings.channel === 'beta' ? 'stable' : 'beta'; saveSettings();
+      settings.channel = settings.channel === 'beta' || settings.channel === 'dev' ? 'stable' : 'beta'; saveSettings();
       ch.textContent = settings.channel === 'beta' ? 'Beta updates from the next Spotify start' : 'Stable updates from the next Spotify start';
       ch.disabled = true;
       Spicetify.showNotification?.('Quit and reopen Spotify to switch update channel.');
     };
-    const again = el('<button class="tess-set-link"> · Show welcome</button>');
+    const again = el('<button class="tess-set-link">Show welcome</button>');
     again.onclick = () => { try { localStorage.removeItem('tess:onboarded'); } catch {} onboarding(); };
     meta.append(ch, again);
     if (oldInstall) {
-      const fix = el('<button class="tess-set-link"> · Finish updating Tess (copies the install line)</button>');
+      const fix = el('<button class="tess-set-link">Finish updating Tess (copies the install line)</button>');
       fix.onclick = () => { Spicetify.Platform.ClipboardAPI?.copy?.(INSTALL_LINE); Spicetify.showNotification?.('Copied. Paste it in Terminal and press Return.'); };
       meta.append(fix);
     }
     section.querySelector('h2').after(meta);
-    sections[1].before(section);
+    sections[0].before(section);
     onDispose(() => section.remove());
     if (pendingThemeScroll) { pendingThemeScroll = false; section.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
   }
@@ -194,11 +214,217 @@
     else { document.getElementById('tess-theme-settings')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); pendingThemeScroll = false; }
   }
   onDraw(buildThemeSection);
+
+  // ---------------- marks instead of :has() ----------------
+  // Some of Tess's styling targets "the element that holds X" (the box around an image, the row around a link).
+  // Written as CSS :has(), the browser re-checked those rules across the page on every change (40% of all style
+  // work while music plays). Tess finds those elements here instead, when Spotify draws, and marks them with a data
+  // attribute (Spotify's code never touches unknown data attributes), so the CSS stays a cheap, direct match.
+  const mark = (node, attr, value = '') => { if (node && node.getAttribute(attr) !== value) node.setAttribute(attr, value); };
+  let lastScrollHints = 0;
+  function markLayout() {
+    const root = document.querySelector('.Root');
+    mark(root?.parentElement, 'data-tess-clear');
+    mark(document.getElementById('main-view')?.parentElement, 'data-tess-clear');
+    mark(document.getElementById('global-nav-bar')?.parentElement, 'data-tess-clear');
+    const stockBar = document.querySelector('[data-testid="now-playing-bar"]');
+    for (let n = stockBar?.parentElement; n && n !== root && n !== document.body; n = n.parentElement) mark(n, 'data-tess-bar-host');
+    const lib = document.getElementById('Desktop_LeftSidebar_Id');
+    if (lib) {
+      mark(lib.querySelector('header')?.parentElement, 'data-tess-clear-bg');
+      mark(document.getElementById('tess-timeline')?.parentElement, 'data-tess-clear-bg');
+    }
+    const peek = document.querySelector('.Root__right-sidebar-peek');
+    if (peek) {
+      // only the Now Playing view's title and artist get the end fade; never the Queue or Recently played rows,
+      // whose narrower subtitles it cut off ("Music video • Seafre")
+      peek.querySelectorAll('#queue-panel [data-tess-mask], #history-panel [data-tess-mask]').forEach((n) => n.removeAttribute('data-tess-mask'));
+      for (const a of peek.querySelectorAll('a[href^="/album/"], a[href^="/artist/"], a[href^="/episode/"], a[href^="/show/"]')) {
+        if (a.closest('#queue-panel, #history-panel')) continue;
+        mark(a.parentElement?.parentElement, 'data-tess-mask');
+        if (a.matches('a[href^="/artist/"]')) {
+          mark(a.parentElement?.parentElement?.parentElement, 'data-tess-mask');
+          for (const img of a.querySelectorAll(':scope > div > img')) mark(img.parentElement, 'data-tess-art');
+        }
+      }
+      for (const c of peek.querySelectorAll('[data-testid="cover-art-image"]')) mark(c.parentElement?.parentElement, 'data-tess-cover-card');
+    }
+    // library: the row that is playing (Spotify colours its title)
+    if (lib) {
+      for (const row of lib.querySelectorAll('[data-encore-id="listRow"]')) {
+        const on = !!row.querySelector('[data-encore-id="listRowTitle"][class*="bright-accent"]');
+        if (on !== row.hasAttribute('data-tess-row-playing')) row.toggleAttribute('data-tess-row-playing', on);
+      }
+    }
+    // queue panel: artwork boxes, and the Jam invite card and its button's box
+    for (const panel of document.querySelectorAll('#queue-panel, #history-panel')) {
+      for (const img of panel.querySelectorAll('li[role="row"] img')) mark(img.parentElement, 'data-tess-art');
+      for (const b of panel.querySelectorAll('[data-encore-id="buttonPrimary"]')) {
+        mark(b.parentElement, 'data-tess-jam-btn-host');
+        const card = b.parentElement?.parentElement;
+        if (card && !card.querySelector('ul')) mark(card, 'data-tess-jam-card');
+      }
+    }
+    // artist page: Spotify's colour blocks around the play row and under the page stay clear over the hero
+    const artist = document.querySelector('[data-testid="artist-page"]');
+    if (artist) {
+      for (const n of artist.querySelectorAll('[data-testid="action-bar"], [style*="--background-base-70"], [style*="background-color"]:empty, .T2XRKvkWneSSMSOCEo40')) mark(n.parentElement, 'data-tess-artist-clear');
+      const hero = document.querySelector('.before-scroll-node > div > .tess-hero-bg');
+      mark(hero?.parentElement, 'data-tess-hero-host');
+    }
+    // Spotify's shelf arrows fade in with an animation tied to each shelf's scroll position. Those animations are
+    // always "running", so every arrow was its own GPU layer (~40 of them, plus everything forced over them),
+    // composited every frame. They now appear when you point at the shelf instead (CSS below), at most re-checked
+    // every 2 s (reading the page's animations is not free).
+    if (typeof ScrollTimeline !== 'undefined' && performance.now() - lastScrollHints > 2000) {
+      lastScrollHints = performance.now();
+      for (const an of document.getAnimations()) {
+        if (!(an.timeline instanceof ScrollTimeline)) continue;
+        const t = an.effect?.target;
+        if (!t || t.hasAttribute('data-tess-scrollhint')) continue;
+        const props = an.effect.getKeyframes().flatMap((k) => Object.keys(k));
+        if (!props.includes('opacity') && !props.includes('pointerEvents')) continue;
+        // only the small arrow buttons; never a shelf itself (Spotify animates some whole shelves the same way)
+        const box = t.getBoundingClientRect();
+        if (box.width > 64 || box.height > 64 || t.querySelector('img, a, [data-encore-id="card"]')) continue;
+        mark(t, 'data-tess-scrollhint');
+        mark(t.parentElement?.parentElement, 'data-tess-carousel');
+      }
+    }
+    const home = document.querySelector('[data-testid="home-page"]');
+    if (home) {
+      // only images not marked yet (cards load their art late)
+      for (const img of home.querySelectorAll('[data-encore-id="card"] img')) {
+        const box = img.parentElement;
+        if (!box || box.hasAttribute('data-tess-art')) continue;
+        mark(box, 'data-tess-art', img.closest('[data-encore-id="card"]').querySelector('a[href^="/artist/"]') ? 'round' : '');
+      }
+    }
+  }
+  onDraw(markLayout);
+
+  // ---------------- Settings: Apple-style, a section list on the left and every section a card ----------------
+  // Spotify's Settings is one long page. Tess groups its sections, puts a list of the groups on the left (it follows
+  // where you are and jumps on click), and turns each section into a rounded glass card.
+  const SET_GROUPS = [
+    ['Tess Music', 'sparkle', '#e0457b', ['Tess Music']],
+    ['General', 'gear', '#8e8e93', ['Account', 'Language', 'Explicit content', 'Autoplay']],
+    ['Playback', 'play', '#ff9f0a', ['Audio quality', 'Playback', 'Shuffle', 'Crossfade']],
+    ['Library & display', 'stack', '#0a84ff', ['Your Library', 'Show songs from', 'Display', 'Videos and Canvas', 'Zoom level']],
+    ['Privacy & social', 'hand', '#30b158', ['Listening activity and insights', 'Social', 'Privacy']],
+    ['Mac & storage', 'laptop', '#5e5ce6', ['Startup and window behaviour', 'Storage', 'Proxy Settings', 'Compatibility', 'Local Files']],
+  ];
+  let setNav = null;
+  function buildSettingsNav() {
+    if (!route().startsWith('/preferences')) return;
+    const page = document.querySelector('[data-testid="settings-page"]');
+    if (!page || !document.getElementById('tess-theme-settings')) return;
+    // a section is the largest block around its heading that holds no other heading (Spotify nests some deeper)
+    const sectionOf = (h) => {
+      let n = h.parentElement;
+      while (n.parentElement && n.parentElement !== page && n.parentElement.querySelectorAll('h2').length === 1) n = n.parentElement;
+      return n;
+    };
+    const secs = [...new Set([...page.querySelectorAll('h2')].map(sectionOf))]
+      .filter((sct) => sct !== page && !sct.closest('.tess-set-nav'));
+    secs.forEach((sct) => sct.classList.add('tess-set-card'));
+    if (page.querySelector('.tess-set-nav')) return;
+    const groups = [];
+    const placed = new Set();
+    for (const [name, icon, colour, titles] of SET_GROUPS) {
+      const items = secs.filter((sct) => titles.includes(sct.querySelector('h2').textContent.trim()));
+      if (!items.length) continue;
+      items.forEach((sct) => placed.add(sct));
+      groups.push({ name, icon, colour, first: items[0], items });
+    }
+    const rest = secs.filter((sct) => !placed.has(sct));
+    if (rest.length) groups.push({ name: 'More', icon: 'more', colour: '#636366', first: rest[0], items: rest });
+    const nav = el('<nav class="tess-set-nav" aria-label="Settings sections"></nav>');
+    for (const g of groups) {
+      const b = el(`<button><span class="ico" style="--c:${g.colour}">${SET_ICONS[g.icon]}</span><span></span></button>`);
+      b.lastChild.textContent = g.name;
+      b.onclick = () => g.first.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      g.button = b;
+      nav.appendChild(b);
+    }
+    page.prepend(nav);
+    setNav = groups;
+    markSettingsNav();
+    onDispose(() => nav.remove());
+  }
+  // the group you're looking at is highlighted
+  function markSettingsNav() {
+    if (!setNav || !setNav[0].button.isConnected) return;
+    const top = (document.querySelector('.main-topBar-container')?.getBoundingClientRect().bottom || 64) + 40;
+    let current = setNav[0];
+    for (const g of setNav) if (g.first.getBoundingClientRect().top <= top) current = g;
+    for (const g of setNav) g.button.classList.toggle('on', g === current);
+  }
+  onDraw(buildSettingsNav);
+
+  // ---------------- the account menu: a glass card with who you are on top and the items in tidy groups ----------
+  // Spotify owns these items, so Tess never moves them in the page: it orders them with CSS (flex order), adds
+  // icons, and puts a small header with your picture and name at the top that opens your profile.
+  const MENU_ITEMS = {
+    'Tess Music settings': [1, 'sparkle', true],
+    Settings: [2, 'gear'],
+    Recents: [10, 'clock', true],
+    'Private session': [11, 'eyeoff'],
+    Account: [12, 'person'],
+    Support: [20, 'help', true],
+    'Log out': [21, 'logout'],
+  };
+  function dressAccountMenu() {
+    const menu = [...document.querySelectorAll('.main-contextMenu-menu')].find((m) => m.querySelector('li') && /Log out/.test(m.textContent));
+    if (!menu || menu.querySelector('.tess-mi-head')) return;
+    menu.classList.add('tess-account-menu');
+    for (const li of menu.children) {
+      const label = li.querySelector('.main-contextMenu-menuItemButton > div span')?.textContent.trim()
+        || li.querySelector('.main-contextMenu-menuItemButton')?.textContent.trim();
+      if (!li.matches('li')) { li.style.order = 40; continue; }       // Spotify's "Your Updates" goes last
+      if (label === 'Experimental features' || label === 'Profile') { li.classList.add('tess-mi-hidden'); continue; }
+      const m = MENU_ITEMS[label];
+      li.style.order = m ? m[0] : 15;
+      if (m?.[2]) li.classList.add('tess-mi-group');
+      const btn = li.querySelector('.main-contextMenu-menuItemButton');
+      if (m && btn && !btn.querySelector('.tess-mi-ico')) btn.prepend(el(`<span class="tess-mi-ico">${SET_ICONS[m[1]]}</span>`));
+    }
+    const widget = document.querySelector('[data-testid="user-widget-link"]');
+    const head = el('<li class="tess-mi-head" role="presentation"><button><img alt=""><span><b></b><small>View profile</small></span></button></li>');
+    head.querySelector('img').src = widget?.querySelector('img')?.src || '';
+    head.querySelector('b').textContent = widget?.getAttribute('aria-label') || 'Your profile';
+    head.querySelector('button').onclick = () => [...menu.querySelectorAll('.main-contextMenu-menuItemButton')]
+      .find((b) => b.textContent.trim() === 'Profile')?.click();
+    menu.prepend(head);
+  }
+  onDraw(dressAccountMenu);
+  // menus open in their own popup at the top of the page, outside what Tess's main watcher sees: dress the account
+  // menu the moment its popup is added (this watches only the page's direct children, so it costs nothing otherwise)
+  const popupWatch = new MutationObserver(() => setTimeout(dressAccountMenu, 0));
+  popupWatch.observe(document.body, { childList: true });
+  onDispose(() => popupWatch.disconnect());
   if (Spicetify.Menu?.Item) {
     const menuItem = new Spicetify.Menu.Item('Tess Music settings', false, openSettings);
     menuItem.register();
     onDispose(() => menuItem.deregister());
   }
+
+  // small glyphs for Settings and the account menu, same family as the player's icons
+  const sico = (body) => `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+  const SET_ICONS = {
+    sparkle: sico('<path d="M12 3.5l1.9 5.2 5.1 1.9-5.1 1.9L12 17.7l-1.9-5.2L5 10.6l5.1-1.9z"/><path d="M18.5 15.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/>'),
+    gear: sico('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
+    play: sico('<path d="M8 5.5v13l10-6.5z"/>'),
+    stack: sico('<rect x="4" y="9" width="16" height="11" rx="2"/><path d="M6.5 6h11M9 3h6"/>'),
+    hand: sico('<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7.5a4 4 0 0 1 8 0V11"/>'),
+    laptop: sico('<rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/>'),
+    more: sico('<circle cx="6" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="18" cy="12" r="1"/>'),
+    clock: sico('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'),
+    eyeoff: sico('<path d="M3 3l18 18"/><path d="M10.6 5.1A9.9 9.9 0 0 1 12 5c5.5 0 9 5.5 9 7 0 .7-.8 2.1-2.2 3.6M6.6 6.6C4.4 8 3 10.6 3 12c0 1.5 3.5 7 9 7 1.6 0 3-.4 4.3-1.1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>'),
+    person: sico('<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/>'),
+    help: sico('<circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 0 1 4.8.8c0 1.7-2.4 2.2-2.4 3.7"/><path d="M12 17h.01"/>'),
+    logout: sico('<path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/><path d="M10 16l-4-4 4-4M6 12h10"/>'),
+  };
 
   // One icon family: 24-unit grid, 1.75 strokes, round caps and joins, soft filled glyphs for transport,
   // so every control reads as part of the same object (SF Symbols' rules, drawn for Tess).
@@ -329,6 +555,7 @@
       </div>
       <div class="tb-tools">
         <span class="tb-quality"></span>
+        <button class="tb-dj" aria-label="DJ: switch it up" title="DJ: switch it up" hidden></button>
         <button class="tb-lyrics" aria-label="Lyrics">${I.lyrics}</button>
         <button class="tb-queue" aria-label="Queue">${I.queue}</button>
         <button class="tb-devices" aria-label="Connect to a device">${I.devices}</button>
@@ -351,6 +578,11 @@
   q(bar, '.tb-heart').onclick = toggleSave;
   q(bar, '.tb-art').onclick = () => openNP('lyrics');
   q(bar, '.tb-lyrics').onclick = () => openNP('lyrics');
+  // While the DJ plays, Spotify's own bar has a DJ button (no label, the DJ's icon) that asks the DJ to switch it up.
+  // Tess shows its own copy of that button and clicks Spotify's, so it does exactly what Spotify's does.
+  const stockDj = () => [...document.querySelectorAll('[data-testid="now-playing-bar"] button:not([aria-label]):not([data-testid])')]
+    .find((b) => b.querySelector('svg'));
+  q(bar, '.tb-dj').onclick = () => stockDj()?.click();
   q(bar, '.tb-queue').onclick = () => spotifyButton('[data-testid="control-button-queue"]')?.click();
   q(bar, '.tb-mini').onclick = () => openMini();
   q(bar, '.tb-devices').onclick = () => spotifyButton('button[aria-label="Connect to a device"]')?.click();
@@ -397,10 +629,11 @@
           </div>
         </div>
         <div class="tn-lyrics"><div class="tn-lines"></div><div class="tn-note"></div>
-          <div class="tn-sync" aria-label="Lyrics timing"><button data-d="-0.5" aria-label="Lyrics earlier">−</button><b>In sync</b><button data-d="0.5" aria-label="Lyrics later">+</button></div>
+          <div class="tn-sync" aria-label="Lyrics timing"><button data-d="-0.5" aria-label="Lyrics earlier">−</button><button class="tn-sync-now" aria-label="Lyrics follow the song">In sync</button><button data-d="0.5" aria-label="Lyrics later">+</button></div>
         </div>
         <div class="tn-queue"><h4>Playing Next</h4><div class="tn-qlist"></div></div>
       </div>
+      <div class="tn-pill bl tn-nolyr" hidden>${I.lyrics}<span>No lyrics for this song</span></div>
       <div class="tn-pill br">
         <button class="tn-lyr on" aria-label="Lyrics">${I.lyrics}</button>
         <button class="tn-q" aria-label="Playing next">${I.queue}</button>
@@ -408,7 +641,12 @@
     </div>`));
 
   let npOpen = false;
+  // Closed, the full-screen player sleeps: once its closing animation has finished it leaves rendering entirely
+  // (display: none), so its record, lyrics, video and glass cost nothing while you use the rest of the app.
+  let npSleep = 0;
   function openNP(mode) {
+    clearTimeout(npSleep);
+    if (np.classList.contains('asleep')) { np.classList.remove('asleep'); void np.offsetWidth; armMeasured = false; }
     renderFlow();
     npOpen = true;
     setMode(mode || 'lyrics');
@@ -424,7 +662,10 @@
     np.classList.remove('open');
     q(np, '.tn-cover video').pause();
     np.setAttribute('aria-hidden', 'true');
+    clearTimeout(npSleep);
+    npSleep = setTimeout(() => { if (!npOpen) np.classList.add('asleep'); }, 650);
   }
+  np.classList.add('asleep');
   function setMode(m) {
     np.classList.remove('mode-lyrics', 'mode-queue', 'mode-none');
     np.classList.add('mode-' + m);
@@ -463,8 +704,28 @@
   // off to pause.
   let ARM_REST = -28, ARM_START = 2, ARM_END = 24;
   var armMeasured = false;
-  // Measure where the stylus meets the record's outer edge and the label's edge (the arm swings about its pivot),
-  // so the start of the song is always the outer groove and the end is always the label, whatever the length.
+  // The stylus moves inward at an even pace, like a real groove: its distance from the record's centre goes from the
+  // outer edge (song start) to the label's edge (song end) in step with the song. The arm's angle is worked out from
+  // that distance; an angle moving evenly with time would leave the stylus nearly still near the label for the last
+  // part of the song, because near the end of the arm's swing turning it barely changes the distance.
+  // armTable: [angle, distance] from the outer groove to the label, distance always falling.
+  let armTable = [[2, 1], [24, 0]];
+  const angleForDist = (r) => {
+    const t = armTable;
+    if (r >= t[0][1]) return t[0][0];
+    for (let i = 1; i < t.length; i++) {
+      if (r >= t[i][1]) { const [a0, d0] = t[i - 1], [a1, d1] = t[i]; return a0 + (a1 - a0) * (d0 - r) / ((d0 - d1) || 1); }
+    }
+    return t[t.length - 1][0];
+  };
+  const distForAngle = (a) => {
+    const t = armTable;
+    if (a <= t[0][0]) return t[0][1];
+    for (let i = 1; i < t.length; i++) {
+      if (a <= t[i][0]) { const [a0, d0] = t[i - 1], [a1, d1] = t[i]; return d0 + (d1 - d0) * (a - a0) / ((a1 - a0) || 1); }
+    }
+    return t[t.length - 1][1];
+  };
   function measureArm() {
     const rec = q(np, '.tn-cover').getBoundingClientRect();
     if (!rec.width) { armMeasured = false; return; }
@@ -473,11 +734,17 @@
     const tx = (44 - 30) * sc, ty = (205 - 22) * sc;
     const cx = rec.left + rec.width / 2, cy = rec.top + rec.height / 2;
     const dist = (deg) => { const a = deg * Math.PI / 180; const x = px + tx * Math.cos(a) - ty * Math.sin(a); const y = py + tx * Math.sin(a) + ty * Math.cos(a); return Math.hypot(x - cx, y - cy); };
-    const find = (r) => { let best = 0, err = Infinity; for (let d = -40; d <= 80; d += 0.25) { const e = Math.abs(dist(d) - r); if (e < err) { err = e; best = d; } } return best; };
-    // the label edge, or as close to it as the arm can reach
-    let minD = Infinity; for (let d = -40; d <= 80; d += 0.5) minD = Math.min(minD, dist(d));
-    const outer = find(rec.width / 2 * 0.95), inner = find(Math.max(rec.width * 0.205, minD + 2));
-    ARM_START = Math.min(outer, inner); ARM_END = Math.max(outer, inner); ARM_REST = ARM_START - 26;
+    // the arm swings inward as its angle grows; only the part of the swing where the distance keeps falling counts
+    let dMin = -40, minD = Infinity;
+    for (let d = -40; d <= 80; d += 0.25) { const r = dist(d); if (r < minD) { minD = r; dMin = d; } }
+    const rOuter = rec.width / 2 * 0.95;
+    const rInner = Math.max(rec.width * 0.205, minD + 2);   // the label's edge, or as close to it as the arm reaches
+    const table = [];
+    for (let d = -40; d <= dMin; d += 0.25) { const r = dist(d); if (r <= rOuter + 2 && r >= rInner - 0.01) table.push([d, r]); }
+    if (table.length < 2) return;
+    armTable = table;
+    ARM_START = angleForDist(rOuter); ARM_END = angleForDist(rInner); ARM_REST = ARM_START - 26;
+    armTable = [[ARM_START, rOuter], ...table.filter(([d]) => d > ARM_START && d < ARM_END), [ARM_END, rInner]];
   }
   // re-measure whenever the record changes size or the player is narrowed (queue open), not only on window resize
   const armObserver = new ResizeObserver(() => { if (np.classList.contains('vinyl')) { measureArm(); armMeasured = true; } });
@@ -485,7 +752,12 @@
   onDispose(() => armObserver.disconnect());
   const arm = q(np, '.tn-arm');
   let armDrag = null;
-  const armAngleFor = (ms) => ARM_START + (ARM_END - ARM_START) * Math.min(1, ms / (P.getDuration() || 1));
+  // song position → stylus distance (even pace from the outer groove to the label) → arm angle
+  const armFrac = (ms) => Math.max(0, Math.min(1, ms / (P.getDuration() || 1)));
+  const armAngleFor = (ms) => {
+    const t = armTable, rOut = t[0][1], rIn = t[t.length - 1][1];
+    return angleForDist(rOut - (rOut - rIn) * armFrac(ms));
+  };
   function placeArm(ms) {
     if (armDrag || !np.classList.contains('vinyl')) return;
     if (!armMeasured) { armMeasured = true; measureArm(); }
@@ -521,7 +793,8 @@
     arm.classList.remove('held');
     if (a < ARM_START - 4) { if (P.isPlaying()) P.pause(); }
     else {
-      const frac = Math.max(0, Math.min(1, (a - ARM_START) / (ARM_END - ARM_START)));
+      const t = armTable, rOut = t[0][1], rIn = t[t.length - 1][1];
+      const frac = Math.max(0, Math.min(1, (rOut - distForAngle(a)) / ((rOut - rIn) || 1)));
       P.seek(Math.round(frac * P.getDuration()));
       if (!P.isPlaying()) P.play();
     }
@@ -591,6 +864,29 @@
     }
   }
   listen(window, 'resize', fitMarquees);
+  // one marquee pass at a time (see core.css): on a new song and on hover
+  const marqueePass = (box) => {
+    if (!box.classList.contains('scrolling') || box.classList.contains('pass')) return;
+    box.classList.add('pass');
+    box.firstElementChild?.addEventListener('animationend', () => box.classList.remove('pass'), { once: true });
+  };
+  const allPasses = () => { if (!document.hidden) document.querySelectorAll('.tess-marquee').forEach(marqueePass); };
+  // (no timed passes: a pass every 20 s kept the window redrawing half the time; song change and hover are enough)
+  listen(document, 'mouseover', (e) => { const box = e.target.closest?.('.tess-marquee'); if (box) marqueePass(box); }, { passive: true });
+  // records spin for 12 s after a song starts or play is pressed (and on hover, in CSS), then rest
+  let spinTimer = 0;
+  const spinBurst = () => {
+    if (!P.isPlaying()) return;
+    html.classList.add('tess-spin-burst');
+    clearTimeout(spinTimer);
+    spinTimer = setTimeout(() => html.classList.remove('tess-spin-burst'), 12000);
+  };
+  P.addEventListener('songchange', spinBurst);
+  P.addEventListener('onplaypause', spinBurst);
+  onDispose(() => { P.removeEventListener('songchange', spinBurst); P.removeEventListener('onplaypause', spinBurst); clearTimeout(spinTimer); html.classList.remove('tess-spin-burst'); });
+  const marqueeOnSong = () => setTimeout(allPasses, 1500);
+  P.addEventListener('songchange', marqueeOnSong);
+  onDispose(() => P.removeEventListener('songchange', marqueeOnSong));
 
   // ---------------- first-run welcome ----------------
   // A single glass sheet on first launch to pick the defaults; everything here is also in Settings → Theme.
@@ -841,6 +1137,8 @@
     const uri = item()?.uri;
     if (!uri || uri === lyrics.uri) return;
     lyrics = { uri, sync: 'LOADING', lines: [] };
+    np.classList.remove('no-lyrics');
+    q(np, '.tn-nolyr').hidden = true;
     linesEl.innerHTML = '';
     noteEl.textContent = '';
     lastLine = -2;
@@ -884,7 +1182,12 @@
     np.classList.toggle('unsynced', lyrics.sync === 'UNSYNCED');
     side.classList.toggle('unsynced', lyrics.sync === 'UNSYNCED');
     side.hidden = !lyrics.lines.length;
-    noteEl.textContent = lyrics.lines.length || lyrics.sync === 'LOADING' ? '' : 'Lyrics aren’t available for this song';
+    // no lyrics: a small note in the corner, and the record, artwork or video takes the whole stage instead
+    const none = !lyrics.lines.length && lyrics.sync !== 'LOADING';
+    np.classList.toggle('no-lyrics', none);
+    q(np, '.tn-nolyr').hidden = !none;
+    noteEl.textContent = '';
+    syncLabel();
     for (const v of views) {
       v.lines.innerHTML = '';
       v.lines.style.transform = '';
@@ -977,10 +1280,31 @@
     syncOffsets[u] = Math.round(((syncOffsets[u] || 0) + d) * 10) / 10;
     if (!syncOffsets[u]) delete syncOffsets[u];
     try { localStorage.setItem('tess:lyricSync', JSON.stringify(syncOffsets)); } catch {}
-    np.querySelectorAll('.tn-sync b').forEach((b) => { b.textContent = syncOffsets[u] ? `${syncOffsets[u] > 0 ? '+' : ''}${syncOffsets[u].toFixed(1)}s` : 'In sync'; });
+    syncLabel();
     lastLine = -2;
   }
-  np.querySelectorAll('.tn-sync button').forEach((b) => { b.onclick = () => nudgeSync(+b.dataset.d); });
+  // the middle of the timing pill: shows the offset (or "In sync"), and "Back to now" while you've scrolled away;
+  // clicking it brings the lyrics straight back to the line being sung and they follow the song again
+  function syncLabel() {
+    const u = item()?.uri;
+    const manual = views[0].manualUntil > performance.now();
+    np.classList.toggle('lyr-manual', manual);
+    np.querySelectorAll('.tn-sync-now').forEach((b) => {
+      b.textContent = manual ? 'Back to now' : syncOffsets[u] ? `${syncOffsets[u] > 0 ? '+' : ''}${syncOffsets[u].toFixed(1)}s` : 'In sync';
+    });
+  }
+  function backToNow() {
+    const v = views[0];
+    clearTimeout(v.resume);
+    v.lines.style.transition = '';
+    v.manualUntil = 0;
+    v.last = -2;
+    lastLine = -2;
+    updateLyrics(P.getProgress());
+    syncLabel();
+  }
+  np.querySelectorAll('.tn-sync button[data-d]').forEach((b) => { b.onclick = () => nudgeSync(+b.dataset.d); });
+  np.querySelectorAll('.tn-sync-now').forEach((b) => { b.onclick = backToNow; });
   // scroll the lyrics yourself; they follow the song again 3 seconds after you stop
   listen(q(np, '.tn-lyrics'), 'wheel', (e) => {
     const v = views[0];
@@ -990,7 +1314,8 @@
     v.lines.style.transition = 'none';
     v.lines.style.transform = `translateY(${-v.manualOffset}px)`;
     clearTimeout(v.resume);
-    v.resume = setTimeout(() => { v.lines.style.transition = ''; v.manualUntil = 0; v.last = -2; lastLine = -2; }, 3000);
+    v.resume = setTimeout(backToNow, 3000);
+    syncLabel();
   }, { passive: false });
   function updateLyrics(ms) {
     ms += syncOffset() * 1000;
@@ -1181,9 +1506,11 @@
       ms.endOfStream();
       video.loop = true;
       video.muted = true;
-      video.autoplay = true;
+      // the full-screen player's video plays only while the player is open (openNP starts it)
+      const wanted = !video.closest('#tess-np') || npOpen;
+      video.autoplay = wanted;
       // don't wait on play(): it can sit unresolved while the window is in the background
-      video.play().catch(() => {});
+      if (wanted) video.play().catch(() => {});
       return true;
     } catch {
       return false;
@@ -1259,13 +1586,36 @@
     const quality = document.querySelector('[data-testid="context-item-info-quality"]')?.textContent?.trim() || '';
     if (q(bar, '.tb-quality').textContent !== quality) q(bar, '.tb-quality').textContent = quality;
     if (q(np, '.tn-quality').textContent !== quality) q(np, '.tn-quality').textContent = quality;
+    syncDj();
+  }
+  function syncDj() {
+    const b = q(bar, '.tb-dj'), sd = stockDj();
+    b.hidden = !sd;
+    if (!sd) return;
+    const svg = sd.querySelector('svg')?.outerHTML || '';
+    if (b.dataset.icon !== svg) { b.dataset.icon = svg; b.innerHTML = svg; }
+    b.style.setProperty('--dj', sd.style.backgroundColor || '');
   }
 
+  // The bar's progress line moves about a pixel a second, so it is updated only when it would move a whole pixel
+  // (checked twice a second, a GPU-only transform change). A smooth 60 fps animation of it, or a width change four
+  // times a second, had kept the whole window redrawing for as long as anything played.
+  let barScale = -1;
+  function animateBarProgress() {
+    const line = q(bar, '.tb-prog i');
+    const dur = P.getDuration() || 1;
+    const f = Math.min(1, Math.max(0, P.getProgress() / dur));
+    const px = Math.round(f * (line.parentElement.clientWidth || 300));
+    if (px === barScale) return;
+    barScale = px;
+    line.style.transform = `scaleX(${f.toFixed(4)})`;
+  }
+  const checkBarDrift = animateBarProgress;
+  listen(document, 'visibilitychange', animateBarProgress);
   function syncProgress() {
     const ms = P.getProgress();
     const dur = P.getDuration() || 1;
     const pct = Math.min(100, (ms / dur) * 100) + '%';
-    q(bar, '.tb-prog i').style.width = pct;
     if (npOpen) {
       placeArm(ms);
       markRibbon(ms);
@@ -1292,7 +1642,8 @@
   onDispose(() => P.removeEventListener('songchange', onSong));
   P.addEventListener('onplaypause', syncState);
   onDispose(() => P.removeEventListener('onplaypause', syncState));
-  every(250, () => { if (!npOpen) { syncProgress(); updateLyrics(P.getProgress()); } });
+  every(250, () => { if (!npOpen) updateLyrics(P.getProgress()); });
+  every(500, () => { if (!npOpen) checkBarDrift(); });
   // coming back to the window: resume the full-screen Canvas if the player is open (Spotify pauses videos while hidden)
   listen(document, 'visibilitychange', () => {
     if (!document.hidden && npOpen && np.classList.contains('has-canvas')) q(np, '.tn-cover video').play().catch(() => {});
@@ -2045,7 +2396,7 @@
     const isArtist = path.startsWith('/artist/');
     html.classList.toggle('tess-artist', isArtist);
     html.classList.toggle('tess-on-settings', path.startsWith('/preferences'));
-    html.classList.remove('tess-hero-light', 'tess-hero-past', 'tess-artist-portrait');
+    html.classList.remove('tess-hero-light', 'tess-hero-past', 'tess-artist-portrait', 'tess-titled');
     document.querySelectorAll('.tess-hero-made').forEach((n) => n.remove());
     html.style.setProperty('--tess-scroll-p', '0');
     clearInterval(heroTimer);
@@ -2159,6 +2510,7 @@
     if (!v) { unwait(); return; }
     bg.appendChild(v);
     v.classList.add('ready');
+    bg.classList.add('video-ready');
     unwait();
     {
       heroTimer = setInterval(() => {
@@ -2188,9 +2540,22 @@
     while (e && !/auto|scroll/.test(getComputedStyle(e).overflowY)) e = e.parentElement;
     return e;
   };
+  // The strip across the top of a page appears together with the page's name, once the page's own big title has
+  // scrolled up under it (Apple Music's way). Spotify showed its strip early and the name only later, so for a long
+  // stretch it was a blank band; on some pages the name never appeared.
+  function bandTitle(scroller) {
+    if (!scroller.closest?.('.main-view-container, #main-view') && !scroller.querySelector?.('.main-view-container')) return;
+    const band = document.querySelector('.main-topBar-container');
+    if (!band) return;
+    const title = scroller.querySelector('[data-testid="entityTitle"], .main-entityHeader-title, h1');
+    const past = title ? title.getBoundingClientRect().bottom < band.getBoundingClientRect().bottom + 4 : scroller.scrollTop > 240;
+    html.classList.toggle('tess-titled', past && scroller.scrollTop > 0);
+  }
   listen(document, 'scroll', (e) => {
     if (!(e.target instanceof Element)) return;
     heroScroll(e.target);
+    bandTitle(e.target);
+    if (setNav) markSettingsNav();
     // track lists: the sticky column header turns to glass only while it is actually stuck
     const head = e.target.querySelector?.('.main-trackList-trackListHeader');
     if (head) head.classList.toggle('tess-stuck', head.getBoundingClientRect().top <= parseFloat(getComputedStyle(head).top) + e.target.getBoundingClientRect().top + 1 && e.target.scrollTop > 0);
@@ -2199,7 +2564,7 @@
   onDispose(() => typeof unlisten === 'function' && unlisten());
   listen(window, 'resize', () => { setHeroHeight(); setTimeout(onRoute, 100); });
   // for checking things from DevTools: window.__tessDebug.artistCanvas(uri), .playCanvas(video, fileId)
-  self.debug = { artistCanvas, playCanvas, trackCanvas, onRoute: () => onRoute() };
+  self.debug = { artistCanvas, playCanvas, trackCanvas, onRoute: () => onRoute(), place: () => runPlacers() };
   onboarding();
   onDraw(applyGlass, 4000);
   applyGlass();
@@ -2912,14 +3277,13 @@
     const h = new Date().getHours();
     return h < 5 ? 'Good night' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
   };
-  const masthead = el('<header id="tess-home-masthead" class="contentSpacing tess-home-enter"><div class="thm-eyebrow"></div><h1 class="thm-title"></h1></header>');
+  const masthead = el('<header id="tess-home-masthead" class="contentSpacing"><h1 class="thm-title"></h1></header>');
 
   // ---------- the dial ----------
   const dial = el(`
     <section id="tess-dial" class="tess-home-enter" aria-label="Pick something to play" tabindex="0">
       <canvas class="td-bg" width="96" height="54"></canvas><canvas class="td-bg" width="96" height="54"></canvas>
       <div class="td-label">
-        <small class="td-reason"></small>
         <b class="td-title"></b>
         <span class="td-sub"></span>
         <div class="td-actions">
@@ -3037,7 +3401,6 @@
     shownKey = key;
     items = picked;
     try { localStorage.setItem('tess:dialItems', JSON.stringify(items.map(({ uri, title, subtitle, img, kind, source, reason }) => ({ uri, title, subtitle, img, kind, source, reason })))); } catch {}
-    noteShown(items);
     buildRing();
     const playingAt = items.findIndex((i) => i.uri === cur);
     select(playingAt >= 0 ? playingAt : 0, true);
@@ -3087,23 +3450,26 @@
     const n = items.length;
     if (!n) return;
     index = ((i % n) + n) % n;
+    // "shown" means seen: only the selected item and its two neighbours by the marker count, not all twelve (#13)
+    if (dial.isConnected && !document.hidden) noteShown([items[(index + n - 1) % n], items[index], items[(index + 1) % n]].filter(Boolean));
     if (instant) { turns = index; ring.classList.add('instant'); requestAnimationFrame(() => ring.classList.remove('instant')); }
     ring.style.setProperty('--turn', (-turns * 360 / n) + 'deg');
     [...ring.children].forEach((c, k) => c.classList.toggle('on', k === index));
     const it = items[index];
-    dial.querySelector('.td-reason').textContent = it.reason || reasonFor(it);
     dial.querySelector('.td-title').textContent = it.title;
-    dial.querySelector('.td-sub').textContent = it.subtitle;
+    dial.querySelector('.td-sub').textContent = [it.reason || reasonFor(it), it.subtitle].filter(Boolean).join(' · ');
     const live = isCurrent(it);
     const song = P.data?.item;
     const songArt = imageOf(song?.metadata?.image_large_url || song?.metadata?.image_url || '');
     dial.querySelector('.td-record i').style.backgroundImage = `url("${live && songArt ? songArt : it.img}")`;
     dial.classList.toggle('live', live);
     if (live && song) {
-      dial.querySelector('.td-reason').textContent = P.isPlaying() ? 'Playing now' : 'Paused';
-      dial.querySelector('.td-sub').textContent = `${song.name || song.metadata?.title || ''} · ${song.metadata?.artist_name || ''}`;
+      dial.querySelector('.td-sub').textContent = `${P.isPlaying() ? 'Playing now' : 'Paused'} · ${song.name || song.metadata?.title || ''} · ${song.metadata?.artist_name || ''}`;
     }
-    dial.querySelector('.td-play span').textContent = isPlayingNow(it) ? 'Pause' : 'Play';
+    const playingIt = isPlayingNow(it);
+    dial.querySelector('.td-play span').textContent = playingIt ? 'Pause' : 'Play';
+    // the icon matches the word: two bars while it plays, a triangle otherwise
+    dial.querySelector('.td-play path').setAttribute('d', playingIt ? 'M1.5 1.5h3v11h-3zM7.5 1.5h3v11h-3z' : 'M1 1.5l9.5 5.5L1 12.5z');
     loadPalette(it.img);
   }
   const reasonFor = (it) => ({ dj: 'Your DJ', timeOfDay: 'For right now', madeFor: 'Made for you', jumpBackIn: 'Jump back in', topMixes: 'One of your top mixes', recent: 'Played recently', library: 'From your library' }[it.source] || 'For you');
@@ -3119,7 +3485,7 @@
   }
   function play(it) {
     if (!it) return;
-    if (isPlayingNow(it)) { P.togglePlay(); } else { Spicetify.Player.playUri(it.uri); notePlayed(it.uri); }
+    if (isPlayingNow(it)) { P.togglePlay(); } else { Spicetify.Player.playUri(it.uri); notePlayed(it.uri); lastNotedContext = it.uri; }
     dial.classList.add('pulse');
     setTimeout(() => dial.classList.remove('pulse'), 500);
     setTimeout(() => select(index), 600);
@@ -3201,7 +3567,7 @@
 
   // ---------- on this day ----------
   // Songs you saved to Liked Songs on today's date in earlier years (or, failing that, within a few days of it).
-  const otd = el(`<section id="tess-otd" class="tess-home-enter" hidden><div class="otd-head"><h2></h2><small></small></div><div class="otd-row"></div></section>`);
+  const otd = el(`<section id="tess-otd" hidden><div class="otd-head"><h2></h2><small></small></div><div class="otd-row"></div></section>`);
   onDispose(() => otd.remove());
   let otdDay = '';
   async function fillOnThisDay() {
@@ -3262,12 +3628,13 @@
       while (chipRow && getComputedStyle(chipRow).position !== 'sticky') chipRow = chipRow.parentElement;
     }
 
-    masthead.querySelector('.thm-eyebrow').textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
     masthead.querySelector('.thm-title').textContent = firstName ? `${greeting()}, ${firstName}` : greeting();
+    // Spotify's own background layer behind the pinned row is styled as Tess's frosted glass by CSS
+    // (.tess-home-sticky > div:empty): Spotify rewrites that layer's classes as you scroll, so a class added here
+    // would be wiped and leave a flat black slab.
     if (dial.isConnected && masthead.parentElement === chipRow && otd.isConnected) return;
     // the greeting lives inside Spotify's sticky filter bar, so the two stay pinned to the top together
     if (chipRow && masthead.parentElement !== chipRow) { chipRow.prepend(masthead); chipRow.classList.add('tess-home-sticky'); }
-    chipRow?.querySelector(':scope > :not(#tess-home-masthead)')?.classList.add('tess-sticky-glass');
     if (chipRow && !chipRow.dataset.tessScroll) {
       chipRow.dataset.tessScroll = '1';
       let sc = chipRow.parentElement;
@@ -3295,12 +3662,28 @@
     // started from somewhere else (sidebar, search, a page): bring it onto the ring now and select it
     if (cur) { lastRefresh = 0; shownKey = ''; refreshDial(); } else select(index);
   };
+  // A play counts wherever it starts (sidebar, search, an album page), not only from the ring, and the ring is
+  // worked out afresh on the next visit to Home instead of showing the one chosen before that play (#13).
+  let lastNotedContext = P.data?.context?.uri || null;
+  const onContext = () => {
+    const cur = P.data?.context?.uri;
+    if (!cur || cur === lastNotedContext || !/^spotify:(playlist|album|artist|show|station|collection|user:[^:]+:collection)/.test(cur)) return;
+    lastNotedContext = cur;
+    notePlayed(cur);
+    lastRefresh = 0;
+  };
+  P.addEventListener('songchange', onContext);
+  onDispose(() => P.removeEventListener('songchange', onContext));
   P.addEventListener('songchange', onSong);
   P.addEventListener('onplaypause', onSong);
   onDispose(() => { P.removeEventListener('songchange', onSong); P.removeEventListener('onplaypause', onSong); html.classList.remove('tess-home'); });
   const ro = new ResizeObserver(() => layoutRing());
   ro.observe(wheel);
   onDispose(() => ro.disconnect());
+  // the record only spins while you can see it: scrolled away, every frame of it was still drawn
+  const seen = new IntersectionObserver(([e]) => dial.classList.toggle('offscreen', !e.isIntersecting));
+  seen.observe(dial);
+  onDispose(() => seen.disconnect());
   // place everything the moment Spotify draws home, instead of polling for it
   let queued = false;
   const mo = new MutationObserver(() => {
