@@ -1,0 +1,13 @@
+# Default owner for all paths
+* @Flame119052
+
+# Area boundaries (ready to delegate per-area reviewers as the project grows)
+/theme/         @Flame119052
+/patcher/       @Flame119052
+/installer/     @Flame119052
+/mini/          @Flame119052
+/companion/     @Flame119052
+/inbox/         @Flame119052
+/.github/       @Flame119052
+/tools/         @Flame119052
+/docs/          @Flame119052

@@ -2,6 +2,21 @@ name: Something's wrong
 description: Tess or Spotify isn't working or looks wrong
 labels: [bug]
 body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of Tess is affected?
+      options:
+        - "area: theme (UI, player, Dial, library, artist pages)"
+        - "area: patcher (Spicetify fork, safe swap)"
+        - "area: installer (installer, updater, doctor, rescue, macOS permissions)"
+        - "area: mini (Tess Mini macOS miniplayer)"
+        - "area: companion (phone PWA)"
+        - "area: release-ci (CI, signing, release channels)"
+        - "area: docs"
+    validations:
+      required: true
   - type: textarea
     id: what
     attributes:

@@ -1,1 +1,8 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
+contact_links:
+  - name: Security Vulnerability (Private)
+    url: https://github.com/Flame119052/tess-music/security/advisories/new
+    about: Do not file public issues for security bugs. Report privately here.
+  - name: Roadmap & Issue Triage Guide
+    url: https://github.com/Flame119052/tess-music/blob/main/docs/triage.md
+    about: How issues are prioritized, categorized, and scheduled into phases.

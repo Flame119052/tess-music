@@ -2,6 +2,21 @@ name: Idea or change
 description: Something new for Tess, or a change to how it looks or works
 labels: [enhancement]
 body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of Tess does this change touch?
+      options:
+        - "area: theme (UI, player, Dial, library, artist pages)"
+        - "area: patcher (Spicetify fork, safe swap)"
+        - "area: installer (installer, updater, doctor, rescue)"
+        - "area: mini (Tess Mini macOS miniplayer)"
+        - "area: companion (phone PWA)"
+        - "area: release-ci (CI, signing, release channels)"
+        - "area: docs"
+    validations:
+      required: true
   - type: textarea
     id: what
     attributes:

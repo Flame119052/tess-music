@@ -94,11 +94,25 @@ nothing; Krish using the Mac adds noise, so alternate with/without and repeat (t
 ## Work tracking
 
 - One GitHub issue per piece of work, in this repo. The issue names the goal, the check, and what blocks it.
+- Give every issue a **clear, plain-English title** that anyone can understand without knowing internal code names.
+- Tag every issue using the 4-axis system in `docs/triage.md` (`P0`–`P3` priority, `area:*` category, type, workflow status) and assign it to the matching roadmap milestone.
 - Comment the evidence on the issue and close it when checked; leave it open (with why) when it needs a real-world
   event (e.g. #28 needs a real blocked Mac).
-- Work lands on `main` (no PRs unless Krish asks). Small, focused commits; the message says what changed for the user
-  and why, and ends with the issue number, e.g. `(#30)`.
+- Work currently lands on `main` (transition to PRs → `dev` → `beta` → `stable` is tracked in #62 while approvers are TBD).
+  Small, focused commits; the message says what changed for the user and why, and ends with the issue number, e.g. `(#30)`.
 - Update `docs/status.md` when something user-visible changes state.
+
+## Communicating with Krish
+
+- **Explain simply, in plain English:** when giving updates, explaining what changed, or comparing trade-offs, write in
+  clear, everyday language first. Focus on what the user sees and feels, why it matters, and real numbers—avoid walls
+  of internal code jargon unless he asks for code-level details.
+- **Quality & premium feel come first:** speed and efficiency must coexist with the rich, made-for-you Apple Music
+  feel—never cut animations, visual polish, or richness just to lower CPU numbers (#58). Keep foreground animations
+  (especially vinyls) running whenever any part of Spotify is visible on screen; pause/sleep only when completely
+  hidden (#57).
+- **Respect "triage / issues only" requests:** when Krish asks to file or organize issues first (or asks a question
+  about how things work), update issues/docs without editing app code until he asks to build.
 
 ## Writing style (code and docs)
 

@@ -82,6 +82,11 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   not installed, until he decides to install one. (#42)
 - **D-39 · 13 Nov 2026 · Owner** — No more feature building in the session that ended with the security audit; file
   everything as issues, document, and audit instead.
+- **D-40 · 13 Nov 2026 · Owner** — Move shipping to Pull Requests → `dev` (auto on passed/merged PR) → `beta` →
+  `stable`, with exact approvers ("passed by whom") TBD. Tracked in #62 before updating the live workflow rules.
+- **D-41 · 13 Nov 2026 · Owner** — Standardize GitHub issue structure like large repos: 4-axis labels (`P0`–`P3`,
+  `area:*`, type, status), phase milestones, plain-English titles for everyone, `CONTRIBUTING.md`, `CODEOWNERS`, and
+  plain-language updates/explanations.
 
 ## Design and performance
 
@@ -92,11 +97,20 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   and on hover, then rest; the subtitle scrolls once per song; the progress line moves a pixel at a time.
   *On a visible Retina window any endless motion cost ~1/3 of a CPU core; at rest CPU went 71% → 29%.* The
   full-screen player is the one place continuous motion stays. (#35) Revisit if the owner wants records spinning
-  continuously; the cost is known.
+  continuously; the cost is known. *(Overruled by D-56.)*
 - **D-53 · 13 Nov 2026 · Agent** — Replace broad `:has()` rules with `data-tess-*` marks set when Spotify draws; give
   Spotify's buttons `will-change: auto`; shelf arrows on hover. *Each was measured as a per-frame or per-change cost.*
+  *(Visual trade-offs under review per D-56, #58.)*
 - **D-54 · 13 Nov 2026 · Agent** — From Impeccable's craft floor: no eyebrow labels above headings (Home greeting,
   Dial reason/state moved under the title), one entrance per page. *The skill marks eyebrows as a ban.* Easy to
   reverse if the owner prefers the labels. (#42)
 - **D-55 · 13 Nov 2026 · Agent** — The closed full-screen player sleeps (`display: none` after its exit animation) and
-  its video plays only when open. *It was most of Tess's work while hidden.*
+  its video plays only when open. *It was most of Tess's work while hidden.* *(Scoped by D-56: sleep/pause only when
+  completely hidden, #57.)*
+- **D-56 · 13 Nov 2026 · Owner** — Overrules D-52 and limits D-53/D-55: performance and efficiency must coexist with the
+  rich, made-for-you Apple Music feel, never at the cost of quality (#58). Keep vinyls and foreground animations running
+  whenever any part of Spotify is visible (even if overshadowed by another window); pause/sleep only when completely
+  hidden (#57). Fix renamed Spotify selectors directly in our `patcher/` fork and watch upstream `spicetify/cli` (#59).
+- **D-57 · 13 Nov 2026 · Owner** — Visual & UX priorities filed: fix artist Photo/Video switch & per-artist persistence
+  (#60), separate Blends and Playlists in Library (#61), rework vinyl tonearm edge-to-label geometry & sync (#63),
+  fix blank right side in no-lyrics full-screen transitions (#65), and collect customization/design controls (#64).
