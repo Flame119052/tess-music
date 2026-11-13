@@ -54,8 +54,9 @@ Each Mac has three layers. Each one keeps working when the layer above it is bro
 3. **Rescue line.** A separate agent (`music.tess.rescue`) that updates never replace. Every 6 hours it fetches the
    rescue order from the `rescue` branch (or from the inbox if GitHub is unreachable) and runs it once. It runs only
    orders signed with the **rescue key** (`~/.config/tess-signing/rescue.pem`, kept only on this Mac, never in GitHub
-   or CI), with a higher serial than any it has run, not expired, and for every Mac or this Mac's id.
-   Publish one with `node tools/rescue.mjs fix.sh [--days 3] [--only <install id>]`.
+   or CI), with a higher serial than any it has run, not expired, and for every Mac or this Mac's id. An order can only
+   name one of five actions built into `rescue.sh` (check, update, repair, restore-spotify, uninstall), never a script.
+   Publish one with `node tools/rescue.mjs <action> [--days 3] [--only <install id>]`.
 
 **Reports.** Macs send anonymous health reports (a daily heartbeat, problems, failed installs, rescue results) to
 the inbox, a Cloudflare Worker at `tess-music-player.janus.ing` (`inbox/`). Nothing personal is sent: the home
