@@ -1,0 +1,26 @@
+# Runs on every push and pull request: the same safety gate the release uses, plus builds and tests.
+# A red check here means something is broken even if nothing was released.
+name: check
+on:
+  push:
+  pull_request:
+permissions: { contents: read }
+jobs:
+  check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: patcher/go.mod, cache: false }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Safety checks (installer, updater, doctor, rescue, patcher swap)
+        run: tools/check-safety.sh
+      - name: Theme builds and parses
+        run: node tools/build.mjs && node --check theme/Tess/theme.js && node --check theme/loader/loader.js
+      - name: Patcher builds
+        run: cd patcher && go build ./... && go vet ./src/cmd/
+      - name: Dial picking tests
+        run: node tools/test-dial-pick.mjs
+      - name: Tools parse
+        run: for f in tools/*.mjs; do node --check "$f"; done

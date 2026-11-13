@@ -1,0 +1,20 @@
+name: Idea or change
+description: Something new for Tess, or a change to how it looks or works
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What and why
+      description: What should Tess do, and what does it fix or make better for you?
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: How we'll know it's done
+      description: The check, e.g. "with the DJ playing, the button shows and opens DJ's options" (screenshots/video for looks; numbers for speed).
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes, references, screenshots

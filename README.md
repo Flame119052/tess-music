@@ -70,16 +70,21 @@ a leaked rescue key means rotating it with a normal update.
 
 ## For development
 
+Start with **[`AGENTS.md`](AGENTS.md)** (rules, repo map, dev loop, how to check and ship), then
+**[`DESIGN.md`](DESIGN.md)** (design system, motion and performance rules) and
+**[`docs/architecture.md`](docs/architecture.md)** (install, updates, safety, releases). What's open:
+[`docs/status.md`](docs/status.md) and the GitHub issues. Report security problems privately ([`SECURITY.md`](SECURITY.md)).
+
 | Path | What |
 |---|---|
 | `theme/Tess/src/` | theme source (`core`, `home`, `playlist`, `dial-pick`); `tools/build.mjs` joins them into `user.css` / `theme.js` |
 | `theme/loader/` | the self-updating, signature-checking loader the installer writes into Spotify |
-| `installer/` | `install.sh`, `uninstall.sh` (test against a copy: `TESS_TEST=1 TESS_SPOTIFY=/path/Spotify.app`) |
+| `installer/` | `install.sh` (public stub), `tess-install.sh` (installer; test against a copy: `TESS_TEST=1 TESS_HOME=… TESS_CONFIG=… TESS_SPOTIFY=/path/Spotify.app`), `updater.sh`, `doctor.sh`, `rescue.sh`, `uninstall.sh` |
 | `mini/` | Tess Mini (SwiftUI) |
-| `patcher/` | the Spicetify CLI fork |
-| `tools/` | `hot.mjs` (live reload), `cdp.mjs` / `cdp-input.mjs` (drive the app), `release.mjs`, audits, profiling |
-| `docs/` | research notes, the feedback checklist, what's left |
-| branches `stable`, `beta` | the signed release bundles the loader downloads (written by `tools/release.mjs`) |
+| `patcher/` | the Spicetify CLI fork (safe folder swap, `can-write`, `tess-verify`) |
+| `inbox/` | the health-report inbox (Cloudflare Worker) |
+| `tools/` | `hot.mjs` (live reload), `cdp.mjs` (drive the app), `bench.mjs` / `cpu-ab.mjs` / `ab.mjs` / traces (measure), `release.mjs`, `promote.mjs`, `rescue.mjs`, `reports.mjs`, `check-safety.sh` |
+| branches `dev`, `stable`, `beta` | the signed release bundles (`dev` internal; `stable`/`beta` only by promotion) |
 
 Release: every push to `main` that touches `theme/`, `mini/`, `patcher/` or `installer/` is built, signed and published
 to the internal **`dev`** channel only (`.github/workflows/release.yml`); only the owner's Mac follows it. Nobody else
