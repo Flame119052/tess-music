@@ -219,7 +219,8 @@ html.tess [data-testid="home-ads-container"] {
   border-radius: 50%;
   background: repeating-radial-gradient(circle, #121214 0 1.5px, #1c1c20 1.5px 3.5px);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.65), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
-  animation: td-spin 5.5s linear infinite;
+  /* 30 steps a second: looks the same on a turning record, half the redraws of 60 */
+  animation: td-spin 5.5s steps(165) infinite;
   animation-play-state: paused;
 }
 html.tess-playing .td-record {
@@ -314,11 +315,11 @@ html.tess [data-testid="home-page"] [data-encore-id="card"]:active {
   transform: scale(0.98);
 }
 /* artwork: the frame carries the corners and shadow, the image just fills it (one shape) */
-html.tess [data-testid="home-page"] [data-encore-id="card"] div:has(> img) {
+html.tess [data-testid="home-page"] [data-tess-art] {
   border-radius: 10px !important;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.38);
 }
-html.tess [data-testid="home-page"] [data-encore-id="card"]:has(a[href^="/artist/"]) div:has(> img) {
+html.tess [data-testid="home-page"] [data-tess-art="round"] {
   border-radius: 50% !important;
 }
 html.tess [data-testid="home-page"] [data-encore-id="card"] img {

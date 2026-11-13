@@ -234,7 +234,9 @@ html.tess .main-view-container__scroll-node-child {
   overflow: hidden;
   -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent);
 }
-/* subtitles scroll only when they don't fit (the script adds .scrolling) */
+/* subtitles scroll only when they don't fit (the script adds .scrolling). One pass at a time, like Apple Music:
+   rest, glide to the end, rest, glide back; then it stays still until the next pass (every ~20 s, on a new song, or
+   on hover). Looping forever made the window redraw 60 times a second for as long as anything played. */
 .tess-marquee {
   -webkit-mask-image: none !important;
 }
@@ -245,12 +247,13 @@ html.tess .main-view-container__scroll-node-child {
 .tess-marquee.scrolling {
   -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent) !important;
 }
-.tess-marquee.scrolling span {
-  animation: tess-marquee 14s linear infinite;
+.tess-marquee.scrolling.pass span {
+  animation: tess-marquee 11s ease-in-out 1;
 }
 @keyframes tess-marquee {
-  0%, 20% { transform: translateX(0); }
-  80%, 100% { transform: translateX(var(--tess-marquee-shift, 0)); }
+  0%, 12% { transform: translateX(0); }
+  45%, 62% { transform: translateX(var(--tess-marquee-shift, 0)); }
+  95%, 100% { transform: translateX(0); }
 }
 .tb-prog {
   position: absolute;
@@ -942,7 +945,7 @@ html.tess #Desktop_LeftSidebar_Id [role="row"][aria-selected="true"] [data-encor
 html.tess #Desktop_LeftSidebar_Id [data-encore-id="listRow"][aria-selected="true"] {
   background: rgba(255, 255, 255, 0.1) !important;
 }
-html.tess #Desktop_LeftSidebar_Id [data-encore-id="listRow"]:has([data-encore-id="listRowTitle"][class*="bright-accent"]) {
+html.tess #Desktop_LeftSidebar_Id [data-tess-row-playing] {
   background: linear-gradient(90deg, rgba(30, 215, 96, 0.16), rgba(30, 215, 96, 0.02) 70%) !important;
   box-shadow: inset 0 0 0 1px rgba(30, 215, 96, 0.18);
 }
@@ -1060,11 +1063,11 @@ html.tess.tess-artist .tess-hero-bg ~ * {
   display: none !important;
 }
 html.tess.tess-artist [data-testid="artist-page"] [style*="--background-base-70"],
-html.tess.tess-artist [data-testid="artist-page"] div:has(> [style*="--background-base-70"]) {
+html.tess.tess-artist [data-testid="artist-page"] [data-tess-artist-clear] {
   background: none !important;
 }
 /* Apple Music's artist scroll: the video stays put behind the page and melts into a soft, dim blur as you scroll */
-html.tess.tess-artist .before-scroll-node > div:has(> .tess-hero-bg) {
+html.tess.tess-artist [data-tess-hero-host] {
   overflow: hidden !important;
 }
 html.tess.tess-artist .tess-hero-bg {
@@ -1224,12 +1227,12 @@ html.tess .Root__right-sidebar-peek [class*="encore-text-body-medium-bold"] {
 }
 html.tess .Root__right-sidebar-peek [data-encore-id="card"],
 html.tess .Root__right-sidebar-peek section > div,
-html.tess .Root__right-sidebar-peek a[href^="/artist/"] > div:has(> img) {
+html.tess .Root__right-sidebar-peek [data-tess-art] {
   border-radius: var(--tess-radius) !important;
 }
 html.tess .Root__right-sidebar-peek section,
 html.tess .Root__right-sidebar-peek [class*="AboutArtist"],
-html.tess .Root__right-sidebar-peek div:has(> div > [data-testid="cover-art-image"]) {
+html.tess .Root__right-sidebar-peek [data-tess-cover-card] {
   background: rgba(255, 255, 255, 0.045) !important;
 }
 html.tess .Root__right-sidebar-peek button[class*="legacy-button-secondary"],
@@ -1366,7 +1369,7 @@ html.tess :is(#queue-panel, #history-panel) li[role="row"] [data-encore-id="list
 html.tess :is(#queue-panel, #history-panel) li[role="row"] [data-encore-id="listRow"]:hover {
   background: rgba(255, 255, 255, 0.06) !important;
 }
-html.tess :is(#queue-panel, #history-panel) li[role="row"] div:has(> img) {
+html.tess :is(#queue-panel, #history-panel) li[role="row"] [data-tess-art] {
   border-radius: 7px !important;
   overflow: hidden;
 }
@@ -1386,7 +1389,7 @@ html.tess :is(#queue-panel, #history-panel) li[role="row"] + li[role="row"] {
   border-top: 1px solid rgba(255, 255, 255, 0.04);
 }
 /* the Jam invite: a quiet glass card with a small white pill instead of a big green slab */
-html.tess #queue-panel div:has(> * > [data-encore-id="buttonPrimary"]):not(:has(ul)) {
+html.tess #queue-panel [data-tess-jam-card] {
   background: rgba(255, 255, 255, 0.045) !important;
   border-radius: var(--tess-radius) !important;
   box-shadow: inset 0 0 0 1px var(--tess-hairline);
@@ -1684,14 +1687,14 @@ html.tess.tess-lib-rail #tess-timeline {
   opacity: 0.55;
 }
 /* the slow zoom is only for still photos; a playing video already moves */
-html.tess.tess-artist .tess-hero-bg:has(.tess-hero-video.ready) {
+html.tess.tess-artist .tess-hero-bg.video-ready {
   animation: none;
 }
 /* the closed full-screen player costs nothing */
 #tess-np:not(.open) .tn-glow {
   display: none;
 }
-html.tess #queue-panel div:has(> [data-encore-id="buttonPrimary"]) {
+html.tess #queue-panel [data-tess-jam-btn-host] {
   background: none !important;
 }
 /* the library panel is one surface: its inner layer takes the outer corners and no paint of its own */
@@ -2224,15 +2227,12 @@ html:not(.tess-lib-wide) .tt-ruler {
 
 /* Spotify paints its whole layout grid with the "main" colour; with a real palette that layer would cover the
    aurora, so the grid (and anything else filling the window) stays clear and only the panels have a surface */
-html.tess .Root > div:has(> #main-view),
-html.tess .Root > div:has(> #global-nav-bar),
-html.tess div:has(> .Root),
+html.tess [data-tess-clear],
 html.tess #main {
   background: transparent !important;
 }
 /* the panels' inner layers take no paint of their own, so the tinted glass of the panel shows through */
-html.tess #Desktop_LeftSidebar_Id div:has(> header),
-html.tess #Desktop_LeftSidebar_Id div:has(> #tess-timeline),
+html.tess #Desktop_LeftSidebar_Id [data-tess-clear-bg],
 html.tess #Desktop_PanelContainer_Id,
 html.tess #Desktop_PanelContainer_Id > div,
 html.tess .Root__right-sidebar-peek aside,
@@ -2281,7 +2281,7 @@ html.tess #main-view .main-view-container {
 }
 
 /* artist picture/video always covers the whole page area, top to bottom, at any window size */
-html.tess.tess-artist .before-scroll-node > div:has(> .tess-hero-bg) {
+html.tess.tess-artist [data-tess-hero-host] {
   position: absolute !important;
   inset: 0 !important;
   height: auto !important;
@@ -2328,8 +2328,7 @@ html.tess [data-testid="playlist-page"] > div:not(.main-entityHeader-container) 
   background-color: transparent !important;
 }
 /* Spotify's fade mask on the panel's song title and artist resolves fully clear under Tess; give it real stops */
-html.tess .Root__right-sidebar-peek :has(> * > :is(a[href^="/album/"], a[href^="/artist/"], a[href^="/episode/"], a[href^="/show/"])),
-html.tess .Root__right-sidebar-peek :has(> * > * > a[href^="/artist/"]) {
+html.tess .Root__right-sidebar-peek [data-tess-mask] {
   -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 6px, #000 calc(100% - 10px), transparent 100%) !important;
   mask-image: linear-gradient(90deg, transparent 0, #000 6px, #000 calc(100% - 10px), transparent 100%) !important;
 }
@@ -2624,8 +2623,7 @@ html.tess #global-nav-bar form[role="search"].tess-liquid::before {
   display: none;
 }
 /* Spotify 1.3.9's (hidden) player row paints a solid band along the bottom; keep it clear */
-html.tess .Root > div > div:has([data-testid="now-playing-bar"]),
-html.tess div:has(> [data-testid="now-playing-bar"]) {
+html.tess [data-tess-bar-host] {
   background: transparent !important;
 }
 
@@ -3133,15 +3131,10 @@ html.tess.tess-artist-portrait [data-testid="artist-page"] .main-entityHeader-im
   margin: 0 !important;
 }
 /* Spotify's artist-colour block behind the play row (and the page colour under it) stay clear over the hero */
-html.tess.tess-artist [data-testid="artist-page"] div:has(> [data-testid="action-bar"]) > [style*="background-color"]:empty,
 html.tess.tess-artist [data-testid="artist-page"] [style*="background-color"]:empty {
   background: transparent !important;
 }
-html.tess.tess-artist [data-testid="artist-page"] div:has(> [data-testid="action-bar"]) {
-  background-color: transparent !important;
-}
-html.tess.tess-artist [data-testid="artist-page"] div:has(> .T2XRKvkWneSSMSOCEo40),
-html.tess.tess-artist [data-testid="artist-page"] div:has(> [style*="background-color"]:empty) {
+html.tess.tess-artist [data-testid="artist-page"] [data-tess-artist-clear] {
   background-color: transparent !important;
 }
 
@@ -3172,7 +3165,8 @@ html.tess.tess-artist [data-testid="artist-page"] div:has(> [style*="background-
   border-radius: 50%;
   background: repeating-radial-gradient(circle, #0d0d10 0 1.6px, #1a1a1f 1.6px 3.2px);
   box-shadow: 0 24px 50px rgba(0, 0, 0, 0.5);
-  animation: tn-spin 3.4s linear infinite;
+  /* 30 steps a second: looks the same on a turning record, half the redraws of 60 */
+  animation: tn-spin 3.4s steps(102) infinite;
   animation-play-state: paused;
 }
 html.tess-playing .tess-cover-wrap.vinyl .tess-side-cover { animation-play-state: running; }
