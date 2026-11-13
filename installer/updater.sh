@@ -263,8 +263,16 @@ if ! "$VERIFY" "$TMP/components.txt" "$(tr -d '\n' < "$TMP/components.sig")"; th
 fi
 rm -f "$STATE/.parts-list-reported"
 
-# each line: name sha256 url source-hash (and one "version X.Y.Z" line)
+# each line: name sha256 url source-hash (and one "version X.Y.Z" and one "rev N" line)
 awk '$1 == "version" { print $2 }' "$TMP/components.txt" > "$STATE/version.new" && [ -s "$STATE/version.new" ] && mv "$STATE/version.new" "$STATE/version"
+rev=$(awk '$1 == "rev" { print $2 }' "$TMP/components.txt")
+if [ -n "$rev" ]; then
+  case "$rev" in ''|*[!0-9]*) problem "parts list has a bad rev; ignored"; exit 0 ;; esac
+  last=$(cat "$STATE/rev-$CHANNEL" 2>/dev/null)
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  # correctly signed is not enough: an older list served by a mirror is still a downgrade
+  [ "$rev" -ge "$last" ] || { problem "parts list is older than the one already installed ($rev < $last); ignored"; doctor --auto; exit 0; }
+fi
 part_file() {
   case "$1" in
     command) echo "$HOME_TESS/tess" ;;
@@ -386,6 +394,7 @@ while read -r name sha url _src; do
   touch "$LOCK"
   log "$name: updated"; changed=$((changed + 1))
 done < "$TMP/components.txt"
+[ -n "$rev" ] && echo "$rev" > "$STATE/rev-$CHANNEL"
 [ "$changed" -gt 0 ] && log "parts current ($changed updated)"
 # a newer patcher may support a Spotify version the old one could not
 [ -n "$new_patcher" ] && reapply now
