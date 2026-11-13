@@ -1,0 +1,10 @@
+{
+  "version": "0.2.23",
+  "channel": "dev",
+  "js": "theme.js",
+  "css": "user.css",
+  "sig": {
+    "js": "1tb4V8IdR2YnRjvYJqXNDxCbTBPyn/ovUNTPjKtTJtwQwAqdMp9yImgTmCjfQB40YV1sVKe9CSE9kRvTr1//BQ==",
+    "css": "+mLhWJbM9uYjR0yMfy9TY5pqecZ2mv/hGhggav/WJkySScVAZ+PI0VXRFNM/Yo/k04i7dI77Rg9GrdceatrpDw=="
+  }
+}
