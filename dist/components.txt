@@ -3,4 +3,4 @@ patcher 65eedbf743a7b2da86e76cb826033f9acb7af6f509ee6ca2801bd639074ca567 https:/
 doctor 9aadfdda12bf0c18f2f1914c986e45200fe96e9fd88d1c21a1f8af2da2cf2038 https://github.com/Flame119052/tess-music/releases/download/v0.2.14/tess-doctor.sh 9aadfdda12bf0c18f2f1914c986e45200fe96e9fd88d1c21a1f8af2da2cf2038
 mini 2f3d07e8db2fd34c82150971b91873cb95db651a8e19a78aa9cef97813e61c38 https://github.com/Flame119052/tess-music/releases/download/v0.2.10/tess-mini.zip b338e16f513e834bc062cacb780264c01bb468a41ac2d8d121b04c7fsig1
 theme 81889d015fa8dd4598cb39e8554017166c651535acf32f4cbf01dadf5ed2461d https://github.com/Flame119052/tess-music/releases/download/v0.2.5/tess-theme.tar.gz 6452aa543ccb520f396ea838ab6ac0bb7c02c79dc0dac1db0aeda918ac55f635
-version 0.2.14
+version 0.2.15
