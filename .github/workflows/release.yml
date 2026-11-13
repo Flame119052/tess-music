@@ -8,7 +8,7 @@ name: release
 on:
   push:
     branches: [main]
-    paths: ['theme/**', 'mini/**', 'patcher/**', 'installer/updater.sh', 'tools/release.mjs', 'tools/build.mjs']
+    paths: ['theme/**', 'mini/**', 'patcher/**', 'installer/updater.sh', 'installer/doctor.sh', 'installer/rescue.sh', 'tools/release.mjs', 'tools/build.mjs']
   workflow_dispatch:
     inputs:
       channel: { description: 'stable or beta', default: 'beta', required: true }

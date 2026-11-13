@@ -1,0 +1,21 @@
+# Tess inbox (Cloudflare Worker). Deploy: npx wrangler@4 deploy   (from this folder, with the owner's Cloudflare login)
+name = "tess-inbox"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = false
+routes = [{ pattern = "tess-music-player.janus.ing", custom_domain = true }]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tess-inbox"
+database_id = "83718330-853d-44a2-9b4b-9edf1b4ecc00"
+
+[[kv_namespaces]]
+binding = "RESCUE"
+id = "26cadf05786a439b89302a0641180c39"
+
+[triggers]
+crons = ["17 4 * * *"]
+
+[observability]
+enabled = false

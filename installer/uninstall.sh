@@ -4,7 +4,7 @@
 HOME_TESS="$HOME/Library/Application Support/Tess"
 PATCHER="$HOME_TESS/bin/patcher/tess-patcher"
 echo; printf '\033[1m%s\033[0m\n\n' "Removing Tess Music"
-for a in music.tess.guard music.tess.mini; do
+for a in music.tess.guard music.tess.mini music.tess.rescue; do
   launchctl bootout "gui/$(id -u)/$a" >/dev/null 2>&1 || true
   rm -f "$HOME/Library/LaunchAgents/$a.plist"
 done

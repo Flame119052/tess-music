@@ -15,12 +15,14 @@ if [ -n "$TESS_TEST" ]; then
   export SPICETIFY_CONFIG="$TESS_CONFIG" SPICETIFY_STATE="$TESS_CONFIG/state"
 fi
 MIN_SPOTIFY="1.2.40"
+INBOX="https://tess-music-player.janus.ing"
 
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
 step() { printf '  \033[32m●\033[0m %s\n' "$1"; }
 PAUSED=""; WAS_RUNNING=""
 fail() {
   printf '\n  \033[31m✕\033[0m %s\n\n' "$1"
+  report_failure "$1"
   if [ -n "$PAUSED" ]; then
     # leave the Mac as it was found: helper running again, no lock, Spotify open if it was
     rm -f "$HOME_TESS/.installing"
@@ -30,6 +32,25 @@ fail() {
     fi
   fi
   exit 1
+}
+# When an install fails, a short anonymous report goes to the Tess inbox so the problem can be fixed (no names, no
+# paths under your home folder, no account details). Turn reports off before installing: touch the file below.
+report_failure() {
+  [ -n "$TESS_TEST" ] || [ -f "$HOME_TESS/reports-off" ] && return 0
+  command -v /usr/bin/python3 >/dev/null 2>&1 || return 0
+  mkdir -p "$HOME_TESS" 2>/dev/null
+  [ -f "$HOME_TESS/install-id" ] || od -An -tx1 -N16 /dev/urandom | tr -d ' \n' > "$HOME_TESS/install-id"
+  { echo "install failed: $1"; echo "spotify: ${SPOTIFY:-none}"
+    for a in /Applications/Spotify.app "$HOME/Applications/Spotify.app"; do echo "== $a"; ls -la "$a/Contents/Resources/Apps" 2>&1; done
+    echo "== running"; ps -axo comm= 2>/dev/null | grep '/Spotify.app/Contents/MacOS/Spotify$'
+    echo "== tess"; ls -la "$HOME_TESS" "$HOME/.local/state/tess-patcher/Backup" 2>&1
+    command -v spicetify >/dev/null 2>&1 && echo "spicetify is installed"
+  } 2>&1 | sed -e "s|$HOME|~|g" -e "s|/Users/$(id -un)|~|g" | /usr/bin/python3 -c '
+import json, sys
+a = sys.argv
+print(json.dumps({"install": a[1], "kind": "install", "spotify": a[2], "macos": a[3], "status": a[4][:300], "body": sys.stdin.read()[-40000:]}))
+' "$(cat "$HOME_TESS/install-id")" "${SPV:-}" "${MACOS:-}" "$1" 2>/dev/null \
+  | curl -fsS --max-time 20 -H "content-type: application/json" --data-binary @- "$INBOX/v1/report" >/dev/null 2>&1 || true
 }
 ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | head -1)" = "$2" ]; }
 
@@ -91,6 +112,7 @@ mkdir -p "$TMP/p" && tar -xzf "$TMP/patcher.tgz" -C "$TMP/p"
 fetch theme "$TMP/theme.tgz" || fail "Download failed. Check your connection and try again."
 fetch updater "$TMP/updater.sh" || fail "Download failed. Check your connection and try again."
 fetch mini "$TMP/mini.zip" || rm -f "$TMP/mini.zip"
+fetch doctor "$TMP/doctor.sh" || rm -f "$TMP/doctor.sh"
 mkdir -p "$HOME_TESS/bin"
 rm -rf "$HOME_TESS/bin/patcher"; ditto "$TMP/p" "$HOME_TESS/bin/patcher"
 PATCHER="$HOME_TESS/bin/patcher/tess-patcher"
@@ -161,7 +183,19 @@ fi
 cp "$TMP/updater.sh" "$HOME_TESS/updater.sh"; chmod +x "$HOME_TESS/updater.sh"
 { echo "SPOTIFY='$SPOTIFY'"; [ -n "$TESS_TEST" ] && echo "TESS_CONFIG='$CONF'"; } > "$HOME_TESS/updater.env"
 mkdir -p "$HOME_TESS/state"
-for n in patcher theme updater mini; do [ "$n" = mini ] && [ ! -s "$TMP/mini.zip" ] && continue; part $n 2 > "$HOME_TESS/state/$n"; done
+for n in patcher theme updater mini doctor; do
+  { [ "$n" = mini ] && [ ! -s "$TMP/mini.zip" ]; } || { [ "$n" = doctor ] && [ ! -s "$TMP/doctor.sh" ]; } && continue
+  part $n 2 > "$HOME_TESS/state/$n"
+done
+awk '$1 == "version" { print $2 }' "$TMP/components.txt" > "$HOME_TESS/state/version"
+[ -s "$TMP/doctor.sh" ] && cp "$TMP/doctor.sh" "$HOME_TESS/doctor.sh"
+[ -f "$HOME_TESS/install-id" ] || od -An -tx1 -N16 /dev/urandom | tr -d ' \n' > "$HOME_TESS/install-id"
+# the rescue line (see rescue.sh): its own copy, which updates never replace
+if [ -x "$HOME_TESS/bin/patcher/rescue/tess-rescue-verify" ] && [ ! -x "$HOME_TESS/rescue/tess-rescue-verify" ]; then
+  mkdir -p "$HOME_TESS/rescue"; cp "$HOME_TESS/bin/patcher/rescue/"* "$HOME_TESS/rescue/"
+  chmod +x "$HOME_TESS/rescue/tess-rescue-verify" "$HOME_TESS/rescue/rescue.sh"
+  TESS_HOME="$HOME_TESS" /bin/zsh "$HOME_TESS/rescue/rescue.sh" --adopt >/dev/null 2>&1 || true
+fi
 rm -f "$HOME_TESS/reapply.sh"
 rm -f "$HOME_TESS/.installing"
 
@@ -183,6 +217,21 @@ cat > "$HOME/Library/LaunchAgents/music.tess.guard.plist" <<EOF
 EOF
 launchctl bootout "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.guard.plist" 2>/dev/null || true
+
+if [ -x "$HOME_TESS/rescue/rescue.sh" ]; then
+cat > "$HOME/Library/LaunchAgents/music.tess.rescue.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>music.tess.rescue</string>
+<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$HOME_TESS/rescue/rescue.sh</string></array>
+<key>StartInterval</key><integer>21600</integer>
+<key>RunAtLoad</key><true/>
+</dict></plist>
+EOF
+launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.rescue.plist" 2>/dev/null || true
+fi
 
 # --- Tess Mini (macOS 13+) ----------------------------------------------------------------------------------------------
 if [ -s "$TMP/mini.zip" ] && ver_ge "$MACOS" "13.0"; then
@@ -211,7 +260,15 @@ cat > "$HOME_TESS/tess" <<'EOF'
 case "$1" in
   update|repair) curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | sh ;;
   uninstall) curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/uninstall.sh | sh ;;
-  *) echo "usage: tess update | repair | uninstall" ;;
+  doctor) /bin/zsh "$HOME/Library/Application Support/Tess/doctor.sh" ;;
+  report) /bin/zsh "$HOME/Library/Application Support/Tess/doctor.sh" --report ;;
+  reports)
+    case "$2" in
+      off) touch "$HOME/Library/Application Support/Tess/reports-off"; echo "Health reports are off." ;;
+      on) rm -f "$HOME/Library/Application Support/Tess/reports-off"; echo "Health reports are on." ;;
+      *) [ -f "$HOME/Library/Application Support/Tess/reports-off" ] && echo "Health reports are off." || echo "Health reports are on. (tess reports off)" ;;
+    esac ;;
+  *) echo "usage: tess doctor | report | reports on|off | update | repair | uninstall" ;;
 esac
 EOF
 chmod +x "$HOME_TESS/tess"
@@ -220,6 +277,8 @@ echo
 bold "Tess is installed."
 echo "  Spotify opens now. The theme updates itself; Spotify updates are handled for you."
 echo "  The first time you open the miniplayer, macOS asks to let Tess Mini control Spotify: choose Allow."
-echo "  To remove it: \"$HOME_TESS/tess\" uninstall"
+  echo "  To remove it: \"$HOME_TESS/tess\" uninstall      If something looks wrong: \"$HOME_TESS/tess\" doctor"
+echo "  Tess sends a small anonymous health report (versions and errors, nothing personal) so problems get fixed."
+echo "  To turn that off: \"$HOME_TESS/tess\" reports off"
 echo
 open -a "$SPOTIFY"

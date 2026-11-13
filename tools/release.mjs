@@ -74,6 +74,13 @@ for (const a of ['arm64', 'amd64']) run('go', ['build', '-ldflags', '-s -w -X ma
 run('lipo', ['-create', `${pdir}tp-arm64`, `${pdir}tp-amd64`, '-output', `${pdir}pkg/tess-patcher`]);
 for (const a of ['arm64', 'amd64']) run('go', ['build', '-ldflags', '-s -w', '-o', `${pdir}tv-${a}`, './tessverify'], { cwd: `${root}patcher`, env: { ...process.env, CGO_ENABLED: '0', GOOS: 'darwin', GOARCH: a } });
 run('lipo', ['-create', `${pdir}tv-arm64`, `${pdir}tv-amd64`, '-output', `${pdir}pkg/tess-verify`]);
+// the rescue line: the same checker built with the rescue key (kept offline, never in CI), plus rescue.sh.
+// Macs copy these once into Tess/rescue and updates never replace them (see installer/rescue.sh).
+const RESCUE_PUBLIC_KEY = 'cC+AMjfi/tOWQ7pvldMC+m5O0n+2TLQ2rW2PhoAsbhk=';
+mkdirSync(`${pdir}pkg/rescue`, { recursive: true });
+for (const a of ['arm64', 'amd64']) run('go', ['build', '-ldflags', `-s -w -X main.publicKey=${RESCUE_PUBLIC_KEY}`, '-o', `${pdir}trv-${a}`, './tessverify'], { cwd: `${root}patcher`, env: { ...process.env, CGO_ENABLED: '0', GOOS: 'darwin', GOARCH: a } });
+run('lipo', ['-create', `${pdir}trv-arm64`, `${pdir}trv-amd64`, '-output', `${pdir}pkg/rescue/tess-rescue-verify`]);
+cpSync(`${root}installer/rescue.sh`, `${pdir}pkg/rescue/rescue.sh`);
 run('curl', ['-fsSL', '-o', `${pdir}up.tgz`, 'https://github.com/spicetify/cli/releases/download/v2.46.4/spicetify-2.46.4-darwin-arm64.tar.gz']);
 mkdirSync(`${pdir}up`, { recursive: true });
 run('tar', ['-xzf', `${pdir}up.tgz`, '-C', `${pdir}up`]);
@@ -86,11 +93,13 @@ run('tar', ['-C', `${pdir}pkg`, '-czf', `${build}tess-patcher-macos-universal.ta
 // The signed list of Tess's other parts, which the updater on each Mac installs. A part whose source did not change
 // keeps pointing at the release that first shipped it, so Macs only download (and restart) what actually changed.
 cpSync(`${root}installer/updater.sh`, `${build}tess-updater.sh`);
+cpSync(`${root}installer/doctor.sh`, `${build}tess-doctor.sh`);
 const hashFiles = (files) => { const h = createHash('sha256'); for (const f of files) h.update(readFileSync(f)); return h.digest('hex'); };
 const gitTree = (p) => execFileSync('git', ['-C', root, 'rev-parse', `HEAD:${p}`], { encoding: 'utf8' }).trim();
 const parts = {
   updater: { file: `${build}tess-updater.sh`, src: hashFiles([`${root}installer/updater.sh`]) },
-  patcher: { file: `${build}tess-patcher-macos-universal.tar.gz`, src: gitTree('patcher') },
+  patcher: { file: `${build}tess-patcher-macos-universal.tar.gz`, src: hashFiles([`${root}installer/rescue.sh`]).slice(0, 20) + gitTree('patcher').slice(0, 20) },
+  doctor: { file: `${build}tess-doctor.sh`, src: hashFiles([`${root}installer/doctor.sh`]) },
   mini: { file: `${build}tess-mini.zip`, src: hashFiles([`${root}mini/TessMini.swift`, `${root}mini/Info.plist`]) },
   theme: { file: `${build}tess-theme.tar.gz`, src: hashFiles([`${root}theme/loader/loader.js`]) },
 };
@@ -101,7 +110,7 @@ const lines = Object.entries(parts).map(([n, p]) => {
   const sha = createHash('sha256').update(readFileSync(p.file)).digest('hex');
   return `${n} ${sha} https://github.com/Flame119052/tess-music/releases/download/v${version}/${p.file.split('/').pop()} ${p.src}`;
 });
-const components = lines.join('\n') + '\n';
+const components = lines.join('\n') + `\nversion ${version}\n`;
 writeFileSync(`${out}dist/components.txt`, components);
 writeFileSync(`${out}dist/components.sig`, sig(components));
 run('git', ['-C', out, 'add', '-A']);
@@ -114,7 +123,7 @@ const keyFile = process.env.TESS_MIRROR_KEY_FILE;
 const mirror = keyFile ? 'git@github.com:Flame119052/tess-releases.git' : 'https://github.com/Flame119052/tess-releases.git';
 const mirrorEnv = keyFile ? { env: { ...process.env, GIT_SSH_COMMAND: `ssh -i ${keyFile} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new` } } : {};
 try { run('git', ['-C', out, 'push', '-q', '--force', mirror, `HEAD:refs/heads/${channel}`], mirrorEnv); } catch { console.error('mirror push to tess-releases failed; 0.1.0 installs will not see this release'); }
-const assets = [`${build}tess-theme.tar.gz`, `${build}tess-mini.zip`, `${build}tess-patcher-macos-universal.tar.gz`, `${build}tess-updater.sh`];
+const assets = [`${build}tess-theme.tar.gz`, `${build}tess-mini.zip`, `${build}tess-patcher-macos-universal.tar.gz`, `${build}tess-updater.sh`, `${build}tess-doctor.sh`];
 try {
   run('gh', ['release', 'create', `v${version}`, ...assets, '-R', 'Flame119052/tess-music', '--target', channel, '-t', `Tess ${version}`, '-n', `Tess ${version}. Install: curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | sh`, ...(channel === 'beta' ? ['--prerelease'] : ['--latest'])]);
 } catch {

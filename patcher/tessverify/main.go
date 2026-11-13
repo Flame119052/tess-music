@@ -9,7 +9,8 @@ import (
 	"os"
 )
 
-const publicKey = "XOYW72EMGoUz6Km+BpIgzTdliV6VzywqMmALhAdr1ws="
+// set at build time for the rescue key (-X main.publicKey=...); defaults to the release key
+var publicKey = "XOYW72EMGoUz6Km+BpIgzTdliV6VzywqMmALhAdr1ws="
 
 func main() {
 	if len(os.Args) != 3 {
