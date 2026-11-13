@@ -400,10 +400,12 @@
 
     masthead.querySelector('.thm-eyebrow').textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
     masthead.querySelector('.thm-title').textContent = firstName ? `${greeting()}, ${firstName}` : greeting();
+    // Spotify's own background layer behind the pinned row is styled as Tess's frosted glass by CSS
+    // (.tess-home-sticky > div:empty): Spotify rewrites that layer's classes as you scroll, so a class added here
+    // would be wiped and leave a flat black slab.
     if (dial.isConnected && masthead.parentElement === chipRow && otd.isConnected) return;
     // the greeting lives inside Spotify's sticky filter bar, so the two stay pinned to the top together
     if (chipRow && masthead.parentElement !== chipRow) { chipRow.prepend(masthead); chipRow.classList.add('tess-home-sticky'); }
-    chipRow?.querySelector(':scope > :not(#tess-home-masthead)')?.classList.add('tess-sticky-glass');
     if (chipRow && !chipRow.dataset.tessScroll) {
       chipRow.dataset.tessScroll = '1';
       let sc = chipRow.parentElement;
