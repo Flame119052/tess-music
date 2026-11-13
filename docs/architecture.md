@@ -7,10 +7,14 @@ How Tess gets onto a Mac, runs inside Spotify, keeps itself current, and gets fi
 ```
 ~/Library/Application Support/Tess/
   bin/patcher/        tess-patcher (Spicetify fork, signed "Tess Music"), tess-verify (release key), rescue/ (copies)
-  updater.sh          background helper (self-updating)          ← LaunchAgent music.tess.guard (every 5 min + on Spotify file changes)
+  updater.sh          background helper (self-updating)          ← LaunchAgent music.tess.guard (every 30 min + on Spotify file changes + woken by wake.sh)
   updater.env         SPOTIFY=…, TESS_PARTS_CHANNEL (dev/beta; absent = stable)
   doctor.sh           checks and safe fixes, health reports       ← `tess doctor`, `tess report`; run by the updater on trouble and daily
-  rescue/             rescue.sh + tess-rescue-verify (rescue key) ← LaunchAgent music.tess.rescue (every 6 h); never auto-updated
+  wake.sh             reads two public markers (channel version, rescue serial) ← LaunchAgent music.tess.wake (every 5 min)
+  installer.sh, uninstall.sh  signed copies used by `tess repair|uninstall` and the rescue line (no download from main)
+  *.last-good         the previous copy of each updated part; state/bad-<part>-<sha> marks a version that broke, never retried
+  rescue/             rescue.sh + tess-rescue-verify (rescue key) ← LaunchAgent music.tess.rescue (every 6 h, or woken); never auto-updated
+  rescue-off          present after `tess rescue off`: the rescue line and its wake-up stay off
   state/              sha of each installed part, version, stamps (.reapply-tried-<ver>, .asked-<ver>, .checked, .heartbeat)
   original-<ver>/     a copy of this Spotify version's own interface files (for repair)
   install-id          random id used only in health reports
@@ -36,9 +40,9 @@ Inside Spotify (`Spotify.app/Contents/Resources/Apps/xpui`): Spicetify's wrapper
 
 ## Rescue line
 
-`rescue.sh` runs every six hours and at login. What it can do is fixed in the file and limited to Tess and Spotify: an
+`rescue.sh` runs every six hours, at login, and within about 5 minutes of a new order (the wake check sees the new serial on the public `rescue` branch and starts it). `tess rescue off` turns it off for good; `tess status` shows whether it's on and which rescue key it trusts. The installer tells every user this. What it can do is fixed in the file and limited to Tess and Spotify: an
 order names one of five actions (`check`, `update`, `repair`, `restore-spotify`, `uninstall`), each of which calls Tess's
-own tool (doctor, updater, the public install line, the patcher's safe restore, the uninstaller). An order can't carry
+own installed, signed tool (doctor, updater, the installed installer copy, the patcher's safe restore, the installed uninstaller); nothing is downloaded from `main`. An order can't carry
 a script or a command, so the rescue key can only press those buttons; `tools/test-rescue.mjs` proves scripts, unknown
 actions and smuggled text are refused. (Rescue lines installed before 13 Nov 2026 used an older script format that new
 orders don't reach.)

@@ -14,12 +14,21 @@ jobs:
         with: { go-version-file: patcher/go.mod, cache: false }
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
+      - name: Fetch the stable channel (the safety gate checks what users get)
+        run: git fetch --depth=1 origin stable:refs/remotes/origin/stable || true
       - name: Safety checks (installer, updater, doctor, rescue, patcher swap)
         run: tools/check-safety.sh
       - name: Theme builds and parses
         run: node tools/build.mjs && node --check theme/Tess/theme.js && node --check theme/loader/loader.js
       - name: Patcher builds
         run: cd patcher && go build ./... && go vet ./src/cmd/
+      - name: Installer, updater, wake and rescue tests (sandbox, fake launchctl/pmset/curl)
+        run: |
+          node tools/test-updater.mjs
+          node tools/test-wake.mjs
+          node tools/test-rescue-control.mjs
+          node tools/test-swap-recovery.mjs
+          node tools/test-rescue.mjs
       - name: Dial picking tests
         run: node tools/test-dial-pick.mjs
       - name: Reviewer agent tests

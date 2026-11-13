@@ -51,7 +51,7 @@ Each Mac has three layers. Each one keeps working when the layer above it is bro
 1. **Updates.** The updater installs whatever the signed parts list on `stable` says. A push to `main` ships it.
 2. **Doctor.** `tess doctor` checks every part and fixes what it safely can. The updater also runs it by itself
    whenever something fails. `tess report` sends a report right away and prints the Mac's install id.
-3. **Rescue line.** A separate agent (`music.tess.rescue`) that updates never replace. Every 6 hours it fetches the
+3. **Rescue line.** A separate agent (`music.tess.rescue`) that updates never replace. Every 6 hours, and within about 5 minutes of a new order, it fetches the
    rescue order from the `rescue` branch (or from the inbox if GitHub is unreachable) and runs it once. It runs only
    orders signed with the **rescue key** (`~/.config/tess-signing/rescue.pem`, kept only on this Mac, never in GitHub
    or CI), with a higher serial than any it has run, not expired, and for every Mac or this Mac's id. An order can only
@@ -97,5 +97,7 @@ line. By hand: `node tools/release.mjs auto|X.Y.Z [dev|beta|stable]` (signing ke
 
 How installed Macs update: the look and features load fresh on every Spotify start (`theme/loader/`, which falls back to
 the last release that started cleanly). Every other part (the loader, patcher, Tess Mini, the updater itself) is kept
-current by `installer/updater.sh`, which macOS runs every few minutes; it installs only what changed, after checking the
-signed parts list. Installs from 0.1.0 read `Flame119052/tess-releases`, which each release mirrors; never archive it.
+current by `installer/updater.sh`, which macOS runs every 30 minutes and whenever the 5-minute wake check sees a new
+release; it installs only what changed, after checking the signed parts list, restarts Spotify only when no music is
+playing, runs the doctor after each update and goes back to the last good part if one breaks. Users can see what's
+running with `tess status` and turn the rescue line off with `tess rescue off`. Installs from 0.1.0 read `Flame119052/tess-releases`, which each release mirrors; never archive it.
