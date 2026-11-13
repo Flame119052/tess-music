@@ -29,22 +29,33 @@ mkdir -p "$STATE"
 rm -f "$HOME_TESS/reapply.sh"
 
 # --- 1. Spotify updated itself: its files are stock again, so apply Tess -------------------------------------------
-if [ -f "$APPS/xpui.spa" ] && [ ! -d "$APPS/xpui" ]; then
-  sleep 8
-  if [ -f "$APPS/xpui.spa" ] && [ ! -d "$APPS/xpui" ]; then
-    log "Spotify updated; re-applying Tess"
-    running=$(spotify_running && echo 1)
-    if "$PATCHER" backup apply --no-restart >> "$LOG" 2>&1 && [ -d "$APPS/xpui" ]; then
-      if [ -n "$running" ]; then
-        osascript -e 'tell application "Spotify" to quit' >/dev/null 2>&1
-        for i in {1..40}; do pgrep -x Spotify >/dev/null || break; sleep 0.5; done
-        open -a "$SPOTIFY"
-      fi
-    else
-      notify "Spotify updated. Run the Tess install line again to bring Tess back."
+# If this Spotify is too new for the current patcher, Spotify is left exactly as it was (stock, working) and this is
+# tried again: every hour, and straight after a newer patcher arrives in step 2. No command is ever needed.
+reapply() {
+  [ -f "$APPS/xpui.spa" ] && [ ! -d "$APPS/xpui" ] || return 0
+  local spv=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$SPOTIFY/Contents/Info.plist" 2>/dev/null)
+  local tried="$STATE/.reapply-failed-$spv"
+  [ -z "$1" ] && [ -f "$tried" ] && [ -z "$(find "$tried" -mmin +60 2>/dev/null)" ] && return 0
+  log "Spotify $spv is stock; applying Tess"
+  local bak="$HOME_TESS/.apps-before-reapply"
+  rm -rf "$bak"; ditto "$APPS" "$bak" || return 0
+  local running=$(spotify_running && echo 1)
+  if "$PATCHER" backup apply --no-restart >> "$LOG" 2>&1 && grep -q spicetifyWrapper "$APPS/xpui/index.html" 2>/dev/null; then
+    rm -rf "$bak"; find "$STATE" -name ".reapply-failed-*" -delete
+    log "Tess applied to Spotify $spv"
+    if [ -n "$running" ]; then
+      osascript -e 'tell application "Spotify" to quit' >/dev/null 2>&1
+      for i in {1..40}; do pgrep -x Spotify >/dev/null || break; sleep 0.5; done
+      open -a "$SPOTIFY"
     fi
+  else
+    rm -rf "$APPS"; ditto "$bak" "$APPS"; rm -rf "$bak"
+    [ -f "$tried" ] || notify "Spotify updated to a version Tess doesn't support yet. Spotify works normally; Tess comes back by itself once it's supported."
+    touch "$tried"
+    log "Spotify $spv: Tess couldn't apply yet; Spotify left stock, will retry"
   fi
-fi
+}
+if [ -f "$APPS/xpui.spa" ] && [ ! -d "$APPS/xpui" ]; then sleep 8; reapply; fi
 
 # --- 2. Tess's own parts --------------------------------------------------------------------------------------------
 # At most every 20 minutes (TESS_FORCE=1 checks now).
@@ -78,7 +89,7 @@ while read -r name sha url _src; do
       rm -rf "$HOME_TESS/bin/patcher.new"; mkdir -p "$HOME_TESS/bin/patcher.new"
       tar -xzf "$f" -C "$HOME_TESS/bin/patcher.new" && [ -x "$HOME_TESS/bin/patcher.new/tess-patcher" ] || { log "patcher: bad archive"; continue; }
       rm -rf "$HOME_TESS/bin/patcher.old"; mv "$HOME_TESS/bin/patcher" "$HOME_TESS/bin/patcher.old"
-      mv "$HOME_TESS/bin/patcher.new" "$HOME_TESS/bin/patcher"; rm -rf "$HOME_TESS/bin/patcher.old" ;;
+      mv "$HOME_TESS/bin/patcher.new" "$HOME_TESS/bin/patcher"; rm -rf "$HOME_TESS/bin/patcher.old"; new_patcher=1 ;;
     mini)
       [ -n "$TESS_TEST" ] && { echo "$sha" > "$STATE/$name"; log "mini: updated (test: not installed)"; continue; }
       mkdir -p "$TMP/mini" && ditto -x -k "$f" "$TMP/mini" && [ -d "$TMP/mini/Tess Mini.app" ] || { log "mini: bad archive"; continue; }
@@ -107,4 +118,6 @@ while read -r name sha url _src; do
   log "$name: updated"; changed=$((changed + 1))
 done < "$TMP/components.txt"
 [ "$changed" -gt 0 ] && log "parts current ($changed updated)"
+# a newer patcher may support a Spotify version the old one could not
+[ -n "$new_patcher" ] && reapply now
 exit 0
