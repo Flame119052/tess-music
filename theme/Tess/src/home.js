@@ -48,14 +48,13 @@
     const h = new Date().getHours();
     return h < 5 ? 'Good night' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
   };
-  const masthead = el('<header id="tess-home-masthead" class="contentSpacing tess-home-enter"><div class="thm-eyebrow"></div><h1 class="thm-title"></h1></header>');
+  const masthead = el('<header id="tess-home-masthead" class="contentSpacing"><h1 class="thm-title"></h1></header>');
 
   // ---------- the dial ----------
   const dial = el(`
     <section id="tess-dial" class="tess-home-enter" aria-label="Pick something to play" tabindex="0">
       <canvas class="td-bg" width="96" height="54"></canvas><canvas class="td-bg" width="96" height="54"></canvas>
       <div class="td-label">
-        <small class="td-reason"></small>
         <b class="td-title"></b>
         <span class="td-sub"></span>
         <div class="td-actions">
@@ -228,19 +227,20 @@
     ring.style.setProperty('--turn', (-turns * 360 / n) + 'deg');
     [...ring.children].forEach((c, k) => c.classList.toggle('on', k === index));
     const it = items[index];
-    dial.querySelector('.td-reason').textContent = it.reason || reasonFor(it);
     dial.querySelector('.td-title').textContent = it.title;
-    dial.querySelector('.td-sub').textContent = it.subtitle;
+    dial.querySelector('.td-sub').textContent = [it.reason || reasonFor(it), it.subtitle].filter(Boolean).join(' · ');
     const live = isCurrent(it);
     const song = P.data?.item;
     const songArt = imageOf(song?.metadata?.image_large_url || song?.metadata?.image_url || '');
     dial.querySelector('.td-record i').style.backgroundImage = `url("${live && songArt ? songArt : it.img}")`;
     dial.classList.toggle('live', live);
     if (live && song) {
-      dial.querySelector('.td-reason').textContent = P.isPlaying() ? 'Playing now' : 'Paused';
-      dial.querySelector('.td-sub').textContent = `${song.name || song.metadata?.title || ''} · ${song.metadata?.artist_name || ''}`;
+      dial.querySelector('.td-sub').textContent = `${P.isPlaying() ? 'Playing now' : 'Paused'} · ${song.name || song.metadata?.title || ''} · ${song.metadata?.artist_name || ''}`;
     }
-    dial.querySelector('.td-play span').textContent = isPlayingNow(it) ? 'Pause' : 'Play';
+    const playingIt = isPlayingNow(it);
+    dial.querySelector('.td-play span').textContent = playingIt ? 'Pause' : 'Play';
+    // the icon matches the word: two bars while it plays, a triangle otherwise
+    dial.querySelector('.td-play path').setAttribute('d', playingIt ? 'M1.5 1.5h3v11h-3zM7.5 1.5h3v11h-3z' : 'M1 1.5l9.5 5.5L1 12.5z');
     loadPalette(it.img);
   }
   const reasonFor = (it) => ({ dj: 'Your DJ', timeOfDay: 'For right now', madeFor: 'Made for you', jumpBackIn: 'Jump back in', topMixes: 'One of your top mixes', recent: 'Played recently', library: 'From your library' }[it.source] || 'For you');
@@ -338,7 +338,7 @@
 
   // ---------- on this day ----------
   // Songs you saved to Liked Songs on today's date in earlier years (or, failing that, within a few days of it).
-  const otd = el(`<section id="tess-otd" class="tess-home-enter" hidden><div class="otd-head"><h2></h2><small></small></div><div class="otd-row"></div></section>`);
+  const otd = el(`<section id="tess-otd" hidden><div class="otd-head"><h2></h2><small></small></div><div class="otd-row"></div></section>`);
   onDispose(() => otd.remove());
   let otdDay = '';
   async function fillOnThisDay() {
@@ -399,7 +399,6 @@
       while (chipRow && getComputedStyle(chipRow).position !== 'sticky') chipRow = chipRow.parentElement;
     }
 
-    masthead.querySelector('.thm-eyebrow').textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
     masthead.querySelector('.thm-title').textContent = firstName ? `${greeting()}, ${firstName}` : greeting();
     // Spotify's own background layer behind the pinned row is styled as Tess's frosted glass by CSS
     // (.tess-home-sticky > div:empty): Spotify rewrites that layer's classes as you scroll, so a class added here

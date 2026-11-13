@@ -1875,7 +1875,7 @@ html.tess #global-nav-bar > div > div:last-child button {
   color: #fff;
 }
 .ts-field input::placeholder {
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(255, 255, 255, 0.6);
 }
 #tess-spot kbd {
   font: 600 11px/1 var(--tess-font);
@@ -1943,7 +1943,7 @@ html.tess #global-nav-bar > div > div:last-child button {
   flex: none;
   font-size: 11.5px;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(255, 255, 255, 0.6);
 }
 .ts-empty {
   margin: 18px;
@@ -2086,7 +2086,7 @@ html.tess.tess-artist.tess-hero-wait .before-scroll-node > div {
   font: 600 11px/1 var(--tess-font);
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(255, 255, 255, 0.6);
 }
 .tt-chapter > small::after {
   content: " items";
@@ -2193,7 +2193,7 @@ html.tess.tess-artist.tess-hero-wait .before-scroll-node > div {
   padding: 4px 10px;
   border-radius: 999px;
   font: 600 11px/1 var(--tess-font);
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(255, 255, 255, 0.6);
   transition: color 0.2s, background 0.2s;
 }
 .tt-tick i {
@@ -3059,8 +3059,9 @@ html.tess ::-webkit-scrollbar-track {
   border-radius: 50%;
   background: #fff;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35), inset 0 -1px 1px rgba(0, 0, 0, 0.12);
-  transform: scale(0);
-  transition: transform 0.25s var(--tess-spring);
+  transform: scale(0.5);
+  opacity: 0;
+  transition: transform 0.25s var(--tess-spring), opacity 0.15s var(--tess-ease-out);
 }
 #tess-np .tn-scrub:hover {
   height: 9px !important;
@@ -3068,6 +3069,7 @@ html.tess ::-webkit-scrollbar-track {
 }
 #tess-np .tn-scrub:hover > i::after {
   transform: scale(1);
+  opacity: 1;
 }
 #tess-np .tn-ribbon,
 #tess-np .tn-peek {
@@ -3374,4 +3376,51 @@ html.tess [data-tess-scrollhint] {
 html.tess [data-tess-carousel]:hover [data-tess-scrollhint] {
   opacity: 1;
   pointer-events: auto;
+}
+
+/* ================= design pass (Emil Kowalski's design-engineering rules, Impeccable's craft floor) ================= */
+html.tess {
+  /* a strong ease-out for UI that responds to you: starts fast, settles softly */
+  --tess-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+}
+/* every Tess control answers a press at once (transform only, so it costs nothing) */
+html.tess :is(#tess-bar .tb-ctl button, #tess-bar .tb-tools button, #tess-bar .tb-heart, #tess-np .tn-btns button,
+  #tess-np .tn-pill button, #tess-np .tn-round, #tess-dial .td-actions button, .tess-set-nav button, .tess-mi-head button,
+  .tess-set-link) {
+  transition-property: transform, background-color, color, opacity;
+  transition-duration: 160ms;
+  transition-timing-function: var(--tess-ease-out);
+}
+html.tess :is(#tess-bar .tb-ctl button, #tess-bar .tb-tools button, #tess-bar .tb-heart, #tess-np .tn-btns button,
+  #tess-np .tn-pill button, #tess-np .tn-round, #tess-dial .td-actions button, .tess-set-nav button, .tess-mi-head button):active {
+  transform: scale(0.96);
+}
+/* the parts nobody draws still carry the design: selection, caret, keyboard focus */
+html.tess ::selection {
+  background: color-mix(in srgb, var(--tess-accent, #1ed760) 38%, transparent);
+  color: #fff;
+}
+html.tess input,
+html.tess textarea {
+  caret-color: var(--tess-accent, #1ed760);
+}
+html.tess :is(#tess-bar, #tess-np, #tess-dial, .tess-set-nav, .tess-account-menu) :focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--tess-accent, #1ed760) 80%, white);
+  outline-offset: 2px;
+}
+/* times and counts don't jitter as they change */
+html.tess :is(.tn-cur, .tn-rem, .tb-time, [data-testid="playback-position"], [data-testid="playback-duration"],
+  .main-trackList-rowDuration, [data-encore-id="listRowDuration"], .tt-count, .td-count) {
+  font-variant-numeric: tabular-nums;
+}
+/* motion off when the system asks for it */
+@media (prefers-reduced-motion: reduce) {
+  html.tess *,
+  html.tess *::before,
+  html.tess *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

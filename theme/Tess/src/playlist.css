@@ -195,7 +195,7 @@ html.tess [data-testid="playlist-page"] .tp-header > [class*="mixingBackground"]
   justify-content: space-between;
   margin-top: 4px;
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(255, 255, 255, 0.6);
 }
 
 .dna-cap {
