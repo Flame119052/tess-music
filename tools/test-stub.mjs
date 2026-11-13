@@ -74,22 +74,32 @@ try {
   assert.equal(r.status, 0, r.stderr);
   assert.match(outcome(), /installer-ran/, 'forwarder ran the stub chain');
 
-  // 5. a channel with no stub yet falls back to that channel's own installer (transitional, #72)
+  // 5. a channel with no stub yet falls back to that channel's own installer
   rmSync(join(box, 'www', 'stable', 'dist', 'stub.sh'), { force: true });
   rmSync(marker, { force: true });
   r = await run(join(root, 'installer/install.sh'));
   assert.equal(r.status, 0, r.stderr);
-  assert.match(outcome(), /installer-ran/, 'transitional fallback ran the same channel installer');
+  assert.match(outcome(), /installer-ran/, 'the channel installer ran');
   assert.match(r.stdout, /isn't on stable yet/, 'the fallback is announced');
 
-  // ...and only a 404 falls back; a broken network does not
+  // 6. a channel with neither falls back to main's installer (temporary, #77)
+  mkdirSync(join(box, 'www', 'main', 'installer'), { recursive: true });
+  writeFileSync(join(box, 'www', 'main', 'installer', 'tess-install.sh'), readFileSync(join(dist, 'install.sh')));
+  rmSync(join(box, 'www', 'stable', 'dist', 'install.sh'), { force: true });
+  rmSync(marker, { force: true });
+  r = await run(join(root, 'installer/install.sh'));
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(outcome(), /installer-ran/, "main's installer ran as the last resort");
+  assert.match(r.stdout, /temporary installer/, 'the temporary fallback is announced');
+
+  // ...and a broken network runs nothing
   await new Promise((r2) => server.close(r2));
   rmSync(marker, { force: true });
   r = await run(join(root, 'installer/install.sh'));
   assert.notEqual(r.status, 0, 'network failure exits non-zero');
   assert.equal(outcome(), '', 'network failure runs nothing');
 
-  console.log('stub tests passed (good chain, tampered installer, wrong pin, forwarder, 404-only fallback)');
+  console.log('stub tests passed (good chain, tampered installer, wrong pin, forwarder, channel and main fallbacks)');
 } finally {
   await new Promise((r) => server.close(r));
   rmSync(box, { recursive: true, force: true });

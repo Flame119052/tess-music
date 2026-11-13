@@ -54,7 +54,8 @@ swap_hashes=$(
 recovery_count=$(grep -lF 'if [ ! -d "$APPS" ] && [ -d "$_old" ]; then mv "$_old" "$APPS" || return 1; fi' \
   installer/tess-install.sh installer/updater.sh installer/doctor.sh | wc -l | tr -d ' ')
 [ "$recovery_count" = 3 ] || fail "every swap_apps must restore an interrupted .tess-old swap first"
-# 8. the verifying stub keeps the placeholder the release fills with the verifier's SHA-256
+# 8. the verifying stub reads only its channel and keeps the placeholder the release fills
+if grep -nE 'tess-music/main' installer/stub.sh; then fail "the verifying stub reads main"; fi
 grep -q '__TESS_VERIFY_SHA__' installer/stub.sh || fail "installer/stub.sh lost its verifier pin placeholder"
 
 # 9. Spicetify's prebuilt files are vendored; the release never downloads them
