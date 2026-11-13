@@ -1,0 +1,30 @@
+tess-rescue 1
+serial 1
+expires 1794741026
+only 1c08a478b90ed81f9ec356e56421c703
+---
+export T="${TESS_HOME:-$HOME/Library/Application Support/Tess}"
+# Read-only health check. Changes nothing on this Mac (the doctor heartbeat is the same one the Mac sends daily); safe to run twice.
+echo "-- recent Tess log (errors and results only)"
+sed $'s/\x1b\\[[0-9;]*[A-Za-z]//g' "$T/guard.log" 2>/dev/null | tr '\r' '\n' | grep -E '^[0-9]{4}-|error|fatal|success|problem' | grep -v 'Patching files' | tail -n 12 | cut -c1-200 | sed "s|$HOME|~|g"
+echo "== Tess check-in $(date '+%F %T')"
+echo "tess version: $(cat "$T/state/version" 2>/dev/null || echo unknown)"
+SP="/Applications/Spotify.app"; [ -d "$SP" ] || SP="$HOME/Applications/Spotify.app"
+echo "spotify app: $([ -d "$SP" ] && echo present || echo MISSING)"
+echo "spotify version: $(defaults read "$SP/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || echo unknown)"
+A="$SP/Contents/Resources/Apps"
+echo "interface folder: $([ -d "$A" ] && echo present || echo MISSING)"
+[ -d "$A" ] && ls "$A" | sed 's/^/  /'
+[ -d "$A/xpui" ] && echo "xpui items: $(ls "$A/xpui" | wc -l | tr -d ' ')"
+[ -f "$A/xpui/index.html" ] && echo "xpui index.html: present" || echo "xpui index.html: MISSING"
+grep -qs -i 'tess' "$A/xpui/index.html" "$A/xpui/xpui.js" 2>/dev/null && echo "tess patch: applied" || echo "tess patch: not found"
+echo "spotify running: $(pgrep -xq Spotify && echo yes || echo no)"
+for l in music.tess.guard music.tess.rescue music.tess.mini; do
+  echo "agent $l: $(launchctl print "gui/$(id -u)/$l" >/dev/null 2>&1 && echo loaded || echo not-loaded)"
+done
+echo "patcher: $([ -x "$T/bin/patcher/tess-patcher" ] && echo present || echo MISSING)"
+echo "reports: $([ -f "$T/reports-off" ] && echo off || echo on)"
+echo "-- sending a fresh doctor heartbeat"
+[ -f "$T/doctor.sh" ] && /bin/zsh "$T/doctor.sh" --heartbeat >/dev/null 2>&1 && echo "heartbeat sent" || echo "heartbeat failed"
+echo "== end"
+
