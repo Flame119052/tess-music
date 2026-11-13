@@ -5,7 +5,11 @@
 //  - Nothing can be read back over the web. Reports are read only with the owner's Cloudflare login (tools/reports.mjs).
 //  - The rescue order is written only with the owner's Cloudflare login, and Macs run it only if it carries the
 //    offline rescue key's signature, so even someone who took over this Worker could not make a Mac run anything.
-const MAX_BODY = 64 * 1024;
+// Cost: everything here stays inside Cloudflare's free allowances even under a flood. Requests over the per-IP limit
+// are refused by Cloudflare's rate limiter before any database work; past the daily total only one row is read per
+// request; at most DAILY_CAP reports are stored a day (~6 rows written each), kept 30 days, 24 KB each at most.
+const MAX_BODY = 32 * 1024;
+const DAILY_CAP = 2000;
 const KINDS = new Set(['heartbeat', 'problem', 'doctor', 'rescue', 'install']);
 const short = (v, n) => (typeof v === 'string' ? v.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '').slice(0, n) : null);
 
@@ -32,6 +36,10 @@ async function report(request, env) {
   if (request.headers.get('content-type') !== 'application/json') return reply(415);
   const len = Number(request.headers.get('content-length') || 0);
   if (!len || len > MAX_BODY) return reply(413);
+  const { success } = await env.LIMIT.limit({ key: request.headers.get('cf-connecting-ip') || '' });
+  if (!success) return reply(429);
+  const day = await env.DB.prepare('SELECT n, until FROM limits WHERE k = ?').bind('all').first();
+  if (day && day.until > Date.now() / 1000 && day.n >= DAILY_CAP) return reply(429);
   const raw = await request.text();
   if (raw.length > MAX_BODY) return reply(413);
   let r;
@@ -41,9 +49,9 @@ async function report(request, env) {
   const ip = await sha(`${env.SALT}|${request.headers.get('cf-connecting-ip') || ''}`);
   if (!(await hit(env, `ip:${ip}`, 30, 3600))) return reply(429);
   if (!(await hit(env, `id:${r.install}`, 60, 86400))) return reply(429);
-  if (!(await hit(env, 'all', 20000, 86400))) return reply(429);
+  if (!(await hit(env, 'all', DAILY_CAP, 86400))) return reply(429);
   await env.DB.prepare('INSERT INTO reports (at, install, kind, tess, spotify, macos, status, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .bind(Date.now(), r.install, r.kind, short(r.tess, 40), short(r.spotify, 40), short(r.macos, 40), short(r.status, 2000), short(r.body, 56 * 1024))
+    .bind(Date.now(), r.install, r.kind, short(r.tess, 40), short(r.spotify, 40), short(r.macos, 40), short(r.status, 2000), short(r.body, 24 * 1024))
     .run();
   return reply(204);
 }
@@ -58,9 +66,9 @@ export default {
     }
     return reply(404);
   },
-  // keep 90 days of reports and drop finished rate-limit windows
+  // keep 30 days of reports and drop finished rate-limit windows
   async scheduled(_event, env) {
-    await env.DB.prepare('DELETE FROM reports WHERE at < ?').bind(Date.now() - 90 * 86400 * 1000).run();
+    await env.DB.prepare('DELETE FROM reports WHERE at < ?').bind(Date.now() - 30 * 86400 * 1000).run();
     await env.DB.prepare('DELETE FROM limits WHERE until < ?').bind(Math.floor(Date.now() / 1000)).run();
   },
 };

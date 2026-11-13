@@ -19,3 +19,9 @@ crons = ["17 4 * * *"]
 
 [observability]
 enabled = false
+
+# Cloudflare's own per-IP limiter (no database work): 6 reports a minute per IP
+[[ratelimits]]
+name = "LIMIT"
+namespace_id = "7301"
+simple = { limit = 6, period = 60 }

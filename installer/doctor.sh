@@ -139,7 +139,7 @@ send() {
 import json, sys
 body, out, i, kind, tess, spot, mac, status = sys.argv[1:9]
 json.dump({"install": i, "kind": kind, "tess": tess, "spotify": spot, "macos": mac, "status": status,
-           "body": open(body, errors="replace").read()[-50000:]}, open(out, "w"))
+           "body": open(body, errors="replace").read()[-22000:]}, open(out, "w"))
 PY
   [ -n "$TESS_TEST" ] && { cp "$TMP/r.json" "$T/last-report.json"; return 0; }
   curl -fsS --max-time 30 -H "content-type: application/json" --data-binary @"$TMP/r.json" "$INBOX/v1/report" >/dev/null 2>&1

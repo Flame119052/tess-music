@@ -44,6 +44,30 @@ Tess modifies the Spotify app's interface files on your Mac. It never touches yo
 Spotify's User Guidelines say not to modify the client; no action against theme users is documented, but the risk is
 yours to judge.
 
+## Fixing a Mac remotely
+
+Each Mac has three layers. Each one keeps working when the layer above it is broken:
+
+1. **Updates.** The updater installs whatever the signed parts list on `stable` says. A push to `main` ships it.
+2. **Doctor.** `tess doctor` checks every part and fixes what it safely can. The updater also runs it by itself
+   whenever something fails. `tess report` sends a report right away and prints the Mac's install id.
+3. **Rescue line.** A separate agent (`music.tess.rescue`) that updates never replace. Every 6 hours it fetches the
+   rescue order from the `rescue` branch (or from the inbox if GitHub is unreachable) and runs it once. It runs only
+   orders signed with the **rescue key** (`~/.config/tess-signing/rescue.pem`, kept only on this Mac, never in GitHub
+   or CI), with a higher serial than any it has run, not expired, and for every Mac or this Mac's id.
+   Publish one with `node tools/rescue.mjs fix.sh [--days 3] [--only <install id>]`.
+
+**Reports.** Macs send anonymous health reports (a daily heartbeat, problems, failed installs, rescue results) to
+the inbox, a Cloudflare Worker at `tess-music-player.janus.ing` (`inbox/`). Nothing personal is sent: the home
+folder, account name, computer name and emails are removed. Users can turn reports off with `tess reports off`.
+The inbox has no way to read anything over the web. Read reports with `node tools/reports.mjs`
+(`problems`, `macs`, `mac <id>`, `show <n>`), which needs your Cloudflare login. Its limits keep it inside
+Cloudflare's free allowances: 6 reports a minute per IP, 2,000 a day in total, 24 KB each, kept 30 days.
+
+**Keys.** The release key (`private.pem`, also the `TESS_SIGNING_KEY` Actions secret) signs releases. The rescue key
+signs rescue orders only. Back both up somewhere offline. Losing the rescue key means rescue orders can't be issued;
+a leaked rescue key means rotating it with a normal update.
+
 ## For development
 
 | Path | What |

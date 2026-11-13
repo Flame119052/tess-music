@@ -48,7 +48,7 @@ report_failure() {
   } 2>&1 | sed -e "s|$HOME|~|g" -e "s|/Users/$(id -un)|~|g" | /usr/bin/python3 -c '
 import json, sys
 a = sys.argv
-print(json.dumps({"install": a[1], "kind": "install", "spotify": a[2], "macos": a[3], "status": a[4][:300], "body": sys.stdin.read()[-40000:]}))
+print(json.dumps({"install": a[1], "kind": "install", "spotify": a[2], "macos": a[3], "status": a[4][:300], "body": sys.stdin.read()[-22000:]}))
 ' "$(cat "$HOME_TESS/install-id")" "${SPV:-}" "${MACOS:-}" "$1" 2>/dev/null \
   | curl -fsS --max-time 20 -H "content-type: application/json" --data-binary @- "$INBOX/v1/report" >/dev/null 2>&1 || true
 }
