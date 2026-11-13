@@ -132,6 +132,10 @@ if [ -f "$LA/music.tess.guard.plist" ]; then
   if loaded music.tess.guard; then ok "update helper running"; st+=(guard=ok)
   else load music.tess.guard && fix "restarted the update helper"; st+=(guard=restarted); fi
 else bad "the update helper is missing (run the install line once)"; st+=(guard=missing); fi
+if [ -x "$T/wake.sh" ] && [ -f "$LA/music.tess.wake.plist" ]; then
+  if loaded music.tess.wake; then ok "wake check running"; st+=(wake=ok)
+  else load music.tess.wake && fix "restarted the wake check"; st+=(wake=restarted); fi
+else bad "the wake check is missing"; st+=(wake=missing); fi
 if [ -d "$HOME/Applications/Tess Mini.app" ] && [ -f "$LA/music.tess.mini.plist" ]; then
   if loaded music.tess.mini; then ok "Tess Mini running"; st+=(mini=ok)
   else load music.tess.mini && fix "restarted Tess Mini"; st+=(mini=restarted); fi

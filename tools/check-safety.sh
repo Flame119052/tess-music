@@ -25,7 +25,7 @@ if grep -nE '^[A-Za-z_]+=\$\((cat|grep|awk|find|ls) [^)]*\)$' installer/tess-ins
 (cd patcher && go test ./src/cmd/ -run Swap -count=1) || fail "swapApps tests"
 
 # 6. installed code reads promoted channels only. The public stub may live on main, but nothing it installs may read it.
-installed="installer/tess-install.sh installer/updater.sh installer/doctor.sh installer/rescue.sh installer/uninstall.sh theme/loader/loader.js"
+installed="installer/tess-install.sh installer/updater.sh installer/doctor.sh installer/rescue.sh installer/uninstall.sh installer/wake.sh theme/loader/loader.js"
 if grep -nE '(raw\.githubusercontent\.com/.*/main/|[?&]ref=main([^[:alnum:]_-]|$)|@main/)' $installed; then
   fail "installed code reads main; use the Mac's promoted channel"
 fi
@@ -35,7 +35,7 @@ repo_values=$(sed -n 's/^REPO="\([^"]*\)".*/\1/p' installer/*.sh | sort -u | wc 
 [ "$repo_values" -le 1 ] || fail "installer scripts have more than one REPO value"
 
 # Network bytes are downloaded to a file and checked before execution. Only the public one-line stub may show curl | sh.
-if grep -nE 'curl[^|]*\|[[:space:]]*([^[:space:]]+[[:space:]]+)*(sh|zsh)([[:space:];]|$)' installer/tess-install.sh installer/updater.sh installer/doctor.sh installer/rescue.sh installer/uninstall.sh; then
+if grep -nE 'curl[^|]*\|[[:space:]]*([^[:space:]]+[[:space:]]+)*(sh|zsh)([[:space:];]|$)' installer/tess-install.sh installer/updater.sh installer/doctor.sh installer/rescue.sh installer/uninstall.sh installer/wake.sh; then
   fail "an installed script pipes a download into a shell"
 fi
 if grep -nE '\|\|[[:space:]]*curl' installer/install.sh; then fail "the public stub falls back to another installer"; fi

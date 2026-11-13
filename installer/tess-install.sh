@@ -142,8 +142,10 @@ fetch mini "$TMP/mini.zip" || rm -f "$TMP/mini.zip"
 fetch doctor "$TMP/doctor.sh" || rm -f "$TMP/doctor.sh"
 fetch installer "$TMP/installer.sh" || fail "Download failed. Check your connection and try again."
 fetch uninstall "$TMP/uninstall.sh" || fail "Download failed. Check your connection and try again."
+fetch wake "$TMP/wake.sh" || fail "Download failed. Check your connection and try again."
 sh -n "$TMP/installer.sh" || fail "Tess's installer download is damaged, so nothing was installed."
 sh -n "$TMP/uninstall.sh" || fail "Tess's uninstaller download is damaged, so nothing was installed."
+zsh -n "$TMP/wake.sh" || fail "Tess's wake check download is damaged, so nothing was installed."
 mkdir -p "$HOME_TESS/bin"
 rm -rf "$HOME_TESS/bin/patcher"; ditto "$TMP/p" "$HOME_TESS/bin/patcher"
 PATCHER="$HOME_TESS/bin/patcher/tess-patcher"
@@ -231,7 +233,7 @@ cp "$TMP/updater.sh" "$HOME_TESS/updater.sh"; chmod +x "$HOME_TESS/updater.sh"
 { echo "SPOTIFY='$SPOTIFY'"; [ -n "$TESS_TEST" ] && echo "TESS_CONFIG='$CONF'"; [ "$CH" != stable ] && echo "TESS_PARTS_CHANNEL='$CH'"; } > "$HOME_TESS/updater.env"
 mkdir -p "$HOME_TESS/state"
 OLD_MINI=$(cat "$HOME_TESS/state/mini" 2>/dev/null || true)
-for n in patcher theme updater mini doctor installer uninstall; do
+for n in patcher theme updater mini doctor installer uninstall wake; do
   { [ "$n" = mini ] && [ ! -s "$TMP/mini.zip" ]; } || { [ "$n" = doctor ] && [ ! -s "$TMP/doctor.sh" ]; } && continue
   part $n 2 > "$HOME_TESS/state/$n"
 done
@@ -239,6 +241,7 @@ awk '$1 == "version" { print $2 }' "$TMP/components.txt" > "$HOME_TESS/state/ver
 [ -s "$TMP/doctor.sh" ] && cp "$TMP/doctor.sh" "$HOME_TESS/doctor.sh"
 cp "$TMP/installer.sh" "$HOME_TESS/installer.sh"; chmod +x "$HOME_TESS/installer.sh"
 cp "$TMP/uninstall.sh" "$HOME_TESS/uninstall.sh"; chmod +x "$HOME_TESS/uninstall.sh"
+cp "$TMP/wake.sh" "$HOME_TESS/wake.sh"; chmod +x "$HOME_TESS/wake.sh"
 [ -f "$HOME_TESS/install-id" ] || od -An -tx1 -N16 /dev/urandom | tr -d ' \n' > "$HOME_TESS/install-id"
 # the rescue action list is installed once; its dedicated verifier can rotate with a signed patcher part
 RESCUE_SRC="$HOME_TESS/bin/patcher/rescue"
@@ -342,6 +345,11 @@ cat > "$HOME/Library/LaunchAgents/music.tess.guard.plist" <<EOF
 EOF
 launchctl bootout "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.guard.plist" 2>/dev/null || true
+
+"$HOME_TESS/wake.sh" --plist > "$HOME/Library/LaunchAgents/music.tess.wake.plist"
+plutil -lint "$HOME/Library/LaunchAgents/music.tess.wake.plist" >/dev/null
+launchctl bootout "gui/$(id -u)/music.tess.wake" >/dev/null 2>&1 || true
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.wake.plist" 2>/dev/null || true
 
 if [ -x "$HOME_TESS/rescue/rescue.sh" ] && [ ! -f "$HOME_TESS/rescue-off" ]; then
 cat > "$HOME/Library/LaunchAgents/music.tess.rescue.plist" <<EOF

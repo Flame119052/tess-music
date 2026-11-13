@@ -70,6 +70,32 @@ install_rescue() {
 }
 install_rescue
 
+install_wake() {
+  local la="$HOME/Library/LaunchAgents" pl
+  [ -n "$TESS_TEST" ] && la="$HOME_TESS/LaunchAgents"
+  pl="$la/music.tess.wake.plist"
+  [ -x "$HOME_TESS/wake.sh" ] && zsh -n "$HOME_TESS/wake.sh" || return 0
+  mkdir -p "$la"
+  "$HOME_TESS/wake.sh" --plist > "$pl.new" || { rm -f "$pl.new"; return 1; }
+  plutil -lint "$pl.new" >/dev/null 2>&1 || { rm -f "$pl.new"; problem "wake: invalid LaunchAgent"; return 1; }
+  local changed=""
+  if [ ! -f "$pl" ] || [ "$(shasum -a 256 "$pl.new" | cut -d' ' -f1)" != "$(shasum -a 256 "$pl" | cut -d' ' -f1)" ]; then
+    mv "$pl.new" "$pl"; changed=1
+  else
+    rm -f "$pl.new"
+  fi
+  [ -n "$TESS_TEST" ] && { log "wake agent installed (test)"; return 0; }
+  if [ -n "$changed" ]; then
+    launchctl bootout "gui/$(id -u)/music.tess.wake" >/dev/null 2>&1
+    launchctl bootstrap "gui/$(id -u)" "$pl" >/dev/null 2>&1
+    log "wake agent installed"
+  else
+    launchctl print "gui/$(id -u)/music.tess.wake" >/dev/null 2>&1 \
+      || launchctl bootstrap "gui/$(id -u)" "$pl" >/dev/null 2>&1
+  fi
+}
+install_wake
+
 # --- 1. Spotify updated itself: its files are stock again, so apply Tess -------------------------------------------
 # Tess is put back only when there is a reason to expect it to work: Spotify's version changed since the last try, a
 # newer patcher arrived (step 2), or the user asked (tess repair, or "Try Again" below). Never on a timer, so one
@@ -174,6 +200,10 @@ while read -r name sha url _src; do
   curl -fsSL --max-time 300 "$url" -o "$f" || { problem "$name: download failed"; continue; }
   [ "$(shasum -a 256 "$f" | cut -d' ' -f1)" = "$sha" ] || { problem "$name: checksum mismatch; ignored"; continue; }
   case "$name" in
+    wake)
+      zsh -n "$f" || { problem "wake: bad file"; continue; }
+      cp "$f" "$HOME_TESS/wake.sh.new" && chmod +x "$HOME_TESS/wake.sh.new" && mv "$HOME_TESS/wake.sh.new" "$HOME_TESS/wake.sh" \
+        && install_wake || continue ;;
     installer)
       sh -n "$f" || { problem "installer: bad file"; continue; }
       cp "$f" "$HOME_TESS/installer.sh.new" && chmod +x "$HOME_TESS/installer.sh.new" && mv "$HOME_TESS/installer.sh.new" "$HOME_TESS/installer.sh" || continue ;;
