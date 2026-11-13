@@ -1,7 +1,7 @@
 # tess-patcher
 
 tess-patcher is a fork of [Spicetify CLI](https://github.com/spicetify/cli) (© the Spicetify contributors), used
-by [Tess Music](https://github.com/Flame119052/tess-releases) to apply its theme to the Spotify desktop app.
+by [Tess Music](https://github.com/Flame119052/tess-music) to apply its theme to the Spotify desktop app.
 
 It is distributed under the same licence as Spicetify, the **GNU Lesser General Public License v2.1** (see
 `LICENSE`). All credit for the patching engine, the Spotify API wrapper (`jsHelper/`) and the CSS map belongs to the
@@ -11,3 +11,9 @@ Changes from upstream (all under LGPL-2.1, source in this repository):
 - configuration lives in `~/.config/tess-patcher` (so it never collides with a real Spicetify install)
 - defaults: theme `Tess`, colour scheme `base`, no Spicetify update check
 - built as a universal macOS binary for the Tess installer
+- **Spotify's interface folder is never deleted and refilled.** `apply` and `restore` build the new folder next to it,
+  check it, and switch with renames, rolling back on any failure (`src/cmd/swap.go`, tested in `src/cmd/swap_test.go`)
+- `tess-patcher can-write <dir>`: asks macOS whether the patcher may change Spotify's files before anything is touched
+  (exit 3 = blocked by App Management, 4 = owned by another user)
+- `tessverify/`: a small Ed25519 checker for Tess's signed updates (built twice: release key and rescue key)
+- macOS builds are signed with Tess's stable code-signing identity

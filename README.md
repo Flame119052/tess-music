@@ -31,14 +31,14 @@ curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/install
 - ⌘K search, Spotify's real right-click menus, Liquid-Glass surfaces, a window that takes the music's colours
 - Settings → Theme for every option
 
-## Credits
+## Credits and licence
 
-- **Spicetify** — Tess is applied by `patcher/`, a fork of [Spicetify CLI](https://github.com/spicetify/cli)
-  © the Spicetify contributors, under the **GNU Lesser General Public License v2.1** (`patcher/LICENSE`,
-  `patcher/NOTICE.md`). Its history is kept in this repo; our changes are listed in `patcher/NOTICE.md`. All credit
-  for the patching engine and the Spotify API wrapper belongs to the Spicetify project.
-- The Dial's picking algorithm was designed with DeepSeek (`theme/Tess/src/dial-pick.js`, `docs/dial-algorithm.md`).
-- Spotify is a trademark of Spotify AB. Tess is not affiliated with or endorsed by Spotify.
+Tess's own code is under the **MIT licence** (`LICENSE`). `patcher/` is a fork of [Spicetify CLI](https://github.com/spicetify/cli)
+© the Spicetify contributors and stays under the **GNU Lesser General Public License v2.1** (`patcher/LICENSE`, changes
+in `patcher/NOTICE.md`); all credit for the patching engine and the Spotify API wrapper belongs to the Spicetify
+project. Everything Tess includes, builds on or learned from (libraries, design references, the Dial's algorithm) is
+credited with its licence in **[`CREDITS.md`](CREDITS.md)**. Spotify is a trademark of Spotify AB; Apple Music and
+Liquid Glass are Apple's. Tess is not affiliated with or endorsed by either.
 
 Tess modifies the Spotify app's interface files on your Mac. It never touches your account or downloads.
 Spotify's User Guidelines say not to modify the client; no action against theme users is documented, but the risk is
