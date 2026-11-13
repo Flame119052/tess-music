@@ -3158,10 +3158,22 @@ html.tess.tess-artist [data-testid="artist-page"] [data-tess-artist-clear] {
   opacity: 0;
   transition: opacity 0.25s;
 }
-#tess-np .tn-lyrics:hover .tn-sync { opacity: 1; }
+#tess-np .tn-lyrics:hover .tn-sync,
+#tess-np.lyr-manual .tn-sync { opacity: 1; }
 #tess-np .tn-sync button { width: 28px; height: 28px; border-radius: 50%; font: 700 16px/1 var(--tess-font); color: #fff; }
 #tess-np .tn-sync button:hover { background: rgba(255, 255, 255, 0.14); }
-#tess-np .tn-sync b { min-width: 64px; text-align: center; font: 600 12px/1 var(--tess-font); color: rgba(255, 255, 255, 0.85); }
+#tess-np .tn-sync .tn-sync-now {
+  width: auto;
+  min-width: 64px;
+  padding: 0 10px;
+  border-radius: 14px;
+  font: 600 12px/1 var(--tess-font);
+  color: rgba(255, 255, 255, 0.85);
+  transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1), background 0.15s;
+}
+#tess-np .tn-sync .tn-sync-now:active { transform: scale(0.96); }
+/* while you've scrolled away, the pill says "Back to now" and stands out a little */
+#tess-np.lyr-manual .tn-sync .tn-sync-now { background: rgba(255, 255, 255, 0.92); color: #1d1d22; }
 
 /* Vinyl in the Now Playing panel too */
 .tess-cover-wrap.vinyl .tess-side-cover {
