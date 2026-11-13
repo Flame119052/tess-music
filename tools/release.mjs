@@ -33,6 +33,25 @@ const pub = createPublicKey(key).export({ format: 'der', type: 'spki' }).subarra
 const sig = (text) => sign(null, Buffer.from(text), key).toString('base64');
 const stamped = `window.__tessVersion = window.__tessVersion === 'baseline' || !window.__tessVersion ? '${version}' : window.__tessVersion;\n${js}`;
 
+// Everything Tess runs on a Mac is signed with one stable identity, "Tess Music" (self-signed). macOS ties a user's
+// approvals (App Management for the patcher, background items for Tess Mini) to it, so they survive every update.
+// Its .p12 comes from TESS_CODESIGN_P12 (base64) + TESS_CODESIGN_PASS in CI, or ~/.config/tess-signing/codesign.p12
+// + codesign.pass locally. A release without it is refused: an ad-hoc signature would make every Mac ask again.
+const keychain = `${root}.build/tess-sign.keychain-db`;
+{
+  const p12 = process.env.TESS_CODESIGN_P12 ? Buffer.from(process.env.TESS_CODESIGN_P12, 'base64') : readFileSync(`${homedir()}/.config/tess-signing/codesign.p12`);
+  const pass = process.env.TESS_CODESIGN_PASS ?? readFileSync(`${homedir()}/.config/tess-signing/codesign.pass`, 'utf8').trim();
+  mkdirSync(`${root}.build`, { recursive: true });
+  writeFileSync(`${root}.build/codesign.p12`, p12, { mode: 0o600 });
+  try { execFileSync('security', ['delete-keychain', keychain], { stdio: 'ignore' }); } catch {}
+  run('security', ['create-keychain', '-p', 'tess', keychain]);
+  run('security', ['unlock-keychain', '-p', 'tess', keychain]);
+  run('security', ['import', `${root}.build/codesign.p12`, '-k', keychain, '-P', pass, '-T', '/usr/bin/codesign'], { stdio: 'ignore' });
+  execFileSync('security', ['set-key-partition-list', '-S', 'apple-tool:,apple:', '-s', '-k', 'tess', keychain], { stdio: 'ignore' });
+  rmSync(`${root}.build/codesign.p12`);
+}
+const codesign = (path, id) => run('codesign', ['--force', '--keychain', keychain, '-s', 'Tess Music', ...(id ? ['-i', id] : []), path]);
+
 rmSync(out, { recursive: true, force: true });
 try { execFileSync('git', ['-C', root, 'worktree', 'prune']); } catch {}
 try { run('git', ['-C', root, 'fetch', '-q', 'origin', `${channel}:${channel}`]); } catch {}
@@ -63,7 +82,7 @@ for (const arch of ['arm64', 'x86_64']) {
 }
 run('lipo', ['-create', `${build}TessMini-arm64`, `${build}TessMini-x86_64`, '-output', `${mini}MacOS/TessMini`]);
 writeFileSync(`${mini}Info.plist`, readFileSync(`${root}mini/Info.plist`, 'utf8').replace('__VERSION__', version));
-run('codesign', ['--force', '--sign', '-', `${build}Tess Mini.app`]);
+codesign(`${build}Tess Mini.app`);
 run('ditto', ['-c', '-k', '--keepParent', `${build}Tess Mini.app`, `${build}tess-mini.zip`]);
 
 writeFileSync(`${out}README.md`, `Release channel \`${channel}\` of Tess Music. Source and install: https://github.com/Flame119052/tess-music\n`);
@@ -72,14 +91,17 @@ const pdir = `${build}patcher/`;
 mkdirSync(`${pdir}pkg`, { recursive: true });
 for (const a of ['arm64', 'amd64']) run('go', ['build', '-ldflags', '-s -w -X main.version=2.46.4', '-o', `${pdir}tp-${a}`, '.'], { cwd: `${root}patcher`, env: { ...process.env, CGO_ENABLED: '0', GOOS: 'darwin', GOARCH: a } });
 run('lipo', ['-create', `${pdir}tp-arm64`, `${pdir}tp-amd64`, '-output', `${pdir}pkg/tess-patcher`]);
+codesign(`${pdir}pkg/tess-patcher`, 'music.tess.patcher');
 for (const a of ['arm64', 'amd64']) run('go', ['build', '-ldflags', '-s -w', '-o', `${pdir}tv-${a}`, './tessverify'], { cwd: `${root}patcher`, env: { ...process.env, CGO_ENABLED: '0', GOOS: 'darwin', GOARCH: a } });
 run('lipo', ['-create', `${pdir}tv-arm64`, `${pdir}tv-amd64`, '-output', `${pdir}pkg/tess-verify`]);
+codesign(`${pdir}pkg/tess-verify`, 'music.tess.verify');
 // the rescue line: the same checker built with the rescue key (kept offline, never in CI), plus rescue.sh.
 // Macs copy these once into Tess/rescue and updates never replace them (see installer/rescue.sh).
 const RESCUE_PUBLIC_KEY = 'cC+AMjfi/tOWQ7pvldMC+m5O0n+2TLQ2rW2PhoAsbhk=';
 mkdirSync(`${pdir}pkg/rescue`, { recursive: true });
 for (const a of ['arm64', 'amd64']) run('go', ['build', '-ldflags', `-s -w -X main.publicKey=${RESCUE_PUBLIC_KEY}`, '-o', `${pdir}trv-${a}`, './tessverify'], { cwd: `${root}patcher`, env: { ...process.env, CGO_ENABLED: '0', GOOS: 'darwin', GOARCH: a } });
 run('lipo', ['-create', `${pdir}trv-arm64`, `${pdir}trv-amd64`, '-output', `${pdir}pkg/rescue/tess-rescue-verify`]);
+codesign(`${pdir}pkg/rescue/tess-rescue-verify`, 'music.tess.rescue-verify');
 cpSync(`${root}installer/rescue.sh`, `${pdir}pkg/rescue/rescue.sh`);
 run('curl', ['-fsSL', '-o', `${pdir}up.tgz`, 'https://github.com/spicetify/cli/releases/download/v2.46.4/spicetify-2.46.4-darwin-arm64.tar.gz']);
 mkdirSync(`${pdir}up`, { recursive: true });
@@ -100,7 +122,7 @@ const parts = {
   updater: { file: `${build}tess-updater.sh`, src: hashFiles([`${root}installer/updater.sh`]) },
   patcher: { file: `${build}tess-patcher-macos-universal.tar.gz`, src: hashFiles([`${root}installer/rescue.sh`]).slice(0, 20) + gitTree('patcher').slice(0, 20) },
   doctor: { file: `${build}tess-doctor.sh`, src: hashFiles([`${root}installer/doctor.sh`]) },
-  mini: { file: `${build}tess-mini.zip`, src: hashFiles([`${root}mini/TessMini.swift`, `${root}mini/Info.plist`]) },
+  mini: { file: `${build}tess-mini.zip`, src: hashFiles([`${root}mini/TessMini.swift`, `${root}mini/Info.plist`]).slice(0, 56) + 'sig1' },
   theme: { file: `${build}tess-theme.tar.gz`, src: hashFiles([`${root}theme/loader/loader.js`]) },
 };
 const prev = {};
@@ -123,6 +145,27 @@ const keyFile = process.env.TESS_MIRROR_KEY_FILE;
 const mirror = keyFile ? 'git@github.com:Flame119052/tess-releases.git' : 'https://github.com/Flame119052/tess-releases.git';
 const mirrorEnv = keyFile ? { env: { ...process.env, GIT_SSH_COMMAND: `ssh -i ${keyFile} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new` } } : {};
 try { run('git', ['-C', out, 'push', '-q', '--force', mirror, `HEAD:refs/heads/${channel}`], mirrorEnv); } catch { console.error('mirror push to tess-releases failed; 0.1.0 installs will not see this release'); }
+// beta always has at least what stable has: a stable release also moves beta up, unless beta is already ahead
+if (channel === 'stable') {
+  const newer = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
+  let betaVersion = '0.0.0';
+  try { betaVersion = JSON.parse(execFileSync('git', ['-C', root, 'show', 'origin/beta:dist/manifest.json'], { encoding: 'utf8' })).version; } catch {}
+  try { run('git', ['-C', root, 'fetch', '-q', 'origin', 'beta']); betaVersion = JSON.parse(execFileSync('git', ['-C', root, 'show', 'FETCH_HEAD:dist/manifest.json'], { encoding: 'utf8' })).version; } catch {}
+  if (newer(version, betaVersion)) {
+    const bo = `${root}.build/beta/`;
+    rmSync(bo, { recursive: true, force: true });
+    try { execFileSync('git', ['-C', root, 'worktree', 'prune']); } catch {}
+    run('git', ['-C', root, 'worktree', 'add', '-q', '--detach', bo, 'FETCH_HEAD']);
+    cpSync(`${out}dist`, `${bo}dist`, { recursive: true });
+    const m = JSON.parse(readFileSync(`${bo}dist/manifest.json`, 'utf8'));
+    writeFileSync(`${bo}dist/manifest.json`, JSON.stringify({ ...m, channel: 'beta' }, null, 2));
+    run('git', ['-C', bo, 'add', '-A']);
+    try { run('git', ['-C', bo, 'commit', '-q', '-m', `Tess ${version} (beta, same as stable)`]); } catch {}
+    run('git', ['-C', bo, 'push', '-q', 'origin', 'HEAD:refs/heads/beta']);
+    try { run('git', ['-C', bo, 'push', '-q', '--force', mirror, 'HEAD:refs/heads/beta'], mirrorEnv); } catch { console.error('mirror push of beta failed'); }
+    console.log(`beta moved up to ${version}`);
+  }
+}
 const assets = [`${build}tess-theme.tar.gz`, `${build}tess-mini.zip`, `${build}tess-patcher-macos-universal.tar.gz`, `${build}tess-updater.sh`, `${build}tess-doctor.sh`];
 try {
   run('gh', ['release', 'create', `v${version}`, ...assets, '-R', 'Flame119052/tess-music', '--target', channel, '-t', `Tess ${version}`, '-n', `Tess ${version}. Install: curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | sh`, ...(channel === 'beta' ? ['--prerelease'] : ['--latest'])]);

@@ -183,6 +183,7 @@ fi
 cp "$TMP/updater.sh" "$HOME_TESS/updater.sh"; chmod +x "$HOME_TESS/updater.sh"
 { echo "SPOTIFY='$SPOTIFY'"; [ -n "$TESS_TEST" ] && echo "TESS_CONFIG='$CONF'"; } > "$HOME_TESS/updater.env"
 mkdir -p "$HOME_TESS/state"
+OLD_MINI=$(cat "$HOME_TESS/state/mini" 2>/dev/null)
 for n in patcher theme updater mini doctor; do
   { [ "$n" = mini ] && [ ! -s "$TMP/mini.zip" ]; } || { [ "$n" = doctor ] && [ ! -s "$TMP/doctor.sh" ]; } && continue
   part $n 2 > "$HOME_TESS/state/$n"
@@ -234,7 +235,10 @@ launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.rescue
 fi
 
 # --- Tess Mini (macOS 13+) ----------------------------------------------------------------------------------------------
-if [ -s "$TMP/mini.zip" ] && ver_ge "$MACOS" "13.0"; then
+# Only replaced when it changed: macOS treats a replaced app as new and shows its "runs in the background" notice again
+if [ -s "$TMP/mini.zip" ] && ver_ge "$MACOS" "13.0" && [ "$OLD_MINI" = "$(part mini 2)" ] && [ -d "$HOME/Applications/Tess Mini.app" ] && [ -f "$HOME/Library/LaunchAgents/music.tess.mini.plist" ]; then
+  launchctl print "gui/$(id -u)/music.tess.mini" >/dev/null 2>&1 || launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.mini.plist" 2>/dev/null || true
+elif [ -s "$TMP/mini.zip" ] && ver_ge "$MACOS" "13.0"; then
   step "Installing Tess Mini"
   mkdir -p "$HOME/Applications"
   launchctl bootout "gui/$(id -u)/music.tess.mini" >/dev/null 2>&1 || true

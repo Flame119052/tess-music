@@ -36,6 +36,8 @@ jobs:
         env:
           TESS_SIGNING_KEY: ${{ secrets.TESS_SIGNING_KEY }}
           TESS_MIRROR_KEY: ${{ secrets.TESS_MIRROR_KEY }}
+          TESS_CODESIGN_P12: ${{ secrets.TESS_CODESIGN_P12 }}
+          TESS_CODESIGN_PASS: ${{ secrets.TESS_CODESIGN_PASS }}
           GH_TOKEN: ${{ github.token }}
         run: |
           printf '%s\n' "$TESS_MIRROR_KEY" > "$RUNNER_TEMP/mirror" && chmod 600 "$RUNNER_TEMP/mirror"

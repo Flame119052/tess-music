@@ -31,7 +31,7 @@ spotify_running() { [ -z "$TESS_TEST" ] && pgrep -x Spotify >/dev/null; }
 touch "$LOCK"; trap 'rm -f "$LOCK"' EXIT
 mkdir -p "$STATE"
 # Tidy-ups for older installs. This script updates itself, so a change to how Tess is set up on a Mac goes here.
-rm -f "$HOME_TESS/reapply.sh"
+rm -f "$HOME_TESS/reapply.sh"; find "$STATE" -name ".reapply-failed-*" -delete 2>/dev/null
 [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 500000 ] && tail -c 250000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
 [ -f "$HOME_TESS/install-id" ] || od -An -tx1 -N16 /dev/urandom | tr -d ' \n' > "$HOME_TESS/install-id"
 
@@ -56,19 +56,45 @@ install_rescue() {
 install_rescue
 
 # --- 1. Spotify updated itself: its files are stock again, so apply Tess -------------------------------------------
-# If this Spotify is too new for the current patcher, Spotify is left exactly as it was (stock, working) and this is
-# tried again: every hour, and straight after a newer patcher arrives in step 2. No command is ever needed.
+# Tess is put back only when there is a reason to expect it to work: Spotify's version changed since the last try, a
+# newer patcher arrived (step 2), or the user asked (tess repair, or "Try Again" below). Never on a timer, so one
+# failure can't turn into a stream of macOS alerts. Before touching anything the patcher asks macOS whether it may
+# change Spotify's files at all; if not, Spotify is left exactly as it is (stock, working) and the user is asked once.
+SETTINGS_URL="x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles"
+asked=""
+blocked() {   # macOS's App Management protection stopped the patcher
+  problem "Spotify $1: macOS App Management is blocking tess-patcher; Spotify left stock"
+  [ -n "$asked" ] && return 0; asked=1
+  [ -n "$TESS_TEST" ] && { touch "$STATE/.asked-$1"; return 0; }
+  local b=$(osascript -e 'display dialog "Spotify updated, and macOS is stopping Tess from putting its look back. Spotify works normally in the meantime.
+
+To allow it once: in System Settings › Privacy & Security › App Management, turn on tess-patcher." with title "Tess Music" buttons {"Later", "Open Settings"} default button 2 giving up after 900' -e 'button returned of result' 2>/dev/null)
+  [ "$b" = "Open Settings" ] || return 0
+  open "$SETTINGS_URL"
+  b=$(osascript -e 'display dialog "When tess-patcher is turned on, click Try Again." with title "Tess Music" buttons {"Later", "Try Again"} default button 2 giving up after 900' -e 'button returned of result' 2>/dev/null)
+  [ "$b" = "Try Again" ] && reapply now
+}
 reapply() {
   [ -f "$APPS/xpui.spa" ] && [ ! -d "$APPS/xpui" ] || return 0
   local spv=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$SPOTIFY/Contents/Info.plist" 2>/dev/null)
-  local tried="$STATE/.reapply-failed-$spv"
-  [ -z "$1" ] && [ -f "$tried" ] && [ -z "$(find "$tried" -mmin +60 2>/dev/null)" ] && return 0
+  local tried="$STATE/.reapply-tried-$spv"
+  [ -z "$1" ] && [ -f "$tried" ] && return 0
+  touch "$tried"
+  [ -z "$1" ] && sleep 8   # let Spotify's own update finish writing
+  "$PATCHER" can-write "$APPS" >/dev/null 2>&1; local cw=$?
+  case $cw in
+    0) ;;
+    3) blocked "$spv"; return 0 ;;
+    4) problem "Spotify $spv: its files belong to another user; Spotify left stock"
+       notify "Spotify updated, and its files belong to another account on this Mac. Run: tess repair"; return 0 ;;
+    *) problem "Spotify $spv: couldn't check whether Tess may change Spotify (code $cw); Spotify left stock"; return 0 ;;
+  esac
   log "Spotify $spv is stock; applying Tess"
   local bak="$HOME_TESS/.apps-before-reapply"
   rm -rf "$bak"; ditto "$APPS" "$bak" || return 0
   local running=$(spotify_running && echo 1)
   if "$PATCHER" backup apply --no-restart >> "$LOG" 2>&1 && grep -q spicetifyWrapper "$APPS/xpui/index.html" 2>/dev/null; then
-    rm -rf "$bak"; find "$STATE" -name ".reapply-failed-*" -delete
+    rm -rf "$bak"; find "$STATE" \( -name ".reapply-*" -o -name ".asked-*" \) -delete
     log "Tess applied to Spotify $spv"
     if [ -n "$running" ]; then
       osascript -e 'tell application "Spotify" to quit' >/dev/null 2>&1
@@ -77,12 +103,12 @@ reapply() {
     fi
   else
     rm -rf "$APPS"; ditto "$bak" "$APPS"; rm -rf "$bak"
-    [ -f "$tried" ] || { notify "Spotify updated to a version Tess doesn't support yet. Spotify works normally; Tess comes back by itself once it's supported."; trouble=1; }
-    touch "$tried"
-    log "Spotify $spv: Tess couldn't apply yet; Spotify left stock, will retry"
+    notify "Spotify updated to a version Tess doesn't support yet. Spotify works normally; Tess comes back by itself once it's supported."
+    trouble=1
+    log "Spotify $spv: Tess couldn't apply yet; Spotify left stock (tried again when a newer patcher arrives)"
   fi
 }
-if [ -f "$APPS/xpui.spa" ] && [ ! -d "$APPS/xpui" ]; then sleep 8; reapply; fi
+reapply
 # Spotify's interface missing altogether: the doctor puts it back from Tess's safety copy when it can
 [ ! -f "$APPS/xpui.spa" ] && [ ! -d "$APPS/xpui" ] && problem "Spotify's interface files are missing"
 [ -n "$trouble" ] && doctor --auto && trouble=""

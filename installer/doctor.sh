@@ -88,8 +88,20 @@ if [ -f "$APPS/xpui/index.html" ] && grep -q spicetifyWrapper "$APPS/xpui/index.
   if grep -q TESS_BASELINE "$APPS/xpui/extensions/theme.js" 2>/dev/null; then ok "Tess is in Spotify $SPV"; st+=(spotify=tess)
   else bad "Spotify is modified but Tess's loader is missing"; st+=(spotify=noloader); rm -f "$T/state/theme"; fi
 elif [ -f "$APPS/xpui.spa" ]; then
-  say "  · Spotify $SPV is stock (Tess goes back in on the next helper run)"; st+=(spotify=stock)
-  rm -f "$T/state/.reapply-failed-$SPV"
+  st+=(spotify=stock)
+  if [ "$MODE" = check ] || [ "$MODE" = --report ]; then
+    # asked for by the user: let the helper try again now (it never retries on its own after a failure)
+    rm -f "$T/state/.reapply-tried-$SPV"
+    say "  · Spotify $SPV is stock; Tess goes back in within 5 minutes"
+    "$T/bin/patcher/tess-patcher" can-write "$APPS" >/dev/null 2>&1
+    if [ $? -eq 3 ]; then
+      bad "macOS is blocking tess-patcher: System Settings › Privacy & Security › App Management, turn on tess-patcher"
+      [ -z "$TESS_TEST" ] && open "x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles"
+      st+=(appmgmt=blocked)
+    fi
+  else
+    say "  · Spotify $SPV is stock"
+  fi
 else
   bad "Spotify's interface files are missing"; st+=(spotify=broken)
   if [ -n "$SPV" ] && [ -f "$T/original-$SPV/xpui.spa" ]; then
