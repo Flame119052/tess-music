@@ -51,7 +51,10 @@
   });
   const startWatch = () => { const root = document.querySelector('.Root') || document.body; domWatch.observe(root, { childList: true, subtree: true }); };
   onDispose(() => domWatch.disconnect());
-  const onDraw = (fn, backupMs = 2500) => { placers.push(fn); every(backupMs, fn); };
+  // placers run the moment Spotify draws; one shared slow timer is the backup for all of them (it used to be one
+  // timer per placer, a dozen of them waking the page several times a second between them)
+  const onDraw = (fn) => { placers.push(fn); };
+  every(3000, () => runPlacers());
   const listen = (target, type, fn, opts) => { target.addEventListener(type, fn, opts); onDispose(() => target.removeEventListener(type, fn, opts)); };
   const imageUrl = (u) => (u && u.startsWith('spotify:image:') ? 'https://i.scdn.co/image/' + u.split(':')[2] : u || '');
   // Blurred-artwork backgrounds are painted small on a canvas and stretched by the GPU. It looks like a huge
@@ -216,6 +219,7 @@
   // work while music plays). Tess finds those elements here instead, when Spotify draws, and marks them with a data
   // attribute (Spotify's code never touches unknown data attributes), so the CSS stays a cheap, direct match.
   const mark = (node, attr, value = '') => { if (node && node.getAttribute(attr) !== value) node.setAttribute(attr, value); };
+  let lastScrollHints = 0;
   function markLayout() {
     const root = document.querySelector('.Root');
     mark(root?.parentElement, 'data-tess-clear');
@@ -261,6 +265,25 @@
       for (const n of artist.querySelectorAll('[data-testid="action-bar"], [style*="--background-base-70"], [style*="background-color"]:empty, .T2XRKvkWneSSMSOCEo40')) mark(n.parentElement, 'data-tess-artist-clear');
       const hero = document.querySelector('.before-scroll-node > div > .tess-hero-bg');
       mark(hero?.parentElement, 'data-tess-hero-host');
+    }
+    // Spotify's shelf arrows fade in with an animation tied to each shelf's scroll position. Those animations are
+    // always "running", so every arrow was its own GPU layer (~40 of them, plus everything forced over them),
+    // composited every frame. They now appear when you point at the shelf instead (CSS below), at most re-checked
+    // every 2 s (reading the page's animations is not free).
+    if (typeof ScrollTimeline !== 'undefined' && performance.now() - lastScrollHints > 2000) {
+      lastScrollHints = performance.now();
+      for (const an of document.getAnimations()) {
+        if (!(an.timeline instanceof ScrollTimeline)) continue;
+        const t = an.effect?.target;
+        if (!t || t.hasAttribute('data-tess-scrollhint')) continue;
+        const props = an.effect.getKeyframes().flatMap((k) => Object.keys(k));
+        if (!props.includes('opacity') && !props.includes('pointerEvents')) continue;
+        // only the small arrow buttons; never a shelf itself (Spotify animates some whole shelves the same way)
+        const box = t.getBoundingClientRect();
+        if (box.width > 64 || box.height > 64 || t.querySelector('img, a, [data-encore-id="card"]')) continue;
+        mark(t, 'data-tess-scrollhint');
+        mark(t.parentElement?.parentElement, 'data-tess-carousel');
+      }
     }
     const home = document.querySelector('[data-testid="home-page"]');
     if (home) {
@@ -368,7 +391,12 @@
       .find((b) => b.textContent.trim() === 'Profile')?.click();
     menu.prepend(head);
   }
-  onDraw(dressAccountMenu, 1500);
+  onDraw(dressAccountMenu);
+  // menus open in their own popup at the top of the page, outside what Tess's main watcher sees: dress the account
+  // menu the moment its popup is added (this watches only the page's direct children, so it costs nothing otherwise)
+  const popupWatch = new MutationObserver(() => setTimeout(dressAccountMenu, 0));
+  popupWatch.observe(document.body, { childList: true });
+  onDispose(() => popupWatch.disconnect());
   if (Spicetify.Menu?.Item) {
     const menuItem = new Spicetify.Menu.Item('Tess Music settings', false, openSettings);
     menuItem.register();
@@ -830,15 +858,26 @@
     }
   }
   listen(window, 'resize', fitMarquees);
-  // one marquee pass at a time (see core.css): on a new song, on hover, and every 20 s while the window is visible
+  // one marquee pass at a time (see core.css): on a new song and on hover
   const marqueePass = (box) => {
     if (!box.classList.contains('scrolling') || box.classList.contains('pass')) return;
     box.classList.add('pass');
     box.firstElementChild?.addEventListener('animationend', () => box.classList.remove('pass'), { once: true });
   };
   const allPasses = () => { if (!document.hidden) document.querySelectorAll('.tess-marquee').forEach(marqueePass); };
-  every(20000, allPasses);
+  // (no timed passes: a pass every 20 s kept the window redrawing half the time; song change and hover are enough)
   listen(document, 'mouseover', (e) => { const box = e.target.closest?.('.tess-marquee'); if (box) marqueePass(box); }, { passive: true });
+  // records spin for 12 s after a song starts or play is pressed (and on hover, in CSS), then rest
+  let spinTimer = 0;
+  const spinBurst = () => {
+    if (!P.isPlaying()) return;
+    html.classList.add('tess-spin-burst');
+    clearTimeout(spinTimer);
+    spinTimer = setTimeout(() => html.classList.remove('tess-spin-burst'), 12000);
+  };
+  P.addEventListener('songchange', spinBurst);
+  P.addEventListener('onplaypause', spinBurst);
+  onDispose(() => { P.removeEventListener('songchange', spinBurst); P.removeEventListener('onplaypause', spinBurst); clearTimeout(spinTimer); html.classList.remove('tess-spin-burst'); });
   const marqueeOnSong = () => setTimeout(allPasses, 1500);
   P.addEventListener('songchange', marqueeOnSong);
   onDispose(() => P.removeEventListener('songchange', marqueeOnSong));
@@ -1529,11 +1568,25 @@
     b.style.setProperty('--dj', sd.style.backgroundColor || '');
   }
 
+  // The bar's progress line moves about a pixel a second, so it is updated only when it would move a whole pixel
+  // (checked twice a second, a GPU-only transform change). A smooth 60 fps animation of it, or a width change four
+  // times a second, had kept the whole window redrawing for as long as anything played.
+  let barScale = -1;
+  function animateBarProgress() {
+    const line = q(bar, '.tb-prog i');
+    const dur = P.getDuration() || 1;
+    const f = Math.min(1, Math.max(0, P.getProgress() / dur));
+    const px = Math.round(f * (line.parentElement.clientWidth || 300));
+    if (px === barScale) return;
+    barScale = px;
+    line.style.transform = `scaleX(${f.toFixed(4)})`;
+  }
+  const checkBarDrift = animateBarProgress;
+  listen(document, 'visibilitychange', animateBarProgress);
   function syncProgress() {
     const ms = P.getProgress();
     const dur = P.getDuration() || 1;
     const pct = Math.min(100, (ms / dur) * 100) + '%';
-    q(bar, '.tb-prog i').style.width = pct;
     if (npOpen) {
       placeArm(ms);
       markRibbon(ms);
@@ -1560,7 +1613,8 @@
   onDispose(() => P.removeEventListener('songchange', onSong));
   P.addEventListener('onplaypause', syncState);
   onDispose(() => P.removeEventListener('onplaypause', syncState));
-  every(250, () => { if (!npOpen) { syncProgress(); updateLyrics(P.getProgress()); } });
+  every(250, () => { if (!npOpen) updateLyrics(P.getProgress()); });
+  every(500, () => { if (!npOpen) checkBarDrift(); });
   // coming back to the window: resume the full-screen Canvas if the player is open (Spotify pauses videos while hidden)
   listen(document, 'visibilitychange', () => {
     if (!document.hidden && npOpen && np.classList.contains('has-canvas')) q(np, '.tn-cover video').play().catch(() => {});

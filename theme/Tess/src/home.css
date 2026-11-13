@@ -223,7 +223,11 @@ html.tess [data-testid="home-ads-container"] {
   animation: td-spin 5.5s steps(165) infinite;
   animation-play-state: paused;
 }
-html.tess-playing .td-record {
+/* While music plays the record spins for a while after a song starts or you press play, and whenever you point at
+   it, then comes to rest. Any motion that never stops makes the whole window redraw continuously (about a third of a
+   CPU core on a Retina screen), so nothing on Home moves for ever. */
+html.tess-playing.tess-spin-burst .td-record,
+html.tess-playing #tess-dial:hover .td-record {
   animation-play-state: running;
 }
 .td-record i {
@@ -501,4 +505,10 @@ html.tess.tess-home #main-view main > div > [style*="background-color"]:first-ch
   backdrop-filter: blur(34px) saturate(1.6) !important;
   -webkit-mask-image: linear-gradient(180deg, #000 82%, transparent);
   mask-image: linear-gradient(180deg, #000 82%, transparent);
+}
+
+/* the record rests while the Dial is scrolled out of view (home.js) */
+#tess-dial.offscreen .td-record,
+#tess-dial.offscreen .td-bg {
+  animation-play-state: paused !important;
 }

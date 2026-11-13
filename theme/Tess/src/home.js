@@ -452,6 +452,10 @@
   const ro = new ResizeObserver(() => layoutRing());
   ro.observe(wheel);
   onDispose(() => ro.disconnect());
+  // the record only spins while you can see it: scrolled away, every frame of it was still drawn
+  const seen = new IntersectionObserver(([e]) => dial.classList.toggle('offscreen', !e.isIntersecting));
+  seen.observe(dial);
+  onDispose(() => seen.disconnect());
   // place everything the moment Spotify draws home, instead of polling for it
   let queued = false;
   const mo = new MutationObserver(() => {
