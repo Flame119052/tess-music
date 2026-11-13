@@ -462,8 +462,28 @@
   // off to pause.
   let ARM_REST = -28, ARM_START = 2, ARM_END = 24;
   var armMeasured = false;
-  // Measure where the stylus meets the record's outer edge and the label's edge (the arm swings about its pivot),
-  // so the start of the song is always the outer groove and the end is always the label, whatever the length.
+  // The stylus moves inward at an even pace, like a real groove: its distance from the record's centre goes from the
+  // outer edge (song start) to the label's edge (song end) in step with the song. The arm's angle is worked out from
+  // that distance; an angle moving evenly with time would leave the stylus nearly still near the label for the last
+  // part of the song, because near the end of the arm's swing turning it barely changes the distance.
+  // armTable: [angle, distance] from the outer groove to the label, distance always falling.
+  let armTable = [[2, 1], [24, 0]];
+  const angleForDist = (r) => {
+    const t = armTable;
+    if (r >= t[0][1]) return t[0][0];
+    for (let i = 1; i < t.length; i++) {
+      if (r >= t[i][1]) { const [a0, d0] = t[i - 1], [a1, d1] = t[i]; return a0 + (a1 - a0) * (d0 - r) / ((d0 - d1) || 1); }
+    }
+    return t[t.length - 1][0];
+  };
+  const distForAngle = (a) => {
+    const t = armTable;
+    if (a <= t[0][0]) return t[0][1];
+    for (let i = 1; i < t.length; i++) {
+      if (a <= t[i][0]) { const [a0, d0] = t[i - 1], [a1, d1] = t[i]; return d0 + (d1 - d0) * (a - a0) / ((a1 - a0) || 1); }
+    }
+    return t[t.length - 1][1];
+  };
   function measureArm() {
     const rec = q(np, '.tn-cover').getBoundingClientRect();
     if (!rec.width) { armMeasured = false; return; }
@@ -472,11 +492,17 @@
     const tx = (44 - 30) * sc, ty = (205 - 22) * sc;
     const cx = rec.left + rec.width / 2, cy = rec.top + rec.height / 2;
     const dist = (deg) => { const a = deg * Math.PI / 180; const x = px + tx * Math.cos(a) - ty * Math.sin(a); const y = py + tx * Math.sin(a) + ty * Math.cos(a); return Math.hypot(x - cx, y - cy); };
-    const find = (r) => { let best = 0, err = Infinity; for (let d = -40; d <= 80; d += 0.25) { const e = Math.abs(dist(d) - r); if (e < err) { err = e; best = d; } } return best; };
-    // the label edge, or as close to it as the arm can reach
-    let minD = Infinity; for (let d = -40; d <= 80; d += 0.5) minD = Math.min(minD, dist(d));
-    const outer = find(rec.width / 2 * 0.95), inner = find(Math.max(rec.width * 0.205, minD + 2));
-    ARM_START = Math.min(outer, inner); ARM_END = Math.max(outer, inner); ARM_REST = ARM_START - 26;
+    // the arm swings inward as its angle grows; only the part of the swing where the distance keeps falling counts
+    let dMin = -40, minD = Infinity;
+    for (let d = -40; d <= 80; d += 0.25) { const r = dist(d); if (r < minD) { minD = r; dMin = d; } }
+    const rOuter = rec.width / 2 * 0.95;
+    const rInner = Math.max(rec.width * 0.205, minD + 2);   // the label's edge, or as close to it as the arm reaches
+    const table = [];
+    for (let d = -40; d <= dMin; d += 0.25) { const r = dist(d); if (r <= rOuter + 2 && r >= rInner - 0.01) table.push([d, r]); }
+    if (table.length < 2) return;
+    armTable = table;
+    ARM_START = angleForDist(rOuter); ARM_END = angleForDist(rInner); ARM_REST = ARM_START - 26;
+    armTable = [[ARM_START, rOuter], ...table.filter(([d]) => d > ARM_START && d < ARM_END), [ARM_END, rInner]];
   }
   // re-measure whenever the record changes size or the player is narrowed (queue open), not only on window resize
   const armObserver = new ResizeObserver(() => { if (np.classList.contains('vinyl')) { measureArm(); armMeasured = true; } });
@@ -484,7 +510,12 @@
   onDispose(() => armObserver.disconnect());
   const arm = q(np, '.tn-arm');
   let armDrag = null;
-  const armAngleFor = (ms) => ARM_START + (ARM_END - ARM_START) * Math.min(1, ms / (P.getDuration() || 1));
+  // song position → stylus distance (even pace from the outer groove to the label) → arm angle
+  const armFrac = (ms) => Math.max(0, Math.min(1, ms / (P.getDuration() || 1)));
+  const armAngleFor = (ms) => {
+    const t = armTable, rOut = t[0][1], rIn = t[t.length - 1][1];
+    return angleForDist(rOut - (rOut - rIn) * armFrac(ms));
+  };
   function placeArm(ms) {
     if (armDrag || !np.classList.contains('vinyl')) return;
     if (!armMeasured) { armMeasured = true; measureArm(); }
@@ -520,7 +551,8 @@
     arm.classList.remove('held');
     if (a < ARM_START - 4) { if (P.isPlaying()) P.pause(); }
     else {
-      const frac = Math.max(0, Math.min(1, (a - ARM_START) / (ARM_END - ARM_START)));
+      const t = armTable, rOut = t[0][1], rIn = t[t.length - 1][1];
+      const frac = Math.max(0, Math.min(1, (rOut - distForAngle(a)) / ((rOut - rIn) || 1)));
       P.seek(Math.round(frac * P.getDuration()));
       if (!P.isPlaying()) P.play();
     }
