@@ -18,7 +18,19 @@ MIN_SPOTIFY="1.2.40"
 
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
 step() { printf '  \033[32m●\033[0m %s\n' "$1"; }
-fail() { printf '\n  \033[31m✕\033[0m %s\n\n' "$1"; exit 1; }
+PAUSED=""; WAS_RUNNING=""
+fail() {
+  printf '\n  \033[31m✕\033[0m %s\n\n' "$1"
+  if [ -n "$PAUSED" ]; then
+    # leave the Mac as it was found: helper running again, no lock, Spotify open if it was
+    rm -f "$HOME_TESS/.installing"
+    if [ -z "$TESS_TEST" ]; then
+      [ -f "$HOME/Library/LaunchAgents/music.tess.guard.plist" ] && launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.guard.plist" >/dev/null 2>&1
+      [ -n "$WAS_RUNNING" ] && open -a "$SPOTIFY" >/dev/null 2>&1
+    fi
+  fi
+  exit 1
+}
 ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | head -1)" = "$2" ]; }
 
 echo; bold "Tess Music"; echo
@@ -31,7 +43,13 @@ step "macOS $MACOS on $(uname -m)"
 # --- Spotify -----------------------------------------------------------------------------------------------------
 SPOTIFY="${TESS_SPOTIFY:-}"   # TESS_SPOTIFY / TESS_TEST=1 are for testing against a copy of Spotify
 if [ -z "$SPOTIFY" ]; then
-  for p in "/Applications/Spotify.app" "$HOME/Applications/Spotify.app"; do [ -d "$p" ] && SPOTIFY="$p" && break; done
+  # the copy that is running wins; otherwise the first complete one; otherwise the first one found
+  RUN=$(ps -axo comm= 2>/dev/null | sed -n 's|^\(.*/Spotify\.app\)/Contents/MacOS/Spotify$|\1|p' | head -1)
+  for p in "$RUN" "/Applications/Spotify.app" "$HOME/Applications/Spotify.app"; do
+    [ -n "$p" ] && [ -d "$p/Contents/Resources/Apps" ] || continue
+    if [ -f "$p/Contents/Resources/Apps/xpui.spa" ] || [ -d "$p/Contents/Resources/Apps/xpui" ]; then SPOTIFY="$p"; break; fi
+    [ -n "$SPOTIFY" ] || SPOTIFY="$p"
+  done
 fi
 [ -n "$SPOTIFY" ] || fail "Spotify isn't installed. Get the desktop app from https://www.spotify.com/download/mac/ , open it once and sign in, then run this again."
 SPV=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$SPOTIFY/Contents/Info.plist" 2>/dev/null || echo 0)
@@ -52,16 +70,21 @@ if [ ! -w "$SPOTIFY/Contents/Resources" ]; then
   sudo chown -R "$(id -un)" "$SPOTIFY" </dev/tty || fail "Couldn't get permission to update Spotify."
 fi
 
+# Spotify's interface must be here (stock, or modified by an earlier Tess), or Tess's own safety copy of it
+A0="$SPOTIFY/Contents/Resources/Apps"
+[ -f "$A0/xpui.spa" ] || [ -d "$A0/xpui" ] || [ -f "$HOME_TESS/original-$SPV/xpui.spa" ] \
+  || fail "Spotify's files at $SPOTIFY look incomplete, so nothing was changed. If Spotify opens normally, it is running from another place: please report this."
+
 # --- download --------------------------------------------------------------------------------------------------
 # The signed parts list says which file of each part is current; every download is checked against it.
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 step "Downloading Tess"
 CH="${TESS_PARTS_CHANNEL:-stable}"
-getlist() { curl -fsSL -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/dist/$1?ref=$CH" -o "$TMP/$1" \
-  || curl -fsSL "https://raw.githubusercontent.com/$REPO/$CH/dist/$1" -o "$TMP/$1"; }
+getlist() { curl -fsSL --max-time 60 -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/dist/$1?ref=$CH" -o "$TMP/$1" \
+  || curl -fsSL --max-time 60 "https://raw.githubusercontent.com/$REPO/$CH/dist/$1" -o "$TMP/$1"; }
 getlist components.txt && getlist components.sig || fail "Download failed. Check your connection and try again."
 part() { awk -v n="$1" '$1 == n { print $'"$2"' }' "$TMP/components.txt"; }
-fetch() { curl -fsSL "$(part "$1" 3)" -o "$2" && [ "$(shasum -a 256 "$2" | cut -d' ' -f1)" = "$(part "$1" 2)" ]; }
+fetch() { curl -fsSL --retry 2 --connect-timeout 20 --max-time 300 "$(part "$1" 3)" -o "$2" && [ "$(shasum -a 256 "$2" | cut -d' ' -f1)" = "$(part "$1" 2)" ]; }
 fetch patcher "$TMP/patcher.tgz" || fail "Download failed. Check your connection and try again."
 mkdir -p "$TMP/p" && tar -xzf "$TMP/patcher.tgz" -C "$TMP/p"
 "$TMP/p/tess-verify" "$TMP/components.txt" "$(tr -d '\n' < "$TMP/components.sig")" || fail "Tess's download didn't pass its signature check, so nothing was installed."
@@ -75,10 +98,9 @@ chmod +x "$PATCHER" "$HOME_TESS/bin/patcher/tess-verify"
 
 # --- pause the update helper while we work (it must never run at the same time) --------------------------------------
 launchctl bootout "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 || true
-mkdir -p "$HOME_TESS"; touch "$HOME_TESS/.installing"
+mkdir -p "$HOME_TESS"; touch "$HOME_TESS/.installing"; PAUSED=1
 
 # --- quit Spotify, undo any earlier patching ---------------------------------------------------------------------
-WAS_RUNNING=""
 if [ -z "$TESS_TEST" ] && pgrep -x Spotify >/dev/null; then
   WAS_RUNNING=1; step "Closing Spotify"
   osascript -e 'tell application "Spotify" to quit' >/dev/null 2>&1 || true
@@ -95,6 +117,11 @@ fi
 
 # --- keep the original interface files, so nothing can be lost ------------------------------------------------------
 APPS="$SPOTIFY/Contents/Resources/Apps"
+if [ ! -f "$APPS/xpui.spa" ] && [ -f "$HOME_TESS/original-$SPV/xpui.spa" ]; then
+  # an earlier Tess kept a copy of this exact Spotify version's own files: put them back
+  step "Putting back Spotify's own files from Tess's safety copy"
+  rm -rf "$APPS"; ditto "$HOME_TESS/original-$SPV" "$APPS" || fail "Couldn't put Spotify's files back."
+fi
 [ -f "$APPS/xpui.spa" ] || fail "Spotify's files look incomplete. Reinstall Spotify from https://www.spotify.com/download/mac/ and run this again."
 ORIG="$HOME_TESS/original-$SPV"
 rm -rf "$HOME_TESS"/original-*
