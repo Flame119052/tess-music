@@ -104,6 +104,22 @@
   const saveSettings = () => { try { localStorage.setItem('tess:settings', JSON.stringify(settings)); } catch {} };
 
   const html = document.documentElement;
+  // Spicetify's helper waits for parts of Spotify's old layout (history buttons, the old bottom bar) by searching the
+  // whole page about once a second until they appear. Spotify 1.3.9 renamed them, so those searches never ended:
+  // ~25 ms of work every second, forever. Hidden stand-ins under the old names let every wait finish at once.
+  if (!document.getElementById('tess-spicetify-anchors')) {
+    const anchors = document.createElement('div');
+    anchors.id = 'tess-spicetify-anchors';
+    anchors.hidden = true;
+    anchors.setAttribute('aria-hidden', 'true');
+    anchors.innerHTML = '<div class="main-globalNav-historyButtonsWrapper"><div class="main-globalNav-historyButtons"><button class="main-globalNav-icon" data-encore-id="buttonTertiary" tabindex="-1"></button></div></div>'
+      + '<div class="main-topBar-historyButtons"><button class="main-topBar-button" tabindex="-1"></button></div>'
+      + '<div class="main-nowPlayingBar-left"><div class="main-nowPlayingWidget-nowPlaying"></div></div>'
+      + '<div class="main-nowPlayingBar-right"><div><button class="main-genericButton-button" tabindex="-1"></button></div></div>'
+      + '<div class="volume-bar__icon-button"></div>'
+      + '<div class="main-actionButtons"><button class="main-actionButtons-button" tabindex="-1"></button></div>';
+    document.body.appendChild(anchors);
+  }
   html.classList.add('tess');
   onDispose(() => html.classList.remove('tess', 'tess-artist', 'tess-tint', 'tess-hero-light'));
   const applySettings = () => {
@@ -527,7 +543,12 @@
     </div>`));
 
   let npOpen = false;
+  // Closed, the full-screen player sleeps: once its closing animation has finished it leaves rendering entirely
+  // (display: none), so its record, lyrics, video and glass cost nothing while you use the rest of the app.
+  let npSleep = 0;
   function openNP(mode) {
+    clearTimeout(npSleep);
+    if (np.classList.contains('asleep')) { np.classList.remove('asleep'); void np.offsetWidth; armMeasured = false; }
     renderFlow();
     npOpen = true;
     setMode(mode || 'lyrics');
@@ -543,7 +564,10 @@
     np.classList.remove('open');
     q(np, '.tn-cover video').pause();
     np.setAttribute('aria-hidden', 'true');
+    clearTimeout(npSleep);
+    npSleep = setTimeout(() => { if (!npOpen) np.classList.add('asleep'); }, 650);
   }
+  np.classList.add('asleep');
   function setMode(m) {
     np.classList.remove('mode-lyrics', 'mode-queue', 'mode-none');
     np.classList.add('mode-' + m);
@@ -1338,9 +1362,11 @@
       ms.endOfStream();
       video.loop = true;
       video.muted = true;
-      video.autoplay = true;
+      // the full-screen player's video plays only while the player is open (openNP starts it)
+      const wanted = !video.closest('#tess-np') || npOpen;
+      video.autoplay = wanted;
       // don't wait on play(): it can sit unresolved while the window is in the background
-      video.play().catch(() => {});
+      if (wanted) video.play().catch(() => {});
       return true;
     } catch {
       return false;

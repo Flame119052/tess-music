@@ -346,6 +346,7 @@ html.tess .main-view-container__scroll-node-child {
   transform: scale(1.03);
   transition: opacity 0.45s, transform 0.6s var(--tess-spring), visibility 0s 0.45s;
 }
+#tess-np.asleep { display: none !important; }
 #tess-np.open {
   opacity: 1;
   visibility: visible;
@@ -3338,3 +3339,6 @@ html.tess .tess-mi-head button { border: 0 !important; box-shadow: none !importa
   overflow: auto;
 }
 .tess-account-menu > div.main-contextMenu-dividerAfter { display: none; }
+
+/* stand-ins for Spicetify (core.js): never shown */
+#tess-spicetify-anchors { display: none !important; }
