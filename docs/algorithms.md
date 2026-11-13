@@ -233,17 +233,17 @@ While the selected slot *is* what is playing, the middle of the ring switches to
 "Playing now" or "Paused", shows the song and artist instead of the playlist name,
 and puts the song's own cover on the record (`home.js:233-241`).
 
-The `play()` function is also the only place that records a play in the Dial's
-memory, and it only records plays started **from the ring** (`home.js:258`).
+Since #13 (13 Nov 2026) any new playlist/album/artist/show that starts playing is recorded as a play, wherever it
+was started, and only the selected item and its two neighbours are recorded as shown.
 
 ### Known weaknesses / ideas
 
-- **The Dial misses things played from elsewhere.** Play started from the sidebar,
+- *(Fixed 13 Nov 2026, #13.)* **The Dial misses things played from elsewhere.** Play started from the sidebar,
   search, or an album page never gets the +16 "you play this from the dial" lift,
   because only the ring's own Play button records a play (`home.js:258`). It also
   means the ring is rebuilt from scratch after a play from the sidebar instead of
   learning from that play.
-- **Every slot counts as "shown".** `noteShown` writes down all twelve (`home.js:133-138`),
+- *(Fixed 13 Nov 2026, #13.)* **Every slot counts as "shown".** `noteShown` writes down all twelve (`home.js:133-138`),
   but a person only really sees the two or three near the marker. Slots 6–11 are
   punished as "shown and skipped" for something nobody looked at, and two days of
   that reaches the full −12.
@@ -256,7 +256,7 @@ memory, and it only records plays started **from the ring** (`home.js:258`).
   (`home.js:93-95`).
 - **Hard ceilings on the pool**: 20 recent contexts and 100 library items
   (`home.js:113`, `home.js:119`), and only library items with an `http` image.
-- **The one-minute timer is wall-clock.** Leave Home and come back inside a minute
+- *(Fixed 13 Nov 2026, #13.)* **The one-minute timer is wall-clock.** Leave Home and come back inside a minute
   and the ring is the one chosen before your last play (`home.js:158`).
 - **No way to say "not this".** The only negative signal is "shown and not played",
   which cannot tell "boring" from "I never scrolled that far".
