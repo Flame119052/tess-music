@@ -157,6 +157,12 @@ while read -r name sha url _src; do
   curl -fsSL --max-time 300 "$url" -o "$f" || { problem "$name: download failed"; continue; }
   [ "$(shasum -a 256 "$f" | cut -d' ' -f1)" = "$sha" ] || { problem "$name: checksum mismatch; ignored"; continue; }
   case "$name" in
+    installer)
+      sh -n "$f" || { problem "installer: bad file"; continue; }
+      cp "$f" "$HOME_TESS/installer.sh.new" && chmod +x "$HOME_TESS/installer.sh.new" && mv "$HOME_TESS/installer.sh.new" "$HOME_TESS/installer.sh" || continue ;;
+    uninstall)
+      sh -n "$f" || { problem "uninstall: bad file"; continue; }
+      cp "$f" "$HOME_TESS/uninstall.sh.new" && chmod +x "$HOME_TESS/uninstall.sh.new" && mv "$HOME_TESS/uninstall.sh.new" "$HOME_TESS/uninstall.sh" || continue ;;
     doctor)
       zsh -n "$f" || { problem "doctor: bad file"; continue; }
       cp "$f" "$HOME_TESS/doctor.sh.new" && mv "$HOME_TESS/doctor.sh.new" "$HOME_TESS/doctor.sh" || continue ;;

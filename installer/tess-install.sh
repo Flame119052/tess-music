@@ -1,6 +1,6 @@
 #!/bin/sh
 # Tess Music installer for macOS.
-#   curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/stable/install.sh | sh
 # Installs Tess into the Spotify desktop app, a helper that re-applies it after Spotify updates, and Tess Mini.
 # Nothing else to set up; run it again any time to repair. Remove with: ~/Library/Application\ Support/Tess/tess uninstall
 set -e
@@ -141,6 +141,10 @@ fetch theme "$TMP/theme.tgz" || fail "Download failed. Check your connection and
 fetch updater "$TMP/updater.sh" || fail "Download failed. Check your connection and try again."
 fetch mini "$TMP/mini.zip" || rm -f "$TMP/mini.zip"
 fetch doctor "$TMP/doctor.sh" || rm -f "$TMP/doctor.sh"
+fetch installer "$TMP/installer.sh" || fail "Download failed. Check your connection and try again."
+fetch uninstall "$TMP/uninstall.sh" || fail "Download failed. Check your connection and try again."
+sh -n "$TMP/installer.sh" || fail "Tess's installer download is damaged, so nothing was installed."
+sh -n "$TMP/uninstall.sh" || fail "Tess's uninstaller download is damaged, so nothing was installed."
 mkdir -p "$HOME_TESS/bin"
 rm -rf "$HOME_TESS/bin/patcher"; ditto "$TMP/p" "$HOME_TESS/bin/patcher"
 PATCHER="$HOME_TESS/bin/patcher/tess-patcher"
@@ -227,12 +231,14 @@ cp "$TMP/updater.sh" "$HOME_TESS/updater.sh"; chmod +x "$HOME_TESS/updater.sh"
 { echo "SPOTIFY='$SPOTIFY'"; [ -n "$TESS_TEST" ] && echo "TESS_CONFIG='$CONF'"; [ "$CH" != stable ] && echo "TESS_PARTS_CHANNEL='$CH'"; } > "$HOME_TESS/updater.env"
 mkdir -p "$HOME_TESS/state"
 OLD_MINI=$(cat "$HOME_TESS/state/mini" 2>/dev/null || true)
-for n in patcher theme updater mini doctor; do
+for n in patcher theme updater mini doctor installer uninstall; do
   { [ "$n" = mini ] && [ ! -s "$TMP/mini.zip" ]; } || { [ "$n" = doctor ] && [ ! -s "$TMP/doctor.sh" ]; } && continue
   part $n 2 > "$HOME_TESS/state/$n"
 done
 awk '$1 == "version" { print $2 }' "$TMP/components.txt" > "$HOME_TESS/state/version"
 [ -s "$TMP/doctor.sh" ] && cp "$TMP/doctor.sh" "$HOME_TESS/doctor.sh"
+cp "$TMP/installer.sh" "$HOME_TESS/installer.sh"; chmod +x "$HOME_TESS/installer.sh"
+cp "$TMP/uninstall.sh" "$HOME_TESS/uninstall.sh"; chmod +x "$HOME_TESS/uninstall.sh"
 [ -f "$HOME_TESS/install-id" ] || od -An -tx1 -N16 /dev/urandom | tr -d ' \n' > "$HOME_TESS/install-id"
 # the rescue line (see rescue.sh): its own copy, which updates never replace
 if [ -x "$HOME_TESS/bin/patcher/rescue/tess-rescue-verify" ] && [ ! -x "$HOME_TESS/rescue/tess-rescue-verify" ]; then
@@ -304,18 +310,20 @@ fi
 # --- the tess command (update / repair / uninstall) -----------------------------------------------------------------
 cat > "$HOME_TESS/tess" <<'EOF'
 #!/bin/sh
+T="$HOME/Library/Application Support/Tess"
 case "$1" in
-  update|repair)
-    CH=$(sed -n "s/^TESS_PARTS_CHANNEL='\(.*\)'$/\1/p" "$HOME/Library/Application Support/Tess/updater.env" 2>/dev/null)
-    curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | TESS_CHANNEL="${CH:-stable}" sh ;;
-  uninstall) curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/uninstall.sh | sh ;;
-  doctor) /bin/zsh "$HOME/Library/Application Support/Tess/doctor.sh" ;;
-  report) /bin/zsh "$HOME/Library/Application Support/Tess/doctor.sh" --report ;;
+  update) /usr/bin/env TESS_FORCE=1 /bin/zsh "$T/updater.sh" ;;
+  repair)
+    CH=$(sed -n "s/^TESS_PARTS_CHANNEL='\(.*\)'$/\1/p" "$T/updater.env" 2>/dev/null)
+    /usr/bin/env TESS_CHANNEL="${CH:-stable}" /bin/sh "$T/installer.sh" ;;
+  uninstall) /bin/sh "$T/uninstall.sh" ;;
+  doctor) /bin/zsh "$T/doctor.sh" ;;
+  report) /bin/zsh "$T/doctor.sh" --report ;;
   reports)
     case "$2" in
-      off) touch "$HOME/Library/Application Support/Tess/reports-off"; echo "Health reports are off." ;;
-      on) rm -f "$HOME/Library/Application Support/Tess/reports-off"; echo "Health reports are on." ;;
-      *) [ -f "$HOME/Library/Application Support/Tess/reports-off" ] && echo "Health reports are off." || echo "Health reports are on. (tess reports off)" ;;
+      off) touch "$T/reports-off"; echo "Health reports are off." ;;
+      on) rm -f "$T/reports-off"; echo "Health reports are on." ;;
+      *) [ -f "$T/reports-off" ] && echo "Health reports are off." || echo "Health reports are on. (tess reports off)" ;;
     esac ;;
   *) echo "usage: tess doctor | report | reports on|off | update | repair | uninstall" ;;
 esac

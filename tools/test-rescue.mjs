@@ -24,6 +24,8 @@ cpSync(verifier, join(R, 'tess-rescue-verify'));
 cpSync(join(root, 'installer/rescue.sh'), join(R, 'rescue.sh'));
 const ID = 'a'.repeat(32), OTHER = 'b'.repeat(32);
 writeFileSync(join(T, 'install-id'), ID);
+writeFileSync(join(T, 'installer.sh'), '#!/bin/sh\nexit 0\n');
+writeFileSync(join(T, 'uninstall.sh'), '#!/bin/sh\nexit 0\n');
 const env = { ...process.env, TESS_TEST: '1', TESS_HOME: T, TESS_RESCUE_DIR: orders };
 const later = () => Math.floor(Date.now() / 1000) + 3600;
 
@@ -41,12 +43,13 @@ const marker = join(box, 'PWNED');
 try {
   let s = 0;
   // 1. every action is accepted and maps to Tess's own tool
-  const expect = { check: 'doctor.sh --report', update: 'updater.sh', repair: 'installer/install.sh', 'restore-spotify': 'restore', uninstall: 'uninstall.sh' };
+  const expect = { check: 'doctor.sh --report', update: 'updater.sh', repair: `${T}/installer.sh`, 'restore-spotify': 'restore', uninstall: `${T}/uninstall.sh` };
   for (const [a, what] of Object.entries(expect)) {
     publish(order(++s, a)); run();
     assert.equal(serial(), s, `${a}: marked done`);
     assert.match(log(), new RegExp(`order ${s}: ${a}`)); assert.ok(log().split('\n').some((l) => l.includes('would run') && l.includes(what)), `${a} runs ${what}`);
   }
+  assert.ok(!log().includes('curl '), 'repair and uninstall never fetch code');
   // 2. a replay does nothing
   const before = log(); run(); assert.equal(log(), before, 'replay ignored');
   // 3. an old-style script order is refused (and its script never runs)

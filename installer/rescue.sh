@@ -8,7 +8,7 @@
 # these buttons:
 #   check            run Tess's doctor (checks Tess and Spotify, puts back only Tess's own safe fixes) and report
 #   update           run Tess's updater now (it installs only parts signed with Tess's release key)
-#   repair           reinstall Tess with the public install line, on this Mac's channel (same as "tess repair")
+#   repair           run this Mac's signed installer copy on its channel (same as "tess repair")
 #   restore-spotify  take Tess out of Spotify and put Spotify's own interface back (Spotify keeps working, plain)
 #   uninstall        remove Tess completely (same as "tess uninstall")
 # Nothing here reads your files, messages, other apps or settings outside Tess and Spotify.
@@ -74,10 +74,10 @@ PATCHER="$T/bin/patcher/tess-patcher"
 case $action in
   check)           cmd=(/bin/zsh "$T/doctor.sh" --report) ;;
   update)          cmd=(/usr/bin/env TESS_FORCE=1 /bin/zsh "$T/updater.sh") ;;
-  repair)          cmd=(/bin/sh -c 'curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | TESS_CHANNEL="$1" sh' _ "${CH:-stable}") ;;
+  repair)          cmd=(/usr/bin/env TESS_CHANNEL="${CH:-stable}" /bin/sh "$T/installer.sh") ;;
   # the patcher's restore swaps in Spotify's own files as one checked copy (swapApps), never delete-then-copy
   restore-spotify) cmd=(/bin/zsh -c '[ -f "$1/updater.env" ] && . "$1/updater.env"; [ -n "$TESS_CONFIG" ] && export SPICETIFY_CONFIG="$TESS_CONFIG"; exec "$2" restore' _ "$T" "$PATCHER") ;;
-  uninstall)       cmd=(/bin/sh -c 'curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/uninstall.sh | sh') ;;
+  uninstall)       cmd=(/bin/sh "$T/uninstall.sh") ;;
   *) log "rescue order $serial asks for '$action', which isn't one of Tess's rescue actions; refused"; exit 0 ;;
 esac
 log "running rescue order $serial: $action (from $got)"
