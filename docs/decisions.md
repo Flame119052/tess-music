@@ -58,6 +58,15 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
 - **D-21 · 13 Nov 2026 · Agent** — When macOS blocks the patcher: check first (`can-write`), leave Spotify untouched,
   ask once with "Open Settings", never retry on a timer; re-apply only on a new Spotify version, a new patcher, or the
   user asking. *The old helper retried every few minutes and half-patched Spotify.* (#28)
+- **D-22 · 13 Nov 2026 · Owner** — For DMG-installed Spotify copies: detect `com.apple.quarantine` upfront in
+  `installer/tess-install.sh` before changing anything and tell the user to reinstall with Spotify's official
+  installer (`Install Spotify.app`), rather than silently stripping quarantine flags or ad-hoc re-signing `Spotify.app`.
+  (#51)
+- **D-23 · 13 Nov 2026 · Owner** — Store raw signing keys on the internal APFS volume (`~/.config/tess-signing/`,
+  `chmod 600`) rather than inside a `noowners` external drive `.env`; back them up via an AES-256 encrypted `.dmg`
+  across separate network, external, and cloud storage with the passphrase in Apple Passwords / iCloud Keychain; leave
+  the owner's FIDO-only YubiKey untouched; document public env/secret rules in `.env.example` + `docs/secrets-and-env.md`
+  and keep machine-specific paths in gitignored `.local/`. (#55)
 
 ## Releases and process
 

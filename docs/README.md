@@ -6,6 +6,7 @@
 | [`../DESIGN.md`](../DESIGN.md) | How Tess looks, moves and performs: tokens, components, motion and performance rules |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | Contributor entry point, issue forms, security reporting, local checks |
 | [`architecture.md`](architecture.md) | How the pieces fit: install, updates, safety mechanisms, release pipeline, secrets, inbox |
+| [`secrets-and-env.md`](secrets-and-env.md) | Local, CI/CD, and Cloudflare environment variables, `.gitignore` safeguards, and key backup policy |
 | [`status.md`](status.md) | What's true now, open issues, design asks, testing gaps |
 | [`roadmap.md`](roadmap.md) | What's next, in order, phase by phase |
 | [`triage.md`](triage.md) | Issue taxonomy: priority (`P0`–`P3`), `area:*` categories, status tags, and milestones |

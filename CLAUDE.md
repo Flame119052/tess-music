@@ -2,8 +2,9 @@
 
 # Claude-specific notes
 
-- Everything in `AGENTS.md` applies. Read `DESIGN.md` before any change to how Tess looks or moves, and
-  `docs/architecture.md` before touching the installer, updater, patcher or release flow.
+- Everything in `AGENTS.md` applies. Read `DESIGN.md` before any change to how Tess looks or moves,
+  `docs/architecture.md` before touching the installer, updater, patcher or release flow, and
+  `docs/secrets-and-env.md` before touching signing, env vars, CI secrets, or Cloudflare Worker config.
 - Claude Code's tool output is not seen by Krish: report results in your reply, with the evidence (numbers,
   screenshots, test output).
 - Krish works across several threads. Start a thread by reading `docs/status.md` and the GitHub issue you were given;

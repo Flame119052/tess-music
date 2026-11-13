@@ -19,7 +19,6 @@ helper blanked its Spotify).
 | # | Priority | Area | What | State / next step |
 | --- | --- | --- | --- | --- |
 | #56 | `P0` | `installer`, `release-ci` | Security audit (DeepSeek V4.1 via OpenCode Go): 25 findings, 2 Critical, 4 High | Open; Phase 1 top priority. |
-| #55 | `P0` | `release-ci` | Back up the signing keys offline | Waiting on Krish (Phase 1). |
 | #53 | `P1` | `installer` | Tell users about the rescue line; `tess rescue off`, `tess status` | Open; waiting on Krish (Phase 1). |
 | #54 | `P1` | `docs`, `release-ci` | Purge old issue revisions and commit messages with personal details | Waiting on Krish (Phase 1). |
 | #62 | `P1` | `docs`, `release-ci` | Update docs & release flow for PRs → `dev` → `beta` → `stable` (approvers TBD) | Waiting on Krish (Phase 1). |
@@ -32,7 +31,7 @@ helper blanked its Spotify).
 | #63 | `P1` | `theme` | Vinyl player: fix tonearm start/end position, proportional tracking, and playback sync | Open bug (Phase 2). |
 | #65 | `P1` | `theme` | Full-screen player: right side stays blank instead of filling the page when a song has no lyrics | Open bug (Phase 2). |
 | #59 | `P1` | `patcher`, `release-ci` | Spicetify fork: fix Spotify button lookups directly and watch upstream for new updates | Open (Phase 2). |
-| #51 | `P1` | `installer` | Installer: warn users if Spotify was dragged from a DMG (macOS blocks patching it) | Open bug (Phase 2). |
+| #51 | `P1` | `installer` | Installer: warn users if Spotify was dragged from a DMG (macOS blocks patching it) | Open bug (Phase 2; approach #1 confirmed: detect quarantine upfront and tell user to reinstall via Spotify's installer). |
 | #61 | `P2` | `theme` | Library: separate Blends and Playlists in the expanded view and filter | Open (Phase 2). |
 | #45 | `P2` | `theme` | Library (full size): final decision on Glass Shelves | Waiting on Krish (Phase 2). |
 | #4 | `P2` | `theme` | Album and playlist pages: review round with Krish | Waiting on Krish's review (Phase 2). |

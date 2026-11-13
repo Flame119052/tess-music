@@ -27,9 +27,12 @@ Owner: Krish (GitHub `Flame119052`). Real users run it on their own Macs; treat 
    says "ship it". The public install line runs the last promoted installer.
 4. **Krish decides:** opening a pull request, promoting to users, installing outside skills or tools, anything with
    `sudo`, deleting data, and design directions he hasn't approved. Name one recommended option and ask.
-5. **Secrets stay secret.** Signing keys live in `~/.config/tess-signing/` and GitHub Actions secrets, never in the
-   repo or in chat. The rescue key (`rescue.pem`) exists only on Krish's Mac. Don't put Krish's email or personal
-   details into any outside request or public file.
+5. **Secrets stay secret.** Signing keys live in `~/.config/tess-signing/` (`chmod 600` on APFS with ownership) and
+   GitHub Actions secrets, never in the repo, in chat, or in a `.env` on a `noowners`-mounted external drive. The
+   rescue key (`rescue.pem`) exists only on Krish's Mac and its AES-256 encrypted backups. Never touch Krish's
+   hardware security keys/YubiKey without checking slots read-only first, keep machine-specific backup paths inside
+   gitignored `.local/`, and see [`docs/secrets-and-env.md`](docs/secrets-and-env.md) and [`.env.example`](.env.example).
+   Don't put Krish's email or personal details into any outside request or public file.
 6. **Users' privacy:** health reports strip names, home paths, computer names and emails; `tess reports off` turns
    them off. Never add anything personal to a report.
 
@@ -45,7 +48,8 @@ Owner: Krish (GitHub `Flame119052`). Real users run it on their own Macs; treat 
 | `inbox/` | Cloudflare Worker at `tess-music-player.janus.ing`: receives anonymous health reports, serves the signed rescue order. No read endpoint. |
 | `companion/` | Phone PWA (separate project, issue #8). |
 | `tools/` | Build, release, promote, rescue, reports, and every measuring tool (see below). |
-| `docs/` | Architecture, status, design rules, algorithms, research. |
+| `docs/` | Architecture, secrets & env (`secrets-and-env.md`), status, design rules, algorithms, research. |
+| `.env.example`, `.local/` | Safe env template (committed) and private machine-specific backup/secret notes (`.local/`, `.env`, `.dev.vars` — gitignored). |
 | `.github/workflows/release.yml` | Safety gate → build/sign → publish to `dev`; `promote` action → stable + beta. |
 
 ## Daily development loop (on Krish's Mac)

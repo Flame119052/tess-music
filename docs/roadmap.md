@@ -18,7 +18,7 @@ The goal: anyone who installs Tess can trust it, the release pipeline is gated c
 | Issue | Priority | What | Why first |
 | --- | --- | --- | --- |
 | #56 | `P0` | Security audit: 25 findings (2 Critical, 4 High). Start with SEC-01/02, SEC-03, SEC-04, SEC-05 | It's code running on other people's Macs |
-| #55 | `P0` | Back up the signing keys offline | The rescue key is a master key; losing or leaking it is the worst case |
+| #55 | `P0` | Back up the signing keys offline | **Done (13 Nov 2026)** — AES-256 encrypted `.dmg` verified across network, external SSD, and cloud storage |
 | #53 | `P1` | Tell users about the rescue line; `tess rescue off`, `tess status` | Consent for remote fix-ups |
 | #54 | `P1` | Purge old issue revisions and commit messages with personal details | Privacy |
 | #62 | `P1` | Update docs & release flow for PRs → `dev` → `beta` → `stable` (approvers TBD) | Aligns process before wider rollout |

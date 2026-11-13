@@ -72,12 +72,17 @@ Install line: `installer/install.sh` (stub on `main`) → downloads `dist/instal
 
 ## Secrets
 
+See [`secrets-and-env.md`](secrets-and-env.md) and [`../.env.example`](../.env.example) for full local, CI, and cloud
+secret handling, `.gitignore` safeguards, and encrypted off-Mac backup policy (machine-specific paths live in
+gitignored `.local/`).
+
 | Secret | Where | Signs / does |
 | --- | --- | --- |
 | Release key (Ed25519) | `~/.config/tess-signing/private.pem`, Actions `TESS_SIGNING_KEY` | theme, components list |
-| Rescue key (Ed25519) | `~/.config/tess-signing/rescue.pem` only | rescue orders |
+| Rescue key (Ed25519) | `~/.config/tess-signing/rescue.pem` + AES-256 backups only | rescue orders |
 | Code-signing identity | `codesign.p12/.pass`, Actions `TESS_CODESIGN_P12/_PASS` | patcher, verifiers, Tess Mini |
 | Mirror deploy key | Actions `TESS_MIRROR_KEY` | push to tess-releases |
+| Inbox IP hash salt | Cloudflare Worker secret `SALT` (`inbox/.dev.vars` locally) | hashes reporter IPs in D1 |
 | Cloudflare login | Krish's wrangler login | inbox deploys, reading reports, publishing rescue orders to KV |
 
 ## Inbox (`inbox/`)
