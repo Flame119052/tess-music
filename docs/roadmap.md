@@ -17,7 +17,7 @@ The goal: anyone who installs Tess can trust it, and the owner can recover from 
 
 | Issue | What | Why first |
 | --- | --- | --- |
-| Security audit issue (label `security`) | Work through the audit's findings, Critical/High first | It's code running on other people's Macs |
+| #56 | Security audit: 25 findings (2 Critical, 4 High). Start with SEC-01/02 (the install line runs `main` unsigned; first-install verification is circular), SEC-03 (`tess update` does the same), SEC-04 (no anti-rollback), SEC-05 (unpinned Spicetify helper) | It's code running on other people's Macs |
 | #53 | Tell users about the rescue line; `tess rescue off`, `tess status` | Consent for remote fix-ups |
 | #55 | Back up the signing keys offline | The rescue key is a master key; losing or leaking it is the worst case |
 | #54 | Purge old issue revisions and commit messages with personal details | Privacy |

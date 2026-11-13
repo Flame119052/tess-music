@@ -39,6 +39,7 @@ helper blanked its Spotify).
 | #53 | Tell users about the rescue line; `tess rescue off`, `tess status` | Open (security). |
 | #54 | Purge old issue revisions and commit messages with personal details | Waiting on Krish. |
 | #55 | Back up the signing keys offline | Waiting on Krish (security). |
+| #56 | Security audit (DeepSeek V4.1 via OpenCode Go): 25 findings, 2 Critical, 4 High | Open; Phase 1 of the roadmap. |
 
 Closed on 13 Nov: #13 (Dial picking), #29 (DJ button), #30 (top bar), #31 (vinyl arm), #32 (no lyrics), #33 (Settings
 and account menu), #35 (performance hill climb), #36 (a user's blanked Spotify + safe swap), #37 (doctor, reports,
