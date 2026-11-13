@@ -12,6 +12,7 @@ import { createPrivateKey, sign } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface } from 'node:readline/promises';
+import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
 const file = args.find((a) => !a.startsWith('--') && !/^\d+$/.test(a) && !/^[0-9a-f,]+$/.test(a));
@@ -54,7 +55,22 @@ run('git', ['-C', dir, 'add', '-A']);
 run('git', ['-C', dir, 'commit', '-q', '-m', `Rescue order ${serial}`]);
 run('git', ['-C', dir, 'push', '-q', 'origin', 'rescue']);
 // 2. the Tess inbox, in case GitHub can't be reached
-const kv = (k, path) => run('npx', ['-y', 'wrangler@4', 'kv', 'key', 'put', '--remote', '--namespace-id', '26cadf05786a439b89302a0641180c39', k, '--path', path], { cwd: new URL('../inbox/', import.meta.url).pathname });
+const kv = (k, path) => run('npx', ['-y', 'wrangler@4', 'kv', 'key', 'put', '--remote', '--namespace-id', '26cadf05786a439b89302a0641180c39', k, '--path', path], { cwd: fileURLToPath(new URL('../inbox/', import.meta.url)) });
 kv('rescue.txt', `${dir}/rescue.txt`);
 kv('rescue.sig', `${dir}/rescue.sig`);
-console.log(`Published rescue order ${serial}. Macs pick it up within 6 hours (or at their next login).`);
+// 3. the wake row in D1: strongly consistent, so a Mac's next one-minute check sees it at once
+try {
+  execFileSync('npx', ['-y', 'wrangler@4', 'd1', 'execute', 'tess-inbox', '--remote', '--command',
+    `INSERT INTO wake (id, serial) VALUES (1, ${serial}) ON CONFLICT(id) DO UPDATE SET serial = excluded.serial`],
+  { cwd: fileURLToPath(new URL('../inbox/', import.meta.url)), stdio: 'ignore' });
+} catch {
+  console.error('Warning: the wake row in D1 failed; the KV fallback still works.');
+}
+// 4. the same serial in KV: slower to reach every edge, but keeps the wake path alive if D1 is unavailable
+try {
+  writeFileSync(`${dir}/wake`, `${serial}\n`);
+  kv('wake', `${dir}/wake`);
+} catch {
+  console.error('Warning: the KV wake fallback failed; the D1 wake row still works.');
+}
+console.log(`Published rescue order ${serial}. Macs with the wake helper start it within a minute; others within 6 hours (or at their next login).`);

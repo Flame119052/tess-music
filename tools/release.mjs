@@ -133,12 +133,14 @@ run('tar', ['-C', `${pdir}pkg`, '-czf', `${build}tess-patcher-macos-universal.ta
 // keeps pointing at the release that first shipped it, so Macs only download (and restart) what actually changed.
 cpSync(`${root}installer/updater.sh`, `${build}tess-updater.sh`);
 cpSync(`${root}installer/doctor.sh`, `${build}tess-doctor.sh`);
+cpSync(`${root}installer/wake.sh`, `${build}tess-wake.sh`);
 const hashFiles = (files) => { const h = createHash('sha256'); for (const f of files) h.update(readFileSync(f)); return h.digest('hex'); };
 const gitTree = (p) => execFileSync('git', ['-C', root, 'rev-parse', `HEAD:${p}`], { encoding: 'utf8' }).trim();
 const parts = {
   updater: { file: `${build}tess-updater.sh`, src: hashFiles([`${root}installer/updater.sh`]) },
   patcher: { file: `${build}tess-patcher-macos-universal.tar.gz`, src: hashFiles([`${root}installer/rescue.sh`]).slice(0, 20) + gitTree('patcher').slice(0, 20) },
   doctor: { file: `${build}tess-doctor.sh`, src: hashFiles([`${root}installer/doctor.sh`]) },
+  wake: { file: `${build}tess-wake.sh`, src: hashFiles([`${root}installer/wake.sh`]) },
   mini: { file: `${build}tess-mini.zip`, src: hashFiles([`${root}mini/TessMini.swift`, `${root}mini/Info.plist`]).slice(0, 56) + 'sig1' },
   theme: { file: `${build}tess-theme.tar.gz`, src: hashFiles([`${root}theme/loader/loader.js`]) },
 };
@@ -183,7 +185,7 @@ if (channel === 'stable') {
     console.log(`beta moved up to ${version}`);
   }
 }
-const assets = [`${build}tess-theme.tar.gz`, `${build}tess-mini.zip`, `${build}tess-patcher-macos-universal.tar.gz`, `${build}tess-updater.sh`, `${build}tess-doctor.sh`];
+const assets = [`${build}tess-theme.tar.gz`, `${build}tess-mini.zip`, `${build}tess-patcher-macos-universal.tar.gz`, `${build}tess-updater.sh`, `${build}tess-doctor.sh`, `${build}tess-wake.sh`];
 try {
   run('gh', ['release', 'create', `v${version}`, ...assets, '-R', 'Flame119052/tess-music', '--target', channel, '-t', `Tess ${version}`, '-n', `Tess ${version}. Install: curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | sh`, ...(channel === 'stable' ? ['--latest'] : ['--prerelease'])]);
 } catch {

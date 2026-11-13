@@ -19,6 +19,7 @@ helper blanked its Spotify).
 | # | Priority | Area | What | State / next step |
 | --- | --- | --- | --- | --- |
 | #56 | `P0` | `installer`, `release-ci` | Security audit (DeepSeek V4.1 via OpenCode Go): 25 findings, 2 Critical, 4 High | Open; Phase 1 top priority. |
+| #68 | `P1` | `installer`, `release-ci` | Rescue line: start a new order within a minute instead of waiting up to six hours | Built and tested locally; dev build + real-order timing next (Phase 1). |
 | #53 | `P1` | `installer` | Tell users about the rescue line; `tess rescue off`, `tess status` | Open; waiting on Krish (Phase 1). |
 | #54 | `P1` | `docs`, `release-ci` | Purge old issue revisions and commit messages with personal details | Waiting on Krish (Phase 1). |
 | #62 | `P1` | `docs`, `release-ci` | Update docs & release flow for PRs → `dev` → `beta` → `stable` (approvers TBD) | Waiting on Krish (Phase 1). |

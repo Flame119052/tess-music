@@ -55,6 +55,35 @@ install_rescue() {
 }
 install_rescue
 
+# The wake helper starts the rescue line within a minute of an order being sent. It has its own agent so a broken
+# updater cannot stop the 6-hour rescue check, and so existing Macs pick it up without a reinstall.
+install_wake_agent() {
+  local pl="$HOME/Library/LaunchAgents/music.tess.wake.plist"
+  [ -n "$TESS_TEST" ] && pl="$HOME_TESS/LaunchAgents/music.tess.wake.plist"
+  [ -f "$HOME_TESS/wake.sh" ] || return 0
+  mkdir -p "$(dirname "$pl")"
+  if ! /bin/zsh "$HOME_TESS/wake.sh" --plist > "$pl.new" 2>/dev/null || ! plutil -lint "$pl.new" >/dev/null 2>&1; then
+    rm -f "$pl.new"; problem "wake: couldn't write its LaunchAgent"; return 0
+  fi
+  if cmp -s "$pl.new" "$pl"; then
+    rm -f "$pl.new"
+    # Repair a plist that is on disk but no longer loaded (a failed bootstrap, or a login after an update).
+    if [ -z "$TESS_TEST" ] && ! launchctl print "gui/$(id -u)/music.tess.wake" >/dev/null 2>&1; then
+      launchctl bootstrap "gui/$(id -u)" "$pl" >/dev/null 2>&1 && log "wake agent loaded"
+    fi
+    return 0
+  fi
+  mv "$pl.new" "$pl"
+  [ -n "$TESS_TEST" ] && { log "wake agent installed (test)"; return 0; }
+  launchctl bootout "gui/$(id -u)/music.tess.wake" >/dev/null 2>&1
+  if launchctl bootstrap "gui/$(id -u)" "$pl" >/dev/null 2>&1; then
+    log "wake agent installed"
+  else
+    problem "wake: couldn't load its LaunchAgent"
+  fi
+}
+install_wake_agent
+
 # --- 1. Spotify updated itself: its files are stock again, so apply Tess -------------------------------------------
 # Tess is put back only when there is a reason to expect it to work: Spotify's version changed since the last try, a
 # newer patcher arrived (step 2), or the user asked (tess repair, or "Try Again" below). Never on a timer, so one
@@ -163,6 +192,9 @@ while read -r name sha url _src; do
     updater)
       zsh -n "$f" || { problem "updater: bad file"; continue; }
       cp "$f" "$HOME_TESS/updater.sh.new" && chmod +x "$HOME_TESS/updater.sh.new" && mv "$HOME_TESS/updater.sh.new" "$HOME_TESS/updater.sh" || continue ;;
+    wake)
+      zsh -n "$f" || { problem "wake: bad file"; continue; }
+      cp "$f" "$HOME_TESS/wake.sh.new" && chmod +x "$HOME_TESS/wake.sh.new" && mv "$HOME_TESS/wake.sh.new" "$HOME_TESS/wake.sh" || continue ;;
     patcher)
       rm -rf "$HOME_TESS/bin/patcher.new"; mkdir -p "$HOME_TESS/bin/patcher.new"
       tar -xzf "$f" -C "$HOME_TESS/bin/patcher.new" && [ -x "$HOME_TESS/bin/patcher.new/tess-patcher" ] || { problem "patcher: bad archive"; continue; }
@@ -195,6 +227,7 @@ while read -r name sha url _src; do
   echo "$sha" > "$STATE/$name"
   log "$name: updated"; changed=$((changed + 1))
 done < "$TMP/components.txt"
+install_wake_agent
 [ "$changed" -gt 0 ] && log "parts current ($changed updated)"
 # a newer patcher may support a Spotify version the old one could not
 [ -n "$new_patcher" ] && reapply now

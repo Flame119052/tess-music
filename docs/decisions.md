@@ -68,6 +68,15 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   the owner's FIDO-only YubiKey untouched; document public env/secret rules in `.env.example` + `docs/secrets-and-env.md`
   and keep machine-specific paths in gitignored `.local/`. (#55)
 
+- **D-58 · 13 Nov 2026 · Owner** — Rescue orders start within a minute: a separate `music.tess.wake` agent asks
+  `GET /v1/wake` every 60 s and starts the signed rescue line when the serial is newer than the last order run. The
+  serial lives in D1 (strongly consistent) with KV as a fallback; the 6-hour `music.tess.rescue` check stays as the
+  fallback, so a broken wake helper or inbox cannot stop rescue. The request carries no install id, and the helper can
+  only start the rescue agent; the order still needs the offline key's signature. *The owner asked for a check-in to
+  run when it is sent, not up to six hours later. True push would need a new service and an always-on connection on
+  every Mac; one small request a minute is the simpler trade-off.* Revisit at a much larger user base (the Worker free
+  tier allows ~100k requests/day).
+
 ## Releases and process
 
 - **D-30 · 12 Nov 2026 · Owner** — Any change pushed to the repo ships automatically as a regular update.

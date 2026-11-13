@@ -10,3 +10,5 @@ CREATE TABLE IF NOT EXISTS reports (
 CREATE INDEX IF NOT EXISTS reports_install ON reports(install, at);
 CREATE INDEX IF NOT EXISTS reports_at ON reports(at);
 CREATE TABLE IF NOT EXISTS limits (k TEXT PRIMARY KEY, n INTEGER NOT NULL, until INTEGER NOT NULL);
+-- The newest rescue serial Macs should wake for. One row, written only by the owner's rescue tool.
+CREATE TABLE IF NOT EXISTS wake (id INTEGER PRIMARY KEY CHECK (id = 1), serial INTEGER NOT NULL);

@@ -1,4 +1,5 @@
-// Tess inbox: Macs send health reports here, and it serves the signed rescue order as one more mirror.
+// Tess inbox: Macs send health reports here, and it serves the signed rescue order as one more mirror plus a public
+// wake serial, so a Mac can notice a new order within a minute instead of waiting for its 6-hour check.
 // Security model:
 //  - Anyone can POST a report (a public installer can't hold a secret), so a report is only ever stored data: never
 //    shown on a page, never run, never trusted. Strict size, shape and rate limits stop flooding.
@@ -63,6 +64,17 @@ export default {
     if (request.method === 'GET' && (pathname === '/v1/rescue.txt' || pathname === '/v1/rescue.sig')) {
       const v = await env.RESCUE.get(pathname.slice(4));
       return v == null ? reply(404) : reply(200, v);
+    }
+    // The newest rescue serial, public like the order itself. No install id, no report data. Macs compare it with
+    // the last order they ran; the order still has to pass the rescue key's signature before anything happens.
+    // D1 is strongly consistent (KV can take ~a minute); KV stays as the fallback for old database schemas.
+    if (request.method === 'GET' && pathname === '/v1/wake') {
+      try {
+        const row = await env.DB.prepare('SELECT serial FROM wake WHERE id = 1').first();
+        if (row && Number.isInteger(row.serial)) return reply(200, String(row.serial));
+      } catch {}
+      const v = await env.RESCUE.get('wake');
+      return v == null ? reply(204) : reply(200, v);
     }
     return reply(404);
   },

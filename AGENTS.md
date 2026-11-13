@@ -45,7 +45,7 @@ Owner: Krish (GitHub `Flame119052`). Real users run it on their own Macs; treat 
 | `patcher/` | Fork of Spicetify CLI 2.46.4 (Go). Tess changes: `src/cmd/swap.go` (safe folder swap), `can-write`, `tessverify/`. |
 | `installer/` | `install.sh` (public stub, never changes), `tess-install.sh` (real installer), `updater.sh` (background helper, self-updating), `doctor.sh`, `rescue.sh` (separate never-updated rescue line), `uninstall.sh`. |
 | `mini/` | Tess Mini, the macOS miniplayer (Swift). |
-| `inbox/` | Cloudflare Worker at `tess-music-player.janus.ing`: receives anonymous health reports, serves the signed rescue order. No read endpoint. |
+| `inbox/` | Cloudflare Worker at `tess-music-player.janus.ing`: receives anonymous health reports, serves the signed rescue order and its public wake serial. No read endpoint for reports. |
 | `companion/` | Phone PWA (separate project, issue #8). |
 | `tools/` | Build, release, promote, rescue, reports, and every measuring tool (see below). |
 | `docs/` | Architecture, secrets & env (`secrets-and-env.md`), status, design rules, algorithms, research. |
@@ -79,6 +79,7 @@ before/after, a failing then passing test, or a log. "Should work" is not done.
 | Installer / updater / doctor / rescue | Sandbox copy of Spotify with `TESS_TEST=1`; cover success, a blocked write, a failure mid-way, and a fresh Mac; `tools/check-safety.sh` |
 | Patcher (Go) | `cd patcher && go test ./src/cmd/` plus an apply → restore cycle on a sandbox copy |
 | Dial picking | `node tools/test-dial-pick.mjs` |
+| Rescue wake | `node tools/test-rescue-wake.mjs` (local inbox + fake launchd); publish a test order and check `rescue/rescue.log` and the reports |
 
 Read numbers carefully: `ps %cpu` on macOS is a minute-long average (use `tools/cpu-ab.mjs`); a hidden window draws
 nothing; Krish using the Mac adds noise, so alternate with/without and repeat (the tools do).
@@ -92,7 +93,8 @@ nothing; Krish using the Mac adds noise, so alternate with/without and repeat (t
   dev build to `stable` and `beta` and mirrors to `Flame119052/tess-releases` (never archive that repo: 0.1.x
   installs read it).
 - Emergency fix for Macs whose updates are stuck: `node tools/rescue.mjs fix.sh [--only <install id>]` (signed with the
-  offline rescue key; Krish's Mac only). Write rescue scripts to be safe to run twice.
+  offline rescue key; Krish's Mac only). Write rescue scripts to be safe to run twice. Macs with the wake helper
+  (`music.tess.wake`, one minute) start it in about a minute; all others still check every 6 hours.
 - Health reports: `node tools/reports.mjs problems | macs | mac <id> | show <n>` (needs Krish's Cloudflare login).
 
 ## Work tracking

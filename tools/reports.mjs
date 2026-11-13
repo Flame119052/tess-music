@@ -5,10 +5,11 @@
 //   node tools/reports.mjs show <n>        the full report number n
 //   node tools/reports.mjs macs            each Mac's latest status
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const [cmd = 'latest', arg] = process.argv.slice(2);
 const q = (sql) => JSON.parse(execFileSync('npx', ['-y', 'wrangler@4', 'd1', 'execute', 'tess-inbox', '--remote', '--json', '--command', sql],
-  { cwd: new URL('../inbox/', import.meta.url).pathname, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }))[0].results;
+  { cwd: fileURLToPath(new URL('../inbox/', import.meta.url)), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }))[0].results;
 const hex = (v) => { if (!/^[0-9a-f]{32}$/.test(v || '')) { console.error('install ids are 32 hex characters'); process.exit(1); } return v; };
 const when = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 16);
 const line = (r) => `${String(r.id).padStart(5)}  ${when(r.at)}  ${r.install.slice(0, 8)}  ${r.kind.padEnd(9)}  tess ${r.tess || '?'}  spotify ${r.spotify || '?'}  macOS ${r.macos || '?'}  ${r.status || ''}`;
