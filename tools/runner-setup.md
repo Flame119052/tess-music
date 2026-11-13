@@ -25,6 +25,10 @@ GitHub CLI (`gh`), and Node.js 22. Do not put provider tokens in the repository 
 
 ## macOS user service
 
+Only on a Mac that holds no Tess keys, or under a separate macOS user that can't read the owner's home folder
+(`~/.config/tess-signing/` holds the signing and rescue keys; a reviewer reading an outside diff could be talked into
+printing any file it can read). The preferred runners are `omarchy` and `paperclip-vps`.
+
 Use a LaunchAgent, not a system LaunchDaemon. Replace `/absolute/path/to/actions-runner` below with the runner
 directory:
 
@@ -85,10 +89,13 @@ setup.
 
 1. **Actions variable:** set `AGENT_ALLOWLIST` to the comma-separated GitHub logins allowed to call
    `@tess-review`.
-2. **Fork pull requests:** under **Settings → Actions → General**, require approval before workflows from fork PRs
-   run.
+2. **Fork pull requests — before registering any runner:** under **Settings → Actions → General**, choose
+   **"Require approval for all outside collaborators"**. The default only stops first-time contributors, and a fork PR
+   could edit `check.yml` to run on `[self-hosted, tess-agent]`.
 3. **Release environment:** create an environment named `release`, add required reviewers, and allow only `main`.
-   The `declare` and `promote` jobs use this environment.
+   The `declare` and `promote` jobs use this environment. Until reviewers are added it does **not** pause anything
+   (GitHub creates it on first use with no rules). Move `TESS_SIGNING_KEY` and `TESS_MIRROR_KEY` from repository
+   secrets into this environment so only approved jobs can read them.
 4. **Branch protection:** protect `main`, `dev`, `beta`, and `stable`; require the `check` status where applicable,
    block force-pushes and deletions, and grant only the release workflow the bypass needed to update channel branches.
 5. **Runner access:** keep the runner repository-scoped (or in a runner group limited to this repository) and confirm

@@ -75,7 +75,8 @@ The agent that writes the approach comment or opens the PR picks who reviews it,
 ## Reviewer agents on Krish's machines
 
 - **Who can call them.** Only GitHub accounts in the allowlist (the repo variable `AGENT_ALLOWLIST`, today just `Flame119052`). A tag from anyone else is ignored. Anyone can still open issues and PRs.
-- **How the job reaches a machine.** Each machine runs a GitHub self-hosted runner labelled `tess-agent`: the Mac, `omarchy` and `paperclip-vps`. GitHub gives the job to whichever runner is online and idle. Each job checks out a fresh copy of the repo, so the machines need no extra syncing.
+- **Where runners may live.** Only on machines that hold no Tess keys: `omarchy` and `paperclip-vps`. Krish's Mac keeps the signing and rescue keys, and a reviewer reading an outside diff could be tricked into printing files it can read. A Mac runner is allowed only under a separate macOS user that can't read Krish's home folder. As a second guard, the reviewer refuses to post any text that looks like a key or token.
+- **How the job reaches a machine.** Each runner machine runs a GitHub self-hosted runner labelled `tess-agent` (see the line above for which machines). GitHub gives the job to whichever runner is online and idle. Each job checks out a fresh copy of the repo, so the machines need no extra syncing.
 - **Picking the model.** `.github/agents.json` lists the reviewer models per role, strongest first. Each runner picks the first one whose provider has usage left, using the local usage hub when it is there, and otherwise falls back down the list.
 - **Safety, because the repo is public:**
   - The workflow is triggered only by `issue_comment`, which always runs the workflow file from `main`, never from a PR.

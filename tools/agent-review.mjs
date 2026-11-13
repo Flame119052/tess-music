@@ -198,7 +198,15 @@ function verdictFor(text) {
   return 'changes needed';
 }
 
+// A reviewer reads untrusted diffs. If text in a diff talks it into printing a key or token, never post that publicly.
+export function looksSecret(text) {
+  return /-----BEGIN [A-Z ]*(PRIVATE KEY|OPENSSH|PGP)|\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})\b|[A-Za-z0-9+\/]{120,}={0,2}/.test(text);
+}
+
 function postComment(repo, number, body) {
+  if (looksSecret(body)) {
+    body = `${marker}\n\nThe review was not posted: its text looked like it contained a key or token. Krish, check the runner's log on the machine that ran it.`;
+  }
   execFileSync('gh', ['issue', 'comment', String(number), '-R', repo, '--body-file', '-'], {
     input: body,
     stdio: ['pipe', 'inherit', 'inherit'],

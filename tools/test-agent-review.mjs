@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { eligibleModels, parseRequest, providerHasUsage, resolveReviewers, tierForPaths } from './agent-review.mjs';
+import { eligibleModels, looksSecret, parseRequest, providerHasUsage, resolveReviewers, tierForPaths } from './agent-review.mjs';
 
 const config = JSON.parse(readFileSync(new URL('../.github/agents.json', import.meta.url), 'utf8'));
 const available = (usedPercent) => ({ windows: [{ usedPercent }] });
@@ -100,4 +100,11 @@ test('a tag can name the reviewer, within the rules', () => {
   assert.match(resolveReviewers(config, config.pr_normal, { provider: 'claude', model: 'claude-opus-5-5', effort: 'ultra' }, 'normal').note, /effort/);
   assert.deepEqual(parseRequest('@tess-review pr model=$(touch x)'), {});
   assert.deepEqual(resolveReviewers(config, config.pr_normal, {}, 'normal').models, config.pr_normal);
+});
+
+test('review text that looks like a key or token is never posted', () => {
+  assert.ok(looksSecret('here: -----BEGIN PRIVATE KEY-----\nMC4CAQ'));
+  assert.ok(looksSecret('token ghp_' + 'a'.repeat(36)));
+  assert.ok(looksSecret('x'.repeat(10) + 'A'.repeat(130)));
+  assert.ok(!looksSecret('Looks fine. The swap keeps a checked copy.\nVerdict: approve'));
 });
