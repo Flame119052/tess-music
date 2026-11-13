@@ -7,6 +7,9 @@ It is distributed under the same licence as Spicetify, the **GNU Lesser General 
 `LICENSE`). All credit for the patching engine, the Spotify API wrapper (`jsHelper/`) and the CSS map belongs to the
 Spicetify project and its contributors.
 
+The prebuilt `jsHelper/` and `css-map.json` that ship inside the Tess patcher are vendored in
+`prebuilt/spicetify-2.46.4/` (source URL and archive SHA-256 in its `README.md`), so a release never downloads them.
+
 Changes from upstream (all under LGPL-2.1, source in this repository):
 - configuration lives in `~/.config/tess-patcher` (so it never collides with a real Spicetify install)
 - defaults: theme `Tess`, colour scheme `base`, no Spicetify update check
