@@ -1,6 +1,6 @@
-updater acfa2cf30d65e8ff61976ecbc1c53ca26125f2144e86e3b08d2c3edfb67633ea https://github.com/Flame119052/tess-music/releases/download/v0.2.9/tess-updater.sh acfa2cf30d65e8ff61976ecbc1c53ca26125f2144e86e3b08d2c3edfb67633ea
-patcher 2eb66ead3b98f70abcefd688c8b17e415846bdc6f8b78501033e1427d82dd57c https://github.com/Flame119052/tess-music/releases/download/v0.2.9/tess-patcher-macos-universal.tar.gz b9e716f3df5a5b33f10ddcefca5a9ef8442632e9
-doctor fdd8079b349b5376b6b24fbfd993eab430b892992103dc3c32ea1bbe997c8f47 https://github.com/Flame119052/tess-music/releases/download/v0.2.9/tess-doctor.sh fdd8079b349b5376b6b24fbfd993eab430b892992103dc3c32ea1bbe997c8f47
-mini dfd92b38cb84bd77e165831cdd79a3dae6d715b1c1b8f35868c88d0a4894b57d https://github.com/Flame119052/tess-music/releases/download/v0.2.5/tess-mini.zip b338e16f513e834bc062cacb780264c01bb468a41ac2d8d121b04c7f2b8b2bc8
+updater cc7e1bdc3249f0717cdbc4b71e877b863bdf38c25416071ffed35e58c3cf9cdc https://github.com/Flame119052/tess-music/releases/download/v0.2.10/tess-updater.sh cc7e1bdc3249f0717cdbc4b71e877b863bdf38c25416071ffed35e58c3cf9cdc
+patcher 019ed8389880f6f312b2e4b9540a37aa329067fb3f5cbca9f4f8d8ad9cdc2b3f https://github.com/Flame119052/tess-music/releases/download/v0.2.10/tess-patcher-macos-universal.tar.gz b9e716f3df5a5b33f10db3abca5352ec3c169645
+doctor 84eb641fdfeb960c1e3c5e6cc5eab1735ae572dac6c7fafeafb556167cd07416 https://github.com/Flame119052/tess-music/releases/download/v0.2.10/tess-doctor.sh 84eb641fdfeb960c1e3c5e6cc5eab1735ae572dac6c7fafeafb556167cd07416
+mini 2f3d07e8db2fd34c82150971b91873cb95db651a8e19a78aa9cef97813e61c38 https://github.com/Flame119052/tess-music/releases/download/v0.2.10/tess-mini.zip b338e16f513e834bc062cacb780264c01bb468a41ac2d8d121b04c7fsig1
 theme 81889d015fa8dd4598cb39e8554017166c651535acf32f4cbf01dadf5ed2461d https://github.com/Flame119052/tess-music/releases/download/v0.2.5/tess-theme.tar.gz 6452aa543ccb520f396ea838ab6ac0bb7c02c79dc0dac1db0aeda918ac55f635
-version 0.2.9
+version 0.2.10
