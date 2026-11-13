@@ -81,9 +81,13 @@ a leaked rescue key means rotating it with a normal update.
 | `docs/` | research notes, the feedback checklist, what's left |
 | branches `stable`, `beta` | the signed release bundles the loader downloads (written by `tools/release.mjs`) |
 
-Release: every push to `main` that touches `theme/`, `mini/`, `patcher/` or `installer/updater.sh` ships to stable by
-itself (`.github/workflows/release.yml`, once the `TESS_SIGNING_KEY` and `TESS_MIRROR_KEY` secrets are set). By hand:
-`node tools/release.mjs auto|X.Y.Z [stable|beta]` (signing key in `~/.config/tess-signing/`).
+Release: every push to `main` that touches `theme/`, `mini/`, `patcher/` or `installer/` is built, signed and published
+to the internal **`dev`** channel only (`.github/workflows/release.yml`); only the owner's Mac follows it. Nobody else
+gets it until it's **promoted**: Actions → release → Run workflow → action `promote` (or `node tools/promote.mjs`),
+which copies that exact dev build to `stable` and `beta`. The public install line (`installer/install.sh`) is a stub
+that runs the installer from the last promoted release (`dist/install.sh`), so the installer is gated the same way;
+the real installer is `installer/tess-install.sh`. Follow dev on a Mac with `TESS_CHANNEL=dev` before the install
+line. By hand: `node tools/release.mjs auto|X.Y.Z [dev|beta|stable]` (signing keys in `~/.config/tess-signing/`).
 
 How installed Macs update: the look and features load fresh on every Spotify start (`theme/loader/`, which falls back to
 the last release that started cleanly). Every other part (the loader, patcher, Tess Mini, the updater itself) is kept

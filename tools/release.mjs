@@ -20,7 +20,8 @@ if (version === 'auto') {
     .sort((x, y) => y[0] - x[0] || y[1] - x[1] || y[2] - x[2])[0] || [0, 2, 0];
   version = `${a}.${b}.${c + 1}`;
 }
-if (!/^\d+\.\d+\.\d+$/.test(version || '')) { console.error('usage: node tools/release.mjs X.Y.Z [stable|beta]'); process.exit(1); }
+if (!/^\d+\.\d+\.\d+$/.test(version || '')) { console.error('usage: node tools/release.mjs X.Y.Z [stable|beta|dev]'); process.exit(1); }
+if (!['stable', 'beta', 'dev'].includes(channel)) { console.error('channel must be stable, beta or dev'); process.exit(1); }
 const root = fileURLToPath(new URL('..', import.meta.url));
 const out = `${root}.build/channel/`;
 const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { stdio: 'inherit', ...opts });
@@ -98,6 +99,9 @@ writeFileSync(`${mini}Info.plist`, readFileSync(`${root}mini/Info.plist`, 'utf8'
 codesign(`${build}Tess Mini.app`);
 run('ditto', ['-c', '-k', '--keepParent', `${build}Tess Mini.app`, `${build}tess-mini.zip`]);
 
+// the installer travels with the release, so the public install line only ever runs a promoted installer
+cpSync(`${root}installer/tess-install.sh`, `${out}dist/install.sh`);
+cpSync(`${root}installer/uninstall.sh`, `${out}dist/uninstall.sh`);
 writeFileSync(`${out}README.md`, `Release channel \`${channel}\` of Tess Music. Source and install: https://github.com/Flame119052/tess-music\n`);
 // the patcher, built from patcher/ (fork of Spicetify CLI) plus Spicetify's compiled helper scripts
 const pdir = `${build}patcher/`;
@@ -181,7 +185,7 @@ if (channel === 'stable') {
 }
 const assets = [`${build}tess-theme.tar.gz`, `${build}tess-mini.zip`, `${build}tess-patcher-macos-universal.tar.gz`, `${build}tess-updater.sh`, `${build}tess-doctor.sh`];
 try {
-  run('gh', ['release', 'create', `v${version}`, ...assets, '-R', 'Flame119052/tess-music', '--target', channel, '-t', `Tess ${version}`, '-n', `Tess ${version}. Install: curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | sh`, ...(channel === 'beta' ? ['--prerelease'] : ['--latest'])]);
+  run('gh', ['release', 'create', `v${version}`, ...assets, '-R', 'Flame119052/tess-music', '--target', channel, '-t', `Tess ${version}`, '-n', `Tess ${version}. Install: curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | sh`, ...(channel === 'stable' ? ['--latest'] : ['--prerelease'])]);
 } catch {
   run('gh', ['release', 'upload', `v${version}`, ...assets, '--clobber', '-R', 'Flame119052/tess-music']);
 }

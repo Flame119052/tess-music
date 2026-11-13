@@ -55,9 +55,9 @@ list_ok=""
 fetch_list() {
   [ -n "$list_ok" ] && return 0
   [ -x "$T/bin/patcher/tess-verify" ] || return 1
-  for u in "https://api.github.com/repos/$REPO/contents/dist" "https://raw.githubusercontent.com/$REPO/stable/dist"; do
+  for u in "https://api.github.com/repos/$REPO/contents/dist" "https://raw.githubusercontent.com/$REPO/${TESS_PARTS_CHANNEL:-stable}/dist"; do
     h=(); [[ $u == *api.github* ]] && h=(-H "Accept: application/vnd.github.raw")
-    q=""; [[ $u == *api.github* ]] && q="?ref=stable"
+    q=""; [[ $u == *api.github* ]] && q="?ref=${TESS_PARTS_CHANNEL:-stable}"
     curl -fsSL --max-time 60 "${h[@]}" "$u/components.txt$q" -o "$TMP/c.txt" && curl -fsSL --max-time 60 "${h[@]}" "$u/components.sig$q" -o "$TMP/c.sig" \
       && "$T/bin/patcher/tess-verify" "$TMP/c.txt" "$(tr -d '\n' < "$TMP/c.sig")" && { list_ok=1; return 0; }
   done

@@ -173,12 +173,13 @@
     }
     // version, update channel and the welcome again
     const meta = el('<p class="tess-set-meta"></p>');
-    meta.textContent = `Tess ${window.__tessVersion || 'dev'} · ${settings.channel === 'beta' ? 'Beta updates' : 'Stable updates'} · `;
+    const chName = { beta: 'Beta updates', dev: 'Internal dev builds' }[settings.channel] || 'Stable updates';
+    meta.textContent = `Tess ${window.__tessVersion || 'dev'} · ${chName} · `;
     const ch = el('<button class="tess-set-link"></button>');
-    ch.textContent = settings.channel === 'beta' ? 'Switch to stable' : 'Get beta updates';
+    ch.textContent = settings.channel === 'beta' || settings.channel === 'dev' ? 'Switch to stable' : 'Get beta updates';
     // the loader reads the channel when Spotify starts; reloading the page here would break Spicetify, so ask for a restart
     ch.onclick = () => {
-      settings.channel = settings.channel === 'beta' ? 'stable' : 'beta'; saveSettings();
+      settings.channel = settings.channel === 'beta' || settings.channel === 'dev' ? 'stable' : 'beta'; saveSettings();
       ch.textContent = settings.channel === 'beta' ? 'Beta updates from the next Spotify start' : 'Stable updates from the next Spotify start';
       ch.disabled = true;
       Spicetify.showNotification?.('Quit and reopen Spotify to switch update channel.');

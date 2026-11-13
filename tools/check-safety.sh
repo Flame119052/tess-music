@@ -11,14 +11,14 @@ if grep -nE 'rm -rf "?\$(APPS|A0)"?( |;|$)' installer/*.sh; then fail "a script 
 if grep -rn 'RemoveAll(appDestPath)' patcher/src; then fail "the patcher deletes Spotify's interface folder directly; use swapApps"; fi
 
 # 2. every script parses
-for f in installer/install.sh installer/uninstall.sh; do sh -n "$f" || fail "$f does not parse"; done
+for f in installer/install.sh installer/tess-install.sh installer/uninstall.sh; do sh -n "$f" || fail "$f does not parse"; done
 for f in installer/updater.sh installer/doctor.sh installer/rescue.sh; do zsh -n "$f" || fail "$f does not parse"; done
 
 # 3. nothing a user's Mac may lack (python3 only opens an "install developer tools" prompt there)
 if grep -nE '(^|[^#])\b(python3?|node|ruby|perl) ' installer/*.sh | grep -v '^\s*#'; then fail "an installer script needs a tool macOS doesn't always have"; fi
 
 # 4. a command substitution that can fail must not stop the installer under set -e
-if grep -nE '^[A-Za-z_]+=\$\((cat|grep|awk|find|ls) [^)]*\)$' installer/install.sh | grep -v '|| true'; then fail "an assignment in install.sh can stop it under set -e; add || true"; fi
+if grep -nE '^[A-Za-z_]+=\$\((cat|grep|awk|find|ls) [^)]*\)$' installer/tess-install.sh | grep -v '|| true'; then fail "an assignment in tess-install.sh can stop it under set -e; add || true"; fi
 
 # 5. the folder swap itself: Spotify untouched when copying fails, the result is incomplete, macOS blocks writing,
 #    or an earlier run stopped halfway

@@ -1,17 +1,21 @@
-# Every push to main that changes Tess ships as an update to everyone on the stable channel.
-# Installed Macs pick it up by themselves: the look on the next Spotify start, the other parts within ~20 minutes.
-# Needs two repository secrets (Settings → Secrets and variables → Actions):
+# Every push to main that changes Tess is built, signed and published to the internal `dev` channel only: the
+# owner's Mac follows it, nobody else does. Users get a build only when it is promoted (Actions → release → Run
+# workflow → action: promote), which copies that exact dev build to stable and beta. Installed Macs then pick it up by
+# themselves: the look on the next Spotify start, the other parts within ~20 minutes.
+# Needs repository secrets (Settings → Secrets and variables → Actions):
 #   TESS_SIGNING_KEY   the Ed25519 private key (PEM) that signs releases
 #   TESS_MIRROR_KEY    an SSH deploy key with write access to Flame119052/tess-releases only (the mirror 0.1.x installs read)
-# Without them this workflow does nothing. Run it by hand from the Actions tab to ship to beta instead.
+#   TESS_CODESIGN_P12 / TESS_CODESIGN_PASS   the stable "Tess Music" code-signing identity
 name: release
 on:
   push:
     branches: [main]
-    paths: ['theme/**', 'mini/**', 'patcher/**', 'installer/updater.sh', 'installer/doctor.sh', 'installer/rescue.sh', 'tools/release.mjs', 'tools/build.mjs']
+    paths: ['theme/**', 'mini/**', 'patcher/**', 'installer/**', 'tools/release.mjs', 'tools/build.mjs', 'tools/check-safety.sh']
   workflow_dispatch:
     inputs:
-      channel: { description: 'stable or beta', default: 'beta', required: true }
+      action: { description: 'release (build to a channel) or promote (dev -> stable and beta)', default: 'promote', required: true }
+      channel: { description: 'for release: dev, beta or stable', default: 'dev', required: false }
+      version: { description: 'for promote: the version on dev to promote (empty = whatever dev has)', default: '', required: false }
 concurrency: { group: release, cancel-in-progress: false }
 permissions: { contents: write }
 jobs:
@@ -47,4 +51,8 @@ jobs:
           export TESS_MIRROR_KEY_FILE="$RUNNER_TEMP/mirror"
           git config user.name "Tess release"
           git config user.email "actions@users.noreply.github.com"
-          node tools/release.mjs auto "${{ github.event.inputs.channel || 'stable' }}"
+          if [ "${{ github.event.inputs.action }}" = "promote" ]; then
+            node tools/promote.mjs ${{ github.event.inputs.version }}
+          else
+            node tools/release.mjs auto "${{ github.event.inputs.channel || 'dev' }}"
+          fi
