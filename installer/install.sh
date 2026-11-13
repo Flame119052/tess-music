@@ -96,11 +96,28 @@ fi
 A0="$SPOTIFY/Contents/Resources/Apps"
 # Spotify's own interface files for this exact version, kept by an earlier Tess (its safety copy, or the patcher's
 # backup) or by Spicetify; used only when Spotify's are missing
+# A backup counts when its settings say it is this version, or when its files match Spotify's own files for this
+# version exactly (SHA-256 of the stock files, listed below as they are confirmed).
+KNOWN_SPA="
+1.3.9.2055 xpui.spa b64742faa2bd1db859aefddd804e76246731f2748d2eb138af212277f27f3e44
+1.3.9.2055 login.spa 9fb9807b21e101c083948af4a0d3cb32806af1e7cc8868e84515465ae2dced48
+"
+known_stock() {  # dir: every .spa in it is a listed stock file of this Spotify version
+  n=0
+  for f in "$1"/*.spa; do
+    [ -f "$f" ] || return 1
+    h=$(shasum -a 256 "$f" | cut -d' ' -f1)
+    echo "$KNOWN_SPA" | grep -q "^$SPV $(basename "$f") $h\$" || return 1
+    n=$((n + 1))
+  done
+  [ $n -gt 0 ]
+}
 repair_source() {
   [ -f "$HOME_TESS/original-$SPV/xpui.spa" ] && { echo "$HOME_TESS/original-$SPV"; return; }
   for pair in "$HOME/.local/state/tess-patcher/Backup|$CONF/config-xpui.ini" "$HOME/.local/state/spicetify/Backup|$HOME/.config/spicetify/config-xpui.ini"; do
     b=${pair%%|*}; c=${pair#*|}
-    [ -f "$b/xpui.spa" ] && grep -qE "^version *= *$SPV *$" "$c" 2>/dev/null && { echo "$b"; return; }
+    [ -f "$b/xpui.spa" ] || continue
+    { grep -qE "^version *= *$SPV *$" "$c" 2>/dev/null || known_stock "$b"; } && { echo "$b"; return; }
   done
 }
 REPAIR=$(repair_source || true)
