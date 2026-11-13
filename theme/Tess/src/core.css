@@ -3028,6 +3028,7 @@ html.tess ::-webkit-scrollbar-track {
 .tw-next:active { transform: scale(0.95); }
 .tess-set-meta { margin: 4px 0 8px; font: 13px var(--tess-font); color: rgba(255, 255, 255, 0.6); }
 .tess-set-link { all: unset; cursor: pointer; color: #fff; text-decoration: underline; text-underline-offset: 2px; }
+.tess-set-link + .tess-set-link { margin-left: 16px; }
 
 /* ================= full-screen scrubber: one rich glass track ================= */
 #tess-np .tn-scrub {
@@ -3196,3 +3197,144 @@ html.tess-playing .tess-cover-wrap.vinyl .tess-side-cover { animation-play-state
 html.tess #main-view [role="radiogroup"] *:not(input):not([class*="indicator"]) {
   background-color: transparent !important;
 }
+
+/* ================= Settings: section list on the left, every section a glass card ================= */
+html.tess [data-testid="settings-page"] {
+  display: grid !important;
+  grid-template-columns: 216px minmax(0, 1fr);
+  column-gap: 32px;
+  max-width: 1120px;
+  margin: 0 auto;
+}
+html.tess [data-testid="settings-page"] > :not(.tess-set-nav) {
+  grid-column: 2;
+  min-width: 0;
+}
+.tess-set-nav {
+  grid-column: 1;
+  grid-row: 1 / span 400;
+  align-self: start;
+  position: sticky;
+  top: 84px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 64px;
+  padding: 8px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+}
+.tess-set-nav button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 9px;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  transition: background 0.15s, color 0.15s;
+}
+html.tess .tess-set-nav button {
+  border: 0 !important;
+  outline: none;
+  box-shadow: none !important;
+  background: transparent !important;
+}
+html.tess .tess-set-nav button:hover { background: rgba(255, 255, 255, 0.07) !important; color: #fff; }
+html.tess .tess-set-nav button.on { background: rgba(255, 255, 255, 0.15) !important; color: #fff; }
+html.tess .tess-set-nav button:focus-visible { box-shadow: 0 0 0 2px var(--tess-accent) !important; }
+.tess-set-nav .ico {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: var(--c);
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+.tess-set-nav .ico svg { width: 14px; height: 14px; }
+html.tess .tess-set-card {
+  margin: 0 0 14px !important;
+  padding: 16px 20px 10px !important;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  scroll-margin-top: 84px;
+}
+html.tess .tess-set-card h2 {
+  margin: 0 0 6px !important;
+  font-size: 15px !important;
+  font-weight: 700 !important;
+}
+html.tess .tess-set-card [data-settings-row] + [data-settings-row] {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+html.tess .tess-set-card hr { display: none; }
+html.tess .tess-set-card .tess-set-card {
+  /* a section inside a section stays flat */
+  background: none;
+  border: 0;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+/* ================= account menu: glass card, grouped, with icons ================= */
+html.tess .main-contextMenu-menu.tess-account-menu {
+  display: flex !important;
+  flex-direction: column;
+  min-width: 260px;
+  padding: 6px !important;
+  border-radius: 16px !important;
+  background: rgba(34, 34, 40, 0.78) !important;
+  -webkit-backdrop-filter: blur(30px) saturate(1.8);
+  backdrop-filter: blur(30px) saturate(1.8);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+.tess-account-menu > li.tess-mi-hidden { display: none !important; }
+.tess-account-menu > li.tess-mi-group:not(:first-child) {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.tess-account-menu .main-contextMenu-menuItemButton {
+  gap: 10px;
+  height: 34px;
+  padding: 0 10px !important;
+  border-radius: 9px !important;
+}
+.tess-account-menu .main-contextMenu-menuItemButton:hover { background: rgba(255, 255, 255, 0.09) !important; }
+.tess-mi-ico { display: grid; place-items: center; width: 18px; color: rgba(255, 255, 255, 0.72); flex: none; }
+.tess-mi-head { order: 0; margin-bottom: 4px; }
+html.tess .tess-mi-head button { border: 0 !important; box-shadow: none !important; background: transparent; }
+.tess-mi-head button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 11px;
+  text-align: left;
+}
+.tess-mi-head button:hover { background: rgba(255, 255, 255, 0.07); }
+.tess-mi-head img { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; }
+.tess-mi-head span { display: flex; flex-direction: column; }
+.tess-mi-head b { font-size: 14px; color: #fff; }
+.tess-mi-head small { font-size: 12px; color: rgba(255, 255, 255, 0.6); }
+/* Spotify's "Your Updates" stays, quieter and shorter */
+.tess-account-menu > div {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  max-height: 210px;
+  overflow: auto;
+}
+.tess-account-menu > div.main-contextMenu-dividerAfter { display: none; }
