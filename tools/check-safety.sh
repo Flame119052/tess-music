@@ -47,5 +47,8 @@ swap_hashes=$(
   done | sort -u | wc -l | tr -d ' '
 )
 [ "$swap_hashes" = 1 ] || fail "the three swap_apps bodies differ"
+recovery_count=$(grep -lF 'if [ ! -d "$APPS" ] && [ -d "$_old" ]; then mv "$_old" "$APPS" || return 1; fi' \
+  installer/tess-install.sh installer/updater.sh installer/doctor.sh | wc -l | tr -d ' ')
+[ "$recovery_count" = 3 ] || fail "every swap_apps must restore an interrupted .tess-old swap first"
 
 echo "safety checks passed"

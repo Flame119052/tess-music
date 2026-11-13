@@ -79,6 +79,7 @@ To allow it once: in System Settings › Privacy & Security › App Management, 
 # halfway through that left Spotify with no interface at all (black window). tools/check-safety.sh enforces this.
 swap_apps() {
   _new="$APPS.tess-new"; _old="$APPS.tess-old"
+  if [ ! -d "$APPS" ] && [ -d "$_old" ]; then mv "$_old" "$APPS" || return 1; fi
   rm -rf "$_new"
   ditto "$1" "$_new" || { rm -rf "$_new"; return 1; }
   [ -s "$_new/xpui.spa" ] || [ -s "$_new/xpui/index.html" ] || { rm -rf "$_new"; return 1; }
@@ -151,6 +152,7 @@ fi
 awk '$1 == "version" { print $2 }' "$TMP/components.txt" > "$STATE/version.new" && [ -s "$STATE/version.new" ] && mv "$STATE/version.new" "$STATE/version"
 changed=0
 while read -r name sha url _src; do
+  touch "$LOCK"
   [ -n "$name" ] && [ -n "$sha" ] && [ -n "$url" ] || continue
   [ "$(cat "$STATE/$name" 2>/dev/null)" = "$sha" ] && continue
   f="$TMP/$name.dl"
@@ -199,6 +201,7 @@ while read -r name sha url _src; do
     *) continue ;;
   esac
   echo "$sha" > "$STATE/$name"
+  touch "$LOCK"
   log "$name: updated"; changed=$((changed + 1))
 done < "$TMP/components.txt"
 [ "$changed" -gt 0 ] && log "parts current ($changed updated)"

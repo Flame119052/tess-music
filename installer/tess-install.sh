@@ -175,6 +175,7 @@ APPS="$SPOTIFY/Contents/Resources/Apps"
 # halfway through that left Spotify with no interface at all (black window). tools/check-safety.sh enforces this.
 swap_apps() {
   _new="$APPS.tess-new"; _old="$APPS.tess-old"
+  if [ ! -d "$APPS" ] && [ -d "$_old" ]; then mv "$_old" "$APPS" || return 1; fi
   rm -rf "$_new"
   ditto "$1" "$_new" || { rm -rf "$_new"; return 1; }
   [ -s "$_new/xpui.spa" ] || [ -s "$_new/xpui/index.html" ] || { rm -rf "$_new"; return 1; }
