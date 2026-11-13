@@ -46,9 +46,20 @@ const keychain = `${root}.build/tess-sign.keychain-db`;
   try { execFileSync('security', ['delete-keychain', keychain], { stdio: 'ignore' }); } catch {}
   run('security', ['create-keychain', '-p', 'tess', keychain]);
   run('security', ['unlock-keychain', '-p', 'tess', keychain]);
-  run('security', ['import', `${root}.build/codesign.p12`, '-k', keychain, '-P', pass, '-T', '/usr/bin/codesign'], { stdio: 'ignore' });
+  run('security', ['import', `${root}.build/codesign.p12`, '-k', keychain, '-P', pass, '-T', '/usr/bin/codesign']);
   execFileSync('security', ['set-key-partition-list', '-S', 'apple-tool:,apple:', '-s', '-k', 'tess', keychain], { stdio: 'ignore' });
   rmSync(`${root}.build/codesign.p12`);
+  // codesign looks identities up through the search list
+  const list = execFileSync('security', ['list-keychains', '-d', 'user'], { encoding: 'utf8' }).split('\n').map((l) => l.trim().replace(/^"|"$/g, '')).filter(Boolean);
+  if (!list.includes(keychain)) run('security', ['list-keychains', '-d', 'user', '-s', keychain, ...list]);
+  // On the CI machine only, trust the certificate for code signing (older macOS won't sign with an untrusted one).
+  // Users' Macs never need to trust it: macOS ties approvals to the signature's identity, not to trust.
+  if (process.env.CI) {
+    const cert = `${root}.build/codesign.crt`;
+    writeFileSync(cert, execFileSync('security', ['find-certificate', '-c', 'Tess Music', '-p', keychain]));
+    run('sudo', ['security', 'add-trusted-cert', '-d', '-r', 'trustRoot', '-p', 'codeSign', '-k', '/Library/Keychains/System.keychain', cert]);
+  }
+  run('security', ['find-identity', '-p', 'codesigning', keychain]);
 }
 const codesign = (path, id) => run('codesign', ['--force', '--keychain', keychain, '-s', 'Tess Music', ...(id ? ['-i', id] : []), path]);
 
