@@ -84,6 +84,11 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
 - **D-60 · 13 Nov 2026 · Owner** — Ship only the wake helper to users: a stable release that changes just the updater
   (0.2.14 + the wake additions, nothing removed) and adds the `wake` part; the theme, patcher, doctor and Tess Mini
   stay exactly as on stable. The rest of dev (0.2.23–0.2.28) is not promoted. (#68)
+- **D-61 · 13 Nov 2026 · Owner** — Reverses D-60, which was a misreading and never shipped. The wake helper is for **one
+  Mac only** (the user it was asked for), never for every Tess user: no stable or beta release carries the `wake` part,
+  and it reaches that Mac only through its targeted rescue order. *The owner does not want quick remote control on
+  every user's Mac.* Before any promote of dev, the `wake` part must come out of the parts list (or become per-Mac
+  opt-in), or promoting would hand it to everyone. (#68)
 
 ## Releases and process
 
