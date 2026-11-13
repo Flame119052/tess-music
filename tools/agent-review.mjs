@@ -1,5 +1,8 @@
 // Run a read-only issue approach or pull-request review and post the verdict.
 // Usage: node tools/agent-review.mjs <approach|pr> <number>
+// The tag may name the reviewer: `@tess-review pr provider=codex model=gpt-6.1-sol effort=high`. Only models listed in
+// .github/agents.json `allowed` are accepted; sensitive work must use a `strong` model. Anything else falls back to
+// the role's defaults, and the comment says why.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -46,6 +49,27 @@ export function eligibleModels(models, usageByProvider, commandAvailable = () =>
     const details = providerDetails[provider];
     return details && commandAvailable(details.command) && providerHasUsage(usageByProvider[provider]);
   });
+}
+
+export function parseRequest(body) {
+  const line = String(body || '').split('\n').find((l) => /^@tess-review (approach|pr)(\s|$)/.test(l));
+  if (!line) return {};
+  const out = {};
+  for (const [, k, v] of line.matchAll(/\b(provider|model|effort)=([A-Za-z0-9._\/-]{1,80})/g)) out[k] = v;
+  return out;
+}
+
+// Returns { models, note }: the requested reviewer first (if it passes the rules), then the role's defaults.
+export function resolveReviewers(config, defaults, request, tier) {
+  const { provider, model, effort } = request || {};
+  if (!provider && !model) return { models: defaults, note: '' };
+  const why = (reason) => ({ models: defaults, note: `Requested reviewer not used: ${reason}. Used the defaults.` });
+  if (!provider || !model) return why('give both provider= and model=');
+  if (!(config.allowed?.[provider] || []).includes(model)) return why(`${provider}/${model} is not in .github/agents.json allowed`);
+  if (tier === 'sensitive' && !(config.strong || []).includes(model)) return why(`sensitive work needs one of ${config.strong.join(', ')}`);
+  if (effort && !(config.efforts || []).includes(effort)) return why(`effort must be one of ${config.efforts.join(', ')}`);
+  const chosen = { provider, model, ...(effort ? { effort } : {}) };
+  return { models: [chosen, ...defaults.filter((d) => d.provider !== provider || d.model !== model)], note: '' };
 }
 
 function commandExists(command) {
@@ -110,10 +134,10 @@ function reviewerEnv() {
   return Object.fromEntries(allowed.flatMap((name) => process.env[name] ? [[name, process.env[name]]] : []));
 }
 
-function cliInvocation(provider, model, prompt) {
+function cliInvocation(provider, model, prompt, effort) {
   const env = reviewerEnv();
   if (provider === 'claude') {
-    return spawnSync('claude', ['-p', '--model', model, '--restricted', '--safe-mode', '--tools', ''], {
+    return spawnSync('claude', ['-p', '--model', model, ...(effort ? ['--effort', effort] : []), '--restricted', '--safe-mode', '--tools', ''], {
       cwd: root,
       env,
       input: prompt,
@@ -122,7 +146,7 @@ function cliInvocation(provider, model, prompt) {
     });
   }
   if (provider === 'codex') {
-    return spawnSync('codex', ['exec', '--model', model, '--sandbox', 'read-only', '--ephemeral', '--ignore-rules', '-C', root, '-'], {
+    return spawnSync('codex', ['exec', '--model', model, ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), '--sandbox', 'read-only', '--ephemeral', '--ignore-rules', '-C', root, '-'], {
       cwd: root,
       env,
       input: prompt,
@@ -160,7 +184,7 @@ function runReviewer(models, prompt) {
   if (!candidates.length) throw new Error('no configured reviewer provider has both usage and a local CLI');
 
   for (const candidate of candidates) {
-    const result = cliInvocation(candidate.provider, candidate.model, prompt);
+    const result = cliInvocation(candidate.provider, candidate.model, prompt, candidate.effort);
     if (result.status === 0 && result.stdout?.trim()) return { ...candidate, text: result.stdout.trim() };
     if (usageLimitError(result)) continue;
     throw new Error(`${candidate.provider} reviewer failed: ${(result.stderr || result.stdout || 'unknown error').trim()}`);
@@ -200,13 +224,14 @@ async function main() {
 
   if (role === 'approach') {
     const approach = eventComment();
-    const result = runReviewer(config.approach, reviewPrompt(role, {
+    const pick = resolveReviewers(config, config.approach, parseRequest(approach), 'sensitive');
+    const result = runReviewer(pick.models, reviewPrompt(role, {
       issue: issueText(issue),
       approach,
     }));
     const verdict = verdictFor(result.text);
     const review = result.text.replaceAll(marker, '').replace(/\n?Verdict:\s*(?:approve|changes needed)\s*$/i, '').trim();
-    postComment(repo, number, `${marker}\nReviewer: ${result.provider} / ${result.model}\n\n${review}\n\nVerdict: ${verdict}`);
+    postComment(repo, number, `${marker}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
     return;
   }
 
@@ -227,14 +252,15 @@ async function main() {
   }
   const diff = gh(['pr', 'diff', String(number), '-R', repo]);
   const key = tier === 'sensitive' ? 'pr_sensitive' : 'pr_normal';
-  const result = runReviewer(config[key], reviewPrompt(role, {
+  const pick = resolveReviewers(config, config[key], parseRequest(eventComment()), tier);
+  const result = runReviewer(pick.models, reviewPrompt(role, {
     issue: linked ? issueText(linked) : '(no linked issue found)',
     approach,
     diff,
   }));
   const verdict = verdictFor(result.text);
   const review = result.text.replaceAll(marker, '').replace(/\n?Verdict:\s*(?:approve|changes needed)\s*$/i, '').trim();
-  postComment(repo, number, `${marker}\nTier: ${tier}\nReviewer: ${result.provider} / ${result.model}\n\n${review}\n\nVerdict: ${verdict}`);
+  postComment(repo, number, `${marker}\nTier: ${tier}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
 }
 
 if (resolve(process.argv[1] || '') === fileURLToPath(import.meta.url)) {

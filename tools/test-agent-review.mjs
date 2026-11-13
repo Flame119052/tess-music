@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { eligibleModels, providerHasUsage, tierForPaths } from './agent-review.mjs';
+import { eligibleModels, parseRequest, providerHasUsage, resolveReviewers, tierForPaths } from './agent-review.mjs';
 
 const config = JSON.parse(readFileSync(new URL('../.github/agents.json', import.meta.url), 'utf8'));
 const available = (usedPercent) => ({ windows: [{ usedPercent }] });
@@ -84,4 +84,20 @@ test('model order follows config and falls through exhausted or missing provider
   assert.deepEqual(normalFallback.map(({ provider, model }) => [provider, model]), [
     ['claude', 'claude-sonnet-5-5'],
   ]);
+});
+
+test('a tag can name the reviewer, within the rules', () => {
+  const req = parseRequest('Plan below.\n@tess-review pr provider=codex model=gpt-6.1-terra effort=high\nthanks');
+  assert.deepEqual(req, { provider: 'codex', model: 'gpt-6.1-terra', effort: 'high' });
+  const normal = resolveReviewers(config, config.pr_normal, req, 'normal');
+  assert.deepEqual(normal.models[0], { provider: 'codex', model: 'gpt-6.1-terra', effort: 'high' });
+  assert.equal(normal.note, '');
+  // sensitive work refuses a lighter model and falls back to the strong defaults
+  const sensitive = resolveReviewers(config, config.pr_sensitive, req, 'sensitive');
+  assert.deepEqual(sensitive.models, config.pr_sensitive); assert.match(sensitive.note, /sensitive work needs/);
+  // unknown models and odd values are refused
+  assert.match(resolveReviewers(config, config.pr_normal, { provider: 'codex', model: 'gpt-9' }, 'normal').note, /not in/);
+  assert.match(resolveReviewers(config, config.pr_normal, { provider: 'claude', model: 'claude-opus-5-5', effort: 'ultra' }, 'normal').note, /effort/);
+  assert.deepEqual(parseRequest('@tess-review pr model=$(touch x)'), {});
+  assert.deepEqual(resolveReviewers(config, config.pr_normal, {}, 'normal').models, config.pr_normal);
 });

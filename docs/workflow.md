@@ -43,6 +43,35 @@ The tier comes from the paths the PR touches. `tools/agent-review.mjs` works it 
 
 So no change runs the strongest model twice unless it can break someone's Mac.
 
+## Choosing a reviewer (the agent asking does this)
+
+The agent that writes the approach comment or opens the PR picks who reviews it, and puts the choice in the tag:
+
+```
+@tess-review approach provider=claude model=claude-opus-5-5 effort=high
+@tess-review pr provider=codex model=gpt-6.1-terra effort=medium
+```
+
+**How to choose.** Before tagging:
+1. Check usage with the usage tool (`provider_usage` in T3; it reads the same hub the runners read). Skip any provider near its limit.
+2. Pick using this table.
+
+| The work | Stage | Reviewer | Effort |
+| --- | --- | --- | --- |
+| Docs only | PR | none (CI is the review) | — |
+| Small theme/tool change, one file, clear check | PR | lighter: `codex gpt-6.1-terra` or `claude claude-sonnet-5-5` | low–medium |
+| Bigger theme work, several files, new behaviour | approach | strong | medium |
+|  | PR | lighter | medium–high |
+| Sensitive (installer, updater, rescue, inbox, patcher, release, signing) | approach and PR | strong only: `claude claude-opus-5-5` or `codex gpt-6.1-sol` | high |
+| Security fixes, or anything that can stop Spotify working | approach and PR | strong, and a *different* provider from the one that wrote it | high–max |
+
+**Rules.**
+- Don't use the strongest model at both stages unless the work is sensitive.
+- The reviewer should come from a different provider than the agent that wrote the change, so it doesn't share the same blind spots.
+- Only models listed under `allowed` in `.github/agents.json` are accepted. Sensitive work must use one listed under `strong`. If the request breaks a rule, or that provider has no usage left, the runner falls back to the defaults for that role and says so in its comment.
+- Leaving the choice out is fine: the defaults are the first model with usage left in that role's list.
+- Only allowlisted accounts can tag. Krish can use the same syntax himself.
+
 ## Reviewer agents on Krish's machines
 
 - **Who can call them.** Only GitHub accounts in the allowlist (the repo variable `AGENT_ALLOWLIST`, today just `Flame119052`). A tag from anyone else is ignored. Anyone can still open issues and PRs.
