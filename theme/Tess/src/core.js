@@ -406,6 +406,7 @@
         </div>
         <div class="tn-queue"><h4>Playing Next</h4><div class="tn-qlist"></div></div>
       </div>
+      <div class="tn-pill bl tn-nolyr" hidden>${I.lyrics}<span>No lyrics for this song</span></div>
       <div class="tn-pill br">
         <button class="tn-lyr on" aria-label="Lyrics">${I.lyrics}</button>
         <button class="tn-q" aria-label="Playing next">${I.queue}</button>
@@ -878,6 +879,8 @@
     const uri = item()?.uri;
     if (!uri || uri === lyrics.uri) return;
     lyrics = { uri, sync: 'LOADING', lines: [] };
+    np.classList.remove('no-lyrics');
+    q(np, '.tn-nolyr').hidden = true;
     linesEl.innerHTML = '';
     noteEl.textContent = '';
     lastLine = -2;
@@ -921,7 +924,11 @@
     np.classList.toggle('unsynced', lyrics.sync === 'UNSYNCED');
     side.classList.toggle('unsynced', lyrics.sync === 'UNSYNCED');
     side.hidden = !lyrics.lines.length;
-    noteEl.textContent = lyrics.lines.length || lyrics.sync === 'LOADING' ? '' : 'Lyrics aren’t available for this song';
+    // no lyrics: a small note in the corner, and the record, artwork or video takes the whole stage instead
+    const none = !lyrics.lines.length && lyrics.sync !== 'LOADING';
+    np.classList.toggle('no-lyrics', none);
+    q(np, '.tn-nolyr').hidden = !none;
+    noteEl.textContent = '';
     for (const v of views) {
       v.lines.innerHTML = '';
       v.lines.style.transform = '';

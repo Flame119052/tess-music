@@ -542,6 +542,40 @@ html.tess .main-view-container__scroll-node-child {
 .tn-line.gap { letter-spacing: 0.25em; font-size: 28px; }
 #tess-np.unsynced .tn-lines { top: 12%; }
 #tess-np.unsynced .tn-line { color: rgba(255, 255, 255, 0.85); cursor: default; font-size: 28px; }
+/* ---- a song with no lyrics: the visual takes the stage, and a small note sits in the corner ---- */
+.tn-pill.bl { bottom: 18px; left: 18px; }
+.tn-nolyr {
+  height: 30px;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--tess-dim);
+  pointer-events: none;
+}
+.tn-nolyr[hidden] { display: none; }
+.tn-nolyr svg { width: 14px; height: 14px; opacity: 0.7; }
+#tess-np.mode-lyrics.no-lyrics .tn-stage { grid-template-columns: 1fr; }
+#tess-np.mode-lyrics.no-lyrics .tn-lyrics { display: none; }
+#tess-np.mode-lyrics.no-lyrics .tn-player { width: min(820px, 74vh, 70vw); }
+/* artwork: bigger, lit by its own colours, and gently alive while it plays */
+#tess-np.mode-lyrics.no-lyrics:not(.vinyl) .tn-cover {
+  box-shadow: 0 50px 140px rgba(0, 0, 0, 0.5), 0 0 160px 6px color-mix(in srgb, var(--tess-accent) 30%, transparent);
+}
+#tess-np.mode-lyrics.no-lyrics:not(.vinyl):not(.paused):not(.has-canvas) .tn-cover {
+  animation: tn-breathe 7s ease-in-out infinite;
+}
+@keyframes tn-breathe {
+  50% { transform: scale(1.025); }
+}
+/* a Canvas video plays full height, the way it's made (tall) */
+#tess-np.mode-lyrics.no-lyrics.has-canvas:not(.vinyl) .tn-player { width: min(46vh, 60vw); }
+#tess-np.mode-lyrics.no-lyrics.has-canvas:not(.vinyl) .tn-cover { aspect-ratio: 9 / 16; border-radius: 18px; }
+/* the background glows brighter to carry the space the lyrics left */
+#tess-np.mode-lyrics.no-lyrics .tn-glow { filter: saturate(1.45) brightness(1.12); transition: filter 0.8s; }
+#tess-np.mode-lyrics.no-lyrics .tn-shade { background: rgba(20, 24, 30, 0.18); transition: background 0.8s; }
+@media (prefers-reduced-motion: reduce) {
+  #tess-np.mode-lyrics.no-lyrics .tn-cover { animation: none !important; }
+}
 .tn-note {
   position: absolute;
   top: 46%;
