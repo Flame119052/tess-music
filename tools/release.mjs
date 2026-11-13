@@ -141,10 +141,10 @@ const gitTree = (p) => execFileSync('git', ['-C', root, 'rev-parse', `HEAD:${p}`
 const parts = {
   updater: { file: `${build}tess-updater.sh`, src: hashFiles([`${root}installer/updater.sh`]) },
   patcher: { file: `${build}tess-patcher-macos-universal.tar.gz`, src: hashFiles([`${root}installer/rescue.sh`]).slice(0, 20) + gitTree('patcher').slice(0, 20) },
+  wake: { file: `${build}tess-wake.sh`, src: hashFiles([`${root}installer/wake.sh`]) },
   doctor: { file: `${build}tess-doctor.sh`, src: hashFiles([`${root}installer/doctor.sh`]) },
   installer: { file: `${build}tess-installer.sh`, src: hashFiles([`${root}installer/tess-install.sh`]) },
   uninstall: { file: `${build}tess-uninstall.sh`, src: hashFiles([`${root}installer/uninstall.sh`]) },
-  wake: { file: `${build}tess-wake.sh`, src: hashFiles([`${root}installer/wake.sh`]) },
   mini: { file: `${build}tess-mini.zip`, src: hashFiles([`${root}mini/TessMini.swift`, `${root}mini/Info.plist`]).slice(0, 56) + 'sig1' },
   theme: { file: `${build}tess-theme.tar.gz`, src: hashFiles([`${root}theme/loader/loader.js`]) },
 };

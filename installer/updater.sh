@@ -23,17 +23,72 @@ log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 trouble=""
 problem() { log "$*"; trouble=1; }
 doctor() { [ -f "$HOME_TESS/doctor.sh" ] && /bin/zsh "$HOME_TESS/doctor.sh" "$1" >/dev/null 2>&1; }
+report_parts_failure() {
+  local stamp="$STATE/.parts-list-reported"
+  if [ ! -f "$stamp" ] || [ -n "$(find "$stamp" -mmin +1440 2>/dev/null)" ]; then
+    touch "$stamp"
+    doctor --report
+  fi
+}
 notify() { [ -n "$TESS_TEST" ] || osascript -e "display notification \"$1\" with title \"Tess Music\"" >/dev/null 2>&1; }
-spotify_running() { [ -z "$TESS_TEST" ] && pgrep -x Spotify >/dev/null; }
+spotify_running() { { [ -n "$TESS_TEST" ] && [ "$TESS_TEST_SPOTIFY_RUNNING" = 1 ]; } || { [ -z "$TESS_TEST" ] && pgrep -x Spotify >/dev/null; }; }
+spotify_playing() { pmset -g assertions 2>/dev/null | awk 'BEGIN { IGNORECASE=1 } /Spotify/ && /(audio|playing)/ { found=1 } END { exit !found }'; }
+restart_spotify_when_idle() {
+  spotify_running || { rm -f "$STATE/.restart-pending"; return 0; }
+  if spotify_playing; then
+    touch "$STATE/.restart-pending"
+    log "Spotify restart deferred while music is playing"
+    return 1
+  fi
+  rm -f "$STATE/.restart-pending"
+  [ -n "$TESS_TEST" ] && { log "Spotify restarted (test)"; return 0; }
+  pkill -TERM -x Spotify 2>/dev/null || true
+  for i in {1..40}; do pgrep -x Spotify >/dev/null || break; sleep 0.5; done
+  pgrep -x Spotify >/dev/null && pkill -KILL -x Spotify 2>/dev/null || true
+  open -a "$SPOTIFY"
+}
 
 [ -n "$SPOTIFY" ] && [ -d "$SPOTIFY" ] || exit 0
 [ -e "$LOCK" ] && [ -z "$(find "$LOCK" -mmin +30 2>/dev/null)" ] && exit 0   # another run or the installer is working
 touch "$LOCK"; trap 'rm -f "$LOCK"' EXIT
 mkdir -p "$STATE"
+if [ -f "$STATE/.restart-pending" ]; then restart_spotify_when_idle || true; fi
 # Tidy-ups for older installs. This script updates itself, so a change to how Tess is set up on a Mac goes here.
 rm -f "$HOME_TESS/reapply.sh"; find "$STATE" -name ".reapply-failed-*" -delete 2>/dev/null
 [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 500000 ] && tail -c 250000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
 [ -f "$HOME_TESS/install-id" ] || od -An -tx1 -N16 /dev/urandom | tr -d ' \n' > "$HOME_TESS/install-id"
+
+install_guard() {
+  local la="$HOME/Library/LaunchAgents" pl
+  [ -n "$TESS_TEST" ] && la="$HOME_TESS/LaunchAgents"
+  pl="$la/music.tess.guard.plist"
+  mkdir -p "$la"
+  cat > "$pl.new" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>music.tess.guard</string>
+<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$HOME_TESS/updater.sh</string></array>
+<key>WatchPaths</key><array><string>$SPOTIFY/Contents/Resources/Apps</string></array>
+<key>StartInterval</key><integer>1800</integer>
+<key>RunAtLoad</key><true/>
+</dict></plist>
+EOF
+  plutil -lint "$pl.new" >/dev/null 2>&1 || { rm -f "$pl.new"; problem "updater: invalid LaunchAgent"; return 1; }
+  local changed=""
+  if [ ! -f "$pl" ] || [ "$(shasum -a 256 "$pl.new" | cut -d' ' -f1)" != "$(shasum -a 256 "$pl" | cut -d' ' -f1)" ]; then
+    mv "$pl.new" "$pl"; changed=1
+  else
+    rm -f "$pl.new"
+  fi
+  [ -n "$TESS_TEST" ] && { log "update agent installed (test)"; return 0; }
+  if [ -n "$changed" ]; then
+    log "update agent plist set to every 30 minutes"
+  fi
+  launchctl print "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 \
+    || launchctl bootstrap "gui/$(id -u)" "$pl" >/dev/null 2>&1
+}
+install_guard
 
 # The rescue action list stays local; the signed patcher part may rotate its dedicated verifier.
 install_rescue() {
@@ -134,6 +189,11 @@ reapply() {
   local spv=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$SPOTIFY/Contents/Info.plist" 2>/dev/null)
   local tried="$STATE/.reapply-tried-$spv"
   [ -z "$1" ] && [ -f "$tried" ] && return 0
+  local running=$(spotify_running && echo 1)
+  if [ -n "$running" ] && spotify_playing; then
+    log "Spotify $spv is stock; reapply deferred while music is playing"
+    return 0
+  fi
   touch "$tried"
   [ -z "$1" ] && sleep 8   # let Spotify's own update finish writing
   "$PATCHER" can-write "$APPS" >/dev/null 2>&1; local cw=$?
@@ -147,15 +207,10 @@ reapply() {
   log "Spotify $spv is stock; applying Tess"
   local bak="$HOME_TESS/.apps-before-reapply"
   rm -rf "$bak"; ditto "$APPS" "$bak" || return 0
-  local running=$(spotify_running && echo 1)
   if "$PATCHER" backup apply --no-restart >> "$LOG" 2>&1 && grep -q spicetifyWrapper "$APPS/xpui/index.html" 2>/dev/null; then
     rm -rf "$bak"; find "$STATE" \( -name ".reapply-*" -o -name ".asked-*" \) -delete
     log "Tess applied to Spotify $spv"
-    if [ -n "$running" ]; then
-      osascript -e 'tell application "Spotify" to quit' >/dev/null 2>&1
-      for i in {1..40}; do pgrep -x Spotify >/dev/null || break; sleep 0.5; done
-      open -a "$SPOTIFY"
-    fi
+    [ -n "$running" ] && restart_spotify_when_idle || true
   else
     swap_apps "$bak" && rm -rf "$bak"
     notify "Spotify updated to a version Tess doesn't support yet. Spotify works normally; Tess comes back by itself once it's supported."
@@ -183,22 +238,73 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"; rm -f "$LOCK"' EXIT
 # GitHub's API is read live but allows 60 reads an hour per network; the raw file address is the fallback
 get() { curl -fsSL --max-time 60 -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/dist/$1?ref=$CHANNEL" -o "$2" \
   || curl -fsSL --max-time 60 "https://raw.githubusercontent.com/$REPO/$CHANNEL/dist/$1" -o "$2"; }
-get components.txt "$TMP/components.txt" && get components.sig "$TMP/components.sig" || exit 0
-if ! "$VERIFY" "$TMP/components.txt" "$(tr -d '\n' < "$TMP/components.sig")"; then
-  problem "parts list failed its signature check; ignored"; doctor --auto
+if ! get components.txt "$TMP/components.txt" || ! get components.sig "$TMP/components.sig"; then
+  problem "parts list download failed"
+  report_parts_failure
   exit 0
 fi
+if ! "$VERIFY" "$TMP/components.txt" "$(tr -d '\n' < "$TMP/components.sig")"; then
+  problem "parts list failed its signature check; ignored"
+  report_parts_failure
+  exit 0
+fi
+rm -f "$STATE/.parts-list-reported"
 
 # each line: name sha256 url source-hash (and one "version X.Y.Z" line)
 awk '$1 == "version" { print $2 }' "$TMP/components.txt" > "$STATE/version.new" && [ -s "$STATE/version.new" ] && mv "$STATE/version.new" "$STATE/version"
+part_file() {
+  case "$1" in
+    doctor|updater|installer|uninstall|wake) echo "$HOME_TESS/$1.sh" ;;
+  esac
+}
+backup_part() {
+  local name=$1 good="$HOME_TESS/$1.last-good" file
+  rm -rf "$good"
+  case "$name" in
+    doctor|updater|installer|uninstall|wake)
+      file=$(part_file "$name"); [ -f "$file" ] && cp "$file" "$good" ;;
+    patcher) [ -d "$HOME_TESS/bin/patcher" ] && ditto "$HOME_TESS/bin/patcher" "$good" ;;
+    mini) [ -z "$TESS_TEST" ] && [ -d "$HOME/Applications/Tess Mini.app" ] && ditto "$HOME/Applications/Tess Mini.app" "$good" ;;
+    theme)
+      mkdir -p "$good"
+      [ -d "$CONF/Themes/Tess" ] && ditto "$CONF/Themes/Tess" "$good/Tess"
+      [ -d "$APPS" ] && ditto "$APPS" "$good/Apps" ;;
+  esac
+}
+restore_part() {
+  local name=$1 good="$HOME_TESS/$1.last-good" file
+  case "$name" in
+    doctor|updater|installer|uninstall|wake)
+      file=$(part_file "$name"); [ -f "$good" ] || return 1
+      cp "$good" "$file" && chmod +x "$file"
+      [ "$name" = wake ] && install_wake ;;
+    patcher)
+      [ -d "$good" ] || return 1
+      rm -rf "$HOME_TESS/bin/patcher"; ditto "$good" "$HOME_TESS/bin/patcher"
+      install_rescue ;;
+    mini)
+      [ -n "$TESS_TEST" ] && return 0
+      [ -d "$good" ] || return 1
+      rm -rf "$HOME/Applications/Tess Mini.app"; ditto "$good" "$HOME/Applications/Tess Mini.app"
+      launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.mini.plist" >/dev/null 2>&1 ;;
+    theme)
+      [ -d "$good/Apps" ] || return 1
+      rm -rf "$CONF/Themes/Tess"
+      [ -d "$good/Tess" ] && ditto "$good/Tess" "$CONF/Themes/Tess"
+      swap_apps "$good/Apps" ;;
+    *) return 1 ;;
+  esac
+}
 changed=0
 while read -r name sha url _src; do
   touch "$LOCK"
   [ -n "$name" ] && [ -n "$sha" ] && [ -n "$url" ] || continue
   [ "$(cat "$STATE/$name" 2>/dev/null)" = "$sha" ] && continue
+  [ -f "$STATE/bad-$name-$sha" ] && { log "$name: skipped known bad $sha"; continue; }
   f="$TMP/$name.dl"
   curl -fsSL --max-time 300 "$url" -o "$f" || { problem "$name: download failed"; continue; }
   [ "$(shasum -a 256 "$f" | cut -d' ' -f1)" = "$sha" ] || { problem "$name: checksum mismatch; ignored"; continue; }
+  backup_part "$name"
   case "$name" in
     wake)
       zsh -n "$f" || { problem "wake: bad file"; continue; }
@@ -228,23 +334,25 @@ while read -r name sha url _src; do
       rm -rf "$HOME/Applications/Tess Mini.app"; ditto "$TMP/mini/Tess Mini.app" "$HOME/Applications/Tess Mini.app"
       launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.mini.plist" >/dev/null 2>&1 ;;
     theme)
-      # the loader Spotify runs; only its two files inside Spotify change, and the old ones come back if anything fails
+      # Stage a complete Apps folder and switch it in one checked rename, like every other Spotify change.
       [ -d "$APPS/xpui" ] || continue
       mkdir -p "$TMP/theme" && tar -xzf "$f" -C "$TMP/theme" && [ -f "$TMP/theme/Tess/theme.js" ] || { problem "theme: bad archive"; continue; }
-      cp "$APPS/xpui/user.css" "$TMP/user.css.bak" 2>/dev/null; cp "$APPS/xpui/extensions/theme.js" "$TMP/theme.js.bak" 2>/dev/null
-      rm -rf "$CONF/Themes/Tess.old"; [ -d "$CONF/Themes/Tess" ] && mv "$CONF/Themes/Tess" "$CONF/Themes/Tess.old"
-      mkdir -p "$CONF/Themes"; ditto "$TMP/theme/Tess" "$CONF/Themes/Tess"
-      if "$PATCHER" refresh >> "$LOG" 2>&1 && grep -q "TESS_BASELINE" "$APPS/xpui/extensions/theme.js"; then
-        rm -rf "$CONF/Themes/Tess.old"
-      else
-        problem "theme: refresh failed; put the previous loader back"
-        rm -rf "$CONF/Themes/Tess"; [ -d "$CONF/Themes/Tess.old" ] && mv "$CONF/Themes/Tess.old" "$CONF/Themes/Tess"
-        [ -f "$TMP/user.css.bak" ] && cp "$TMP/user.css.bak" "$APPS/xpui/user.css"
-        [ -f "$TMP/theme.js.bak" ] && cp "$TMP/theme.js.bak" "$APPS/xpui/extensions/theme.js"
-        continue
-      fi ;;
+      rm -rf "$TMP/theme-apps"; ditto "$APPS" "$TMP/theme-apps" || { problem "theme: couldn't stage Spotify's files"; continue; }
+      mkdir -p "$TMP/theme-apps/xpui/extensions"
+      cp "$TMP/theme/Tess/user.css" "$TMP/theme-apps/xpui/user.css"
+      cp "$TMP/theme/Tess/theme.js" "$TMP/theme-apps/xpui/extensions/theme.js"
+      grep -q "TESS_BASELINE" "$TMP/theme-apps/xpui/extensions/theme.js" || { problem "theme: loader is incomplete"; continue; }
+      mkdir -p "$CONF/Themes"; rm -rf "$CONF/Themes/Tess"; ditto "$TMP/theme/Tess" "$CONF/Themes/Tess"
+      swap_apps "$TMP/theme-apps" || { problem "theme: checked Spotify swap failed"; restore_part theme; continue; } ;;
     *) continue ;;
   esac
+  if ! doctor --validate; then
+    restore_part "$name" && restored="restored last good" || restored="no last good was available"
+    touch "$STATE/bad-$name-$sha"
+    problem "$name: doctor rejected $sha; $restored; marked bad"
+    doctor --report
+    continue
+  fi
   echo "$sha" > "$STATE/$name"
   touch "$LOCK"
   log "$name: updated"; changed=$((changed + 1))

@@ -13,6 +13,7 @@ CONF="${TESS_CONFIG:-$HOME/.config/tess-patcher}"
 REPO="Flame119052/tess-music"
 INBOX="https://tess-music-player.janus.ing"
 LA="$HOME/Library/LaunchAgents"
+[ -n "$TESS_TEST" ] && LA="$T/LaunchAgents"
 UID_=$(id -u)
 MODE="${1:-check}"
 OUT=$(mktemp); trap 'rm -f "$OUT"' EXIT
@@ -150,8 +151,10 @@ elif [ -x "$T/rescue/tess-rescue-verify" ] && [ -f "$LA/music.tess.rescue.plist"
 else st+=(rescue=none "rescue-verifier=${rescue_fp:-none}"); fi
 
 # --- network ----------------------------------------------------------------------------------------------------------
-if curl -fsS --max-time 15 -o /dev/null https://api.github.com/zen 2>/dev/null || curl -fsS --max-time 15 -o /dev/null https://raw.githubusercontent.com 2>/dev/null; then ok "can reach updates"
-else bad "can't reach GitHub for updates"; st+=(net=down); fi
+if [ "$MODE" != --validate ]; then
+  if curl -fsS --max-time 15 -o /dev/null https://api.github.com/zen 2>/dev/null || curl -fsS --max-time 15 -o /dev/null https://raw.githubusercontent.com 2>/dev/null; then ok "can reach updates"
+  else bad "can't reach GitHub for updates"; st+=(net=down); fi
+fi
 
 recent=$(tail -200 "$T/guard.log" 2>/dev/null | grep -iE "fail|mismatch|couldn|bad|error|ignored" | tail -5)
 [ -n "$recent" ] && { say "  recent problems in the helper's log:"; echo "$recent" | sed 's/^/    /' | while read -r l; do say "$l"; done; }
@@ -179,5 +182,7 @@ case "$MODE" in
   --report) send doctor && echo "Report sent. Your install id: $ID" || echo "Couldn't send the report (reports off, or offline)." ;;
   --auto) [ "$problems" -gt 0 ] || [ "$fixed" -gt 0 ] && send problem ;;
   --heartbeat) send heartbeat ;;
+  --validate) [ "$problems" -eq 0 ] ;;
 esac
+[ "$MODE" = --validate ] && [ "$problems" -gt 0 ] && exit 1
 exit 0

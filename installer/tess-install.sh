@@ -53,6 +53,15 @@ report_failure() {
     | curl -fsS --max-time 20 -H "content-type: application/json" --data-binary @- "$INBOX/v1/report" >/dev/null 2>&1 || true
 }
 ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | head -1)" = "$2" ]; }
+spotify_playing() { pmset -g assertions 2>/dev/null | awk 'BEGIN { IGNORECASE=1 } /Spotify/ && /(audio|playing)/ { found=1 } END { exit !found }'; }
+wait_for_idle() {
+  waiting=""
+  while spotify_playing; do
+    [ -n "$waiting" ] || { step "Waiting for the current song to stop before restarting Spotify…"; waiting=1; }
+    [ -e "$HOME_TESS/.installing" ] && touch "$HOME_TESS/.installing"
+    sleep 15
+  done
+}
 
 echo; bold "Tess Music"; echo
 
@@ -157,10 +166,10 @@ mkdir -p "$HOME_TESS"; touch "$HOME_TESS/.installing"; PAUSED=1
 
 # --- quit Spotify, undo any earlier patching ---------------------------------------------------------------------
 if [ -z "$TESS_TEST" ] && pgrep -x Spotify >/dev/null; then
-  WAS_RUNNING=1; step "Closing Spotify"
-  osascript -e 'tell application "Spotify" to quit' >/dev/null 2>&1 || true
+  WAS_RUNNING=1; wait_for_idle; step "Closing Spotify"
+  pkill -TERM -x Spotify 2>/dev/null || true
   i=0; while pgrep -x Spotify >/dev/null && [ $i -lt 40 ]; do sleep 0.5; i=$((i+1)); done
-  pkill -x Spotify 2>/dev/null || true
+  pkill -KILL -x Spotify 2>/dev/null || true
 fi
 if [ -d "$SPOTIFY/Contents/Resources/Apps/xpui" ]; then
   # Spotify was already modified (an earlier Tess, or Spicetify): put it back to stock first
@@ -291,6 +300,7 @@ case "$1" in
       on)
         rm -f "$T/rescue-off"
         [ -f "$LA/music.tess.rescue.plist" ] || /usr/bin/env TESS_FORCE=1 /bin/zsh "$T/updater.sh" >/dev/null 2>&1
+        [ -x "$T/rescue/rescue.sh" ] && /bin/zsh "$T/rescue/rescue.sh" --adopt >/dev/null 2>&1
         launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
         launchctl bootstrap "gui/$(id -u)" "$LA/music.tess.rescue.plist" >/dev/null 2>&1 \
           && echo "The Tess rescue line is on." || echo "The rescue line could not start; run tess doctor."
@@ -339,7 +349,7 @@ cat > "$HOME/Library/LaunchAgents/music.tess.guard.plist" <<EOF
 <key>Label</key><string>music.tess.guard</string>
 <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$HOME_TESS/updater.sh</string></array>
 <key>WatchPaths</key><array><string>$SPOTIFY/Contents/Resources/Apps</string></array>
-<key>StartInterval</key><integer>300</integer>
+<key>StartInterval</key><integer>1800</integer>
 <key>RunAtLoad</key><true/>
 </dict></plist>
 EOF
