@@ -274,9 +274,11 @@ html.tess .main-view-container__scroll-node-child {
 .tb-prog i {
   display: block;
   height: 100%;
-  width: 0;
+  width: 100%;
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.8);
+  transform-origin: 0 50%;
+  transform: scaleX(0);
 }
 .tb-tools {
   display: flex;
@@ -3170,7 +3172,8 @@ html.tess.tess-artist [data-testid="artist-page"] [data-tess-artist-clear] {
   animation: tn-spin 3.4s steps(102) infinite;
   animation-play-state: paused;
 }
-html.tess-playing .tess-cover-wrap.vinyl .tess-side-cover { animation-play-state: running; }
+html.tess-playing.tess-spin-burst .tess-cover-wrap.vinyl .tess-side-cover,
+html.tess-playing .tess-cover-wrap.vinyl:hover .tess-side-cover { animation-play-state: running; }
 .tess-cover-wrap.vinyl .tess-side-cover img {
   inset: 30%; width: 40%; height: 40%; border-radius: 50%; box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.5);
 }
@@ -3337,6 +3340,30 @@ html.tess .tess-mi-head button { border: 0 !important; box-shadow: none !importa
 
 /* stand-ins for Spicetify (core.js): never shown */
 #tess-spicetify-anchors { display: none !important; }
+
+/* Spotify marks every button and chip with will-change: transform (for its press animation), which made each visible
+   one its own GPU layer: ~50 layers, plus the layers forced on everything drawn over them, all composited every frame.
+   The press animation runs the same without the hint. [class*=…] so it survives Spotify's versioned class prefix. */
+html.tess [class*="legacy-button"],
+html.tess [class*="legacy-chip"],
+html.tess [class*="button-icon"],
+html.tess [data-encore-id="card"],
+html.tess [data-encore-id="card"] * {
+  will-change: auto !important;
+}
+
+/* Spotify's shelf arrows: shown when you point at the shelf, instead of a scroll-linked animation that kept every
+   arrow on its own GPU layer (see core.js markLayout) */
+html.tess [data-tess-scrollhint] {
+  animation: none !important;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+html.tess [data-tess-carousel]:hover [data-tess-scrollhint] {
+  opacity: 1;
+  pointer-events: auto;
+}
 
 /* ================= Home ("Listen Now") ================= */
 /* No backdrop blurs here on purpose: home sits on a plain dark panel, so a blur would cost GPU for no visible change. */
@@ -3563,7 +3590,11 @@ html.tess [data-testid="home-ads-container"] {
   animation: td-spin 5.5s steps(165) infinite;
   animation-play-state: paused;
 }
-html.tess-playing .td-record {
+/* While music plays the record spins for a while after a song starts or you press play, and whenever you point at
+   it, then comes to rest. Any motion that never stops makes the whole window redraw continuously (about a third of a
+   CPU core on a Retina screen), so nothing on Home moves for ever. */
+html.tess-playing.tess-spin-burst .td-record,
+html.tess-playing #tess-dial:hover .td-record {
   animation-play-state: running;
 }
 .td-record i {
@@ -3841,6 +3872,12 @@ html.tess.tess-home #main-view main > div > [style*="background-color"]:first-ch
   backdrop-filter: blur(34px) saturate(1.6) !important;
   -webkit-mask-image: linear-gradient(180deg, #000 82%, transparent);
   mask-image: linear-gradient(180deg, #000 82%, transparent);
+}
+
+/* the record rests while the Dial is scrolled out of view (home.js) */
+#tess-dial.offscreen .td-record,
+#tess-dial.offscreen .td-bg {
+  animation-play-state: paused !important;
 }
 
 /* ================= playlist pages ================= */
