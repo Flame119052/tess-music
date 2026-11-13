@@ -30,11 +30,7 @@ func Apply(spicetifyVersion string) {
 	extractedStock := false
 	if !spotifystatus.Get(appDestPath).IsApplied() {
 		spinner, _ := utils.Spinner.Start("Copying raw assets")
-		if err := os.RemoveAll(appDestPath); err != nil {
-			spinner.Fail("Failed to copy raw assets")
-			utils.Fatal(err)
-		}
-		if err := utils.Copy(rawFolder, appDestPath, true, nil); err != nil {
+		if err := swapApps(func(dir string) error { return utils.Copy(rawFolder, dir, true, nil) }); err != nil {
 			spinner.Fail("Failed to copy raw assets")
 			utils.Fatal(err)
 		}

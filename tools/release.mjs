@@ -25,6 +25,8 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const out = `${root}.build/channel/`;
 const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { stdio: 'inherit', ...opts });
 
+// the safety gate: nothing is built or published unless it passes
+run('sh', [`${root}tools/check-safety.sh`]);
 run('node', [`${root}tools/build.mjs`]);
 const js = readFileSync(`${root}theme/Tess/theme.js`, 'utf8').replace("window.__tessVersion", "window.__tessVersion");
 const css = readFileSync(`${root}theme/Tess/user.css`, 'utf8');

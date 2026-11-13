@@ -83,6 +83,19 @@ else
   if fetch_part updater "$TMP/u.sh" && zsh -n "$TMP/u.sh"; then cp "$TMP/u.sh" "$T/updater.sh"; chmod +x "$T/updater.sh"; rm -f "$T/state/updater"; fix "downloaded the updater again"; fi
 fi
 
+# Spotify's interface folder is only ever replaced by switching in a complete copy: the copy is made next to it and
+# checked, then two renames swap them, and if anything fails the original stays. Never delete-then-copy: a block
+# halfway through that left Spotify with no interface at all (black window). tools/check-safety.sh enforces this.
+swap_apps() {
+  _new="$APPS.tess-new"; _old="$APPS.tess-old"
+  rm -rf "$_new"
+  ditto "$1" "$_new" || { rm -rf "$_new"; return 1; }
+  [ -s "$_new/xpui.spa" ] || [ -s "$_new/xpui/index.html" ] || { rm -rf "$_new"; return 1; }
+  rm -rf "$_old"
+  if [ -d "$APPS" ]; then mv "$APPS" "$_old" || { rm -rf "$_new"; return 1; }; fi
+  mv "$_new" "$APPS" || { [ -d "$_old" ] && mv "$_old" "$APPS"; rm -rf "$_new"; return 1; }
+  rm -rf "$_old"
+}
 # --- Spotify's interface -------------------------------------------------------------------------------------------
 if [ -f "$APPS/xpui/index.html" ] && grep -q spicetifyWrapper "$APPS/xpui/index.html" 2>/dev/null; then
   if grep -q TESS_BASELINE "$APPS/xpui/extensions/theme.js" 2>/dev/null; then ok "Tess is in Spotify $SPV"; st+=(spotify=tess)
@@ -105,7 +118,7 @@ elif [ -f "$APPS/xpui.spa" ]; then
 else
   bad "Spotify's interface files are missing"; st+=(spotify=broken)
   if [ -n "$SPV" ] && [ -f "$T/original-$SPV/xpui.spa" ]; then
-    rm -rf "$APPS"; ditto "$T/original-$SPV" "$APPS" && fix "put back Spotify's own files from Tess's safety copy of $SPV"
+    swap_apps "$T/original-$SPV" && fix "put back Spotify's own files from Tess's safety copy of $SPV"
   else
     say "    Tess has no copy of Spotify $SPV's files. Only reinstalling Spotify fixes this: https://www.spotify.com/download/mac/"
   fi

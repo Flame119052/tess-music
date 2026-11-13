@@ -74,6 +74,19 @@ To allow it once: in System Settings › Privacy & Security › App Management, 
   b=$(osascript -e 'display dialog "When tess-patcher is turned on, click Try Again." with title "Tess Music" buttons {"Later", "Try Again"} default button 2 giving up after 900' -e 'button returned of result' 2>/dev/null)
   [ "$b" = "Try Again" ] && reapply now
 }
+# Spotify's interface folder is only ever replaced by switching in a complete copy: the copy is made next to it and
+# checked, then two renames swap them, and if anything fails the original stays. Never delete-then-copy: a block
+# halfway through that left Spotify with no interface at all (black window). tools/check-safety.sh enforces this.
+swap_apps() {
+  _new="$APPS.tess-new"; _old="$APPS.tess-old"
+  rm -rf "$_new"
+  ditto "$1" "$_new" || { rm -rf "$_new"; return 1; }
+  [ -s "$_new/xpui.spa" ] || [ -s "$_new/xpui/index.html" ] || { rm -rf "$_new"; return 1; }
+  rm -rf "$_old"
+  if [ -d "$APPS" ]; then mv "$APPS" "$_old" || { rm -rf "$_new"; return 1; }; fi
+  mv "$_new" "$APPS" || { [ -d "$_old" ] && mv "$_old" "$APPS"; rm -rf "$_new"; return 1; }
+  rm -rf "$_old"
+}
 reapply() {
   [ -f "$APPS/xpui.spa" ] && [ ! -d "$APPS/xpui" ] || return 0
   local spv=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$SPOTIFY/Contents/Info.plist" 2>/dev/null)
@@ -102,7 +115,7 @@ reapply() {
       open -a "$SPOTIFY"
     fi
   else
-    rm -rf "$APPS"; ditto "$bak" "$APPS"; rm -rf "$bak"
+    swap_apps "$bak" && rm -rf "$bak"
     notify "Spotify updated to a version Tess doesn't support yet. Spotify works normally; Tess comes back by itself once it's supported."
     trouble=1
     log "Spotify $spv: Tess couldn't apply yet; Spotify left stock (tried again when a newer patcher arrives)"

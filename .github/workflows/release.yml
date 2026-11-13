@@ -31,6 +31,9 @@ jobs:
       - uses: actions/setup-node@v4
         if: steps.key.outputs.ok
         with: { node-version: 22 }
+      - name: Safety checks (a release never ships if these fail)
+        if: steps.key.outputs.ok
+        run: tools/check-safety.sh
       - name: Build, sign and publish
         if: steps.key.outputs.ok
         env:

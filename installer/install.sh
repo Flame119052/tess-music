@@ -167,19 +167,33 @@ fi
 
 # --- keep the original interface files, so nothing can be lost ------------------------------------------------------
 APPS="$SPOTIFY/Contents/Resources/Apps"
+# Spotify's interface folder is only ever replaced by switching in a complete copy: the copy is made next to it and
+# checked, then two renames swap them, and if anything fails the original stays. Never delete-then-copy: a block
+# halfway through that left Spotify with no interface at all (black window). tools/check-safety.sh enforces this.
+swap_apps() {
+  _new="$APPS.tess-new"; _old="$APPS.tess-old"
+  rm -rf "$_new"
+  ditto "$1" "$_new" || { rm -rf "$_new"; return 1; }
+  [ -s "$_new/xpui.spa" ] || [ -s "$_new/xpui/index.html" ] || { rm -rf "$_new"; return 1; }
+  rm -rf "$_old"
+  if [ -d "$APPS" ]; then mv "$APPS" "$_old" || { rm -rf "$_new"; return 1; }; fi
+  mv "$_new" "$APPS" || { [ -d "$_old" ] && mv "$_old" "$APPS"; rm -rf "$_new"; return 1; }
+  rm -rf "$_old"
+}
 if [ ! -f "$APPS/xpui.spa" ] && [ -n "$REPAIR" ]; then
   # put back this exact Spotify version's own interface files from the copy found above
   step "Putting back Spotify's own files"
-  rm -rf "$APPS"; mkdir -p "$APPS"
-  for f in "$REPAIR"/*.spa; do cp "$f" "$APPS/" || fail "Couldn't put Spotify's files back."; done
+  swap_apps "$REPAIR" || fail "Couldn't put Spotify's files back; Spotify was left as it was."
 fi
 [ -f "$APPS/xpui.spa" ] || fail "Spotify's files look incomplete. Reinstall Spotify from https://www.spotify.com/download/mac/ and run this again."
 ORIG="$HOME_TESS/original-$SPV"
-rm -rf "$HOME_TESS"/original-*
-ditto "$APPS" "$ORIG" || fail "Couldn't make a safety copy of Spotify's files; nothing was changed."
+# the new safety copy is complete before any older one is removed
+rm -rf "$ORIG.new"
+ditto "$APPS" "$ORIG.new" || { rm -rf "$ORIG.new"; fail "Couldn't make a safety copy of Spotify's files; nothing was changed."; }
+for o in "$HOME_TESS"/original-*; do [ "$o" = "$ORIG.new" ] || rm -rf "$o"; done
+mv "$ORIG.new" "$ORIG"
 put_back() {
-  rm -rf "$APPS"
-  ditto "$ORIG" "$APPS"
+  swap_apps "$ORIG"
   rm -f "$HOME_TESS/.installing"
 }
 

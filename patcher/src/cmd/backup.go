@@ -156,12 +156,7 @@ func clearBackup() {
 func Restore() {
 	CheckStates()
 	spinner, _ := utils.Spinner.Start("Restoring Spotify")
-	if err := os.RemoveAll(appDestPath); err != nil {
-		spinner.Fail("Failed to restore Spotify")
-		utils.Fatal(err)
-	}
-
-	if err := utils.Copy(backupFolder, appDestPath, false, []string{".spa"}); err != nil {
+	if err := swapApps(func(dir string) error { return utils.Copy(backupFolder, dir, false, []string{".spa"}) }); err != nil {
 		spinner.Fail("Failed to restore Spotify")
 		utils.Fatal(err)
 	}
