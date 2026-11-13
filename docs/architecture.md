@@ -10,7 +10,6 @@ How Tess gets onto a Mac, runs inside Spotify, keeps itself current, and gets fi
   updater.sh          background helper (self-updating)          ← LaunchAgent music.tess.guard (every 5 min + on Spotify file changes)
   updater.env         SPOTIFY=…, TESS_PARTS_CHANNEL (dev/beta; absent = stable)
   doctor.sh           checks and safe fixes, health reports       ← `tess doctor`, `tess report`; run by the updater on trouble and daily
-  wake.sh             asks the inbox for a new rescue serial       ← LaunchAgent music.tess.wake (every five minutes)
   rescue/             rescue.sh + tess-rescue-verify (rescue key) ← LaunchAgent music.tess.rescue (every 6 h); never auto-updated
   state/              sha of each installed part, version, stamps (.reapply-tried-<ver>, .asked-<ver>, .checked, .heartbeat)
   original-<ver>/     a copy of this Spotify version's own interface files (for repair)
@@ -37,11 +36,12 @@ Inside Spotify (`Spotify.app/Contents/Resources/Apps/xpui`): Spicetify's wrapper
 
 ## Rescue line
 
-`rescue.sh` runs every six hours and at login. `wake.sh` runs every five minutes and asks the inbox for the newest rescue
-serial; when it is newer than the last order this Mac ran, it starts `music.tess.rescue` through launchd. It cannot
-run an order itself: the order still has to download and pass the offline rescue key's signature, so a broken or
-compromised wake helper can only ring the bell. The 6-hour check stays as the fallback if the helper, the inbox or the
-network is down. The wake serial lives in D1 (strongly consistent) with KV as a fallback; it contains no install id.
+`rescue.sh` runs every six hours and at login. What it can do is fixed in the file and limited to Tess and Spotify: an
+order names one of five actions (`check`, `update`, `repair`, `restore-spotify`, `uninstall`), each of which calls Tess's
+own tool (doctor, updater, the public install line, the patcher's safe restore, the uninstaller). An order can't carry
+a script or a command, so the rescue key can only press those buttons; `tools/test-rescue.mjs` proves scripts, unknown
+actions and smuggled text are refused. (Rescue lines installed before 13 Nov 2026 used an older script format that new
+orders don't reach.)
 
 ## Spotify updates itself
 
@@ -64,7 +64,6 @@ Its files go back to stock (`Apps/xpui.spa`). The updater notices (LaunchAgent W
 | Loader fallback | `theme/loader/loader.js` | a broken theme release |
 | Channels | `dev` → promote → `stable`/`beta` | untested builds reaching users |
 | Rescue line | `installer/rescue.sh`, offline rescue key | updates stuck on a Mac |
-| Rescue wake | `installer/wake.sh`, `music.tess.wake` every five minutes | an order waiting up to six hours to start |
 | Health reports | `doctor.sh` → inbox | problems nobody reports |
 
 ## Release pipeline

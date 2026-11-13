@@ -79,7 +79,7 @@ before/after, a failing then passing test, or a log. "Should work" is not done.
 | Installer / updater / doctor / rescue | Sandbox copy of Spotify with `TESS_TEST=1`; cover success, a blocked write, a failure mid-way, and a fresh Mac; `tools/check-safety.sh` |
 | Patcher (Go) | `cd patcher && go test ./src/cmd/` plus an apply → restore cycle on a sandbox copy |
 | Dial picking | `node tools/test-dial-pick.mjs` |
-| Rescue wake | `node tools/test-rescue-wake.mjs` (local inbox + fake launchd); publish a test order and check `rescue/rescue.log` and the reports |
+| Rescue line | `node tools/test-rescue.mjs` (signed orders in a sandbox: five actions accepted; scripts, unknown actions, injected text, bad signatures, expired orders, replays refused) |
 
 Read numbers carefully: `ps %cpu` on macOS is a minute-long average (use `tools/cpu-ab.mjs`); a hidden window draws
 nothing; Krish using the Mac adds noise, so alternate with/without and repeat (the tools do).
@@ -92,9 +92,10 @@ nothing; Krish using the Mac adds noise, so alternate with/without and repeat (t
 - Promote when Krish says so: `node tools/promote.mjs` (or the workflow's `promote` action). That copies the exact
   dev build to `stable` and `beta` and mirrors to `Flame119052/tess-releases` (never archive that repo: 0.1.x
   installs read it).
-- Emergency fix for Macs whose updates are stuck: `node tools/rescue.mjs fix.sh [--only <install id>]` (signed with the
-  offline rescue key; Krish's Mac only). Write rescue scripts to be safe to run twice. Macs with the wake helper
-  (`music.tess.wake`, every five minutes) start it within about five minutes; all others still check every 6 hours.
+- Emergency fix for Macs whose updates are stuck: `node tools/rescue.mjs <check|update|repair|restore-spotify|uninstall>
+  [--only <install id>]` (signed with the offline rescue key; Krish's Mac only). Rescue orders are those five Tess
+  actions only; never add a way for an order to run a script or reach anything outside Tess and Spotify. Macs check every
+  6 hours and at login.
 - Health reports: `node tools/reports.mjs problems | macs | mac <id> | show <n>` (needs Krish's Cloudflare login).
 
 ## Work tracking

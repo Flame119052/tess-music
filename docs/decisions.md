@@ -89,6 +89,13 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   and it reaches that Mac only through its targeted rescue order. *The owner does not want quick remote control on
   every user's Mac.* Before any promote of dev, the `wake` part must come out of the parts list (or become per-Mac
   opt-in), or promoting would hand it to everyone. (#68)
+- **D-62 · 13 Nov 2026 · Owner** — The rescue line is limited to Tess and Spotify, so it can be trusted on everyone's Mac: an
+  order names one of five fixed actions (`check`, `update`, `repair`, `restore-spotify`, `uninstall`) built into
+  `rescue.sh`, and can't carry a script or command. The wake helper and every script-running tool are out of `main`
+  and out of every release (D-61 made permanent). Rescue lines installed earlier (the owner's Mac and one other)
+  keep the old script format; that's the owner's decision for those two Macs only, tracked privately. *"No user
+  should get scripts giving me control over their Mac."* Trade-off: a problem none of the five actions can fix now
+  needs a normal signed release instead of a one-off script. (#69)
 
 ## Releases and process
 
