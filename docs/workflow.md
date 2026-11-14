@@ -97,21 +97,32 @@ comment, and chooses its reviewer from `.github/agents.json`.
 ```
 
 Only accounts in `AGENT_ALLOWLIST` can use it. The GitHub-hosted gate ignores comments carrying
-`<!-- tess-review-bot -->` and, on a PR, requires `check.yml` to have passed on that exact head commit. The trusted
-dispatcher then uses the Mac environment's HTTPS MCP endpoint and an OAuth outside-agent sign-in; an environment or
-relay token is not an MCP login.
+`<!-- tess-review-bot -->` and, on a PR, requires `check.yml` to have passed on that exact head commit; the thread is
+told that commit and stops if the PR head has moved. A pull request from a fork is refused for every task, `review`
+included: plan mode is not a filesystem sandbox, and text nobody here chose must not reach a machine that holds keys.
+The trusted dispatcher then uses the Mac environment's HTTPS MCP endpoint and an OAuth outside-agent sign-in; an
+environment or relay token is not an MCP login.
 
-With no machine, dispatch tries `instabox`, `vps` (`paperclip-vps`), `omarchy`, then `mac`, skipping links that do
-not answer. A named machine must answer; dispatch never silently moves explicitly targeted work. `review` and
-`approach` run in plan mode. `fix` starts from `origin/main`, or from the same-repository PR head when called on a
+With no machine, dispatch tries `instabox`, then `omarchy`, skipping links that do not answer. The Mac and
+`paperclip-vps` are used only when the tag names them, so a machine that holds the signing keys or runs Paperclip is
+never a fall-through. A named machine must answer; dispatch never silently moves explicitly targeted work. `review`
+and `approach` run in plan mode. `fix` starts from `origin/main`, or from the same-repository PR head when called on a
 PR. Every thread reads this workflow and `AGENTS.md`, posts a marked result comment, and never merges.
-This lane is not the reviewer's filesystem sandbox. Do not target a machine with private files when an outside PR
-or issue contains text that you do not trust.
 
-Two dedicated dispatcher runner instances and two durable local slots cap this lane at two live threads. Extra
-GitHub jobs queue. A slot is removed only after T3 confirms the thread and all delegated work settled. If a launch
-or wait reply is lost, its slot remains occupied until a person reconciles it; automatically freeing an uncertain
-slot could start a third thread.
+A refused request is answered on the issue or PR with a fixed reason and a link to the run: a bad option, an
+unreachable machine, a fork PR, CI that hasn't passed, a full queue, or a sign-in that needs renewing. An account
+outside the allowlist is ignored in silence.
+
+Two dedicated dispatcher runner instances and the same number of durable local slots cap this lane at two live
+threads (`TESS_AGENT_SLOTS` changes the slot count, default 2). Extra GitHub jobs queue. A slot is removed only after
+T3 confirms the thread and all delegated work settled. If a launch or wait reply is lost, its slot remains occupied
+until a person reconciles it; automatically freeing an uncertain slot could start a third thread. A wait returns
+before Node's five-minute fetch limit and re-waits, so a thread that runs for hours keeps its slot and its session
+reconnects once it expires.
+
+The dispatcher's credential is not readable by any other job. It lives in a file only the `tess-dispatch` user can
+read, and that runner's job-started hook refuses every job that is not an `issue_comment` run of this workflow from
+`main` — including a workflow another branch adds. See `tools/runner-setup.md`.
 
 ## Where work happens: branches, worktrees and machines
 
@@ -161,8 +172,9 @@ These rules come from mistakes made while setting this up: agents started from t
 - **No Tess agent edits, restarts or reads Paperclip.** That covers `/srv/paperclip`, its PostgreSQL database, its
   services, and the Tincan relay. Nothing for Tess is installed system-wide there.
 - **No builds or long tests run on the VPS.** Heavy work goes to GitHub's machines, Instabox, `omarchy`, or the Mac.
-- A T3 thread dispatched to `vps` receives these limits in its first prompt and must clean up its Tess worktree when
-  done. This is a policy boundary, not an operating-system sandbox: the owner chooses the VPS deliberately.
+- A T3 thread reaches `paperclip-vps` only when a tag names it; dispatch never sends work there on its own. That
+  thread receives these limits in its first prompt and must clean up its Tess worktree when done. This is a policy
+  boundary, not an operating-system sandbox: the owner chooses the VPS deliberately (D-65).
 
 ## How Macs get updates
 

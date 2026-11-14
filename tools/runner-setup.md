@@ -4,6 +4,10 @@ The reviewer workflow is safe only when its runner is a dedicated, unprivileged 
 GitHub-hosted `gate` job checks the caller and PR checks first. The self-hosted runner checks out `main` only and reads
 PR changes through `gh pr diff`; it must never build or run PR code.
 
+The `@tess-agent` dispatcher is a second, different runner: another user, another label, and its own home directory.
+Its setup and boundaries are at the end of this page. Nothing that runs as `tess-runner` may read the dispatcher's
+credential.
+
 ## Register one runner
 
 In the repository, open **Settings → Actions → Runners → New self-hosted runner** and follow GitHub's download steps
@@ -102,7 +106,8 @@ setup.
 4. **Branch protection:** protect `main`, `dev`, `beta`, and `stable`; require the `check` status where applicable,
    block force-pushes and deletions, and grant only the release workflow the bypass needed to update channel branches.
 5. **Runner access:** keep the runner repository-scoped (or in a runner group limited to this repository) and confirm
-   that it has the `tess-agent` label.
+   that it has the `tess-agent` label. The dispatcher runner carries `tess-dispatch` instead, runs as its own user,
+   and must not be in the same runner group as anything else.
 
 ## What a runner machine has (set up 14 Nov on `omarchy` and `paperclip-vps`)
 
@@ -118,15 +123,40 @@ setup.
 
 ## One-time `@tess-agent` dispatcher setup
 
-The dispatcher is separate from the read-only reviewer. Run exactly two GitHub runner instances as the same
-dedicated, unprivileged user and give both the `tess-dispatch` label. They may share a host, but each Actions runner
-needs its own installation directory and service. Both must inherit the same private slot directory. GitHub leaves a
-third job queued while the two instances are busy; the slots are a second cap if another runner is registered by
-mistake.
+The dispatcher is separate from the read-only reviewer, and it must stay separate: it holds a credential that can
+start full T3 threads on the machines that keep Tess's signing and rescue keys.
+
+**Its own user, never `tess-runner`.** Create a dedicated, unprivileged account, `tess-dispatch`, with no `sudo`
+rights and a home directory only it can read (`chmod 700`, owner `tess-dispatch`). No reviewer runner, no other job,
+and no shared installation directory may use that account. Run exactly two GitHub runner instances as it and give
+both the `tess-dispatch` label. They may share a host with the reviewer, but each Actions runner needs its own
+installation directory and service. Both must inherit the same private slot directory. GitHub leaves a third job
+queued while the two instances are busy; the slots are a second cap if another runner is registered by mistake.
+
+**The job hook is what makes that boundary real.** A same-repository pull request can add a workflow with
+`runs-on: [self-hosted, tess-dispatch]` and read everything a job on that runner can read. Fork approval does not
+cover branches in this repository, and a `fix` thread can push one. So each instance's `.env` sets the runner's
+job-started hook, which refuses every job that is not an `issue_comment` run of the dispatch workflow from `main`:
+
+```sh
+cp tools/runner-hook.sh ~tess-dispatch/.local/bin/tess-dispatch-hook.sh
+```
+
+Then set this value in `~tess-dispatch/actions-runner/.env` (mode 600) and restart both services:
+
+```dotenv
+ACTIONS_RUNNER_HOOK_JOB_STARTED=/home/tess-dispatch/.local/bin/tess-dispatch-hook.sh
+```
+
+Check it after any change, including a runner upgrade: run any other workflow by hand (a `workflow_dispatch`, or a
+`pull_request` from this repository) and confirm its job fails to start with `tess-dispatch: refusing this job` in
+the runner log. The hook fails closed, so a missing event name refuses too. `node tools/test-agent-dispatch.mjs`
+covers the hook's decisions.
 
 On the Mac, turn on linked environments and link Instabox, `paperclip-vps`, and `omarchy`. Make sure this repository
-is a T3 project on each target. The Mac itself is the fourth target. Sign `gh` in on each target so the started
-thread can post its marked result and, for `fix`, push its branch.
+is a T3 project on each target. The Mac itself is the fourth target, and `omarchy` the second default. `paperclip-vps`
+and the Mac are used only when the tag names them. Sign `gh` in on each target so the started thread can post its
+marked result and, for `fix`, push its branch.
 
 The dispatcher signs in to the Mac's HTTPS `/mcp` address as an outside OAuth client. Use an OAuth-capable MCP client
 on the dispatcher host to start that sign-in, approve it once in T3 with your own pairing code, and choose an access
@@ -134,13 +164,21 @@ ceiling that can start the intended threads. A plain environment token, T3 Conne
 GitHub token does not work. This repository does not register the OAuth client and must never receive the pairing
 code. The approval lasts 30 days; repeat the outside-agent sign-in when it expires.
 
-Put only the OAuth-issued MCP credential and routing values in each runner installation's private `.env` (mode 600),
-never in this repository or a GitHub secret:
+Keep the OAuth-issued credential in a file only `tess-dispatch` can read, not in the job environment: the runner
+copies its `.env` into every job it starts, and a process listing shows a job's environment. Only the routing values
+go in `~tess-dispatch/actions-runner/.env` (mode 600):
+
+```sh
+mkdir -p -m 700 ~tess-dispatch/.config/tess-agent-dispatch
+printf '%s\n' '<OAuth-issued outside-agent access token>' > ~tess-dispatch/.config/tess-agent-dispatch/credential
+chmod 600 ~tess-dispatch/.config/tess-agent-dispatch/credential
+```
 
 ```dotenv
 TESS_T3_MCP_URL=https://<mac-environment-address>/mcp
-TESS_T3_MCP_OAUTH_TOKEN=<OAuth-issued outside-agent access token>
-TESS_AGENT_SLOT_DIR=/home/tess-runner/.local/state/tess-agent-dispatch
+TESS_T3_MCP_CREDENTIAL_FILE=/home/tess-dispatch/.config/tess-agent-dispatch/credential
+TESS_AGENT_SLOT_DIR=/home/tess-dispatch/.local/state/tess-agent-dispatch
+TESS_AGENT_SLOTS=2
 
 TESS_T3_INSTABOX_ENVIRONMENT_ID=<T3 environment id>
 TESS_T3_INSTABOX_PROJECT_ID=<Tess project id there>
@@ -152,10 +190,29 @@ TESS_T3_MAC_ENVIRONMENT_ID=<Mac T3 environment id; optional because the endpoint
 TESS_T3_MAC_PROJECT_ID=<Tess project id on the Mac>
 ```
 
-Use the T3 environment and project IDs shown by T3; labels are not stable identifiers. Restart both runner services
-after changing `.env`.
+`TESS_T3_MCP_OAUTH_TOKEN` still works for a quick trial, but a file is preferred for the reason above. Never put any
+of it in this repository or a GitHub secret.
 
-Each occupied slot contains `owner.json` with the GitHub comment and launch retry key. A slot normally disappears
-after `t3_thread_wait` confirms the thread and all of its delegated work settled. If a network failure leaves one
-behind, find that thread in T3 by its `Tess <task>: #<number>` title and GitHub comment, then confirm it completed or
-stop it. Remove that one slot directory only after reconciliation. Never clear all slots just to make the queue move.
+Use the T3 environment and project IDs shown by T3; labels are not stable identifiers. `TESS_AGENT_SLOTS` is the
+number of live threads this lane allows (default 2, at most 8). Restart both runner services after changing `.env`.
+
+Before the first tag, run the read-only preflight as `tess-dispatch` on the dispatcher host. It proves the sign-in and
+the machine IDs and starts nothing:
+
+```sh
+set -a; . ~tess-dispatch/actions-runner/.env; set +a
+node tools/agent-dispatch.mjs check
+```
+
+Every line should say `ready` or `not configured`, never `unreachable` for a machine you meant to use.
+
+Each occupied slot contains `owner.json` with the GitHub comment, the machine it went to, and the launch retry key. A
+slot normally disappears after `t3_thread_wait` confirms the thread and all of its delegated work settled. If a
+network failure leaves one behind, find that thread in T3 by its `Tess <task>: #<number>` title and GitHub comment,
+then confirm it completed or stop it. Remove that one slot directory only after reconciliation. Never clear all slots
+just to make the queue move.
+
+When dispatch refuses a request, the person who wrote the tag is told on the issue or pull request: a fixed reason
+plus a link to the run. The text comes from `refusalReasons` in `tools/agent-dispatch.mjs`, never from an error
+message, so nothing the runner learned can be published. A tag from an account outside `AGENT_ALLOWLIST` stays
+silent on purpose.
