@@ -56,6 +56,14 @@ esac
   for (const part of ['installer', 'uninstall', 'wake', ...(withCommand ? [] : ['command'])]) assert.ok(!existsSync(join(tess, 'state', part)), `${part} absent, no false installed state`);
   assert.equal(readFileSync(join(tess, 'tess'), 'utf8'), readFileSync(join(root, 'installer/tess-command.sh'), 'utf8'), 'installer installs signed command');
   assert.equal(readFileSync(join(source, 'Contents/Resources/Apps/xpui.spa'), 'utf8'), 'fake stock Spotify');
+  const env = { ...process.env, HOME: home, TESS_TEST: '1', TESS_HOME: tess, TESS_CONFIG: config, TESS_SPOTIFY: spotify, FIXTURES: fixtures, PATH: `${bin}:${process.env.PATH}` };
+  const repair = execFileSync('/bin/sh', [join(tess, 'tess'), 'repair'], { env, encoding: 'utf8' });
+  assert.match(repair, /Test install.*finished/);
+  const uninstall = execFileSync('/bin/sh', [join(tess, 'tess'), 'uninstall'], { env, encoding: 'utf8' });
+  assert.match(uninstall, /Spotify is back to normal/);
+  assert.ok(!existsSync(tess), 'tess uninstall removes TESS_HOME');
+  assert.ok(!existsSync(config), 'tess uninstall removes sandbox config');
+  console.log('legacy repair and uninstall actually ran in sandbox; TESS_HOME removed');
   if (withCommand) console.log('signed command sandbox install passed');
   else console.log('legacy channel sandbox install passed (copied fake Spotify; list contains only patcher/theme/updater; installer/uninstall/wake/command absent; remote rescue notice shown)');
 } finally { rmSync(box, { recursive: true, force: true }); }
