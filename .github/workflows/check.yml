@@ -33,6 +33,12 @@ jobs:
           node tools/test-rescue.mjs
       - name: Dial picking tests
         run: node tools/test-dial-pick.mjs
+      - name: Support bot triage and setup tests
+        run: node tools/test-support.mjs
+      - name: Inbox support endpoint tests
+        run: node tools/test-inbox.mjs
+      - name: Support session folder tests
+        run: node tools/test-session.mjs
       - name: Reviewer agent tests
         run: node tools/test-agent-review.mjs
       - name: Tools parse

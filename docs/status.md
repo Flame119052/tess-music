@@ -16,6 +16,18 @@ beta with action `promote` (or `node tools/promote.mjs`).
 Installs on record (health inbox): the owner's Mac (dev) and one user's Mac (stable, repaired 13 Nov after the 0.1.0
 helper blanked its Spotify).
 
+## Support bot
+
+Built and tested in `support/` (#70, D-65, D-66): **one Hermes bot on a server**, on OpenCode's free tier, that people
+message. It works out what broke from Tess's own doctor report and their screenshots and **posts it to the inbox** —
+`POST /v1/support`, token-authenticated, stored beside the health reports. Krish's side reads it with
+`tools/reports.mjs support list` and files the issue with its P0–P3 and area labels. Access is an allowlist only Krish
+can change, from his own Telegram account.
+
+**Not deployed, and not part of a release.** Before it can work: `inbox/schema.sql` applied to D1 and the Worker
+deployed — both Krish's, neither done here — plus a machine, a Telegram bot and a posting token. What can be run now:
+`node tools/test-inbox.mjs` and `node tools/test-support.mjs`.
+
 ## Open issues (GitHub, sorted by priority — see [`triage.md`](triage.md))
 
 | # | Priority | Area | What | State / next step |
@@ -49,6 +61,7 @@ helper blanked its Spotify).
 | #5 | `P2` | `theme` | Artist video when no top song has a Canvas | Open (Phase 4). |
 | #6 | `P2` | `installer` | Keep downloads off the Mac when the external drive is unplugged | Open (Phase 4). |
 | #8 | `P2` | `companion` | Phone companion (PWA in `companion/`) | Waiting on Krish (Phase 5). |
+| #70 | `P2` | `docs`, `release-ci`, `installer` | Support bot: a Hermes bot people message, that sends what broke to the inbox for Krish to file | Built in `support/` (D-65, D-66). Waiting on Krish to merge, deploy the Worker and create the bot. |
 | #2 | `P3` | `theme` | Word-by-word lyric highlight | Paused / deferred by Krish (Phase 4). |
 | #34 | `P3` | `installer`, `patcher`, `theme` | Windows version | Paused by Krish (Phase 5). |
 | #1 | `P2` | `theme` | Tess Music v1 | Umbrella `spec`. |

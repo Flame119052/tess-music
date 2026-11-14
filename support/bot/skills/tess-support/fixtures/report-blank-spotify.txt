@@ -1,0 +1,10 @@
+Tess doctor  2026-11-14 09:41:02
+  ✓ patcher
+  ✓ updater
+  ✕ Spotify's interface files are missing
+  ✓ update helper running
+  ✓ can reach updates
+  recent problems in the helper's log:
+    2026-11-14 09:12:44 Spotify's interface files are missing
+  1 problem(s), 0 fixed.
+Report sent. Your install id: 4f2a9c1e8b7d0a3f5e6c8b2d1a4f7e90

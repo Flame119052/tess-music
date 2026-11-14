@@ -10,6 +10,13 @@ binding = "DB"
 database_name = "tess-inbox"
 database_id = "83718330-853d-44a2-9b4b-9edf1b4ecc00"
 
+# Recordings of a person's Spotify window. Never served back; the scheduled job deletes each one when its report is
+# filed or at 14 days, and set a lifecycle rule on this bucket too (delete after 14 days) so an unapplied deploy can't
+# leave one lying there. Object lifecycle is configured on the bucket, not here.
+[[r2_buckets]]
+binding = "SUPPORT"
+bucket_name = "tess-support"
+
 [[kv_namespaces]]
 binding = "RESCUE"
 id = "26cadf05786a439b89302a0641180c39"

@@ -1,0 +1,36 @@
+# Tess Support on a server. Run as its own unprivileged user with a hard ceiling, so the worst a support bot can do to
+# the machine is bounded before anything about prompts or tokens matters.
+#
+#   sudo useradd --system --create-home --shell /usr/sbin/nologin tess-support
+#   sudo cp support/tess-support.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now tess-support
+#
+# Replace the ExecStart path if Hermes lives elsewhere (setup.sh prints the real one).
+[Unit]
+Description=Tess support bot (Hermes)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tess-support
+Group=tess-support
+WorkingDirectory=/home/tess-support
+# The caps: a support bot that leaks memory or spins cannot take the machine with it.
+MemoryMax=1G
+CPUQuota=50%
+TasksMax=64
+# Nothing it does needs to write outside its own home and the Hermes home.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/tess-support/.hermes
+# A crash restarts it, but not in a loop that hammers the model or the inbox.
+Restart=on-failure
+RestartSec=10
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+[Install]
+WantedBy=multi-user.target
