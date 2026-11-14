@@ -32,6 +32,9 @@ How GitHub issues are sorted by **priority**, **importance (milestone)**, **cate
 - `waiting on Krish` — needs owner decision, design review, or owner-only action
 - `status: verify` — implemented; waiting on real-world/hardware verification before closing
 - `status: paused` — explicitly paused or deferred by Krish
+- `needs more info` — we asked the reporter a question; the `stale` workflow closes it after 7 days with no reply
+
+PRs also get a `size:XS` … `size:XL` label automatically (`pr-size` workflow). It is context for the reviewer, not a rule.
 
 ## 5. Plain-English Issue Titles
 
