@@ -91,11 +91,14 @@ setup.
    `@tess-review`.
 2. **Fork pull requests — before registering any runner:** under **Settings → Actions → General**, choose
    **"Require approval for all outside collaborators"**. The default only stops first-time contributors, and a fork PR
-   could edit `check.yml` to run on `[self-hosted, tess-agent]`.
+   could edit `check.yml` to run on `[self-hosted, tess-agent]`. On a personal repo this approval is the only thing
+   stopping that, so never approve a fork run whose PR touches `.github/workflows/`. (Set on 14 Nov.)
 3. **Release environment:** create an environment named `release`, add required reviewers, and allow only `main`.
    The `declare` and `promote` jobs use this environment. Until reviewers are added it does **not** pause anything
-   (GitHub creates it on first use with no rules). Move `TESS_SIGNING_KEY` and `TESS_MIRROR_KEY` from repository
-   secrets into this environment so only approved jobs can read them.
+   (GitHub creates it on first use with no rules). Set on 14 Nov: reviewer Flame119052, `main` only. The signing and
+   mirror keys are still repository secrets, because the dev build uses them on every merge. Moving them needs a
+   separate `build` environment for the dev job and a new tess-releases deploy key (there is no local copy of the
+   mirror key), which is tracked as its own issue. The agent-review workflow never names a secret.
 4. **Branch protection:** protect `main`, `dev`, `beta`, and `stable`; require the `check` status where applicable,
    block force-pushes and deletions, and grant only the release workflow the bypass needed to update channel branches.
 5. **Runner access:** keep the runner repository-scoped (or in a runner group limited to this repository) and confirm
