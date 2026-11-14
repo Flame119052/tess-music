@@ -105,6 +105,8 @@ With no machine, dispatch tries `instabox`, `vps` (`paperclip-vps`), `omarchy`, 
 not answer. A named machine must answer; dispatch never silently moves explicitly targeted work. `review` and
 `approach` run in plan mode. `fix` starts from `origin/main`, or from the same-repository PR head when called on a
 PR. Every thread reads this workflow and `AGENTS.md`, posts a marked result comment, and never merges.
+This lane is not the reviewer's filesystem sandbox. Do not target a machine with private files when an outside PR
+or issue contains text that you do not trust.
 
 Two dedicated dispatcher runner instances and two durable local slots cap this lane at two live threads. Extra
 GitHub jobs queue. A slot is removed only after T3 confirms the thread and all delegated work settled. If a launch
