@@ -68,15 +68,16 @@ for (const p of parts) {
   const from = p.endsWith('.sh') ? join(box, p) : join(dist, p);
   if (p.endsWith('.sh')) writeFileSync(join(dist, p), readFileSync(from));
 }
-const components = [
+const partLines = [
   `patcher ${sha(join(dist, 'patcher.tgz'))} ${base}/patcher.tgz src-p`,
   `theme ${sha(join(dist, 'theme.tgz'))} ${base}/theme.tgz src-t`,
   `updater ${sha(join(dist, 'updater.sh'))} ${base}/updater.sh src-u`,
   `doctor ${sha(join(dist, 'doctor.sh'))} ${base}/doctor.sh src-d`,
-  'version 0.2.99',
-  'rev 99',
-].join('\n') + '\n';
-writeFileSync(join(dist, 'components.txt'), components);
+];
+const writeComponents = (extra = ['version 0.2.99', 'rev 99']) => {
+  writeFileSync(join(dist, 'components.txt'), [...partLines, ...extra].join('\n') + '\n');
+};
+writeComponents();
 writeFileSync(join(dist, 'components.sig'), 'test\n');
 
 const verifier = join(box, 'verify');
@@ -115,6 +116,28 @@ try {
   assert.equal(readFileSync(join(box, 'tess/state/version'), 'utf8').trim(), '0.2.99', 'installed version recorded');
   assert.equal(readFileSync(join(box, 'tess/state/rev-stable'), 'utf8').trim(), '99', 'rev recorded per channel');
 
+  // 1b. a lower rev is refused before anything is downloaded or touched
+  writeComponents(['version 0.2.98', 'rev 98']);
+  const lower = await install();
+  assert.notEqual(lower.status, 0, 'a lower rev fails the install');
+  assert.match(lower.stdout, /older than the version already installed/, 'the failure names the downgrade');
+  assert.equal(readFileSync(join(box, 'tess/state/rev-stable'), 'utf8').trim(), '99', 'the floor is not lowered');
+
+  // 1c. a pre-rev list is refused once a rev is installed
+  writeComponents(['version 0.2.98']);
+  const noRev = await install();
+  assert.notEqual(noRev.status, 0, 'a pre-rev list fails after a rev is installed');
+  assert.match(noRev.stdout, /has no rev/, 'the failure names the missing rev');
+
+  // 1d. ...but a pre-rev list still installs on a fresh Mac, which is what stable serves today
+  rmSync(join(box, 'tess'), { recursive: true, force: true });
+  rmSync(join(spotify, 'Contents/Resources/Apps/xpui'), { recursive: true, force: true });
+  writeComponents(['version 0.2.98']);
+  const fresh = await install();
+  assert.equal(fresh.status, 0, fresh.stdout + fresh.stderr);
+  assert.equal(readFileSync(join(box, 'tess/state/version'), 'utf8').trim(), '0.2.98', 'fresh pre-rev install recorded');
+  assert.equal(existsSync(join(box, 'tess/state/rev-stable')), false, 'no rev file for a pre-rev list');
+
   // 2. a failing verifier stops before the patcher is unpacked or Spotify is touched
   rmSync(join(spotify, 'Contents/Resources/Apps/xpui'), { recursive: true, force: true });
   rmSync(join(box, 'tess'), { recursive: true, force: true });
@@ -126,7 +149,7 @@ try {
   assert.equal(existsSync(join(box, 'tess/bin/patcher')), false, 'the patcher archive was not unpacked');
   assert.match(bad.stdout, /signature check/, 'the failure names the signature check');
 
-  console.log('install tests passed (signed list checked first; failing verifier stops before the patcher)');
+  console.log('install tests passed (signed list first; lower and pre-rev refusal; fresh pre-rev; bad verifier stops before the patcher)');
 } finally {
   await new Promise((r) => server.close(r));
   rmSync(box, { recursive: true, force: true });
