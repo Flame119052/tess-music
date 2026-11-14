@@ -109,7 +109,13 @@ These rules come from mistakes made while setting this up: agents started from t
 - **Never start from whatever the project root happens to have checked out.** This is how a branch ended up carrying another PR's commits.
 - **Updating:** `git fetch origin` then `git merge --ff-only origin/main`. A plain `git pull` fails here with "Cannot fast-forward to multiple branches".
 - **A PR that conflicts with `main`:** rebase it, rerun its tests, and push with `--force-with-lease`. Never use a bare `--force`.
-- **Don't push to another agent's branch** while it is working. If its agent is gone, you may add commits, and you must leave a PR comment saying what you added.
+- **An open PR belongs to the agent that opened it** for as long as that agent's thread is alive. For example, the support-bot agent owns `support-bot` (#85).
+  - Everyone else, including the reviewer and other agents, comments on the PR and doesn't push to its branch.
+  - If the owner's thread is gone, you may add commits. Leave a PR comment saying what you added and who you are.
+- **Reviewers only comment.** A reviewer agent never pushes, approves, merges or edits a branch.
+- **Only Krish merges,** unless he names a PR and says to merge it. Merges use a merge commit, so each PR's commits stay visible. Never squash a PR another agent is still reading.
+- **Stacked work:** if your PR needs another open PR, start from that PR's branch, say "stacked on #N" in your PR, and rebase onto `main` once #N merges.
+- **Merge order matters when PRs touch the same files.** The later PR rebases after the earlier one merges. It never copies the earlier PR's commits, with one exception: a fix that unblocks CI. If you copy that, say so in a comment.
 - **Leftovers:** a local branch that is pushed or merged gets deleted. One with unpushed commits stays until Krish says otherwise.
 - **No plans, notes or scratch files in the repo.** Keep them in your session's scratch folder. A merged PR and its issue are the record.
 
@@ -121,6 +127,12 @@ These rules come from mistakes made while setting this up: agents started from t
 | `omarchy`, `paperclip-vps` | The reviewer runners (`tess-agent`). Each job gets a fresh checkout, so nothing on them needs syncing. | Holds a Tess key. Runs the runner as root. |
 | GitHub's macOS machines | CI (`check.yml`) and every build and signature (`release.yml`). They are the only place the signing secrets are used. | Runs code from a fork PR without Krish's approval. |
 | Instabox | Optional Linux scratch box for an agent. | Holds a Tess key. Builds Tess, which needs macOS. |
+
+**`paperclip-vps` runs Paperclip first. Tess work there must never slow it down or touch it.**
+- **The reviewer runner** runs as `tess-runner`, with no admin rights and a hard cap: 1 CPU core and 1.5 GB of memory, at the lowest priority for CPU and disk. If it runs out, the review fails; Paperclip doesn't. `omarchy` has the same setup with a 2 GB cap.
+- **No Tess agent edits, restarts or reads Paperclip.** That covers `/srv/paperclip`, its PostgreSQL database, its services, and the Tincan relay. Nothing for Tess is installed system-wide there. Everything lives in `~tess-runner`.
+- **No builds or tests run on the VPS,** only reviews, which read code. Heavy work goes to GitHub's machines or `omarchy`.
+- **Tess agents don't run on the VPS through T3 Code.** T3 runs as root there, so any agent it starts has root power next to Paperclip. Claude refuses full access as root, and we leave that check on. Tess agent work goes to Krish's Mac or `omarchy`. Moving T3 on the VPS to a normal account is a separate decision for Krish.
 
 ## How Macs get updates
 
