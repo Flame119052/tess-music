@@ -35,5 +35,7 @@ jobs:
         run: node tools/test-dial-pick.mjs
       - name: Reviewer agent tests
         run: node tools/test-agent-review.mjs
+      - name: T3 agent dispatch tests
+        run: node tools/test-agent-dispatch.mjs
       - name: Tools parse
         run: for f in tools/*.mjs; do node --check "$f"; done

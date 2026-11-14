@@ -25,6 +25,7 @@ helper blanked its Spotify).
 | #53 | `P1` | `installer` | Tell users about the rescue line; `tess rescue off`, `tess status` | PR #75 review fixes implemented; sandbox checks cover persistent opt-out, older channel installs, separate wake reads, and the older-script notice. Awaiting CI and reviewer acceptance; not released. |
 | #54 | `P1` | `docs`, `release-ci` | Purge old issue revisions and commit messages with personal details | Waiting on Krish (Phase 1). |
 | #71 | `P1` | `installer`, `release-ci` | Issue → approach → PR → dev → beta → stable, with reviewer agents | Parts B–C implemented in PR; runner registration and repository settings remain owner steps. |
+| #88 | `P1` | `release-ci` | A `@tess-agent` GitHub tag starts a T3 thread on the chosen reachable machine | [PR #90](https://github.com/Flame119052/tess-music/pull/90) fixes the review findings with tested refusals, CRLF, long waits and the CI commit. The real-thread check needs Krish's one-time OAuth sign-in on the dispatcher host. |
 | #62 | `P1` | `docs`, `release-ci` | Update docs & release flow for PRs → `dev` → `beta` → `stable` (approvers TBD) | Waiting on Krish (Phase 1). |
 | #28 | `P1` | `installer`, `patcher` | macOS App Management: ask once, never loop, approval survives updates | Shipped; `status: verify` on a real blocked Mac at next Spotify update. |
 | #7 | `P1` | `patcher`, `installer` | Survive Spotify updates | Done; waiting on Krish to confirm and close. |
