@@ -1,33 +1,44 @@
 {
-  "_note": "Defaults per role (strongest first) and the models an allowlisted tag may ask for. See docs/workflow.md \u2192 Choosing a reviewer.",
+  "_note": "Defaults per role (first with usage left wins) and the models an allowlisted tag may ask for. Why each is here: docs/workflow.md -> Choosing a reviewer, and docs/research/reviewer-models-2026-11.md.",
   "approach": [
     {
       "provider": "claude",
-      "model": "claude-opus-5-5"
+      "model": "claude-opus-5-5",
+      "effort": "high"
     },
     {
       "provider": "codex",
-      "model": "gpt-6.1-sol"
+      "model": "gpt-6.1-sol",
+      "effort": "high"
     }
   ],
   "pr_normal": [
     {
       "provider": "codex",
-      "model": "gpt-6.1-terra"
+      "model": "gpt-6.1-terra",
+      "effort": "medium"
     },
     {
       "provider": "claude",
-      "model": "claude-sonnet-5-5"
+      "model": "claude-sonnet-5-5",
+      "effort": "medium"
+    },
+    {
+      "provider": "opencode",
+      "model": "opencode-go/glm-5.3",
+      "effort": "high"
     }
   ],
   "pr_sensitive": [
     {
       "provider": "claude",
-      "model": "claude-opus-5-5"
+      "model": "claude-opus-5-5",
+      "effort": "high"
     },
     {
       "provider": "codex",
-      "model": "gpt-6.1-sol"
+      "model": "gpt-6.1-sol",
+      "effort": "high"
     }
   ],
   "allowed": {
@@ -44,7 +55,9 @@
       "gpt-5.6-sol"
     ],
     "opencode": [
-      "opencode-go/deepseek-v4.1-flash"
+      "opencode-go/glm-5.3",
+      "opencode-go/deepseek-v4.1-flash",
+      "opencode-go/kimi-k3"
     ]
   },
   "strong": [
