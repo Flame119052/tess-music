@@ -3,7 +3,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { eligibleModels, looksSecret, parseRequest, providerHasUsage, resolveReviewers, reviewerEnv, tierForPaths } from './agent-review.mjs';
+import { claudeTools, eligibleModels, looksSecret, parseRequest, providerHasUsage, resolveReviewers, reviewerEnv, snapshot, tierForPaths } from './agent-review.mjs';
+import { existsSync, rmSync } from 'node:fs';
 
 const config = JSON.parse(readFileSync(new URL('../.github/agents.json', import.meta.url), 'utf8'));
 const available = (usedPercent) => ({ windows: [{ usedPercent }] });
@@ -113,4 +114,16 @@ test('the reviewer gets Claude its sign-in but never the GitHub token', () => {
   const env = reviewerEnv({ HOME: '/home/r', PATH: '/bin', GH_TOKEN: 'ghs_x', GITHUB_TOKEN: 'ghs_y', CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-x', OTHER: '1' });
   assert.deepEqual(Object.keys(env).sort(), ['CLAUDE_CODE_OAUTH_TOKEN', 'HOME', 'PATH']);
   assert.ok(looksSecret('sk-ant-oat01-' + 'a'.repeat(80)));
+});
+
+test('the reviewer reads a throwaway copy with read-only tools only', () => {
+  assert.deepEqual(claudeTools.split(','), ['Read', 'Grep', 'Glob']);
+  const dir = snapshot('HEAD');
+  try {
+    assert.ok(existsSync(`${dir}/AGENTS.md`), 'copy has the repo files');
+    assert.ok(!existsSync(`${dir}/.git`), 'copy has no .git, so no remote or credentials');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  assert.ok(!existsSync(dir), 'copy is deleted after the review');
 });
