@@ -36,6 +36,10 @@
   const envelope = (m) => JSON.stringify({ version: m.version, js: m.js, css: m.css, jsSha: m.jsSha, cssSha: m.cssSha, rev: Number(m.rev) });
   async function verified(b) {
     if (!b || typeof b.js !== 'string' || typeof b.css !== 'string' || typeof b.sigJs !== 'string' || typeof b.sigCss !== 'string') return false;
+    if (b.channel !== channel) return false;
+    // Stored copies obey the same forward-only rule as downloads.
+    const r = Number(b.rev) || 0;
+    if (r < floor() || (floor() > 0 && !b.env)) return false;
     if (!(await verify(b.js, b.sigJs)) || !(await verify(b.css, b.sigCss))) return false;
     if (b.env) {
       if (!(await verify(b.env, b.sigEnv))) return false;
