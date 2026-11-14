@@ -4,7 +4,7 @@
 // .github/agents.json `allowed` are accepted; sensitive work must use a `strong` model. Anything else falls back to
 // the role's defaults, and the comment says why.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,14 +18,25 @@ const providerDetails = {
   opencode: { command: 'opencode', cache: 'opencode.json' },
 };
 
-const docsPath = (path) => path.startsWith('docs/')
+// The key each provider signs in with on a headless runner. A review gets its own provider's key and nothing else.
+const providerKeys = {
+  claude: 'CLAUDE_CODE_OAUTH_TOKEN',
+  codex: 'CODEX_API_KEY',
+  cursor: 'CURSOR_API_KEY',
+  opencode: 'OPENCODE_API_KEY',
+};
+
+// The OpenCode agent file decides what the OpenCode reviewer may read, so loosening it is a security change even though
+// it ends in .md. It is never a docs-only path.
+const reviewerPolicy = ['tools/opencode-reviewer.md'];
+const docsPath = (path) => !reviewerPolicy.includes(path) && (path.startsWith('docs/')
   || path.endsWith('.md')
-  || path.startsWith('.github/ISSUE_TEMPLATE/');
+  || path.startsWith('.github/ISSUE_TEMPLATE/'));
 const sensitivePath = (path) => path.startsWith('installer/')
   || path.startsWith('inbox/')
   || path.startsWith('patcher/')
   || path.startsWith('.github/')
-  || ['tools/release.mjs', 'tools/promote.mjs', 'tools/rescue.mjs', 'tools/check-safety.sh'].includes(path)
+  || ['tools/release.mjs', 'tools/promote.mjs', 'tools/rescue.mjs', 'tools/check-safety.sh', ...reviewerPolicy].includes(path)
   || /(^|[/.-])(signing|rescue)([/.-]|$)/i.test(path);
 
 export function tierForPaths(paths) {
@@ -133,11 +144,11 @@ function reviewPrompt(role, context) {
   return `${common}\n\nLINKED ISSUE\n${context.issue}\n\nAPPROACH\n${context.approach}\n\nPULL REQUEST DIFF\n${context.diff}`;
 }
 
-// The reviewer never sees GH_TOKEN or anything else from the job. CLAUDE_CODE_OAUTH_TOKEN is Claude's own sign-in
-// on a headless runner (made with `claude setup-token`, kept in the runner's .env); without it Claude can't start.
-export function reviewerEnv(env = process.env) {
-  const allowed = ['HOME', 'PATH', 'TMPDIR', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL',
-    'CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_API_KEY', 'CURSOR_API_KEY', 'OPENCODE_API_KEY'];
+// The reviewer never sees GH_TOKEN or another provider's key. It gets only the key its own CLI signs in with
+// (CLAUDE_CODE_OAUTH_TOKEN is Claude's headless sign-in, made with `claude setup-token`, kept in the runner's .env).
+export function reviewerEnv(env = process.env, provider) {
+  const allowed = ['HOME', 'PATH', 'TMPDIR', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', providerKeys[provider]]
+    .filter(Boolean);
   return Object.fromEntries(allowed.flatMap((name) => env[name] ? [[name, env[name]]] : []));
 }
 
@@ -146,58 +157,93 @@ export function reviewerEnv(env = process.env) {
 export function snapshot(ref) {
   const dir = mkdtempSync(join(process.env.RUNNER_TEMP || tmpdir(), 'tess-review-'));
   execFileSync('sh', ['-c', 'git -C "$1" archive "$2" | tar -x -C "$3"', 'sh', root, ref, dir]);
-  for (const name of agentConfig) rmSync(join(dir, name), { recursive: true, force: true });
+  stripAgentConfig(dir);
   return dir;
 }
 
 export const claudeTools = 'Read,Grep,Glob';
 
-// A PR could ship its own agent settings (an OpenCode agent named like ours, Cursor rules, Claude hooks) to widen what
-// the reviewer may do. They are removed from the copy; the reviewer only ever uses the settings on the runner.
-export const agentConfig = ['.opencode', 'opencode.json', 'opencode.jsonc', '.cursor', '.cursorrules', '.claude', '.codex', '.mcp.json'];
+// A PR could ship its own agent settings (an OpenCode agent named like ours, Cursor rules, Claude hooks) or its own
+// AGENTS.md/CLAUDE.md telling the reviewer what to say. They are removed from the copy at any depth; the reviewer only
+// ever uses the settings on the runner and the instructions in its prompt.
+export const agentConfig = ['.opencode', 'opencode.json', 'opencode.jsonc', '.cursor', '.cursorrules', '.claude', '.codex',
+  '.mcp.json', '.github/copilot-instructions.md', 'AGENTS.md', 'CLAUDE.md'];
 
-function cliInvocation(provider, model, prompt, effort, work = root) {
-  const env = reviewerEnv();
+export function stripAgentConfig(dir) {
+  const walk = (current) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const path = join(current, entry.name);
+      if (agentConfig.includes(entry.name)) rmSync(path, { recursive: true, force: true });
+      else if (entry.isDirectory()) walk(path);
+    }
+  };
+  walk(dir);
+}
+
+// The flags each CLI needs to stay read-only, and the folder to stay in. Effort is spelled differently by each of them:
+// Claude has --effort, Codex a config key, OpenCode rides a #variant on the model id (`opencode run` has no --variant).
+export function cliArgs(provider, model, effort, work = root) {
   if (provider === 'claude') {
-    return spawnSync('claude', ['-p', '--model', model, ...(effort ? ['--effort', effort] : []), '--restricted', '--safe-mode', '--tools', claudeTools], {
-      cwd: work,
-      env,
-      input: prompt,
-      encoding: 'utf8',
-      maxBuffer: 30 * 1024 * 1024,
-    });
+    return ['-p', '--model', model, ...(effort ? ['--effort', effort] : []), '--restricted', '--safe-mode', '--tools', claudeTools];
   }
   if (provider === 'codex') {
-    return spawnSync('codex', ['exec', '--model', model, ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), '--sandbox', 'read-only', '--ephemeral', '--ignore-rules', '-C', work, '-'], {
-      cwd: work,
-      env,
-      input: prompt,
-      encoding: 'utf8',
-      maxBuffer: 30 * 1024 * 1024,
-    });
+    return ['-c', 'project_doc_max_bytes=0', 'exec', '--model', model, ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []),
+      '--sandbox', 'read-only', '--ephemeral', '--ignore-rules', '-C', work, '-'];
   }
   if (provider === 'cursor') {
-    return spawnSync('cursor-agent', ['--print', '--mode', 'ask', '--sandbox', 'enabled', '--trust', '--model', model, '--workspace', work, prompt], {
-      cwd: work,
-      env,
-      encoding: 'utf8',
-      maxBuffer: 30 * 1024 * 1024,
-    });
+    return ['--print', '--mode', 'ask', '--sandbox', 'enabled', '--trust', '--model', model, '--workspace', work];
   }
   if (provider === 'opencode') {
-    return spawnSync('opencode', ['run', '--agent', 'tess-reviewer', '--model', model, ...(effort ? ['--variant', effort] : []), '--archived', prompt], {
-      cwd: work,
-      env,
-      encoding: 'utf8',
-      maxBuffer: 30 * 1024 * 1024,
-    });
+    return ['run', '--agent', 'tess-reviewer', '--model', effort ? `${model}#${effort}` : model, '--archived'];
   }
   throw new Error(`unsupported review provider: ${provider}`);
+}
+
+export const reviewerAgentFile = 'tools/opencode-reviewer.md';
+
+// The runner's copy of the agent is what limits OpenCode's reads, so it must be the copy on main, byte for byte. A stale
+// or edited copy would silently widen the reviewer's rights, and an unknown agent name would fall back to the default
+// agent, which can run shell. So the review stops here instead.
+export function assertReviewerAgent(
+  installed = join(homedir(), '.config/opencode/agents/tess-reviewer.md'),
+  source = join(root, reviewerAgentFile),
+) {
+  if (!existsSync(source)) throw new Error(`opencode reviewer agent template is missing: ${source}`);
+  const expected = readFileSync(source, 'utf8');
+  if (!existsSync(installed)) {
+    throw new Error(`opencode reviewer agent missing at ${installed}; copy ${reviewerAgentFile} there (tools/runner-setup.md)`);
+  }
+  if (readFileSync(installed, 'utf8') !== expected) {
+    throw new Error(`opencode reviewer agent at ${installed} differs from ${reviewerAgentFile} on main; copy it again (tools/runner-setup.md)`);
+  }
+}
+
+function cliInvocation(provider, model, prompt, effort, work = root) {
+  if (provider === 'opencode') assertReviewerAgent();
+  const args = cliArgs(provider, model, effort, work);
+  return spawnSync(providerDetails[provider].command, provider === 'cursor' ? [...args, prompt] : args, {
+    cwd: work,
+    env: reviewerEnv(process.env, provider),
+    input: provider === 'cursor' ? undefined : prompt,
+    encoding: 'utf8',
+    maxBuffer: 30 * 1024 * 1024,
+  });
 }
 
 function usageLimitError(result) {
   return /(?:usage|rate)[ -]?limit|quota|credits?.*(?:exhaust|deplet|limit)|too many requests|insufficient.*credits?/i
     .test(`${result.stdout || ''}\n${result.stderr || ''}`);
+}
+
+// A CLI that rejects a flag, a variant or a config key tells us nothing about the change under review. Move on to the
+// next reviewer rather than failing the review, so an untested flag on one provider cannot block a PR.
+function flagError(result) {
+  return /unknown (?:option|flag|argument|command|variant)|unrecognized (?:option|flag|argument)|unexpected argument|invalid (?:option|flag|variant|value|argument)|no such option/i
+    .test(`${result.stdout || ''}\n${result.stderr || ''}`);
+}
+
+export function retryableFailure(result) {
+  return usageLimitError(result) || flagError(result);
 }
 
 function runReviewer(models, prompt, work) {
@@ -208,10 +254,10 @@ function runReviewer(models, prompt, work) {
   for (const candidate of candidates) {
     const result = cliInvocation(candidate.provider, candidate.model, prompt, candidate.effort, work);
     if (result.status === 0 && result.stdout?.trim()) return { ...candidate, text: result.stdout.trim() };
-    if (usageLimitError(result)) continue;
+    if (retryableFailure(result)) continue;
     throw new Error(`${candidate.provider} reviewer failed: ${(result.stderr || result.stdout || 'unknown error').trim()}`);
   }
-  throw new Error('all configured reviewer providers reported a usage limit');
+  throw new Error('all configured reviewer providers reported a usage limit or rejected their flags');
 }
 
 function verdictFor(text) {
@@ -225,8 +271,20 @@ export function looksSecret(text) {
   return /-----BEGIN [A-Z ]*(PRIVATE KEY|OPENSSH|PGP)|\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})\b|[A-Za-z0-9+\/]{120,}={0,2}/.test(text);
 }
 
+// The patterns above only know some key shapes. Provider keys (OpenCode, Cursor, Codex) have their own, so also refuse
+// any review that quotes the value of a key this job is holding, GH_TOKEN included.
+export const heldSecretNames = ['GH_TOKEN', 'GITHUB_TOKEN', ...Object.values(providerKeys)];
+
+export function heldSecrets(env = process.env) {
+  return heldSecretNames.map((name) => env[name]).filter((value) => value && value.length >= 12);
+}
+
+export function containsHeldSecret(text, env = process.env) {
+  return heldSecrets(env).some((value) => String(text).includes(value));
+}
+
 function postComment(repo, number, body) {
-  if (looksSecret(body)) {
+  if (looksSecret(body) || containsHeldSecret(body)) {
     body = `${marker}\n\nThe review was not posted: its text looked like it contained a key or token. Krish, check the runner's log on the machine that ran it.`;
   }
   execFileSync('gh', ['issue', 'comment', String(number), '-R', repo, '--body-file', '-'], {

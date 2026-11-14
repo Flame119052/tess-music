@@ -119,7 +119,10 @@ setup.
 ## Adding another reviewer provider to a runner
 
 Install the CLI under `tess-runner` (in `~/.local/bin`), sign it in as that user, and pass only its key through the
-runner's `.env` (`CODEX_API_KEY`, `CURSOR_API_KEY` or `OPENCODE_API_KEY`; the reviewer passes on nothing else). For
-OpenCode, also copy `tools/opencode-reviewer.md` to `~tess-runner/.config/opencode/agents/tess-reviewer.md`; without it
-the `tess-reviewer` agent doesn't exist and the review fails instead of running with wider rights. Then restart the
-runner service. A provider with no CLI on the machine is simply skipped.
+runner's `.env` (`CODEX_API_KEY`, `CURSOR_API_KEY` or `OPENCODE_API_KEY`; the reviewer passes on its own provider's key
+and nothing else). For OpenCode, also copy `tools/opencode-reviewer.md` to
+`~tess-runner/.config/opencode/agents/tess-reviewer.md`. Without it the `tess-reviewer` agent doesn't exist and `opencode
+run` would fall back to its default agent, which can run shell; with a copy that differs from `main` the runner would
+widen the reviewer's rights. So the review checks the file before it starts and stops with a clear message instead of
+running either way. Update the copy whenever that file changes on `main`. Then restart the runner service. A provider
+with no CLI on the machine is simply skipped.

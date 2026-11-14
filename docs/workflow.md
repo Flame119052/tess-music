@@ -86,11 +86,17 @@ What each model is known for (opinions are labelled in the research note):
 
 Every reviewer runs read-only, whichever provider it is:
 - Claude: `--restricted --safe-mode` with only the Read, Grep and Glob tools.
-- Codex: `--sandbox read-only`.
+- Codex: `--sandbox read-only --ephemeral --ignore-rules`, with project document loading off (`project_doc_max_bytes=0`).
 - Cursor: `--mode ask --sandbox enabled`.
-- OpenCode: the `tess-reviewer` agent (`tools/opencode-reviewer.md`), which denies everything except reading.
+- OpenCode: the `tess-reviewer` agent (`tools/opencode-reviewer.md`), which denies everything except reading, and denies
+  `external_directory` so reads stop at the review copy. The runner's copy must match that file on `main` exactly, or the
+  review stops instead of running under wider rules. That file is sensitive work: a PR that changes it gets the strong
+  reviewer, never "docs only".
 
-Any agent settings shipped inside a PR (`.opencode`, `.cursor`, `.claude` and the like) are removed from the review copy first.
+Any agent settings shipped inside a PR (`.opencode`, `.cursor`, `.claude` and the like) are removed from the review copy
+first, at any depth, together with the PR's own `AGENTS.md` and `CLAUDE.md`: a reviewer reads a PR as data, never as
+instructions. Before a review is posted, it is also refused if its text contains the value of any key the job holds,
+`GH_TOKEN` included.
 
 **Rules.**
 - Don't use the strongest model at both stages unless the work is sensitive.
