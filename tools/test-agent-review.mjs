@@ -1,13 +1,64 @@
 // Test reviewer tier and model selection without GitHub or provider network calls.
 // Usage: node tools/test-agent-review.mjs
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { claudeTools, eligibleModels, looksSecret, parseRequest, providerHasUsage, resolveReviewers, reviewerEnv, snapshot, tierForPaths } from './agent-review.mjs';
 import { existsSync, rmSync } from 'node:fs';
 
 const config = JSON.parse(readFileSync(new URL('../.github/agents.json', import.meta.url), 'utf8'));
 const available = (usedPercent) => ({ windows: [{ usedPercent }] });
+
+// Run the workflow's machine-picking step for real, with fake `curl` and `sleep` in front of PATH, so the answer that
+// decides between the Instabox box and a backup is the same shell the runner runs.
+function pickMachine({ wakeUrl, readyBody = '', curlFails = false }) {
+  const workflow = readFileSync(new URL('../.github/workflows/agent-review.yml', import.meta.url), 'utf8').split('\n');
+  const start = workflow.findIndex((line) => line.trim() === '- name: Pick the reviewer machine (Instabox first, then the VPS or omarchy)');
+  assert.ok(start > 0, 'the workflow still has the machine step');
+  const runAt = workflow.findIndex((line, i) => i > start && line.trim() === 'run: |');
+  const indent = workflow[runAt].search(/\S/);
+  const script = [];
+  for (const line of workflow.slice(runAt + 1)) {
+    if (line.trim() !== '' && line.search(/\S/) <= indent) break;
+    script.push(line.slice(indent + 2));
+  }
+
+  const dir = mkdtempSync(join(tmpdir(), 'tess-machine-'));
+  try {
+    const out = join(dir, 'output');
+    writeFileSync(out, '');
+    writeFileSync(join(dir, 'curl'), curlFails
+      ? '#!/bin/sh\nexit 7\n'
+      : `#!/bin/sh\nprintf '%s' '${readyBody}'\n`);
+    writeFileSync(join(dir, 'sleep'), '#!/bin/sh\nexit 0\n');
+    chmodSync(join(dir, 'curl'), 0o755);
+    chmodSync(join(dir, 'sleep'), 0o755);
+    const env = { PATH: `${dir}:${process.env.PATH}`, GITHUB_OUTPUT: out, HOME: dir };
+    if (wakeUrl !== undefined) env.WAKE_URL = wakeUrl;
+    execFileSync('bash', ['-e', '-c', script.join('\n')], { env, stdio: 'pipe' });
+    return readFileSync(out, 'utf8').trim();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('no wake URL keeps the old behaviour: any tess-agent runner', () => {
+  assert.equal(pickMachine({}), 'runs_on=["self-hosted","tess-agent"]');
+  assert.equal(pickMachine({ wakeUrl: '' }), 'runs_on=["self-hosted","tess-agent"]');
+});
+
+test('only the exact ready answer pins the job to Instabox', () => {
+  const pinned = 'runs_on=["self-hosted","tess-agent","tess-primary"]';
+  assert.equal(pickMachine({ wakeUrl: 'https://box.example/ready', readyBody: 'tess-ready' }), pinned);
+  // A trailing slash must not turn the request into //ready, and a platform's 200 "starting…" page is not ready.
+  assert.equal(pickMachine({ wakeUrl: 'https://box.example/', readyBody: 'tess-ready' }), pinned);
+  const backup = 'runs_on=["self-hosted","tess-agent","tess-backup"]';
+  assert.equal(pickMachine({ wakeUrl: 'https://box.example', readyBody: 'starting…' }), backup);
+  assert.equal(pickMachine({ wakeUrl: 'https://box.example', curlFails: true }), backup);
+});
 
 test('review roles keep the requested model order', () => {
   assert.deepEqual(config.approach, [

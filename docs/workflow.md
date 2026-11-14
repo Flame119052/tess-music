@@ -19,7 +19,7 @@ Only `beta` and `stable` are public. The release workflow does it:
 
 1. **Issue.** Every change starts as an issue. It says the goal, the check, and what blocks it.
 2. **Approach.** The agent picking up the issue posts its plan as a comment: what changes, which files, how it will be checked.
-3. **Approach review.** For changes that need one (see tiers below), the agent tags the reviewer in that comment (`@tess-review approach`). A reviewer agent runs on one of Krish's machines, reads the issue and the plan, and replies **approve** or **changes needed**.
+3. **Approach review.** For changes that need one (see tiers below), the agent tags the reviewer in that comment (`@tess-review approach`). A reviewer agent runs on a self-hosted runner on one of the reviewer machines (Instabox first, then the VPS or omarchy), reads the issue and the plan, and replies **approve** or **changes needed**.
 4. **PR.** The change lands as a pull request into `main`, with `(#issue)` in its title.
 5. **Checks.** CI (`check.yml`: safety gate, builds, tests) must pass. No AI reviewer runs on a PR whose checks haven't passed.
 6. **PR review.** The agent tags `@tess-review pr`. The reviewer reads the diff against the approved plan and the issue's check, and posts a review.
@@ -72,11 +72,11 @@ The agent that writes the approach comment or opens the PR picks who reviews it,
 - Leaving the choice out is fine: the defaults are the first model with usage left in that role's list.
 - Only allowlisted accounts can tag. Krish can use the same syntax himself.
 
-## Reviewer agents on Krish's machines
+## Reviewer agents on the reviewer machines
 
 - **Who can call them.** Only GitHub accounts in the allowlist (the repo variable `AGENT_ALLOWLIST`, today just `Flame119052`). A tag from anyone else is ignored. Anyone can still open issues and PRs.
-- **Where runners may live.** Only on machines that hold no Tess keys: `omarchy` and `paperclip-vps`. Krish's Mac keeps the signing and rescue keys, and a reviewer reading an outside diff could be tricked into printing files it can read. A Mac runner is allowed only under a separate macOS user that can't read Krish's home folder. As a second guard, the reviewer refuses to post any text that looks like a key or token.
-- **How the job reaches a machine.** Each runner machine runs a GitHub self-hosted runner labelled `tess-agent` (see the line above for which machines). GitHub gives the job to whichever runner is online and idle. Each job checks out a fresh copy of the repo, so the machines need no extra syncing.
+- **Where runners may live.** Only on machines that hold no Tess keys: the Instabox box `tess-reviewer` (the default), and the VPS `paperclip-vps` and `omarchy` (backups). Instabox is a third-party host, so it gets no vault and holds nothing but the reviewer's Claude login token (D-65). Krish's Mac keeps the signing and rescue keys, and a reviewer reading an outside diff could be tricked into printing files it can read. A Mac runner is allowed only under a separate macOS user that can't read Krish's home folder. As a second guard, the reviewer refuses to post any text that looks like a key or token.
+- **How the job reaches a machine.** Each runner machine runs a GitHub self-hosted runner labelled `tess-agent`, and the job is pinned by label: the Instabox runner is also `tess-primary`, the two backups are `tess-backup`. A `gate` step wakes the paused Instabox box through its public `/ready` page and waits about 2.5 minutes for it to answer `tess-ready` (which it only does when its runner is active and idle); if it doesn't, the job is given the `tess-backup` label and GitHub gives it to whichever backup runner is online and idle. Each job checks out a fresh copy of the repo, so the machines need no extra syncing.
 - **Picking the model.** `.github/agents.json` lists the reviewer models per role, strongest first. Each runner picks the first one whose provider has usage left, using the local usage hub when it is there, and otherwise falls back down the list.
 - **Safety, because the repo is public:**
   - The workflow is triggered only by `issue_comment`, which always runs the workflow file from `main`, never from a PR.
@@ -124,9 +124,9 @@ These rules come from mistakes made while setting this up: agents started from t
 | Machine | Does | Never |
 | --- | --- | --- |
 | Krish's Mac | Holds the signing and rescue keys. Runs the real Spotify on `dev`. Krish's own commands. The T3 threads. | Hosts a GitHub runner. Holds secrets in the repo or in an external drive's `.env`. |
-| Instabox `tess-reviewer` (default), then `paperclip-vps` or `omarchy` (backups) | The reviewer runners (`tess-agent`). A review first wakes the Instabox box through its public `/ready` page (`REVIEW_WAKE_URL`); if it isn't ready within about two minutes, the job goes to whichever backup is free. Each job gets a fresh checkout, so nothing on them needs syncing. | Holds a Tess key. Runs the runner as root. |
+| `paperclip-vps`, `omarchy` | The backup reviewer runners (`tess-agent`, `tess-backup`), used whenever Instabox isn't ready. Each job gets a fresh checkout, so nothing on them needs syncing. | Holds a Tess key. Runs the runner as root. |
 | GitHub's macOS machines | CI (`check.yml`) and every build and signature (`release.yml`). They are the only place the signing secrets are used. | Runs code from a fork PR without Krish's approval. |
-| Instabox | Optional Linux scratch box for an agent. | Holds a Tess key. Builds Tess, which needs macOS. |
+| Instabox | The default reviewer runner (`tess-agent`, `tess-primary`), made with `--no-vault` so it holds only the reviewer's Claude login token. A review wakes it through its public `/ready` page and waits about 2.5 minutes before falling back to a backup. | Holds a Tess key. Builds Tess, which needs macOS. Runs the runner as root. |
 
 **`paperclip-vps` runs Paperclip first. Tess work there must never slow it down or touch it.**
 - **The reviewer runner** runs as `tess-runner`, with no admin rights and a hard cap: 1 CPU core and 1.5 GB of memory, at the lowest priority for CPU and disk. If it runs out, the review fails; Paperclip doesn't. `omarchy` has the same setup with a 2 GB cap.
@@ -145,4 +145,4 @@ These rules come from mistakes made while setting this up: agents started from t
 ## CI
 
 - `check.yml` runs on GitHub's macOS machines, which are free for public repos. It's the deterministic gate: the safety check, theme build, patcher build and tests.
-- An Instabox cloud machine runs Linux, so it can't build Tess Mini or run the macOS checks. It can only be an extra Linux runner for agents.
+- An Instabox cloud machine runs Linux, so it can't build Tess Mini or run the macOS checks. It is the default reviewer runner for agents, and nothing else.
