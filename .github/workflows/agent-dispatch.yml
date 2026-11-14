@@ -1,0 +1,116 @@
+name: agent dispatch
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      allowed: ${{ steps.gate.outputs.allowed }}
+      is_pr: ${{ steps.gate.outputs.is_pr }}
+      pr_head_ref: ${{ steps.gate.outputs.pr_head_ref }}
+      subject_url: ${{ steps.gate.outputs.subject_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Check caller, request, and CI
+        id: gate
+        env:
+          AGENT_ALLOWLIST: ${{ vars.AGENT_ALLOWLIST }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          {
+            echo "allowed=false"
+            echo "is_pr=false"
+            echo "pr_head_ref="
+            echo "subject_url="
+          } >> "$GITHUB_OUTPUT"
+
+          if [[ "$COMMENT_BODY" == *"<!-- tess-review-bot -->"* ]]; then
+            exit 0
+          fi
+
+          caller_allowed=false
+          IFS=',' read -ra accounts <<< "$AGENT_ALLOWLIST"
+          for account in "${accounts[@]}"; do
+            account="${account#"${account%%[![:space:]]*}"}"
+            account="${account%"${account##*[![:space:]]}"}"
+            if [[ "$account" == "$COMMENTER" ]]; then
+              caller_allowed=true
+              break
+            fi
+          done
+          if [[ "$caller_allowed" != true ]]; then
+            exit 0
+          fi
+
+          task="$(printf '%s\n' "$COMMENT_BODY" | awk '/^@tess-agent (review|fix|approach)([[:space:]]|$)/ { print $2; exit }')"
+          if [[ "$task" != "review" && "$task" != "fix" && "$task" != "approach" ]]; then
+            exit 0
+          fi
+
+          issue="$(gh api "repos/$REPOSITORY/issues/$ISSUE_NUMBER")"
+          subject_url="$(jq -r '.html_url' <<< "$issue")"
+          is_pr=false
+          pr_head_ref=
+          pr_url="$(jq -r '.pull_request.url // empty' <<< "$issue")"
+          if [[ -n "$pr_url" ]]; then
+            is_pr=true
+            pr="$(gh api "repos/$REPOSITORY/pulls/$ISSUE_NUMBER")"
+            head_sha="$(jq -r '.head.sha' <<< "$pr")"
+            pr_head_ref="$(jq -r '.head.ref' <<< "$pr")"
+            pr_head_repo="$(jq -r '.head.repo.full_name' <<< "$pr")"
+            conclusion="$(gh api "repos/$REPOSITORY/actions/workflows/check.yml/runs?head_sha=$head_sha&event=pull_request&per_page=100" \
+              --jq '.workflow_runs | sort_by(.created_at) | reverse | .[0].conclusion // ""')"
+            if [[ "$conclusion" != "success" ]]; then
+              exit 0
+            fi
+            if [[ "$task" == "fix" && "$pr_head_repo" != "$REPOSITORY" ]]; then
+              exit 0
+            fi
+          fi
+
+          {
+            echo "allowed=true"
+            echo "is_pr=$is_pr"
+            echo "pr_head_ref=$pr_head_ref"
+            echo "subject_url=$subject_url"
+          } >> "$GITHUB_OUTPUT"
+
+  dispatch:
+    needs: gate
+    if: needs.gate.outputs.allowed == 'true'
+    runs-on: [self-hosted, tess-dispatch]
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Start and follow the T3 thread
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          IS_PR: ${{ needs.gate.outputs.is_pr }}
+          PR_HEAD_REF: ${{ needs.gate.outputs.pr_head_ref }}
+          REPOSITORY: ${{ github.repository }}
+          SUBJECT_URL: ${{ needs.gate.outputs.subject_url }}
+        run: node tools/agent-dispatch.mjs
