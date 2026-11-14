@@ -1,0 +1,18 @@
+name: tess-support
+version: 2.0.0
+description: "Tess Music support. Someone describes what broke, it reads Tess's own doctor report and their screenshots, files the problem with its priority and labels, and tells Krish."
+hermes_requires: ">=0.12.0"
+author: "Tess Music"
+license: "MIT"
+
+# Declared so the install says what the bot needs, not so that it asks: setup.sh writes these after the install, and
+# every one of them is optional at install time.
+env_requires:
+  - name: TELEGRAM_BOT_TOKEN
+    description: "Telegram bot token from @BotFather"
+    required: false
+    default: ""
+  - name: TESS_OWNER_ID
+    description: "Krish's numeric Telegram id — the only person who can add or remove anyone"
+    required: false
+    default: ""

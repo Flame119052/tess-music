@@ -108,6 +108,76 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
     an order is. The updater itself runs every 30 minutes, restarts Spotify only when no music is playing, runs the
     doctor after each update, and rolls back on failure.
   - Supersedes D-32 (PRs are now the norm) and the "wake out of every release" part of D-61/D-62. (#71)
+- **D-65 · 14 Nov 2026 · Agent (owner set the requirements)** — Support is **one Hermes bot on Krish's server**, which
+  people message. It replaces both earlier directions in #70 — Instinct/tincan/Grok Bot, then a Telegram bot, then a
+  Hermes profile installed on each person's own Mac. Nothing of the first two was built; the third is what this reverses.
+  (#70)
+  - **Why a server, not the person's Mac.** Two of Krish's requirements can't both hold with a local bot: every report
+    has to be *filed with its P0–P3 and area labels*, which needs a token with triage rights, and a token inside an
+    install line can be pulled out of it; and *he* has to control the allowlist, which needs one list. He named the
+    answer: *"otherwise run the bot on a server and have the person paste only `tess report` output."*
+  - **It is still a Hermes bot** — a profile (`tess-support`) with its own persona, skill and model, started by
+    `support/setup.sh`. Hermes has no public chat link, so the one way a stranger reaches a Hermes bot is a messaging
+    gateway; that is Telegram here, and it is the only platform-specific part.
+  - **Access is Hermes' gate, not the model's judgement.** `TELEGRAM_ALLOWED_USERS` is checked in the gateway before
+    the model is called, and a gateway with no list denies everyone. Anyone else gets one polite refusal and 24 hours of
+    silence — `unauthorized_dm_behavior: decline`, never a pairing code. Krish adds and removes people with `/allow`,
+    `/deny` and `/who`; `scripts/allowlist.mjs` refuses a wildcard, a phone number, a request not from his id, and
+    removing himself, rewrites the list and the `.env` at 600 atomically, logs every change, and restarts the gateway.
+    Hermes' own `allow_admin_from` is set to his id too, so Hermes' admin commands are his alone; the three support
+    commands above are not Hermes commands, so for those the script's own check is the gate, and the docs say so.
+  - **Every report reaches him twice**: the issue is filed with its labels by an issues-only token on the server, and a
+    one-line message with the link goes to him on every triage. Nothing is filed from a person's browser.
+  - **Nothing of Tess's runs on anyone's Mac** and no Node is needed there. The only command is `tess report`, which the
+    person starts (D-62 unchanged), and the bot has no route to their machine.
+  - **Never on the Paperclip machine.** `setup.sh` refuses when it finds `/srv/paperclip`, so Paperclip's files,
+    database and services are never shared with it.
+  - **The terminal is real, and that is stated, not hidden.** `config.yaml` removes the desktop, computer-use and
+    browser toolsets and denies dangerous commands in unattended contexts, but a shell on that machine is a shell. The
+    blast radius is one issues-only token on one public repo, and every access change is logged and echoed to Krish.
+  - Trade-off: it needs a machine, a Telegram bot and a GitHub token, and it is the one part of Tess that lives
+    outside a release. Revisit if Hermes grows a way for an outsider to reach a bot without a messaging gateway.
+
+- **D-66 · 14 Nov 2026 · Owner** — Support reports go to the **inbox**, not to GitHub, and the model is **OpenCode's
+  free tier**. The bot posts one JSON payload to a new `POST /v1/support` on the Worker at `tess-music-player.janus.ing`;
+  the owner's side reads it with `tools/reports.mjs support list|show|filed` and files the issue with the P0–P3 and area
+  labels from `docs/triage.md`. (#70)
+  - **Why:** the person's side must never need a GitHub account, a token or a browser, the labels have to be applied by
+    something with triage rights, and the owner already has one private place that stores reports anonymously. This is
+    that place.
+  - **Authenticated, unlike a health report.** Reporting is public by design (an installer can't hold a secret); a
+    support report carries someone's own words, so it needs a token. Only a SHA-256 of each token is stored, every token
+    has a label, and revoking is one command. An unknown, revoked or absent token is refused.
+  - **No read endpoint**, unchanged: `GET` on the path is a 404, and reading needs the owner's Cloudflare login.
+  - **The labels are validated twice** — in `triage.mjs` on the server and again in the Worker — because they become
+    GitHub labels, and a made-up one would fail the filing instead of the report.
+  - **The bot gets no GitHub token at all**, so a bot talked into something by a stranger can write to one inbox and
+    nothing else. Filing happens with the owner's login, on the owner's machine.
+  - Trade-off: two things on the owner's side before it works — applying `inbox/schema.sql` and deploying the Worker —
+    and filing is a step he (or his agent) takes rather than something that happens on its own. Revisit if the inbox
+    ever grows a read API; today that would undo D-14's rule.
+
+- **D-67 · 14 Nov 2026 · Owner** — The support bot keeps a hard resource budget and cleans up after itself, and it is
+  made of seven small skills rather than one long playbook. (#70)
+  - **One session folder per visit**, capped at 60 MB, holding the screenshots, the recording, the doctor output and the
+    chat scratch. Anything older than 24 hours is swept on the same run, and the whole scratch space stays under 500 MB.
+  - **Recordings are capped at 50 MB and 2 minutes.** Over the cap they are re-encoded down when `ffmpeg` exists and
+    refused when it does not — never stored "to sort out later".
+  - **The folder is deleted the moment the inbox accepts the report.** Only a one-line receipt survives: report id,
+    time, file count, size — no file names, no paths. *A person's screen is a liability to keep, and "it vanished" is not
+    an answer to what happened to their file.*
+  - **On the inbox side**, a recording goes to R2, never to the database, and is deleted when the report is filed or at
+    14 days — by the scheduled job and by an R2 lifecycle rule, so an unapplied rule can't leave it lying there. There is
+    no way to read one back.
+  - **The process is capped where systemd can cap it**: `support/tess-support.service` gives it its own unprivileged
+    user with `MemoryMax=1G` and `CPUQuota=50%`, and `setup.sh` starts it through that unit when it runs as root on a
+    systemd machine. Where that isn't possible it starts the gateway plainly and says the process is uncapped rather
+    than claiming otherwise. No background processes either way. It still refuses to run on paperclip-vps.
+  - **Seven skills, one job each**: `tess-support` (front door), `tess-evidence`, `tess-repro`, `tess-duplicate`,
+    `tess-gather`, `tess-triage`, `tess-handoff` — each with its own trigger, so the model loads one thing at a time
+    instead of one long playbook and hoping it remembers the middle.
+  - Trade-off: caps mean a genuinely large recording is refused rather than examined, so the bot asks for a shorter one.
+    Revisit if R2 or Telegram raise their limits enough for that to stop mattering.
 
 ## Releases and process
 

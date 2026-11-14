@@ -1,0 +1,50 @@
+# Tess Support. setup.sh keeps the model as whatever is connected on the machine (falling back to OpenCode's free
+# tier), and stores the Telegram token, Krish's id and the inbox posting token in this profile's own .env — never here.
+
+# OpenCode's free tier by default — no paid key, nothing billed to anyone.
+model:
+  provider: "opencode"
+  default: "deepseek-v4.1-flash-free"
+
+# This profile gets its own gateway so it can't disturb another profile's bots on the same machine.
+gateway:
+  standalone: true
+  platforms:
+    telegram:
+      extra:
+        # Hermes' own gate, checked by the gateway before the model runs: only Krish may use Hermes' admin slash
+        # commands. setup.sh fills in his id here along with the allowlist; it is never left open.
+        allow_admin_from:
+          - "__OWNER_ID__"
+        # Everyone else on the allowlist keeps the read-only commands and nothing that changes state.
+        user_allowed_commands:
+          - status
+          - whoami
+          - help
+
+agent:
+  # A screenshot is the main evidence a person can give, so let images through as images.
+  image_input_mode: auto
+  # Nothing here needs to drive a desktop or a headless browser, and both are ways for a stranger's message to reach
+  # something other than its two scripts. Off, not "don't".
+  disabled_toolsets: [computer_use, desktop_ui, browser]
+
+# Only these. `cronjob` and `delegation` are left out because a support bot has nothing to schedule and nothing to
+# hand off, and every tool it does have is another way a pasted screenshot could try to steer it.
+platform_toolsets:
+  telegram: [terminal, file, web, vision, skills, messaging]
+
+# Someone who isn't on the allowlist gets one polite refusal, then silence for 24 hours. No pairing code: there is no
+# self-service door into this bot.
+unauthorized_dm_behavior: decline
+unauthorized_dm_decline_message: >-
+  I can only talk to people the Tess maintainer has added. Reply to the message that gave you this bot and he'll add
+  you.
+
+approvals:
+  # Hermes' own gate. Being on the allowlist is not permission to run whatever the model suggests; anything it judges
+  # dangerous waits, and a cron or unattended context is denied outright.
+  mode: smart
+  cron_mode: deny
+  single_query_mode: deny
+  unattended_mode: deny
