@@ -24,6 +24,8 @@ jobs:
         run: cd patcher && go build ./... && go vet ./src/cmd/
       - name: Installer, updater, wake and rescue tests (sandbox, fake launchctl/pmset/curl)
         run: |
+          node tools/test-installer-legacy.mjs
+          node tools/test-installer-legacy.mjs --command
           node tools/test-updater.mjs
           node tools/test-wake.mjs
           node tools/test-rescue-control.mjs

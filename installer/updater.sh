@@ -98,35 +98,36 @@ EOF
 }
 install_guard
 
-# The rescue action list stays local; the signed patcher part may rotate its dedicated verifier.
+# Rescue keeps an independent verifier so a broken patcher update cannot disable recovery.
 install_rescue() {
   local src="$HOME_TESS/bin/patcher/rescue" dst="$HOME_TESS/rescue" pl="$HOME/Library/LaunchAgents/music.tess.rescue.plist"
+  [ -n "$TESS_TEST" ] && pl="$HOME_TESS/LaunchAgents/music.tess.rescue.plist"
+  if [ -f "$HOME_TESS/rescue-off" ]; then
+    if [ -z "$TESS_TEST" ]; then
+      launchctl disable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+      launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+    fi
+    rm -f "$pl"
+    log "rescue line stays off"
+    return 0
+  fi
   [ -x "$src/tess-rescue-verify" ] && [ -f "$src/rescue.sh" ] || return 0
   local fresh=""
   mkdir -p "$dst"
   if [ ! -x "$dst/tess-rescue-verify" ]; then
     cp "$src/tess-rescue-verify" "$dst/tess-rescue-verify"; fresh=1
-  elif [ "$(shasum -a 256 "$src/tess-rescue-verify" | cut -d' ' -f1)" != "$(shasum -a 256 "$dst/tess-rescue-verify" | cut -d' ' -f1)" ]; then
-    cp "$src/tess-rescue-verify" "$dst/tess-rescue-verify.new" && chmod +x "$dst/tess-rescue-verify.new" \
-      && mv "$dst/tess-rescue-verify.new" "$dst/tess-rescue-verify"
-    log "rescue verifier updated"
   fi
   [ -f "$dst/rescue.sh" ] || { cp "$src/rescue.sh" "$dst/rescue.sh"; fresh=1; }
   chmod +x "$dst/tess-rescue-verify" "$dst/rescue.sh"
   [ -n "$fresh" ] && /bin/zsh "$dst/rescue.sh" --adopt >/dev/null 2>&1
-  if [ -f "$HOME_TESS/rescue-off" ]; then
-    [ -n "$TESS_TEST" ] || launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1
-    log "rescue line stays off"
-    return 0
-  fi
   [ -f "$pl" ] && return 0
-  [ -n "$TESS_TEST" ] && { log "rescue line installed (test)"; return 0; }
-  mkdir -p "$HOME/Library/LaunchAgents"
+  mkdir -p "$(dirname "$pl")"
   printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
     '<plist version="1.0"><dict>' '<key>Label</key><string>music.tess.rescue</string>' \
     "<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$dst/rescue.sh</string></array>" \
     '<key>StartInterval</key><integer>21600</integer>' '<key>RunAtLoad</key><true/>' '</dict></plist>' > "$pl"
+  [ -n "$TESS_TEST" ] && { log "rescue line installed (test)"; return 0; }
   launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1
   launchctl bootstrap "gui/$(id -u)" "$pl" >/dev/null 2>&1
   log "rescue line installed"
@@ -262,6 +263,7 @@ rm -f "$STATE/.parts-list-reported"
 awk '$1 == "version" { print $2 }' "$TMP/components.txt" > "$STATE/version.new" && [ -s "$STATE/version.new" ] && mv "$STATE/version.new" "$STATE/version"
 part_file() {
   case "$1" in
+    command) echo "$HOME_TESS/tess" ;;
     doctor|updater|installer|uninstall|wake) echo "$HOME_TESS/$1.sh" ;;
   esac
 }
@@ -269,7 +271,7 @@ backup_part() {
   local name=$1 good="$HOME_TESS/$1.last-good" file
   rm -rf "$good"
   case "$name" in
-    doctor|updater|installer|uninstall|wake)
+    doctor|updater|installer|uninstall|wake|command)
       file=$(part_file "$name"); [ -f "$file" ] && cp "$file" "$good" ;;
     patcher) [ -d "$HOME_TESS/bin/patcher" ] && ditto "$HOME_TESS/bin/patcher" "$good" ;;
     mini) [ -z "$TESS_TEST" ] && [ -d "$HOME/Applications/Tess Mini.app" ] && ditto "$HOME/Applications/Tess Mini.app" "$good" ;;
@@ -282,10 +284,10 @@ backup_part() {
 restore_part() {
   local name=$1 good="$HOME_TESS/$1.last-good" file
   case "$name" in
-    doctor|updater|installer|uninstall|wake)
+    doctor|updater|installer|uninstall|wake|command)
       file=$(part_file "$name"); [ -f "$good" ] || return 1
       cp "$good" "$file" && chmod +x "$file"
-      [ "$name" = wake ] && install_wake ;;
+      if [ "$name" = wake ]; then install_wake; fi ;;
     patcher)
       [ -d "$good" ] || return 1
       rm -rf "$HOME_TESS/bin/patcher"; ditto "$good" "$HOME_TESS/bin/patcher"
@@ -303,6 +305,9 @@ restore_part() {
     *) return 1 ;;
   esac
 }
+# Existing health problems must not permanently reject an unrelated signed part.
+baseline=0
+doctor --validate || baseline=$?
 changed=0
 while read -r name sha url _src; do
   touch "$LOCK"
@@ -318,6 +323,9 @@ while read -r name sha url _src; do
       zsh -n "$f" || { problem "wake: bad file"; continue; }
       cp "$f" "$HOME_TESS/wake.sh.new" && chmod +x "$HOME_TESS/wake.sh.new" && mv "$HOME_TESS/wake.sh.new" "$HOME_TESS/wake.sh" \
         && install_wake || continue ;;
+    command)
+      sh -n "$f" || { problem "command: bad file"; continue; }
+      cp "$f" "$HOME_TESS/tess.new" && chmod +x "$HOME_TESS/tess.new" && mv "$HOME_TESS/tess.new" "$HOME_TESS/tess" || continue ;;
     installer)
       sh -n "$f" || { problem "installer: bad file"; continue; }
       cp "$f" "$HOME_TESS/installer.sh.new" && chmod +x "$HOME_TESS/installer.sh.new" && mv "$HOME_TESS/installer.sh.new" "$HOME_TESS/installer.sh" || continue ;;
@@ -354,7 +362,7 @@ while read -r name sha url _src; do
       swap_apps "$TMP/theme-apps" || { problem "theme: checked Spotify swap failed"; restore_part theme; continue; } ;;
     *) continue ;;
   esac
-  if ! doctor --validate; then
+  if [ "$baseline" = 0 ] && ! doctor --validate; then
     restore_part "$name" && restored="restored last good" || restored="no last good was available"
     touch "$STATE/bad-$name-$sha"
     problem "$name: doctor rejected $sha; $restored; marked bad"

@@ -170,3 +170,9 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
 - **D-57 · 13 Nov 2026 · Owner** — Visual & UX priorities filed: fix artist Photo/Video switch & per-artist persistence
   (#60), separate Blends and Playlists in Library (#61), rework vinyl tonearm edge-to-label geometry & sync (#63),
   fix blank right side in no-lyrics full-screen transitions (#65), and collect customization/design controls (#64).
+
+- **14 Nov 2026 · PR #75 review fixes (#53)** — Ship the Tess command as an optional signed `command` part so the
+  updater reaches existing Macs. Older channels can omit installer, uninstall, wake and command parts. Rescue off
+  disables the launchd job and removes its login plist; ordinary updates preserve the independent rescue verifier.
+  Part rollback requires a healthy doctor baseline so unrelated existing failures cannot ban good parts. Wake
+  remembers the last rescue serial it triggered, including rejected or expired orders.

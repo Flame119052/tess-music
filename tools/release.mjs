@@ -135,12 +135,14 @@ cpSync(`${root}installer/updater.sh`, `${build}tess-updater.sh`);
 cpSync(`${root}installer/doctor.sh`, `${build}tess-doctor.sh`);
 cpSync(`${root}installer/tess-install.sh`, `${build}tess-installer.sh`);
 cpSync(`${root}installer/uninstall.sh`, `${build}tess-uninstall.sh`);
+cpSync(`${root}installer/tess-command.sh`, `${build}tess-command.sh`);
 cpSync(`${root}installer/wake.sh`, `${build}tess-wake.sh`);
 const hashFiles = (files) => { const h = createHash('sha256'); for (const f of files) h.update(readFileSync(f)); return h.digest('hex'); };
 const gitTree = (p) => execFileSync('git', ['-C', root, 'rev-parse', `HEAD:${p}`], { encoding: 'utf8' }).trim();
 const parts = {
   updater: { file: `${build}tess-updater.sh`, src: hashFiles([`${root}installer/updater.sh`]) },
   patcher: { file: `${build}tess-patcher-macos-universal.tar.gz`, src: hashFiles([`${root}installer/rescue.sh`]).slice(0, 20) + gitTree('patcher').slice(0, 20) },
+  command: { file: `${build}tess-command.sh`, src: hashFiles([`${root}installer/tess-command.sh`]) },
   wake: { file: `${build}tess-wake.sh`, src: hashFiles([`${root}installer/wake.sh`]) },
   doctor: { file: `${build}tess-doctor.sh`, src: hashFiles([`${root}installer/doctor.sh`]) },
   installer: { file: `${build}tess-installer.sh`, src: hashFiles([`${root}installer/tess-install.sh`]) },
@@ -189,7 +191,7 @@ if (channel === 'stable') {
     console.log(`beta moved up to ${version}`);
   }
 }
-const assets = [`${build}tess-theme.tar.gz`, `${build}tess-mini.zip`, `${build}tess-patcher-macos-universal.tar.gz`, `${build}tess-updater.sh`, `${build}tess-doctor.sh`, `${build}tess-installer.sh`, `${build}tess-uninstall.sh`, `${build}tess-wake.sh`];
+const assets = [`${build}tess-theme.tar.gz`, `${build}tess-mini.zip`, `${build}tess-patcher-macos-universal.tar.gz`, `${build}tess-updater.sh`, `${build}tess-doctor.sh`, `${build}tess-installer.sh`, `${build}tess-uninstall.sh`, `${build}tess-wake.sh`, `${build}tess-command.sh`];
 try {
   run('gh', ['release', 'create', `v${version}`, ...assets, '-R', 'Flame119052/tess-music', '--target', channel, '-t', `Tess ${version}`, '-n', `Tess ${version}. Install: curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | sh`, ...(channel === 'stable' ? ['--latest'] : ['--prerelease'])]);
 } catch {

@@ -44,7 +44,7 @@ function sandbox({ stock = false, fresh = false, realDoctor = false } = {}) {
   writeFileSync(join(tess, 'updater.env'), `SPOTIFY='${spotify}'\nTESS_CONFIG='${config}'\nTESS_PARTS_CHANNEL='beta'\n`);
   writeFileSync(join(tess, 'doctor.sh'), realDoctor ? readFileSync(join(root, 'installer', 'doctor.sh')) : `#!/bin/zsh
 echo "$1" >> "$TESS_DOCTOR_LOG"
-if [ "$1" = --validate ] && [ -f "$TESS_REJECT" ]; then exit 1; fi
+if [ "$1" = --validate ] && [ -f "$TESS_REJECT" ] && grep -q "new installer" "$TESS_HOME/installer.sh"; then exit 1; fi
 if [ "$1" = --report ]; then touch "$TESS_REPORTED"; fi
 exit 0
 `);
@@ -146,6 +146,24 @@ try {
     s.run();
     assert.equal(readFileSync(join(s.tess, 'installer.sh'), 'utf8'), s.asset, 'fresh state installs part');
     assert.ok(existsSync(join(s.tess, 'LaunchAgents', 'music.tess.wake.plist')), 'fresh state installs wake agent');
+  }
+
+  {
+    const s = sandbox();
+    writeFileSync(join(s.tess, 'doctor.sh'), '#!/bin/zsh\nexit 1\n');
+    s.run();
+    assert.equal(readFileSync(join(s.tess, 'installer.sh'), 'utf8'), s.asset, 'pre-existing health failure does not ban good part');
+    assert.ok(!existsSync(join(s.state, `bad-installer-${s.assetSha}`)));
+  }
+
+  {
+    const s = sandbox();
+    const command = readFileSync(join(root, 'installer', 'tess-command.sh'), 'utf8');
+    writeFileSync(join(s.fixtures, 'installer.sh'), command);
+    writeFileSync(join(s.fixtures, 'components.txt'), `command ${sha(command)} test://installer source\n`);
+    s.run();
+    assert.equal(readFileSync(join(s.tess, 'tess'), 'utf8'), command, 'existing Mac receives signed command');
+    assert.match(execFileSync('/bin/sh', [join(s.tess, 'tess'), 'status'], { env: s.env, encoding: 'utf8' }), /Wake check:/);
   }
 
   {

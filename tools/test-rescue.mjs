@@ -1,26 +1,22 @@
-// Test the rescue line (installer/rescue.sh) in a sandbox: real orders signed with the rescue key, checked by the
-// installed tess-rescue-verify, run with TESS_TEST=1 (actions are logged, never run).
-// Usage: node tools/test-rescue.mjs        (owner's Mac only: needs ~/.config/tess-signing/rescue.pem and Tess)
+// Test rescue with an ephemeral signing key and the real Go verifier built for that key.
+// Usage: node tools/test-rescue.mjs (no installed Tess or production keys required)
 // Proves: each of the five actions is accepted; script orders, unknown actions, injected text, bad signatures,
 // expired orders, replays and orders for other Macs do nothing.
 import { execFileSync } from 'node:child_process';
-import { createPrivateKey, sign } from 'node:crypto';
+import { generateKeyPairSync, sign } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const keyFile = `${homedir()}/.config/tess-signing/rescue.pem`;
-const verifier = `${homedir()}/Library/Application Support/Tess/rescue/tess-rescue-verify`;
-if (!existsSync(keyFile) || !existsSync(verifier)) { console.log('skipped: needs the rescue key and an installed Tess'); process.exit(0); }
-const key = createPrivateKey(readFileSync(keyFile));
-
+const { privateKey: key, publicKey } = generateKeyPairSync('ed25519');
 const box = mkdtempSync(join(tmpdir(), 'tess-rescue-test-'));
 const T = join(box, 'Tess'), R = join(T, 'rescue'), orders = join(box, 'orders');
 mkdirSync(R, { recursive: true }); mkdirSync(orders);
-cpSync(verifier, join(R, 'tess-rescue-verify'));
+const rawKey = publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64');
+execFileSync('go', ['build', '-ldflags', `-X main.publicKey=${rawKey}`, '-o', join(R, 'tess-rescue-verify'), './tessverify'], { cwd: join(root, 'patcher') });
 cpSync(join(root, 'installer/rescue.sh'), join(R, 'rescue.sh'));
 const ID = 'a'.repeat(32), OTHER = 'b'.repeat(32);
 writeFileSync(join(T, 'install-id'), ID);

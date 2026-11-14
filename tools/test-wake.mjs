@@ -64,6 +64,7 @@ esac
     writeFileSync(order, `tess-rescue 2\nserial ${serial}\n`);
     writeFileSync(join(state, 'version'), `${installed}\n`);
     writeFileSync(join(rescue, 'serial'), `${done}\n`);
+    rmSync(join(state, '.wake-rescue-kicked'), { force: true });
     rmSync(curlLog, { force: true });
     rmSync(launchLog, { force: true });
     rmSync(join(tess, 'rescue-off'), { force: true });
@@ -86,6 +87,12 @@ esac
   reset({ serial: 6 });
   run();
   assert.ok(kicks().some((line) => line.endsWith('music.tess.rescue')), 'new serial wakes rescue');
+
+  run();
+  assert.equal(kicks().filter(line => line.endsWith('music.tess.rescue')).length, 1, 'unaccepted serial wakes only once');
+  writeFileSync(order, 'tess-rescue 2\nserial 7\n');
+  run();
+  assert.equal(kicks().filter(line => line.endsWith('music.tess.rescue')).length, 2, 'new serial wakes again');
 
   reset({ serial: 6 });
   writeFileSync(join(tess, 'rescue-off'), '');

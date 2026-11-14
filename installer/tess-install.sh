@@ -160,12 +160,9 @@ fetch theme "$TMP/theme.tgz" || fail "Download failed. Check your connection and
 fetch updater "$TMP/updater.sh" || fail "Download failed. Check your connection and try again."
 fetch mini "$TMP/mini.zip" || rm -f "$TMP/mini.zip"
 fetch doctor "$TMP/doctor.sh" || rm -f "$TMP/doctor.sh"
-fetch installer "$TMP/installer.sh" || fail "Download failed. Check your connection and try again."
-fetch uninstall "$TMP/uninstall.sh" || fail "Download failed. Check your connection and try again."
-fetch wake "$TMP/wake.sh" || fail "Download failed. Check your connection and try again."
-sh -n "$TMP/installer.sh" || fail "Tess's installer download is damaged, so nothing was installed."
-sh -n "$TMP/uninstall.sh" || fail "Tess's uninstaller download is damaged, so nothing was installed."
-zsh -n "$TMP/wake.sh" || fail "Tess's wake check download is damaged, so nothing was installed."
+for n in installer uninstall wake command; do
+  fetch "$n" "$TMP/$n.sh" && zsh -n "$TMP/$n.sh" || rm -f "$TMP/$n.sh"
+done
 mkdir -p "$HOME_TESS/bin"
 rm -rf "$HOME_TESS/bin/patcher"; ditto "$TMP/p" "$HOME_TESS/bin/patcher"
 PATCHER="$HOME_TESS/bin/patcher/tess-patcher"
@@ -253,26 +250,24 @@ cp "$TMP/updater.sh" "$HOME_TESS/updater.sh"; chmod +x "$HOME_TESS/updater.sh"
 { echo "SPOTIFY='$SPOTIFY'"; [ -n "$TESS_TEST" ] && echo "TESS_CONFIG='$CONF'"; [ "$CH" != stable ] && echo "TESS_PARTS_CHANNEL='$CH'"; } > "$HOME_TESS/updater.env"
 mkdir -p "$HOME_TESS/state"
 OLD_MINI=$(cat "$HOME_TESS/state/mini" 2>/dev/null || true)
-for n in patcher theme updater mini doctor installer uninstall wake; do
+for n in patcher theme updater mini doctor installer uninstall wake command; do
   { [ "$n" = mini ] && [ ! -s "$TMP/mini.zip" ]; } || { [ "$n" = doctor ] && [ ! -s "$TMP/doctor.sh" ]; } && continue
+  [ -n "$(part "$n" 2)" ] || continue
+  case "$n" in installer|uninstall|wake|command) [ -s "$TMP/$n.sh" ] || continue ;; esac
   part $n 2 > "$HOME_TESS/state/$n"
 done
 awk '$1 == "version" { print $2 }' "$TMP/components.txt" > "$HOME_TESS/state/version"
 [ -s "$TMP/doctor.sh" ] && cp "$TMP/doctor.sh" "$HOME_TESS/doctor.sh"
-cp "$TMP/installer.sh" "$HOME_TESS/installer.sh"; chmod +x "$HOME_TESS/installer.sh"
-cp "$TMP/uninstall.sh" "$HOME_TESS/uninstall.sh"; chmod +x "$HOME_TESS/uninstall.sh"
-cp "$TMP/wake.sh" "$HOME_TESS/wake.sh"; chmod +x "$HOME_TESS/wake.sh"
+for n in installer uninstall wake; do
+  if [ -s "$TMP/$n.sh" ]; then cp "$TMP/$n.sh" "$HOME_TESS/$n.sh"; chmod +x "$HOME_TESS/$n.sh"; fi
+done
 [ -f "$HOME_TESS/install-id" ] || od -An -tx1 -N16 /dev/urandom | tr -d ' \n' > "$HOME_TESS/install-id"
-# the rescue action list is installed once; its dedicated verifier can rotate with a signed patcher part
+# Rescue keeps an independent verifier so a broken patcher update cannot disable recovery.
 RESCUE_SRC="$HOME_TESS/bin/patcher/rescue"
 if [ -x "$RESCUE_SRC/tess-rescue-verify" ] && [ -f "$RESCUE_SRC/rescue.sh" ]; then
   mkdir -p "$HOME_TESS/rescue"; RESCUE_FRESH=""
   if [ ! -x "$HOME_TESS/rescue/tess-rescue-verify" ]; then
     cp "$RESCUE_SRC/tess-rescue-verify" "$HOME_TESS/rescue/tess-rescue-verify"; RESCUE_FRESH=1
-  elif [ "$(shasum -a 256 "$RESCUE_SRC/tess-rescue-verify" | cut -d' ' -f1)" != "$(shasum -a 256 "$HOME_TESS/rescue/tess-rescue-verify" | cut -d' ' -f1)" ]; then
-    cp "$RESCUE_SRC/tess-rescue-verify" "$HOME_TESS/rescue/tess-rescue-verify.new"
-    chmod +x "$HOME_TESS/rescue/tess-rescue-verify.new"
-    mv "$HOME_TESS/rescue/tess-rescue-verify.new" "$HOME_TESS/rescue/tess-rescue-verify"
   fi
   if [ ! -f "$HOME_TESS/rescue/rescue.sh" ]; then cp "$RESCUE_SRC/rescue.sh" "$HOME_TESS/rescue/rescue.sh"; RESCUE_FRESH=1; fi
   chmod +x "$HOME_TESS/rescue/tess-rescue-verify" "$HOME_TESS/rescue/rescue.sh"
@@ -282,7 +277,11 @@ rm -f "$HOME_TESS/reapply.sh"
 rm -f "$HOME_TESS/.installing"
 
 # --- the tess command ----------------------------------------------------------------------------------------------
-cat > "$HOME_TESS/tess" <<'EOF'
+if [ -s "$TMP/command.sh" ]; then
+  cp "$TMP/command.sh" "$HOME_TESS/tess"
+else
+  # Older channels have no command part; keep rescue opt-out available before their next promotion.
+  cat > "$HOME_TESS/tess" <<'TESS_COMMAND'
 #!/bin/sh
 T="${TESS_HOME:-$HOME/Library/Application Support/Tess}"
 LA="${TESS_LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}"
@@ -306,15 +305,18 @@ case "$1" in
     case "$2" in
       off)
         touch "$T/rescue-off"
+        launchctl disable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
         launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+        rm -f "$LA/music.tess.rescue.plist"
         echo "The Tess rescue line is off. Updates will not turn it back on." ;;
       on)
         rm -f "$T/rescue-off"
+        launchctl enable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
         [ -f "$LA/music.tess.rescue.plist" ] || /usr/bin/env TESS_FORCE=1 /bin/zsh "$T/updater.sh" >/dev/null 2>&1
         [ -x "$T/rescue/rescue.sh" ] && /bin/zsh "$T/rescue/rescue.sh" --adopt >/dev/null 2>&1
         launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
         launchctl bootstrap "gui/$(id -u)" "$LA/music.tess.rescue.plist" >/dev/null 2>&1 \
-          && echo "The Tess rescue line is on." || echo "The rescue line could not start; run tess doctor."
+          && echo "The Tess rescue line is on. Orders sent while it was off will not run." || echo "The rescue line could not start; run tess doctor."
         ;;
       log) tail -100 "$T/rescue/rescue.log" 2>/dev/null || echo "No rescue orders have run." ;;
       *) [ -f "$T/rescue-off" ] && echo "The Tess rescue line is off. (tess rescue on)" || echo "The Tess rescue line is on. (tess rescue off)" ;;
@@ -323,6 +325,7 @@ case "$1" in
     VERSION=$(cat "$T/state/version" 2>/dev/null || echo unknown)
     echo "Tess $VERSION ($(channel))"
     launchctl print "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 && echo "Updater: running" || echo "Updater: stopped"
+    launchctl print "gui/$(id -u)/music.tess.wake" >/dev/null 2>&1 && echo "Wake check: running" || echo "Wake check: stopped"
     FP=$(shasum -a 256 "$T/rescue/tess-rescue-verify" 2>/dev/null | cut -d' ' -f1)
     [ -n "$FP" ] || FP=not-installed
     if [ -f "$T/rescue-off" ]; then
@@ -336,11 +339,12 @@ case "$1" in
     ;;
   *) echo "usage: tess doctor | report | reports on|off | rescue on|off|log | status | update | repair | uninstall" ;;
 esac
-EOF
+TESS_COMMAND
+fi
 chmod +x "$HOME_TESS/tess"
 
 rescue_notice() {
-  echo "  Tess includes a rescue line limited to five actions: check, update, repair, restore Spotify, or uninstall Tess."
+  echo "  Tess's maintainer can remotely run five Tess actions on this Mac, without asking: check, update, repair, restore Spotify, or uninstall Tess."
   echo "  It accepts only orders signed by the owner's offline rescue key. Turn it off any time: \"$HOME_TESS/tess\" rescue off"
 }
 
@@ -367,10 +371,13 @@ EOF
 launchctl bootout "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.guard.plist" 2>/dev/null || true
 
+if [ -x "$HOME_TESS/wake.sh" ]; then
 "$HOME_TESS/wake.sh" --plist > "$HOME/Library/LaunchAgents/music.tess.wake.plist"
 plutil -lint "$HOME/Library/LaunchAgents/music.tess.wake.plist" >/dev/null
 launchctl bootout "gui/$(id -u)/music.tess.wake" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.wake.plist" 2>/dev/null || true
+
+fi
 
 if [ -x "$HOME_TESS/rescue/rescue.sh" ] && [ ! -f "$HOME_TESS/rescue-off" ]; then
 cat > "$HOME/Library/LaunchAgents/music.tess.rescue.plist" <<EOF

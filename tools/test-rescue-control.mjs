@@ -10,9 +10,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const installer = readFileSync(join(root, 'installer', 'tess-install.sh'), 'utf8');
-const command = installer.match(/cat > "\$HOME_TESS\/tess" <<'EOF'\n([\s\S]*?)\nEOF\nchmod \+x "\$HOME_TESS\/tess"/)?.[1];
-assert.ok(command, 'installed tess command found');
-assert.match(installer, /limited to five actions: check, update, repair, restore Spotify, or uninstall Tess/);
+const command = readFileSync(join(root, 'installer', 'tess-command.sh'), 'utf8');
+assert.match(installer, /remotely run five Tess actions on this Mac, without asking/);
 assert.match(installer, /signed by the owner's offline rescue key/);
 assert.match(installer, /rescue off/);
 
@@ -20,7 +19,7 @@ const box = mkdtempSync(join(tmpdir(), 'tess-rescue-control-'));
 const tess = join(box, 'Tess');
 const state = join(tess, 'state');
 const rescue = join(tess, 'rescue');
-const agents = join(box, 'LaunchAgents');
+const agents = join(tess, 'LaunchAgents');
 const bin = join(box, 'bin');
 const launchLog = join(box, 'launchctl.log');
 const loadedRescue = join(box, 'rescue-loaded');
@@ -50,6 +49,12 @@ case "$1:$2" in
   print:*music.tess.guard) [ -f "$TESS_TEST_BOX/guard-loaded" ] ;;
   print:*music.tess.rescue) [ -f "$TESS_TEST_BOX/rescue-loaded" ] ;;
   bootout:*music.tess.rescue) rm -f "$TESS_TEST_BOX/rescue-loaded" ;;
+  disable:*) touch "$TESS_TEST_BOX/rescue-disabled" ;;
+  enable:*) rm -f "$TESS_TEST_BOX/rescue-disabled" ;;
+  login:*)
+    [ -f "$TESS_TEST_BOX/rescue-disabled" ] || [ ! -f "$TESS_LAUNCH_AGENTS/music.tess.rescue.plist" ] || touch "$TESS_TEST_BOX/rescue-loaded"
+    exit 0 ;;
+  print:*music.tess.wake) exit 1 ;;
   bootstrap:*) touch "$TESS_TEST_BOX/rescue-loaded" ;;
 esac
 `);
@@ -58,6 +63,7 @@ esac
   const env = {
     ...process.env,
     TESS_HOME: tess,
+    TESS_TEST: '1',
     TESS_LAUNCH_AGENTS: agents,
     TESS_TEST_BOX: box,
     PATH: `${bin}:${process.env.PATH}`,
@@ -70,6 +76,7 @@ esac
   assert.match(out, /Updater: running/);
   assert.match(out, new RegExp(`Rescue: on, running \\(verifier SHA-256 ${fingerprint}\\)`));
   assert.match(out, /Reports: on/);
+  assert.match(out, /Wake check: stopped/);
 
   out = run('rescue', 'off');
   assert.match(out, /rescue line is off/i);
@@ -77,6 +84,10 @@ esac
   assert.ok(!existsSync(loadedRescue), 'rescue agent unloaded');
   assert.match(readFileSync(launchLog, 'utf8'), /bootout .*music\.tess\.rescue/);
   assert.match(run('status'), /Rescue: off/);
+  assert.ok(!existsSync(join(agents, 'music.tess.rescue.plist')), 'off removes login plist');
+  assert.ok(existsSync(join(box, 'rescue-disabled')), 'off persists in launchd disabled state');
+  execFileSync(join(bin, 'launchctl'), ['login'], { env });
+  assert.ok(!existsSync(loadedRescue), 'simulated login cannot start old rescue script');
 
   const packagedRescue = join(tess, 'bin', 'patcher', 'rescue');
   mkdirSync(packagedRescue, { recursive: true });
@@ -85,9 +96,11 @@ esac
   chmodSync(join(packagedRescue, 'tess-rescue-verify'), 0o755);
   chmodSync(join(packagedRescue, 'rescue.sh'), 0o755);
   writeFileSync(join(tess, 'updater.sh'), readFileSync(join(root, 'installer', 'updater.sh')));
+  writeFileSync(join(agents, 'music.tess.rescue.plist'), 'stale login plist');
   execFileSync('/bin/zsh', [join(tess, 'updater.sh')], { env: { ...env, TESS_TEST: '1' }, encoding: 'utf8' });
   assert.ok(existsSync(join(tess, 'rescue-off')), 'update kept the off marker');
   assert.ok(!existsSync(loadedRescue), 'update did not reload rescue');
+  assert.ok(!existsSync(join(agents, 'music.tess.rescue.plist')), 'updater removes stale rescue plist');
   assert.match(readFileSync(join(tess, 'guard.log'), 'utf8'), /rescue line stays off/);
 
   writeFileSync(join(tess, 'reports-off'), '');
@@ -95,8 +108,11 @@ esac
 
   out = run('rescue', 'on');
   assert.match(out, /rescue line is on/i);
+  assert.match(out, /Orders sent while it was off will not run/);
+  assert.ok(!existsSync(join(box, 'rescue-disabled')), 'on enables launchd job');
   assert.ok(!existsSync(join(tess, 'rescue-off')), 'off marker removed');
   assert.ok(existsSync(loadedRescue), 'rescue agent loaded');
+  assert.equal(readFileSync(join(rescue, 'tess-rescue-verify'), 'utf8'), 'test rescue verifier\n', 'ordinary update preserves independent rescue verifier');
   assert.match(readFileSync(launchLog, 'utf8'), /bootstrap .*music\.tess\.rescue\.plist/);
 
   console.log('rescue control tests passed (notice, off/on persistence, status fingerprint)');

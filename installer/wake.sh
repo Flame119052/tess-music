@@ -52,7 +52,9 @@ serial=$(awk '$1 == "serial" { print $2; exit }' "$TMP/rescue")
 case $serial in ''|*[!0-9]*) exit 0 ;; esac
 done_serial=$(cat "$R/serial" 2>/dev/null); done_serial=${done_serial:-0}
 case $done_serial in ''|*[!0-9]*) done_serial=0 ;; esac
-if [ ! -f "$T/rescue-off" ] && [ "$serial" -gt "$done_serial" ]; then
+kicked=$(cat "$STATE/.wake-rescue-kicked" 2>/dev/null)
+if [ ! -f "$T/rescue-off" ] && [ "$serial" -gt "$done_serial" ] && [ "$serial" != "$kicked" ]; then
+  echo "$serial" > "$STATE/.wake-rescue-kicked"
   launchctl kickstart "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
 fi
 exit 0
