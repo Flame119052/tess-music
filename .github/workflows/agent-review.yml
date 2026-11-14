@@ -19,6 +19,7 @@ jobs:
       number: ${{ steps.gate.outputs.number }}
       head_sha: ${{ steps.gate.outputs.head_sha }}
       tier: ${{ steps.gate.outputs.tier }}
+      runs_on: ${{ steps.machine.outputs.runs_on }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -90,11 +91,29 @@ jobs:
             echo "head_sha=$head_sha"
             echo "tier=$tier"
           } >> "$GITHUB_OUTPUT"
+      - name: Pick the reviewer machine (Instabox first, then the VPS or omarchy)
+        id: machine
+        if: steps.gate.outputs.allowed == 'true'
+        env:
+          WAKE_URL: ${{ vars.REVIEW_WAKE_URL }}
+        run: |
+          # A request to the box's public page wakes a paused Instabox; it answers 200 once its runner is up. If it
+          # doesn't within about two minutes, the job goes to whichever of the VPS and omarchy is free.
+          if [ -n "$WAKE_URL" ]; then
+            for i in $(seq 1 12); do
+              if curl -fsS --max-time 10 "$WAKE_URL/ready" >/dev/null 2>&1; then
+                echo 'runs_on=["self-hosted","tess-agent","tess-primary"]' >> "$GITHUB_OUTPUT"; echo "Instabox is ready."; exit 0
+              fi
+              sleep 10
+            done
+            echo "Instabox didn't answer; using a backup machine."
+          fi
+          echo 'runs_on=["self-hosted","tess-agent","tess-backup"]' >> "$GITHUB_OUTPUT"
 
   review:
     needs: gate
     if: needs.gate.outputs.allowed == 'true'
-    runs-on: [self-hosted, tess-agent]
+    runs-on: ${{ fromJSON(needs.gate.outputs.runs_on || '["self-hosted","tess-agent"]') }}
     permissions:
       contents: read
       issues: write
