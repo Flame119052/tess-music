@@ -92,6 +92,18 @@ assert.equal(floor(r.saved), 3, 'the rev floor moves up');
 r = await runLoader({ served: await serve(await release(2, 'v2')), store: { 'tess:rev:stable': 3 } });
 assert.ok(!r.ran.includes('v2'), 'an older rev is refused');
 
+// 2b. with the network down, a genuine stored release below the floor is not run
+const stored = await release(3, 'v3');
+const storedBundle = { version: 'v3', channel: 'stable', rev: 3, js: stored.files['theme.js'], css: stored.files['user.css'], sigJs: stored.manifest.sig.js, sigCss: stored.manifest.sig.css, env: stored.envText, sigEnv: stored.manifest.sig.envelope };
+r = await runLoader({ served: { manifestText: null, files: {} }, store: { 'tess:rev:stable': 5, 'tess:bundle': storedBundle } });
+assert.ok(!r.ran.includes('v3'), 'a below-floor cache is not run when offline');
+
+// 2c. ...and the same holds for a pre-envelope bundle with rev 0
+const oldLegacy = await legacy('v0');
+const legacyBundle = { version: 'v0', channel: 'stable', rev: 0, js: oldLegacy.files['theme.js'], css: oldLegacy.files['user.css'], sigJs: oldLegacy.manifest.sig.js, sigCss: oldLegacy.manifest.sig.css };
+r = await runLoader({ served: { manifestText: null, files: {} }, store: { 'tess:rev:stable': 5, 'tess:bundle': legacyBundle } });
+assert.ok(!r.ran.includes('v0'), 'a pre-envelope cache is not run after a rev floor exists');
+
 // 3. a forged cache is not run; the valid download is fetched instead
 r = await runLoader({
   served: await serve(await release(3, 'v3')),
