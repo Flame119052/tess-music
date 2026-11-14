@@ -26,7 +26,7 @@ jobs:
             CGO_ENABLED=0 GOOS=darwin GOARCH=$a go build -trimpath -buildvcs=false -ldflags '-s -w' -o "$RUNNER_TEMP/tv-$a" ./tessverify
           done
           lipo -create "$RUNNER_TEMP/tv-arm64" "$RUNNER_TEMP/tv-amd64" -output "$RUNNER_TEMP/tess-verify"
-          [ "$(shasum -a 256 "$RUNNER_TEMP/tess-verify" | cut -d' ' -f1)" = "$pin" ] || { echo "installer/tess-verify is stale; rebuild it and update VERIFY_SHA in installer/install.sh"; exit 1; }
+          [ "$(shasum -a 256 "$RUNNER_TEMP/tess-verify" | cut -d' ' -f1)" = "$pin" ] || { echo "installer/verify/<sha> is stale; rebuild it, commit it under its hash, and update VERIFY_SHA"; exit 1; }
       - name: Theme builds and parses
         run: node tools/build.mjs && node --check theme/Tess/theme.js && node --check theme/loader/loader.js
       - name: Patcher builds

@@ -70,7 +70,7 @@ Its files go back to stock (`Apps/xpui.spa`). The updater notices (LaunchAgent W
 | Safety copy + repair | `original-<ver>/`, patcher backup, known stock SHA-256s | lost interface files |
 | Release gate | `tools/check-safety.sh` (CI + release script) | shipping a destructive or unparsable script |
 | Signed content | Ed25519 release key (CI secret + Krish's Mac) | tampered downloads |
-| Pinned verifier | `installer/install.sh` + `installer/tess-verify` | a channel or mirror swapping the checker and installer together |
+| Pinned verifier | `installer/install.sh` + `installer/verify/<sha>` | a channel or mirror swapping the checker and installer together |
 | Signed envelope + `rev` floor | `dist/manifest.json`, `components.txt`, loader | a correctly signed but older release (downgrade) |
 | Verified cache | `theme/loader/loader.js` | code written into `tess:bundle` by another extension or an XSS |
 | Stable code signature | "Tess Music" self-signed identity | macOS re-asking for permissions every update |
@@ -94,7 +94,7 @@ that exact beta to `stable`, including its notes and channel-root install line, 
 Both public-channel jobs use the protected GitHub `release` environment and support a no-write `--dry-run`.
 
 Install line: `installer/install.sh` (forwarder on `main`) pins the committed verifier's SHA-256, downloads
-`main/installer/tess-verify`, checks it, then downloads `$CH/dist/install.sh` and `dist/install.sig` and verifies the
+`main/installer/verify/<sha>`, checks it, then downloads `$CH/dist/install.sh` and `dist/install.sig` and verifies the
 installer before running it with that verifier → the installer checks `components.txt` before unpacking the patcher.
 A channel published before the first promote has no signed installer; it gets `main`'s installer (temporary, #77), and
 the safety gate fails if that fallback outlives stable's signed installer.
