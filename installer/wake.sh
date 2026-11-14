@@ -1,5 +1,7 @@
 #!/bin/zsh
-# Every five minutes, read two tiny public release markers and wake the signed updater or rescue line when needed.
+# Every five minutes, read the public release marker and wake the signed updater when it moved.
+# The rescue serial is read only while that line is on, so a user who turned it off is not
+# stuck waiting on the rescue branch for ordinary updates.
 T="${TESS_HOME:-$HOME/Library/Application Support/Tess}"
 STATE="$T/state"
 R="$T/rescue"
@@ -28,25 +30,33 @@ mkdir -p "$STATE" "$R"
 LOCK="$T/.installing"
 [ -e "$LOCK" ] && [ -z "$(find "$LOCK" -mmin +30 2>/dev/null)" ] && exit 0
 
-# A failed pair of public reads waits 15 minutes before trying again.
+# One failed read pauses both for 15 minutes, so a dead network is not hit every 5.
+# On that attempt the reads stay separate: a missing rescue order still wakes an update.
 FAILED="$STATE/.wake-network-failed"
 [ -f "$FAILED" ] && [ -z "$(find "$FAILED" -mmin +15 2>/dev/null)" ] && exit 0
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 version_url="https://raw.githubusercontent.com/$REPO/$CHANNEL/dist/manifest.json"
 rescue_url="https://raw.githubusercontent.com/$REPO/rescue/rescue.txt"
-if ! curl -fsSL --connect-timeout 5 --max-time 15 "$version_url" -o "$TMP/version" \
-  || ! curl -fsSL --connect-timeout 5 --max-time 15 "$rescue_url" -o "$TMP/rescue"; then
-  touch "$FAILED"
+failed=""
+if curl -fsSL --connect-timeout 5 --max-time 15 "$version_url" -o "$TMP/version"; then
+  published=$(awk -F'"' '/"version"[[:space:]]*:/ { print $4; exit }' "$TMP/version")
+  installed=$(cat "$STATE/version" 2>/dev/null)
+  if [ -n "$published" ] && [ "$published" != "$installed" ]; then
+    launchctl kickstart "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 || true
+  fi
+else
+  failed=1
+fi
+if [ -f "$T/rescue-off" ]; then
+  if [ -n "$failed" ]; then touch "$FAILED"; else rm -f "$FAILED"; fi
   exit 0
 fi
-rm -f "$FAILED"
-
-published=$(awk -F'"' '/"version"[[:space:]]*:/ { print $4; exit }' "$TMP/version")
-installed=$(cat "$STATE/version" 2>/dev/null)
-if [ -n "$published" ] && [ "$published" != "$installed" ]; then
-  launchctl kickstart "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 || true
+if ! curl -fsSL --connect-timeout 5 --max-time 15 "$rescue_url" -o "$TMP/rescue"; then
+  failed=1
 fi
+if [ -n "$failed" ]; then touch "$FAILED"; else rm -f "$FAILED"; fi
+[ -s "$TMP/rescue" ] || exit 0
 
 serial=$(awk '$1 == "serial" { print $2; exit }' "$TMP/rescue")
 case $serial in ''|*[!0-9]*) exit 0 ;; esac

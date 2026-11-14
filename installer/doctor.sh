@@ -143,6 +143,13 @@ if [ -d "$HOME/Applications/Tess Mini.app" ] && [ -f "$LA/music.tess.mini.plist"
 fi
 rescue_fp=$(shasum -a 256 "$T/rescue/tess-rescue-verify" 2>/dev/null | cut -d' ' -f1)
 if [ -f "$T/rescue-off" ]; then
+  # launchd loads a leftover plist again at login, so off has to unload the job and delete that plist
+  if launchctl print "gui/$UID_/music.tess.rescue" >/dev/null 2>&1; then
+    launchctl disable "gui/$UID_/music.tess.rescue" >/dev/null 2>&1 || true
+    launchctl bootout "gui/$UID_/music.tess.rescue" >/dev/null 2>&1 || true
+    rm -f "$LA/music.tess.rescue.plist"
+    fix "stopped the rescue line you turned off"
+  fi
   ok "rescue line is off by your choice"; st+=(rescue=off "rescue-verifier=${rescue_fp:-none}")
 elif [ -x "$T/rescue/tess-rescue-verify" ] && [ -f "$LA/music.tess.rescue.plist" ]; then
   if loaded music.tess.rescue; then ok "rescue line ready"; st+=(rescue=ok)

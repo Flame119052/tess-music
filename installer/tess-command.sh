@@ -66,7 +66,11 @@ case "$1" in
     FP=$(shasum -a 256 "$T/rescue/tess-rescue-verify" 2>/dev/null | cut -d' ' -f1)
     [ -n "$FP" ] || FP=not-installed
     if [ -f "$T/rescue-off" ]; then
-      echo "Rescue: off (verifier SHA-256 $FP)"
+      if launchctl print "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1; then
+        echo "Rescue: off, but the agent is still loaded; run: tess rescue off (verifier SHA-256 $FP)"
+      else
+        echo "Rescue: off (verifier SHA-256 $FP)"
+      fi
     elif launchctl print "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1; then
       echo "Rescue: on, running (verifier SHA-256 $FP)"
     else

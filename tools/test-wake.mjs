@@ -38,8 +38,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$url" in
-  */beta/dist/manifest.json) cp "$TESS_MANIFEST" "$out" ;;
-  */rescue/rescue.txt) cp "$TESS_ORDER" "$out" ;;
+  */beta/dist/manifest.json) [ "$TESS_CURL_FAIL_VERSION" = 1 ] && exit 22; cp "$TESS_MANIFEST" "$out" ;;
+  */rescue/rescue.txt) [ "$TESS_CURL_FAIL_RESCUE" = 1 ] && exit 22; cp "$TESS_ORDER" "$out" ;;
   *) exit 22 ;;
 esac
 `);
@@ -97,7 +97,29 @@ esac
   reset({ serial: 6 });
   writeFileSync(join(tess, 'rescue-off'), '');
   run();
+  assert.equal(lines(curlLog).length, 1, 'rescue off reads only the version');
+  assert.match(lines(curlLog)[0], /\/beta\/dist\/manifest\.json/);
+  assert.ok(!lines(curlLog).some((line) => line.includes('rescue.txt')), 'rescue off skips the rescue branch');
   assert.ok(!kicks().some((line) => line.endsWith('music.tess.rescue')), 'rescue off suppresses rescue wake');
+
+  reset({ published: '1.2.4', serial: 9 });
+  writeFileSync(join(tess, 'rescue-off'), '');
+  run();
+  assert.equal(lines(curlLog).length, 1, 'rescue off still skips rescue when the version moved');
+  assert.ok(kicks().some((line) => line.endsWith('music.tess.guard')), 'rescue off still wakes the updater');
+  assert.ok(!kicks().some((line) => line.endsWith('music.tess.rescue')), 'rescue off does not wake rescue for a new serial');
+
+  reset({ published: '1.2.4', serial: 6 });
+  run({ TESS_CURL_FAIL_RESCUE: '1' });
+  assert.ok(kicks().some((line) => line.endsWith('music.tess.guard')), 'a failed rescue read still wakes the updater');
+  assert.ok(!kicks().some((line) => line.endsWith('music.tess.rescue')), 'a failed rescue read starts no rescue wake');
+  assert.ok(existsSync(join(state, '.wake-network-failed')), 'a failed rescue read still backs off');
+
+  reset({ serial: 8 });
+  run({ TESS_CURL_FAIL_VERSION: '1' });
+  assert.ok(!kicks().some((line) => line.endsWith('music.tess.guard')), 'a failed version read starts no updater');
+  assert.ok(kicks().some((line) => line.endsWith('music.tess.rescue')), 'a failed version read still wakes rescue');
+  assert.ok(existsSync(join(state, '.wake-network-failed')), 'a failed version read still backs off');
 
   reset({ published: '1.2.4', serial: 6 });
   run({ TESS_CURL_FAIL: '1' });
@@ -132,7 +154,7 @@ esac
   assert.ok(existsSync(installedPlist), 'updater installs wake LaunchAgent in sandbox');
   assert.match(readFileSync(installedPlist, 'utf8'), /<integer>300<\/integer>/);
 
-  console.log('wake tests passed (no change, version, serial, off, network backoff, lock, 5-minute agent)');
+  console.log('wake tests passed (no change, version, serial, off skips rescue read, independent read failures, network backoff, lock, 5-minute agent)');
 } finally {
   rmSync(box, { recursive: true, force: true });
 }

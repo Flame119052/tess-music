@@ -44,6 +44,8 @@ preserves color.ini processing (colors.css and spicetify-config.json) before the
 test builds the real Go patcher, updates a theme color, and checks generated colors, JSON, script and unchanged
 live config. The guard log now says that a loaded agent takes the new interval at next login.
 
+Round 6 separates the two wake reads. With rescue off, the sandbox curl log has one line, the version file, and a new version still starts the updater. A failed rescue read still starts the updater. A failed version read still starts rescue. An older rescue script (no `tess-rescue 2` acceptance line) makes repair say that orders can run any script. A current script still gets the five-action notice. `tess status` says the agent is still loaded when the off marker and a loaded job are both present. The doctor then disables that job, unloads it, and deletes its login plist. These checks ran under an empty HOME. The safety gate, updater, wake, rescue-control, swap-recovery, rescue, legacy install, agent-review (9) and dial-pick (16) tests passed.
+
 The single theme.last-good copy remains deliberately available for rollback. It is replaced at the next theme
 update; it is not an accumulating history. Existing Macs see the rescue notice on install/repair and can read
 `tess rescue` and `tess status`; this fix does not add an unsolicited notice. PR #75 already links #71 and #56

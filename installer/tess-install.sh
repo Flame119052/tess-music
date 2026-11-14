@@ -383,7 +383,11 @@ case "$1" in
     FP=$(shasum -a 256 "$T/rescue/tess-rescue-verify" 2>/dev/null | cut -d' ' -f1)
     [ -n "$FP" ] || FP=not-installed
     if [ -f "$T/rescue-off" ]; then
-      echo "Rescue: off (verifier SHA-256 $FP)"
+      if launchctl print "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1; then
+        echo "Rescue: off, but the agent is still loaded; run: tess rescue off (verifier SHA-256 $FP)"
+      else
+        echo "Rescue: off (verifier SHA-256 $FP)"
+      fi
     elif launchctl print "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1; then
       echo "Rescue: on, running (verifier SHA-256 $FP)"
     else
@@ -400,6 +404,9 @@ chmod +x "$HOME_TESS/tess.new" && mv -f "$HOME_TESS/tess.new" "$HOME_TESS/tess"
 rescue_notice() {
   if [ -f "$HOME_TESS/rescue-off" ]; then
     echo "  The Tess rescue line is off on this Mac. Turn it back on: \"$HOME_TESS/tess\" rescue on"
+  elif [ -x "$HOME_TESS/rescue/rescue.sh" ] && ! grep -q 'grep -qx "tess-rescue 2"' "$HOME_TESS/rescue/rescue.sh"; then
+    echo "  This Mac has an older Tess rescue line: orders signed by the owner's offline rescue key can run any script on this Mac as you, without asking."
+    echo "  Turn it off any time: \"$HOME_TESS/tess\" rescue off"
   elif [ -x "$HOME_TESS/rescue/rescue.sh" ]; then
     echo "  Tess's maintainer can remotely run five Tess actions on this Mac, without asking: check, update, repair, restore Spotify, or uninstall Tess."
     echo "  It accepts only orders signed by the owner's offline rescue key. Turn it off any time: \"$HOME_TESS/tess\" rescue off"

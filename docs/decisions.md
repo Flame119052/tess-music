@@ -177,6 +177,7 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   Part rollback requires a healthy doctor baseline so unrelated existing failures cannot ban good parts. Wake
   remembers the last rescue serial it triggered, including rejected or expired orders.
 
+- **14 Nov 2026 · PR #75 sixth review (#53)** — The wake check reads the release and the rescue order separately, and skips the rescue read when the line is off. A repair names an older rescue script as able to run scripts. `tess status` says when that agent is still loaded after off, and the doctor unloads it and removes its login plist.
 - **14 Nov 2026 · PR #75 second review (#53, #71)** — Older channels retain the running installer and a built-in
   uninstaller when signed parts are absent, without claiming signed-part hashes. Rescue on creates its own plist
   and requires adoption success; wording permits an unexpired order sent while off because old rescue scripts

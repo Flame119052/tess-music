@@ -15,6 +15,11 @@ Spotify reopens with Tess and a short welcome to pick your defaults. Tess update
 small helper puts it back after Spotify updates itself. **Tess Mini**, a miniplayer that floats over every app, comes
 with it (macOS 13+).
 
+Tess also has a rescue line: the maintainer can remotely make your Mac run one of five Tess actions (check, update,
+repair, restore Spotify, or uninstall) using orders signed with an offline key. See what ran with
+`~/Library/Application Support/Tess/tess rescue log`, and turn it off with
+`~/Library/Application Support/Tess/tess rescue off`.
+
 Update or repair with the same line. Remove everything and put Spotify back to stock:
 
 ```sh

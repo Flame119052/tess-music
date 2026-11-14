@@ -13,6 +13,8 @@ const installer = readFileSync(join(root, 'installer', 'tess-install.sh'), 'utf8
 const command = readFileSync(join(root, 'installer', 'tess-command.sh'), 'utf8');
 assert.match(installer, /remotely run five Tess actions on this Mac, without asking/);
 assert.match(installer, /signed by the owner's offline rescue key/);
+assert.match(installer, /older Tess rescue line/);
+assert.match(installer, /can run any script on this Mac as you, without asking/);
 assert.match(installer, /rescue off/);
 
 const box = mkdtempSync(join(tmpdir(), 'tess-rescue-control-'));
@@ -83,7 +85,9 @@ esac
   assert.ok(existsSync(join(tess, 'rescue-off')), 'off marker written');
   assert.ok(!existsSync(loadedRescue), 'rescue agent unloaded');
   assert.match(readFileSync(launchLog, 'utf8'), /bootout .*music\.tess\.rescue/);
-  assert.match(run('status'), /Rescue: off/);
+  const offStatus = run('status');
+  assert.match(offStatus, /Rescue: off \(verifier SHA-256/);
+  assert.doesNotMatch(offStatus, /still loaded/);
   assert.ok(!existsSync(join(agents, 'music.tess.rescue.plist')), 'off removes login plist');
   assert.ok(existsSync(join(box, 'rescue-disabled')), 'off persists in launchd disabled state');
   execFileSync(join(bin, 'launchctl'), ['login'], { env });
@@ -124,7 +128,26 @@ esac
   assert.equal(readFileSync(join(rescue, 'tess-rescue-verify'), 'utf8'), 'test rescue verifier\n', 'ordinary update preserves independent rescue verifier');
   assert.match(readFileSync(launchLog, 'utf8'), /bootstrap .*music\.tess\.rescue\.plist/);
 
-  console.log('rescue control tests passed (notice, off/on persistence, status fingerprint)');
+  writeFileSync(join(tess, 'rescue-off'), '');
+  writeFileSync(loadedRescue, '');
+  writeFileSync(join(agents, 'music.tess.rescue.plist'), '<plist>music.tess.rescue</plist>\n');
+  const stillLoaded = run('status');
+  assert.match(stillLoaded, /Rescue: off, but the agent is still loaded; run: tess rescue off/);
+  assert.match(stillLoaded, new RegExp(`verifier SHA-256 ${fingerprint}`));
+  writeFileSync(join(bin, 'curl'), '#!/bin/sh\nexit 22\n');
+  chmodSync(join(bin, 'curl'), 0o755);
+  writeFileSync(join(tess, 'doctor.sh'), readFileSync(join(root, 'installer', 'doctor.sh')));
+  chmodSync(join(tess, 'doctor.sh'), 0o755);
+  const doctorOut = execFileSync('/bin/zsh', [join(tess, 'doctor.sh')], { env, encoding: 'utf8' });
+  assert.match(doctorOut, /stopped the rescue line you turned off/);
+  assert.ok(!existsSync(loadedRescue), 'doctor unloads a rescue agent that is still running while off');
+  assert.ok(!existsSync(join(agents, 'music.tess.rescue.plist')), 'doctor removes the rescue login plist while off');
+  assert.ok(existsSync(join(box, 'rescue-disabled')), 'doctor disables the rescue job while off');
+  const stopped = run('status');
+  assert.match(stopped, /Rescue: off \(verifier SHA-256/);
+  assert.doesNotMatch(stopped, /still loaded/);
+
+  console.log('rescue control tests passed (notice, off/on persistence, status fingerprint, loaded-while-off)');
 } finally {
   rmSync(box, { recursive: true, force: true });
 }
