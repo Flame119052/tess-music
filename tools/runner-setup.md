@@ -134,11 +134,13 @@ setup.
   exact body `tess-ready` only while the runner is active and no `Runner.Worker` job is running, so a job is never pinned
   to a box that is still starting, busy or paused; every other case gets a different status or body. Its source is one
   `python3` file, `/usr/local/lib/tess-ready.py`, started by `tess-ready.service`; it uses only the standard library and
-  reads `/proc`. The port is published; its URL is the repo variable `REVIEW_WAKE_URL`. Requesting it is what wakes the
+  asks `systemctl` and `pgrep`. The port is published; its URL is the repo variable `REVIEW_WAKE_URL`. Requesting it is what wakes the
   paused box, and it reveals nothing but ready or not ready.
-- The workflow waits up to 12 × (5 s request + 5 s pause), about 2.5 minutes, for that answer, then sends the job to
+- The workflow waits up to 12 requests of up to 5 s with 5 s pauses between them, under 2 minutes, for that answer, then sends the job to
   `tess-backup`. The `review` job carries `timeout-minutes: 30`, so a box that freezes mid-job fails the review instead
-  of holding the queue.
+  of holding the queue. It does not cover a job still waiting in the queue: if the box pauses (or a second tag takes it)
+  between answering ready and picking the job up, the job waits for it, up to GitHub's 24-hour limit. If that is ever
+  seen, cancel the run and tag again; the next check sends it to a backup.
 - The 30-minute pause counts idle time as Instabox defines it. A review that runs longer than that could be paused
   mid-job; if that is ever seen, the fix is the `timeout-minutes` failure above plus a second wake, not a longer pause.
 - To retire it: `instabox port unpublish tess-reviewer 8787`, remove the runner in GitHub, then `instabox rm tess-reviewer`.

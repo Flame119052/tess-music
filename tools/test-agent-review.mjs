@@ -14,7 +14,7 @@ const available = (usedPercent) => ({ windows: [{ usedPercent }] });
 
 // Run the workflow's machine-picking step for real, with fake `curl` and `sleep` in front of PATH, so the answer that
 // decides between the Instabox box and a backup is the same shell the runner runs.
-function pickMachine({ wakeUrl, readyBody = '', curlFails = false }) {
+function pickMachine({ wakeUrl, readyBody = '', curlFails = false, readyOnTry = 1, countCalls = false }) {
   const workflow = readFileSync(new URL('../.github/workflows/agent-review.yml', import.meta.url), 'utf8').split('\n');
   const start = workflow.findIndex((line) => line.trim() === '- name: Pick the reviewer machine (Instabox first, then the VPS or omarchy)');
   assert.ok(start > 0, 'the workflow still has the machine step');
@@ -30,16 +30,20 @@ function pickMachine({ wakeUrl, readyBody = '', curlFails = false }) {
   try {
     const out = join(dir, 'output');
     writeFileSync(out, '');
-    writeFileSync(join(dir, 'curl'), curlFails
-      ? '#!/bin/sh\nexit 7\n'
-      : `#!/bin/sh\nprintf '%s' '${readyBody}'\n`);
+    // The fake curl counts its calls in a file, so a box that wakes on a later try and the 12-try limit can be checked.
+    const calls = join(dir, 'calls');
+    writeFileSync(join(dir, 'curl'), `#!/bin/sh\necho x >> '${calls}'\n` + (curlFails
+      ? 'exit 7\n'
+      : `[ "$(wc -l < '${calls}')" -ge ${readyOnTry} ] && printf '%s' '${readyBody}'\nexit 0\n`));
     writeFileSync(join(dir, 'sleep'), '#!/bin/sh\nexit 0\n');
     chmodSync(join(dir, 'curl'), 0o755);
     chmodSync(join(dir, 'sleep'), 0o755);
     const env = { PATH: `${dir}:${process.env.PATH}`, GITHUB_OUTPUT: out, HOME: dir };
     if (wakeUrl !== undefined) env.WAKE_URL = wakeUrl;
     execFileSync('bash', ['-e', '-c', script.join('\n')], { env, stdio: 'pipe' });
-    return readFileSync(out, 'utf8').trim();
+    const result = readFileSync(out, 'utf8').trim();
+    if (!countCalls) return result;
+    return { result, calls: existsSync(calls) ? readFileSync(calls, 'utf8').split('\n').filter(Boolean).length : 0 };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -58,6 +62,13 @@ test('only the exact ready answer pins the job to Instabox', () => {
   const backup = 'runs_on=["self-hosted","tess-agent","tess-backup"]';
   assert.equal(pickMachine({ wakeUrl: 'https://box.example', readyBody: 'starting…' }), backup);
   assert.equal(pickMachine({ wakeUrl: 'https://box.example', curlFails: true }), backup);
+});
+
+test('a box that wakes on a later try still gets the job, and the check gives up after 12 tries', () => {
+  const late = pickMachine({ wakeUrl: 'https://box.example', readyBody: 'tess-ready', readyOnTry: 3, countCalls: true });
+  assert.deepEqual(late, { result: 'runs_on=["self-hosted","tess-agent","tess-primary"]', calls: 3 });
+  const never = pickMachine({ wakeUrl: 'https://box.example', curlFails: true, countCalls: true });
+  assert.deepEqual(never, { result: 'runs_on=["self-hosted","tess-agent","tess-backup"]', calls: 12 });
 });
 
 test('review roles keep the requested model order', () => {

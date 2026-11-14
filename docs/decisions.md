@@ -113,9 +113,10 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   VPS (`paperclip-vps`) and then `omarchy` as fallbacks. A review wakes the box through its public `/ready` page and
   takes it only when its runner answers that it is active and idle; otherwise the job goes to a backup by label.
   *A review needs no macOS and no keys, so a box that exists only for reviews leaves the owner's Mac and Paperclip
-  untouched, and costs nothing while it is paused.* Trade-off: it is a third-party host, and it holds only the
-  reviewer's Claude login token — made with `--no-vault`, holding no Tess signing or rescue keys, its runner runs as an
-  unprivileged user, and it reads outside code read-only. Amends D-63's "reviewer agents run on the owner's machines".
+  untouched, and costs nothing while it is paused.* Trade-off: it is a third-party host. It holds the reviewer's Claude
+  login token, its GitHub runner credentials, and, during a job, that job's `GITHUB_TOKEN` (issues/PR comment write).
+  It is made with `--no-vault` and holds no Tess signing or rescue keys. Its runner runs as an unprivileged user, and it
+  reads outside code read-only. Amends D-63's "reviewer agents run on the owner's machines".
   (#71)
 
 ## Releases and process
