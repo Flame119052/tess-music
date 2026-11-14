@@ -1,6 +1,5 @@
 #!/bin/sh
 # Tess Music installer for macOS.
-#   curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | sh
 # Installs Tess into the Spotify desktop app, a helper that re-applies it after Spotify updates, and Tess Mini.
 # Nothing else to set up; run it again any time to repair. Remove with: ~/Library/Application\ Support/Tess/tess uninstall
 set -e
@@ -14,6 +13,8 @@ if [ -n "$TESS_TEST" ]; then
   HOME_TESS="$TESS_HOME"; CONF="$TESS_CONFIG"
   export SPICETIFY_CONFIG="$TESS_CONFIG" SPICETIFY_STATE="$TESS_CONFIG/state"
 fi
+# A launchd label is per user. A sandbox must not call /bin/launchctl, which is the owner's real job.
+real_launchctl() { [ -n "$TESS_TEST" ] && [ "$(command -v launchctl)" = /bin/launchctl ]; }
 MIN_SPOTIFY="1.2.40"
 INBOX="https://tess-music-player.janus.ing"
 
@@ -54,6 +55,27 @@ report_failure() {
     | curl -fsS --max-time 20 -H "content-type: application/json" --data-binary @- "$INBOX/v1/report" >/dev/null 2>&1 || true
 }
 ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | head -1)" = "$2" ]; }
+# Playing audio makes macOS hold a sleep assertion for Spotify, usually filed by coreaudiod "Created for PID: <Spotify>".
+# pmset needs no permission (osascript would ask every user). macOS awk has no IGNORECASE, so match both cases.
+spotify_playing() {
+  pids=" $(pgrep -f '/Spotify.app/Contents/' 2>/dev/null | tr '\n' ' ') "
+  pmset -g assertions 2>/dev/null | LC_ALL=C awk -v pids="$pids" '
+    /Created for PID:/ { n = $0; gsub(/[^0-9]/, "", n); if (n != "" && index(pids, " " n " ")) found = 1 }
+    /\(Spotify/ && /[Aa]udio|[Pp]laying/ { found = 1 }
+    END { exit !found }'
+}
+wait_for_idle() {
+  # Someone running the install line in Terminal wants it now; background repairs wait, but at most 12 minutes, which
+  # stays under the rescue line's 15-minute watchdog so a repair order is never killed half-way.
+  [ -t 1 ] && return 0
+  waiting=""; i=0
+  while spotify_playing && [ $i -lt ${TESS_IDLE_WAIT_TRIES:-48} ]; do
+    i=$((i+1))
+    [ -n "$waiting" ] || { step "Waiting for the current song to stop before restarting Spotify…"; waiting=1; }
+    [ -e "$HOME_TESS/.installing" ] && touch "$HOME_TESS/.installing"
+    sleep 15
+  done
+}
 
 echo; bold "Tess Music"; echo
 
@@ -141,21 +163,24 @@ fetch theme "$TMP/theme.tgz" || fail "Download failed. Check your connection and
 fetch updater "$TMP/updater.sh" || fail "Download failed. Check your connection and try again."
 fetch mini "$TMP/mini.zip" || rm -f "$TMP/mini.zip"
 fetch doctor "$TMP/doctor.sh" || rm -f "$TMP/doctor.sh"
+for n in installer uninstall wake command; do
+  fetch "$n" "$TMP/$n.sh" && zsh -n "$TMP/$n.sh" || rm -f "$TMP/$n.sh"
+done
 mkdir -p "$HOME_TESS/bin"
 rm -rf "$HOME_TESS/bin/patcher"; ditto "$TMP/p" "$HOME_TESS/bin/patcher"
 PATCHER="$HOME_TESS/bin/patcher/tess-patcher"
 chmod +x "$PATCHER" "$HOME_TESS/bin/patcher/tess-verify"
 
 # --- pause the update helper while we work (it must never run at the same time) --------------------------------------
-launchctl bootout "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 || true
+real_launchctl || launchctl bootout "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 || true
 mkdir -p "$HOME_TESS"; touch "$HOME_TESS/.installing"; PAUSED=1
 
 # --- quit Spotify, undo any earlier patching ---------------------------------------------------------------------
 if [ -z "$TESS_TEST" ] && pgrep -x Spotify >/dev/null; then
-  WAS_RUNNING=1; step "Closing Spotify"
-  osascript -e 'tell application "Spotify" to quit' >/dev/null 2>&1 || true
+  WAS_RUNNING=1; wait_for_idle; step "Closing Spotify"
+  pkill -TERM -x Spotify 2>/dev/null || true
   i=0; while pgrep -x Spotify >/dev/null && [ $i -lt 40 ]; do sleep 0.5; i=$((i+1)); done
-  pkill -x Spotify 2>/dev/null || true
+  pkill -KILL -x Spotify 2>/dev/null || true
 fi
 if [ -d "$SPOTIFY/Contents/Resources/Apps/xpui" ]; then
   # Spotify was already modified (an earlier Tess, or Spicetify): put it back to stock first
@@ -172,6 +197,7 @@ APPS="$SPOTIFY/Contents/Resources/Apps"
 # halfway through that left Spotify with no interface at all (black window). tools/check-safety.sh enforces this.
 swap_apps() {
   _new="$APPS.tess-new"; _old="$APPS.tess-old"
+  if [ ! -d "$APPS" ] && [ -d "$_old" ]; then mv "$_old" "$APPS" || return 1; fi
   rm -rf "$_new"
   ditto "$1" "$_new" || { rm -rf "$_new"; return 1; }
   [ -s "$_new/xpui.spa" ] || [ -s "$_new/xpui/index.html" ] || { rm -rf "$_new"; return 1; }
@@ -222,28 +248,199 @@ if [ ! -f "$APPS/xpui/index.html" ] || ! grep -q "spicetifyWrapper" "$APPS/xpui/
   put_back
   fail "Tess didn't apply cleanly. Spotify was put back exactly as it was; please report this."
 fi
+# Copy beside the target and rename: sh and zsh read a running script as they go, and `tess repair` runs this installer
+# (and the tess command) from the very files written here, so overwriting them in place could run a mix of two versions.
+put() { cp "$1" "$2.new" && chmod +x "$2.new" && mv -f "$2.new" "$2"; }
 # --- the updater: keeps every part of Tess current from now on, and puts Tess back after Spotify updates --------------
-cp "$TMP/updater.sh" "$HOME_TESS/updater.sh"; chmod +x "$HOME_TESS/updater.sh"
+put "$TMP/updater.sh" "$HOME_TESS/updater.sh"
 { echo "SPOTIFY='$SPOTIFY'"; [ -n "$TESS_TEST" ] && echo "TESS_CONFIG='$CONF'"; [ "$CH" != stable ] && echo "TESS_PARTS_CHANNEL='$CH'"; } > "$HOME_TESS/updater.env"
 mkdir -p "$HOME_TESS/state"
 OLD_MINI=$(cat "$HOME_TESS/state/mini" 2>/dev/null || true)
-for n in patcher theme updater mini doctor; do
+for n in patcher theme updater mini doctor installer uninstall wake command; do
   { [ "$n" = mini ] && [ ! -s "$TMP/mini.zip" ]; } || { [ "$n" = doctor ] && [ ! -s "$TMP/doctor.sh" ]; } && continue
+  [ -n "$(part "$n" 2)" ] || continue
+  case "$n" in installer|uninstall|wake|command) [ -s "$TMP/$n.sh" ] || continue ;; esac
   part $n 2 > "$HOME_TESS/state/$n"
 done
 awk '$1 == "version" { print $2 }' "$TMP/components.txt" > "$HOME_TESS/state/version"
-[ -s "$TMP/doctor.sh" ] && cp "$TMP/doctor.sh" "$HOME_TESS/doctor.sh"
+[ -s "$TMP/doctor.sh" ] && put "$TMP/doctor.sh" "$HOME_TESS/doctor.sh"
+for n in installer uninstall wake; do
+  if [ -s "$TMP/$n.sh" ]; then put "$TMP/$n.sh" "$HOME_TESS/$n.sh"; fi
+done
 [ -f "$HOME_TESS/install-id" ] || od -An -tx1 -N16 /dev/urandom | tr -d ' \n' > "$HOME_TESS/install-id"
-# the rescue line (see rescue.sh): its own copy, which updates never replace
-if [ -x "$HOME_TESS/bin/patcher/rescue/tess-rescue-verify" ] && [ ! -x "$HOME_TESS/rescue/tess-rescue-verify" ]; then
-  mkdir -p "$HOME_TESS/rescue"; cp "$HOME_TESS/bin/patcher/rescue/"* "$HOME_TESS/rescue/"
+# Older channels have no local repair or uninstall parts.
+[ -s "$HOME_TESS/installer.sh" ] || { [ -f "$0" ] && cp "$0" "$HOME_TESS/installer.sh" && chmod +x "$HOME_TESS/installer.sh"; } || true
+if [ ! -s "$HOME_TESS/uninstall.sh" ]; then
+  cat > "$HOME_TESS/uninstall.sh" <<'TESS_UNINSTALL'
+#!/bin/sh
+# Removes Tess Music and puts Spotify back to stock.
+# Installed as a signed Tess part; run with: ~/Library/Application\ Support/Tess/tess uninstall
+HOME_TESS="${TESS_HOME:-$HOME/Library/Application Support/Tess}"
+[ -f "$HOME_TESS/updater.env" ] && . "$HOME_TESS/updater.env"
+CONF="${TESS_CONFIG:-$HOME/.config/tess-patcher}"
+[ -n "$TESS_CONFIG" ] && export SPICETIFY_CONFIG="$TESS_CONFIG"
+PATCHER="$HOME_TESS/bin/patcher/tess-patcher"
+echo; printf '\033[1m%s\033[0m\n\n' "Removing Tess Music"
+# A launchd label is per user. A sandbox must not call /bin/launchctl, which is the owner's real job.
+real_launchctl() { [ -n "$TESS_TEST" ] && [ "$(command -v launchctl)" = /bin/launchctl ]; }
+real_launchctl || launchctl enable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+if [ -z "$TESS_TEST" ]; then
+  for a in music.tess.guard music.tess.mini music.tess.rescue music.tess.wake; do
+    launchctl bootout "gui/$(id -u)/$a" >/dev/null 2>&1 || true
+    rm -f "$HOME/Library/LaunchAgents/$a.plist"
+  done
+  if pgrep -x Spotify >/dev/null; then osascript -e 'tell application "Spotify" to quit' >/dev/null 2>&1; sleep 2; fi
+fi
+[ -x "$PATCHER" ] && "$PATCHER" restore --no-restart >/dev/null 2>&1 || true
+[ -z "$TESS_TEST" ] && rm -rf "$HOME/Applications/Tess Mini.app"
+rm -rf "$HOME_TESS" "$CONF"
+echo "  Spotify is back to normal. (Your Spotify account, library and downloads were never touched.)"
+echo
+TESS_UNINSTALL
+  chmod +x "$HOME_TESS/uninstall.sh"
+fi
+# Rescue keeps an independent verifier so a broken patcher update cannot disable recovery.
+RESCUE_SRC="$HOME_TESS/bin/patcher/rescue"
+if [ -x "$RESCUE_SRC/tess-rescue-verify" ] && [ -f "$RESCUE_SRC/rescue.sh" ]; then
+  mkdir -p "$HOME_TESS/rescue"; RESCUE_FRESH=""
+  if [ ! -x "$HOME_TESS/rescue/tess-rescue-verify" ]; then
+    cp "$RESCUE_SRC/tess-rescue-verify" "$HOME_TESS/rescue/tess-rescue-verify"; RESCUE_FRESH=1
+  fi
+  if [ ! -f "$HOME_TESS/rescue/rescue.sh" ]; then cp "$RESCUE_SRC/rescue.sh" "$HOME_TESS/rescue/rescue.sh"; RESCUE_FRESH=1; fi
   chmod +x "$HOME_TESS/rescue/tess-rescue-verify" "$HOME_TESS/rescue/rescue.sh"
-  TESS_HOME="$HOME_TESS" /bin/zsh "$HOME_TESS/rescue/rescue.sh" --adopt >/dev/null 2>&1 || true
+  [ -n "$RESCUE_FRESH" ] && TESS_HOME="$HOME_TESS" /bin/zsh "$HOME_TESS/rescue/rescue.sh" --adopt >/dev/null 2>&1 || true
 fi
 rm -f "$HOME_TESS/reapply.sh"
 rm -f "$HOME_TESS/.installing"
 
-if [ -n "$TESS_TEST" ]; then echo; bold "Test install into $SPOTIFY finished."; exit 0; fi
+# --- the tess command ----------------------------------------------------------------------------------------------
+if [ -s "$TMP/command.sh" ]; then
+  cp "$TMP/command.sh" "$HOME_TESS/tess.new"
+else
+  # Older channels have no command part; keep rescue opt-out available before their next promotion.
+  cat > "$HOME_TESS/tess.new" <<'TESS_COMMAND'
+#!/bin/sh
+T="${TESS_HOME:-$HOME/Library/Application Support/Tess}"
+LA="${TESS_LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}"
+channel() {
+  CH=$(sed -n "s/^TESS_PARTS_CHANNEL='\(.*\)'$/\1/p" "$T/updater.env" 2>/dev/null)
+  echo "${CH:-stable}"
+}
+# A launchd label is per user. Under TESS_TEST, /bin/launchctl is the owner's real jobs.
+real_launchctl() { [ -n "$TESS_TEST" ] && [ "$(command -v launchctl)" = /bin/launchctl ]; }
+lctl() { real_launchctl && return 1; command launchctl "$@"; }
+case "$1" in
+  update) /usr/bin/env TESS_FORCE=1 /bin/zsh "$T/updater.sh" ;;
+  repair) exec /usr/bin/env TESS_CHANNEL="$(channel)" /bin/sh "$T/installer.sh" ;;
+  uninstall) exec /bin/sh "$T/uninstall.sh" ;;
+  doctor) /bin/zsh "$T/doctor.sh" ;;
+  report) /bin/zsh "$T/doctor.sh" --report ;;
+  reports)
+    case "$2" in
+      off) touch "$T/reports-off"; echo "Health reports are off." ;;
+      on) rm -f "$T/reports-off"; echo "Health reports are on." ;;
+      *) [ -f "$T/reports-off" ] && echo "Health reports are off." || echo "Health reports are on. (tess reports off)" ;;
+    esac ;;
+  rescue)
+    case "$2" in
+      off)
+        touch "$T/rescue-off"
+        lctl disable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+        lctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+        rm -f "$LA/music.tess.rescue.plist"
+        echo "The Tess rescue line is off. Updates will not turn it back on." ;;
+      on)
+        if [ ! -x "$T/rescue/rescue.sh" ] || ! /bin/zsh "$T/rescue/rescue.sh" --adopt >/dev/null 2>&1; then
+          touch "$T/rescue-off"
+          lctl disable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+          lctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+          rm -f "$LA/music.tess.rescue.plist"
+          echo "Couldn't read the current rescue order; the rescue line stays off. Try again when online."
+          exit 1
+        fi
+        mkdir -p "$LA"
+        RESCUE_PATH=$(printf '%s' "$T/rescue/rescue.sh" | sed 's/\&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+        printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+          '<plist version="1.0"><dict><key>Label</key><string>music.tess.rescue</string>' \
+          "<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$RESCUE_PATH</string></array>" \
+          '<key>StartInterval</key><integer>21600</integer><key>RunAtLoad</key><true/><key>AbandonProcessGroup</key><true/></dict></plist>' > "$LA/music.tess.rescue.plist" || exit 1
+        rm -f "$T/rescue-off"
+        lctl enable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+        lctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+        if lctl bootstrap "gui/$(id -u)" "$LA/music.tess.rescue.plist" >/dev/null 2>&1; then
+          echo "The Tess rescue line is on. A current, unexpired order may run, including one sent while it was off."
+        else
+          touch "$T/rescue-off"
+          lctl disable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+          rm -f "$LA/music.tess.rescue.plist"
+          echo "The rescue line could not start; it stays off. Run tess doctor."
+          exit 1
+        fi
+        ;;
+      log) tail -100 "$T/rescue/rescue.log" 2>/dev/null || echo "No rescue orders have run." ;;
+      *) if [ -f "$T/rescue-off" ]; then echo "The Tess rescue line is off. (tess rescue on)"
+         elif [ ! -x "$T/rescue/tess-rescue-verify" ]; then echo "The Tess rescue line is not installed on this Mac."
+         else echo "The Tess rescue line is on. (tess rescue off)"; fi ;;
+    esac ;;
+  status)
+    VERSION=$(cat "$T/state/version" 2>/dev/null || echo unknown)
+    echo "Tess $VERSION ($(channel))"
+    lctl print "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 && echo "Updater: running" || echo "Updater: stopped"
+    lctl print "gui/$(id -u)/music.tess.wake" >/dev/null 2>&1 && echo "Wake check: running" || echo "Wake check: stopped"
+    FP=$(shasum -a 256 "$T/rescue/tess-rescue-verify" 2>/dev/null | cut -d' ' -f1)
+    [ -n "$FP" ] || FP=not-installed
+    # Status is how a person checks the line. "On" with no verifier describes a line that is not there.
+    if [ ! -x "$T/rescue/tess-rescue-verify" ]; then
+      echo "Rescue: not installed"
+    elif [ -f "$T/rescue-off" ]; then
+      if lctl print "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1; then
+        echo "Rescue: off, but the agent is still loaded; run: tess rescue off (verifier SHA-256 $FP)"
+      else
+        echo "Rescue: off (verifier SHA-256 $FP)"
+      fi
+    elif lctl print "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1; then
+      echo "Rescue: on, running (verifier SHA-256 $FP)"
+    else
+      echo "Rescue: on, stopped (verifier SHA-256 $FP)"
+    fi
+    [ -f "$T/reports-off" ] && echo "Reports: off" || echo "Reports: on"
+    # An older script is not limited to the five actions. Repair is not the only place that should say so.
+    if [ -f "$T/rescue/rescue.sh" ] && ! grep -q 'grep -qx "tess-rescue 2"' "$T/rescue/rescue.sh"; then
+      echo "Rescue format: older (a signed order can run any script as you; tess rescue off stops it)"
+    fi
+    ;;
+  *) echo "usage: tess doctor | report | reports on|off | rescue on|off|log | status | update | repair | uninstall" ;;
+esac
+TESS_COMMAND
+fi
+chmod +x "$HOME_TESS/tess.new" && mv -f "$HOME_TESS/tess.new" "$HOME_TESS/tess"
+
+rescue_notice() {
+  if [ -f "$HOME_TESS/rescue-off" ]; then
+    echo "  The Tess rescue line is off on this Mac. Turn it back on: \"$HOME_TESS/tess\" rescue on"
+  # Remember that this Mac was told the line exists, so a later update may put the files back. "Isn't set up" does not.
+  elif [ -x "$HOME_TESS/rescue/rescue.sh" ] && ! grep -q 'grep -qx "tess-rescue 2"' "$HOME_TESS/rescue/rescue.sh"; then
+    echo "  This Mac has an older Tess rescue line: orders signed by the owner's offline rescue key can run any script on this Mac as you, without asking."
+    echo "  Turn it off any time: \"$HOME_TESS/tess\" rescue off"
+    mkdir -p "$HOME_TESS/state"; touch "$HOME_TESS/state/rescue-notice-shown"
+  elif [ -x "$HOME_TESS/rescue/rescue.sh" ]; then
+    echo "  Tess's maintainer can remotely run five Tess actions on this Mac, without asking: check, update, repair, restore Spotify, or uninstall Tess."
+    echo "  It accepts only orders signed by the owner's offline rescue key. Turn it off any time: \"$HOME_TESS/tess\" rescue off"
+    mkdir -p "$HOME_TESS/state"; touch "$HOME_TESS/state/rescue-notice-shown"
+  else
+    echo "  The Tess rescue line isn't set up on this Mac."
+  fi
+}
+
+if [ -x "$HOME_TESS/rescue/rescue.sh" ] && [ ! -f "$HOME_TESS/rescue-off" ]; then
+  real_launchctl || launchctl enable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+fi
+
+if [ -n "$TESS_TEST" ]; then
+  echo; bold "Test install into $SPOTIFY finished."
+  rescue_notice
+  exit 0
+fi
 
 # --- the helper that runs the updater -----------------------------------------------------------------------------
 step "Keeping Tess up to date, and on through Spotify updates"
@@ -255,14 +452,24 @@ cat > "$HOME/Library/LaunchAgents/music.tess.guard.plist" <<EOF
 <key>Label</key><string>music.tess.guard</string>
 <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$HOME_TESS/updater.sh</string></array>
 <key>WatchPaths</key><array><string>$SPOTIFY/Contents/Resources/Apps</string></array>
-<key>StartInterval</key><integer>300</integer>
+<key>StartInterval</key><integer>1800</integer>
 <key>RunAtLoad</key><true/>
 </dict></plist>
 EOF
 launchctl bootout "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.guard.plist" 2>/dev/null || true
 
-if [ -x "$HOME_TESS/rescue/rescue.sh" ]; then
+# A bad wake plist must not abort the rest of install: Mini, rescue and the notice still have to run.
+if [ -x "$HOME_TESS/wake.sh" ] && "$HOME_TESS/wake.sh" --plist > "$HOME/Library/LaunchAgents/music.tess.wake.plist.new" \
+   && plutil -lint "$HOME/Library/LaunchAgents/music.tess.wake.plist.new" >/dev/null; then
+  mv -f "$HOME/Library/LaunchAgents/music.tess.wake.plist.new" "$HOME/Library/LaunchAgents/music.tess.wake.plist"
+  launchctl bootout "gui/$(id -u)/music.tess.wake" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.wake.plist" 2>/dev/null || true
+else
+  rm -f "$HOME/Library/LaunchAgents/music.tess.wake.plist.new"
+fi
+
+if [ -x "$HOME_TESS/rescue/rescue.sh" ] && [ ! -f "$HOME_TESS/rescue-off" ]; then
 cat > "$HOME/Library/LaunchAgents/music.tess.rescue.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -271,6 +478,7 @@ cat > "$HOME/Library/LaunchAgents/music.tess.rescue.plist" <<EOF
 <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$HOME_TESS/rescue/rescue.sh</string></array>
 <key>StartInterval</key><integer>21600</integer>
 <key>RunAtLoad</key><true/>
+<key>AbandonProcessGroup</key><true/>
 </dict></plist>
 EOF
 launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
@@ -301,32 +509,12 @@ EOF
   launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.mini.plist" 2>/dev/null || true
 fi
 
-# --- the tess command (update / repair / uninstall) -----------------------------------------------------------------
-cat > "$HOME_TESS/tess" <<'EOF'
-#!/bin/sh
-case "$1" in
-  update|repair)
-    CH=$(sed -n "s/^TESS_PARTS_CHANNEL='\(.*\)'$/\1/p" "$HOME/Library/Application Support/Tess/updater.env" 2>/dev/null)
-    curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | TESS_CHANNEL="${CH:-stable}" sh ;;
-  uninstall) curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/uninstall.sh | sh ;;
-  doctor) /bin/zsh "$HOME/Library/Application Support/Tess/doctor.sh" ;;
-  report) /bin/zsh "$HOME/Library/Application Support/Tess/doctor.sh" --report ;;
-  reports)
-    case "$2" in
-      off) touch "$HOME/Library/Application Support/Tess/reports-off"; echo "Health reports are off." ;;
-      on) rm -f "$HOME/Library/Application Support/Tess/reports-off"; echo "Health reports are on." ;;
-      *) [ -f "$HOME/Library/Application Support/Tess/reports-off" ] && echo "Health reports are off." || echo "Health reports are on. (tess reports off)" ;;
-    esac ;;
-  *) echo "usage: tess doctor | report | reports on|off | update | repair | uninstall" ;;
-esac
-EOF
-chmod +x "$HOME_TESS/tess"
-
 echo
 bold "Tess is installed."
 echo "  Spotify opens now. The theme updates itself; Spotify updates are handled for you."
 echo "  The first time you open the miniplayer, macOS asks to let Tess Mini control Spotify: choose Allow."
-  echo "  To remove it: \"$HOME_TESS/tess\" uninstall      If something looks wrong: \"$HOME_TESS/tess\" doctor"
+echo "  To remove it: \"$HOME_TESS/tess\" uninstall      If something looks wrong: \"$HOME_TESS/tess\" doctor"
+rescue_notice
 echo "  Tess sends a small anonymous health report (versions and errors, nothing personal) so problems get fixed."
 echo "  To turn that off: \"$HOME_TESS/tess\" reports off"
 echo
