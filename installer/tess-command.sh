@@ -7,8 +7,8 @@ channel() {
 }
 case "$1" in
   update) /usr/bin/env TESS_FORCE=1 /bin/zsh "$T/updater.sh" ;;
-  repair) /usr/bin/env TESS_CHANNEL="$(channel)" /bin/sh "$T/installer.sh" ;;
-  uninstall) /bin/sh "$T/uninstall.sh" ;;
+  repair) exec /usr/bin/env TESS_CHANNEL="$(channel)" /bin/sh "$T/installer.sh" ;;
+  uninstall) exec /bin/sh "$T/uninstall.sh" ;;
   doctor) /bin/zsh "$T/doctor.sh" ;;
   report) /bin/zsh "$T/doctor.sh" --report ;;
   reports)

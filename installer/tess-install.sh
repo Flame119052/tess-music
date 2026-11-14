@@ -246,8 +246,11 @@ if [ ! -f "$APPS/xpui/index.html" ] || ! grep -q "spicetifyWrapper" "$APPS/xpui/
   put_back
   fail "Tess didn't apply cleanly. Spotify was put back exactly as it was; please report this."
 fi
+# Copy beside the target and rename: sh and zsh read a running script as they go, and `tess repair` runs this installer
+# (and the tess command) from the very files written here, so overwriting them in place could run a mix of two versions.
+put() { cp "$1" "$2.new" && chmod +x "$2.new" && mv -f "$2.new" "$2"; }
 # --- the updater: keeps every part of Tess current from now on, and puts Tess back after Spotify updates --------------
-cp "$TMP/updater.sh" "$HOME_TESS/updater.sh"; chmod +x "$HOME_TESS/updater.sh"
+put "$TMP/updater.sh" "$HOME_TESS/updater.sh"
 { echo "SPOTIFY='$SPOTIFY'"; [ -n "$TESS_TEST" ] && echo "TESS_CONFIG='$CONF'"; [ "$CH" != stable ] && echo "TESS_PARTS_CHANNEL='$CH'"; } > "$HOME_TESS/updater.env"
 mkdir -p "$HOME_TESS/state"
 OLD_MINI=$(cat "$HOME_TESS/state/mini" 2>/dev/null || true)
@@ -258,9 +261,9 @@ for n in patcher theme updater mini doctor installer uninstall wake command; do
   part $n 2 > "$HOME_TESS/state/$n"
 done
 awk '$1 == "version" { print $2 }' "$TMP/components.txt" > "$HOME_TESS/state/version"
-[ -s "$TMP/doctor.sh" ] && cp "$TMP/doctor.sh" "$HOME_TESS/doctor.sh"
+[ -s "$TMP/doctor.sh" ] && put "$TMP/doctor.sh" "$HOME_TESS/doctor.sh"
 for n in installer uninstall wake; do
-  if [ -s "$TMP/$n.sh" ]; then cp "$TMP/$n.sh" "$HOME_TESS/$n.sh"; chmod +x "$HOME_TESS/$n.sh"; fi
+  if [ -s "$TMP/$n.sh" ]; then put "$TMP/$n.sh" "$HOME_TESS/$n.sh"; fi
 done
 [ -f "$HOME_TESS/install-id" ] || od -An -tx1 -N16 /dev/urandom | tr -d ' \n' > "$HOME_TESS/install-id"
 # Older channels have no local repair or uninstall parts.
@@ -308,10 +311,10 @@ rm -f "$HOME_TESS/.installing"
 
 # --- the tess command ----------------------------------------------------------------------------------------------
 if [ -s "$TMP/command.sh" ]; then
-  cp "$TMP/command.sh" "$HOME_TESS/tess"
+  cp "$TMP/command.sh" "$HOME_TESS/tess.new"
 else
   # Older channels have no command part; keep rescue opt-out available before their next promotion.
-  cat > "$HOME_TESS/tess" <<'TESS_COMMAND'
+  cat > "$HOME_TESS/tess.new" <<'TESS_COMMAND'
 #!/bin/sh
 T="${TESS_HOME:-$HOME/Library/Application Support/Tess}"
 LA="${TESS_LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}"
@@ -321,8 +324,8 @@ channel() {
 }
 case "$1" in
   update) /usr/bin/env TESS_FORCE=1 /bin/zsh "$T/updater.sh" ;;
-  repair) /usr/bin/env TESS_CHANNEL="$(channel)" /bin/sh "$T/installer.sh" ;;
-  uninstall) /bin/sh "$T/uninstall.sh" ;;
+  repair) exec /usr/bin/env TESS_CHANNEL="$(channel)" /bin/sh "$T/installer.sh" ;;
+  uninstall) exec /bin/sh "$T/uninstall.sh" ;;
   doctor) /bin/zsh "$T/doctor.sh" ;;
   report) /bin/zsh "$T/doctor.sh" --report ;;
   reports)
@@ -392,7 +395,7 @@ case "$1" in
 esac
 TESS_COMMAND
 fi
-chmod +x "$HOME_TESS/tess"
+chmod +x "$HOME_TESS/tess.new" && mv -f "$HOME_TESS/tess.new" "$HOME_TESS/tess"
 
 rescue_notice() {
   if [ -f "$HOME_TESS/rescue-off" ]; then
