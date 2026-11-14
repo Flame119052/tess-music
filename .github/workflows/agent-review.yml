@@ -100,7 +100,7 @@ jobs:
           # A request to the box's public page wakes a paused Instabox. Its /ready page answers with the exact body
           # "tess-ready", and only while its runner is active and idle, so a job is never pinned to a box that is still
           # starting, busy or paused. Platforms often serve a 200 "starting…" page, which is why the body is checked and
-          # not just the status code. If it doesn't answer within about 2.5 minutes, the job goes to a backup machine.
+          # not just the status code. If it doesn't answer within 2 minutes (12 tries), the job goes to a backup machine.
           # With no wake URL configured there is no box to wake, so the job uses any tess-agent runner, as before.
           if [ -z "$WAKE_URL" ]; then
             echo 'runs_on=["self-hosted","tess-agent"]' >> "$GITHUB_OUTPUT"
@@ -121,7 +121,8 @@ jobs:
     needs: gate
     if: needs.gate.outputs.allowed == 'true'
     runs-on: ${{ fromJSON(needs.gate.outputs.runs_on) }}
-    # A paused or frozen box must fail the review rather than hold the queue for GitHub's 24-hour limit.
+    # A box that freezes mid-job fails the review after 30 minutes. This does not cover a job still waiting in the
+    # queue: if the box pauses after answering ready, the job waits for it (up to GitHub's 24-hour limit).
     timeout-minutes: 30
     permissions:
       contents: read
