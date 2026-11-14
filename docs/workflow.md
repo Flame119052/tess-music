@@ -124,7 +124,7 @@ These rules come from mistakes made while setting this up: agents started from t
 | Machine | Does | Never |
 | --- | --- | --- |
 | Krish's Mac | Holds the signing and rescue keys. Runs the real Spotify on `dev`. Krish's own commands. The T3 threads. | Hosts a GitHub runner. Holds secrets in the repo or in an external drive's `.env`. |
-| `omarchy`, `paperclip-vps` | The reviewer runners (`tess-agent`). Each job gets a fresh checkout, so nothing on them needs syncing. | Holds a Tess key. Runs the runner as root. |
+| Instabox `tess-reviewer` (default), then `paperclip-vps` or `omarchy` (backups) | The reviewer runners (`tess-agent`). A review first wakes the Instabox box through its public `/ready` page (`REVIEW_WAKE_URL`); if it isn't ready within about two minutes, the job goes to whichever backup is free. Each job gets a fresh checkout, so nothing on them needs syncing. | Holds a Tess key. Runs the runner as root. |
 | GitHub's macOS machines | CI (`check.yml`) and every build and signature (`release.yml`). They are the only place the signing secrets are used. | Runs code from a fork PR without Krish's approval. |
 | Instabox | Optional Linux scratch box for an agent. | Holds a Tess key. Builds Tess, which needs macOS. |
 

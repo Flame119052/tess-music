@@ -115,3 +115,15 @@ setup.
   on from the job; `GH_TOKEN` never reaches it.
 - Krish's Mac makes the registration token and sends it over SSH standard input, so the token never sits in a file or in
   an agent's instructions.
+
+## The Instabox reviewer (default machine, set up 14 Nov)
+
+- Box `tess-reviewer`, made with `--no-vault` so none of Krish's Instabox secrets reach a box that reads outside code.
+  It pauses itself after 30 idle minutes (the free plan's fixed setting) and costs nothing while paused.
+- Same setup as the other runners: a `tess-runner` user, the sandbox and a cap (3 cores, 6 GB, as the box does nothing
+  else), and the workspace wiped after every job. Its runner carries the extra label `tess-primary`; the VPS and omarchy
+  carry `tess-backup`.
+- `tess-ready.service` (user `nobody`, 64 MB) answers `GET /ready` on port 8787 with 200 when the runner is up. The port
+  is published; its URL is the repo variable `REVIEW_WAKE_URL`. Requesting it is what wakes the paused box. It reveals
+  nothing but ready or not ready.
+- To retire it: `instabox port unpublish tess-reviewer 8787`, remove the runner in GitHub, then `instabox rm tess-reviewer`.
