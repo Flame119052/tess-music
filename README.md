@@ -15,6 +15,13 @@ Spotify reopens with Tess and a short welcome to pick your defaults. Tess update
 small helper puts it back after Spotify updates itself. **Tess Mini**, a miniplayer that floats over every app, comes
 with it (macOS 13+).
 
+Tess also has a rescue line. On a current install the maintainer can remotely run one of five Tess actions
+(check, update, repair, restore Spotify, or uninstall) using orders signed with an offline key. Those orders
+cannot carry a script. Rescue lines installed before 13 Nov 2026 are older: a signed order can run any script
+as you, and updates never replace that script. Repair tells you if this Mac has one. See what ran with
+`~/Library/Application\ Support/Tess/tess rescue log`, and turn it off with
+`~/Library/Application\ Support/Tess/tess rescue off`.
+
 Update or repair with the same line. Remove everything and put Spotify back to stock:
 
 ```sh
@@ -51,11 +58,12 @@ Each Mac has three layers. Each one keeps working when the layer above it is bro
 1. **Updates.** The updater installs whatever the signed parts list on `stable` says. A push to `main` ships it.
 2. **Doctor.** `tess doctor` checks every part and fixes what it safely can. The updater also runs it by itself
    whenever something fails. `tess report` sends a report right away and prints the Mac's install id.
-3. **Rescue line.** A separate agent (`music.tess.rescue`) that updates never replace. Every 6 hours it fetches the
+3. **Rescue line.** A separate agent (`music.tess.rescue`) that updates never replace. Every 6 hours, and within about 5 minutes of a new order, it fetches the
    rescue order from the `rescue` branch (or from the inbox if GitHub is unreachable) and runs it once. It runs only
    orders signed with the **rescue key** (`~/.config/tess-signing/rescue.pem`, kept only on this Mac, never in GitHub
    or CI), with a higher serial than any it has run, not expired, and for every Mac or this Mac's id. An order can only
-   name one of five actions built into `rescue.sh` (check, update, repair, restore-spotify, uninstall), never a script.
+   name one of five actions built into the current `rescue.sh` (check, update, repair, restore-spotify, uninstall), never a script.
+   Rescue lines installed before 13 Nov 2026 keep an older script, which updates never replace, and a signed order for that script can run any command.
    Publish one with `node tools/rescue.mjs <action> [--days 3] [--only <install id>]`.
 
 **Reports.** Macs send anonymous health reports (a daily heartbeat, problems, failed installs, rescue results) to
@@ -97,5 +105,7 @@ line. By hand: `node tools/release.mjs auto|X.Y.Z [dev|beta|stable]` (signing ke
 
 How installed Macs update: the look and features load fresh on every Spotify start (`theme/loader/`, which falls back to
 the last release that started cleanly). Every other part (the loader, patcher, Tess Mini, the updater itself) is kept
-current by `installer/updater.sh`, which macOS runs every few minutes; it installs only what changed, after checking the
-signed parts list. Installs from 0.1.0 read `Flame119052/tess-releases`, which each release mirrors; never archive it.
+current by `installer/updater.sh`, which macOS runs every 30 minutes and whenever the 5-minute wake check sees a new
+release; it installs only what changed, after checking the signed parts list, restarts Spotify only when no music is
+playing, runs the doctor after each update and goes back to the last good part if one breaks. Users can see what's
+running with `tess status` and turn the rescue line off with `tess rescue off`. Installs from 0.1.0 read `Flame119052/tess-releases`, which each release mirrors; never archive it.

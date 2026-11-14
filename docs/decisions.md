@@ -170,3 +170,18 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
 - **D-57 · 13 Nov 2026 · Owner** — Visual & UX priorities filed: fix artist Photo/Video switch & per-artist persistence
   (#60), separate Blends and Playlists in Library (#61), rework vinyl tonearm edge-to-label geometry & sync (#63),
   fix blank right side in no-lyrics full-screen transitions (#65), and collect customization/design controls (#64).
+
+- **14 Nov 2026 · PR #75 review fixes (#53)** — Ship the Tess command as an optional signed `command` part so the
+  updater reaches existing Macs. Older channels can omit installer, uninstall, wake and command parts. Rescue off
+  disables the launchd job and removes its login plist; ordinary updates preserve the independent rescue verifier.
+  Part rollback requires a healthy doctor baseline so unrelated existing failures cannot ban good parts. Wake
+  remembers the last rescue serial it triggered, including rejected or expired orders.
+
+- **14 Nov 2026 · PR #75 sixth review (#53)** — The wake check reads the release and the rescue order separately, and skips the rescue read when the line is off. A repair names an older rescue script as able to run scripts. `tess status` says when that agent is still loaded after off, and the doctor unloads it and removes its login plist.
+- **14 Nov 2026 · PR #75 seventh review (#53)** — Docs name the pre-13 Nov rescue scripts, which updates never replace and which can run a signed script. Existing Macs are not shown a new notice unless they repair or reinstall. #53's check is the install notice, the README, and SECURITY.md. That older format is the owner's Mac and one other (D-62); they see the plain wording the next time they repair. An unsolicited notice on every Mac is not part of this change. A sandbox calls launchctl only when a fake one is first on PATH, because the job label is the owner's real job.
+- **14 Nov 2026 · PR #75 eighth review (#53)** — When the doctor part itself changes, the updater takes a new health baseline from that doctor instead of judging it by the previous one. `tess status` says the rescue line is not installed when its verifier is missing, and names an older script that can run any script. The doctor removes a leftover rescue login file even when that job is not loaded. An update does not add a rescue line on a Mac whose install notice said the line was not there.
+- **14 Nov 2026 · PR #75 second review (#53, #71)** — Older channels retain the running installer and a built-in
+  uninstaller when signed parts are absent, without claiming signed-part hashes. Rescue on creates its own plist
+  and requires adoption success; wording permits an unexpired order sent while off because old rescue scripts
+  cannot report adoption failure reliably. Reinstall and uninstall clear launchd's persistent rescue disable.
+  Theme refresh runs with a copied config against staged Spotify files to preserve generated colors before swap.

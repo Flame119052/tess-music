@@ -79,7 +79,8 @@ before/after, a failing then passing test, or a log. "Should work" is not done.
 | Installer / updater / doctor / rescue | Sandbox copy of Spotify with `TESS_TEST=1`; cover success, a blocked write, a failure mid-way, and a fresh Mac; `tools/check-safety.sh` |
 | Patcher (Go) | `cd patcher && go test ./src/cmd/` plus an apply → restore cycle on a sandbox copy |
 | Dial picking | `node tools/test-dial-pick.mjs` |
-| Rescue line | `node tools/test-rescue.mjs` (signed orders in a sandbox: five actions accepted; scripts, unknown actions, injected text, bad signatures, expired orders, replays refused) |
+| Rescue line | `node tools/test-rescue.mjs` (signed orders in a sandbox: five actions accepted; scripts, unknown actions, injected text, bad signatures, expired orders, replays refused), `node tools/test-rescue-control.mjs` (notice, off/on, status) |
+| Updater, wake, swaps | `node tools/test-updater.mjs` (success, fresh Mac, blocked write, failed swap, rollback + no retry, playing vs idle), `node tools/test-wake.mjs`, `node tools/test-swap-recovery.mjs` (kill mid-swap) |
 
 Read numbers carefully: `ps %cpu` on macOS is a minute-long average (use `tools/cpu-ab.mjs`); a hidden window draws
 nothing; Krish using the Mac adds noise, so alternate with/without and repeat (the tools do).
@@ -88,7 +89,7 @@ nothing; Krish using the Mac adds noise, so alternate with/without and repeat (t
 
 - `tools/check-safety.sh` must pass (CI runs it before every build).
 - Push to `main` → CI builds, signs (Ed25519 for content, the stable "Tess Music" code-signing identity for binaries)
-  and publishes to `dev`. Krish's Mac picks it up (look: next Spotify start; other parts: within ~20 minutes).
+  and publishes to `dev`. Krish's Mac picks it up (look: next Spotify start; other parts: within ~5–30 minutes).
 - Declare when Krish says so: `node tools/declare.mjs` copies the exact dev build to beta and writes notes for every
   PR merged since the previous beta. Promote with `node tools/promote.mjs` after beta is clean; it copies that exact
   beta to stable. Both mirror their public channel to `Flame119052/tess-releases` (never archive that repo: 0.1.x
@@ -96,7 +97,7 @@ nothing; Krish using the Mac adds noise, so alternate with/without and repeat (t
 - Emergency fix for Macs whose updates are stuck: `node tools/rescue.mjs <check|update|repair|restore-spotify|uninstall>
   [--only <install id>]` (signed with the offline rescue key; Krish's Mac only). Rescue orders are those five Tess
   actions only; never add a way for an order to run a script or reach anything outside Tess and Spotify. Macs check every
-  6 hours and at login.
+  6 hours, at login, and within ~5 minutes of a new order via the wake check; users can turn it off (`tess rescue off`).
 - Health reports: `node tools/reports.mjs problems | macs | mac <id> | show <n>` (needs Krish's Cloudflare login).
 
 ## Work tracking

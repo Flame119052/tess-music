@@ -13,7 +13,10 @@ CONF="${TESS_CONFIG:-$HOME/.config/tess-patcher}"
 REPO="Flame119052/tess-music"
 INBOX="https://tess-music-player.janus.ing"
 LA="$HOME/Library/LaunchAgents"
+[ -n "$TESS_TEST" ] && LA="$T/LaunchAgents"
 UID_=$(id -u)
+# A launchd label is per user. A sandbox must not call /bin/launchctl, which is the owner's real job.
+real_launchctl() { [ -n "$TESS_TEST" ] && [ "$(command -v launchctl)" = /bin/launchctl ]; }
 MODE="${1:-check}"
 OUT=$(mktemp); trap 'rm -f "$OUT"' EXIT
 problems=0; fixed=0; st=()
@@ -88,6 +91,7 @@ fi
 # halfway through that left Spotify with no interface at all (black window). tools/check-safety.sh enforces this.
 swap_apps() {
   _new="$APPS.tess-new"; _old="$APPS.tess-old"
+  if [ ! -d "$APPS" ] && [ -d "$_old" ]; then mv "$_old" "$APPS" || return 1; fi
   rm -rf "$_new"
   ditto "$1" "$_new" || { rm -rf "$_new"; return 1; }
   [ -s "$_new/xpui.spa" ] || [ -s "$_new/xpui/index.html" ] || { rm -rf "$_new"; return 1; }
@@ -131,18 +135,37 @@ if [ -f "$LA/music.tess.guard.plist" ]; then
   if loaded music.tess.guard; then ok "update helper running"; st+=(guard=ok)
   else load music.tess.guard && fix "restarted the update helper"; st+=(guard=restarted); fi
 else bad "the update helper is missing (run the install line once)"; st+=(guard=missing); fi
+if [ -x "$T/wake.sh" ] && [ -f "$LA/music.tess.wake.plist" ]; then
+  if loaded music.tess.wake; then ok "wake check running"; st+=(wake=ok)
+  else load music.tess.wake && fix "restarted the wake check"; st+=(wake=restarted); fi
+else bad "the wake check is missing"; st+=(wake=missing); fi
 if [ -d "$HOME/Applications/Tess Mini.app" ] && [ -f "$LA/music.tess.mini.plist" ]; then
   if loaded music.tess.mini; then ok "Tess Mini running"; st+=(mini=ok)
   else load music.tess.mini && fix "restarted Tess Mini"; st+=(mini=restarted); fi
 fi
-if [ -x "$T/rescue/tess-rescue-verify" ] && [ -f "$LA/music.tess.rescue.plist" ]; then
+rescue_fp=$(shasum -a 256 "$T/rescue/tess-rescue-verify" 2>/dev/null | cut -d' ' -f1)
+if [ -f "$T/rescue-off" ]; then
+  # A leftover plist loads again at login even when the job is not running now.
+  if ! real_launchctl; then
+    launchctl disable "gui/$UID_/music.tess.rescue" >/dev/null 2>&1 || true
+    if launchctl print "gui/$UID_/music.tess.rescue" >/dev/null 2>&1; then
+      launchctl bootout "gui/$UID_/music.tess.rescue" >/dev/null 2>&1 || true
+      fix "stopped the rescue line you turned off"
+    fi
+  fi
+  [ -f "$LA/music.tess.rescue.plist" ] && rm -f "$LA/music.tess.rescue.plist" && fix "removed the rescue line's login file"
+  ok "rescue line is off by your choice"; st+=(rescue=off "rescue-verifier=${rescue_fp:-none}")
+elif [ -x "$T/rescue/tess-rescue-verify" ] && [ -f "$LA/music.tess.rescue.plist" ]; then
   if loaded music.tess.rescue; then ok "rescue line ready"; st+=(rescue=ok)
   else load music.tess.rescue && fix "restarted the rescue line"; st+=(rescue=restarted); fi
-else st+=(rescue=none); fi
+  st+=("rescue-verifier=${rescue_fp:-none}")
+else st+=(rescue=none "rescue-verifier=${rescue_fp:-none}"); fi
 
 # --- network ----------------------------------------------------------------------------------------------------------
-if curl -fsS --max-time 15 -o /dev/null https://api.github.com/zen 2>/dev/null || curl -fsS --max-time 15 -o /dev/null https://raw.githubusercontent.com 2>/dev/null; then ok "can reach updates"
-else bad "can't reach GitHub for updates"; st+=(net=down); fi
+if [ "$MODE" != --validate ]; then
+  if curl -fsS --max-time 15 -o /dev/null https://api.github.com/zen 2>/dev/null || curl -fsS --max-time 15 -o /dev/null https://raw.githubusercontent.com 2>/dev/null; then ok "can reach updates"
+  else bad "can't reach GitHub for updates"; st+=(net=down); fi
+fi
 
 recent=$(tail -200 "$T/guard.log" 2>/dev/null | grep -iE "fail|mismatch|couldn|bad|error|ignored" | tail -5)
 [ -n "$recent" ] && { say "  recent problems in the helper's log:"; echo "$recent" | sed 's/^/    /' | while read -r l; do say "$l"; done; }
@@ -170,5 +193,7 @@ case "$MODE" in
   --report) send doctor && echo "Report sent. Your install id: $ID" || echo "Couldn't send the report (reports off, or offline)." ;;
   --auto) [ "$problems" -gt 0 ] || [ "$fixed" -gt 0 ] && send problem ;;
   --heartbeat) send heartbeat ;;
+  --validate) [ "$problems" -eq 0 ] ;;
 esac
+[ "$MODE" = --validate ] && [ "$problems" -gt 0 ] && exit 1
 exit 0

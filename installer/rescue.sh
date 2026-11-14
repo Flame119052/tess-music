@@ -8,7 +8,7 @@
 # these buttons:
 #   check            run Tess's doctor (checks Tess and Spotify, puts back only Tess's own safe fixes) and report
 #   update           run Tess's updater now (it installs only parts signed with Tess's release key)
-#   repair           reinstall Tess with the public install line, on this Mac's channel (same as "tess repair")
+#   repair           run this Mac's signed installer copy on its channel (same as "tess repair")
 #   restore-spotify  take Tess out of Spotify and put Spotify's own interface back (Spotify keeps working, plain)
 #   uninstall        remove Tess completely (same as "tess uninstall")
 # Nothing here reads your files, messages, other apps or settings outside Tess and Spotify.
@@ -29,7 +29,9 @@ VERIFY="$R/tess-rescue-verify"
 LOG="$R/rescue.log"
 REPO="Flame119052/tess-music"
 INBOX="https://tess-music-player.janus.ing"
-[ -x "$VERIFY" ] || exit 0
+[ -f "$T/rescue-off" ] && [ "$1" != --adopt ] && exit 0
+refuse() { [ "$1" = --adopt ] && exit 1; exit 0; }
+[ -x "$VERIFY" ] || refuse "$1"
 mkdir -p "$R"
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 200000 ] && tail -c 100000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
@@ -51,17 +53,20 @@ for src in api raw inbox; do
   "$VERIFY" "$TMP/o" "$(tr -d '\n' < "$TMP/s")" && { got=$src; break; }
   log "order from $src failed its signature check; ignored"
 done
-[ -n "$got" ] || exit 0
+[ -n "$got" ] || refuse "$1"
 
 # Only the action format is accepted. The older format ("tess-rescue 1", which carried a script) is refused here.
-head -1 "$TMP/o" | grep -qx "tess-rescue 2" || exit 0
+head -1 "$TMP/o" | grep -qx "tess-rescue 2" || refuse "$1"
 field() { sed -n "s/^$1 \(.*\)$/\1/p" "$TMP/o" | head -1; }
 serial=$(field serial); expires=$(field expires); only=$(field only); action=$(field action)
-case $serial in ''|*[!0-9]*) exit 0 ;; esac
-case $expires in ''|*[!0-9]*) exit 0 ;; esac
+case $serial in ''|*[!0-9]*) refuse "$1" ;; esac
+case $expires in ''|*[!0-9]*) refuse "$1" ;; esac
 done_serial=$(cat "$R/serial" 2>/dev/null); done_serial=${done_serial:-0}
 # --adopt (used when the rescue line is first installed): note the current order as seen, without running it
-if [ "$1" = --adopt ]; then [ "$serial" -gt "$done_serial" ] && echo "$serial" > "$R/serial"; exit 0; fi
+if [ "$1" = --adopt ]; then
+  if [ "$serial" -gt "$done_serial" ]; then echo "$serial" > "$R/serial" || exit 1; fi
+  exit 0
+fi
 [ "$serial" -gt "$done_serial" ] || exit 0
 [ "$(date +%s)" -lt "$expires" ] || exit 0
 id=$(cat "$T/install-id" 2>/dev/null)
@@ -74,10 +79,10 @@ PATCHER="$T/bin/patcher/tess-patcher"
 case $action in
   check)           cmd=(/bin/zsh "$T/doctor.sh" --report) ;;
   update)          cmd=(/usr/bin/env TESS_FORCE=1 /bin/zsh "$T/updater.sh") ;;
-  repair)          cmd=(/bin/sh -c 'curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | TESS_CHANNEL="$1" sh' _ "${CH:-stable}") ;;
+  repair)          cmd=(/usr/bin/env TESS_CHANNEL="${CH:-stable}" /bin/sh "$T/installer.sh") ;;
   # the patcher's restore swaps in Spotify's own files as one checked copy (swapApps), never delete-then-copy
   restore-spotify) cmd=(/bin/zsh -c '[ -f "$1/updater.env" ] && . "$1/updater.env"; [ -n "$TESS_CONFIG" ] && export SPICETIFY_CONFIG="$TESS_CONFIG"; exec "$2" restore' _ "$T" "$PATCHER") ;;
-  uninstall)       cmd=(/bin/sh -c 'curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/uninstall.sh | sh') ;;
+  uninstall)       cmd=(/bin/sh "$T/uninstall.sh") ;;
   *) log "rescue order $serial asks for '$action', which isn't one of Tess's rescue actions; refused"; exit 0 ;;
 esac
 log "running rescue order $serial: $action (from $got)"

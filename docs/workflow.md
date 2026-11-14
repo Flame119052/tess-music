@@ -137,14 +137,10 @@ These rules come from mistakes made while setting this up: agents started from t
 ## How Macs get updates
 
 - **Updater.** It runs every 30 minutes, and also whenever Spotify's files change.
-- **Wake check.** Every 5 minutes a tiny check reads two small public files, at no cost to the inbox:
-  - the channel's version, which changes when a release is published (that is the webhook-style trigger);
-  - the rescue order number.
-
-  If either is newer, it starts the updater or the rescue line straight away.
+- **Wake check.** Every 5 minutes a tiny check reads public files, at no cost to the inbox. It reads the channel's version, which changes when a release is published (that is the webhook-style trigger). It also reads the rescue order number, unless the user turned the rescue line off. A failure to read one does not skip the other on that attempt. If either is newer, it starts the updater or the rescue line straight away.
 - **Media playing.** Anything that has to restart Spotify waits until no music is playing. Downloads go ahead anyway.
 - **After every update** the doctor checks Tess and Spotify. If the new version broke something, Tess goes back to the last good version and stops retrying that one.
-- **The rescue line** can only do its five actions (D-62). The user is told about it and can turn it off (`tess rescue off`, #53).
+- **The rescue line** on a current install can only do its five actions (D-62). Scripts installed before 13 Nov 2026 can still run a signed script; repair says so. The user can turn it off (`tess rescue off`, #53).
 
 ## CI
 
