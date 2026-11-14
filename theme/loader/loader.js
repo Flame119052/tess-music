@@ -44,6 +44,8 @@
         const m = JSON.parse(await get('manifest.json'));
         const signed = !!(m.sig && typeof m.sig.envelope === 'string');
         const rev = signed ? Number(m.rev) : 0;
+        // Once this Mac has run a release with a rev, an older, pre-rev manifest is a downgrade too.
+        if (!signed && floor() > 0) continue;
         if (signed) {
           const min = Number(m.min);
           if (!Number.isInteger(rev) || rev < 1 || !Number.isInteger(min) || min < 0 || rev < min) continue;

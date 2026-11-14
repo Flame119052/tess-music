@@ -156,7 +156,7 @@ step "Downloading Tess"
 CH="${TESS_CHANNEL:-${TESS_PARTS_CHANNEL:-stable}}"   # dev = internal builds (only the owner's Mac)
 getlist() {
   # TESS_DIST_BASE is for sandbox tests: a local folder server instead of GitHub.
-  if [ -n "$TESS_DIST_BASE" ]; then curl -fsSL --max-time 60 "$DIST/$CH/dist/$1" -o "$TMP/$1"; return; fi
+  if [ -n "$TESS_TEST" ] && [ -n "$TESS_DIST_BASE" ]; then curl -fsSL --max-time 60 "$DIST/$CH/dist/$1" -o "$TMP/$1"; return; fi
   curl -fsSL --max-time 60 -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/dist/$1?ref=$CH" -o "$TMP/$1" \
     || curl -fsSL --max-time 60 "https://raw.githubusercontent.com/$REPO/$CH/dist/$1" -o "$TMP/$1"
 }
@@ -168,6 +168,15 @@ if [ -n "$VERIFY" ]; then
   "$VERIFY" "$TMP/components.txt" "$(tr -d '\n' < "$TMP/components.sig")" || fail "Tess's download didn't pass its signature check, so nothing was installed."
 fi
 part() { awk -v n="$1" '$1 == n { print $'"$2"' }' "$TMP/components.txt"; }
+# The same forward-only rule as the updater: a repair must not install an older release or reset the rev floor.
+rev=$(awk '$1 == "rev" { print $2 }' "$TMP/components.txt") || true
+old=$(cat "$HOME_TESS/state/rev-$CH" 2>/dev/null) || true; case "$old" in ''|*[!0-9]*) old=0 ;; esac
+if [ -z "$rev" ]; then
+  [ "$old" -gt 0 ] && fail "This installer's list has no rev, but version $old is already installed; nothing was changed."
+else
+  case "$rev" in *[!0-9]*) fail "This installer's list has a bad rev; nothing was changed." ;; esac
+  [ "$rev" -ge "$old" ] || fail "This installer is older than the version already installed; nothing was changed."
+fi
 fetch() { curl -fsSL --retry 2 --connect-timeout 20 --max-time 300 "$(part "$1" 3)" -o "$2" && [ "$(shasum -a 256 "$2" | cut -d' ' -f1)" = "$(part "$1" 2)" ]; }
 fetch patcher "$TMP/patcher.tgz" || fail "Download failed. Check your connection and try again."
 mkdir -p "$TMP/p" && tar -xzf "$TMP/patcher.tgz" -C "$TMP/p"
@@ -279,7 +288,7 @@ for n in patcher theme updater mini doctor installer uninstall wake command; do
   part $n 2 > "$HOME_TESS/state/$n"
 done
 awk '$1 == "version" { print $2 }' "$TMP/components.txt" > "$HOME_TESS/state/version"
-awk '$1 == "rev" { print $2 }' "$TMP/components.txt" > "$HOME_TESS/state/rev-$CH"
+if [ -n "$rev" ]; then echo "$rev" > "$HOME_TESS/state/rev-$CH"; fi
 [ -s "$TMP/doctor.sh" ] && put "$TMP/doctor.sh" "$HOME_TESS/doctor.sh"
 for n in installer uninstall wake; do
   if [ -s "$TMP/$n.sh" ]; then put "$TMP/$n.sh" "$HOME_TESS/$n.sh"; fi
