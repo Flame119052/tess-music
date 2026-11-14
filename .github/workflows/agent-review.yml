@@ -19,6 +19,7 @@ jobs:
       number: ${{ steps.gate.outputs.number }}
       head_sha: ${{ steps.gate.outputs.head_sha }}
       tier: ${{ steps.gate.outputs.tier }}
+      runs_on: ${{ steps.machine.outputs.runs_on }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -90,11 +91,39 @@ jobs:
             echo "head_sha=$head_sha"
             echo "tier=$tier"
           } >> "$GITHUB_OUTPUT"
+      - name: Pick the reviewer machine (Instabox first, then the VPS or omarchy)
+        id: machine
+        if: steps.gate.outputs.allowed == 'true'
+        env:
+          WAKE_URL: ${{ vars.REVIEW_WAKE_URL }}
+        run: |
+          # A request to the box's public page wakes a paused Instabox. Its /ready page answers with the exact body
+          # "tess-ready", and only while its runner is active and idle, so a job is never pinned to a box that is still
+          # starting, busy or paused. Platforms often serve a 200 "starting…" page, which is why the body is checked and
+          # not just the status code. If it doesn't answer within 2 minutes (12 tries), the job goes to a backup machine.
+          # With no wake URL configured there is no box to wake, so the job uses any tess-agent runner, as before.
+          if [ -z "$WAKE_URL" ]; then
+            echo 'runs_on=["self-hosted","tess-agent"]' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          for i in $(seq 1 12); do
+            if [ "$(curl -fsS --max-time 5 "${WAKE_URL%/}/ready" 2>/dev/null)" = "tess-ready" ]; then
+              echo 'runs_on=["self-hosted","tess-agent","tess-primary"]' >> "$GITHUB_OUTPUT"
+              echo "Instabox is ready."
+              exit 0
+            fi
+            if [ "$i" -lt 12 ]; then sleep 5; fi
+          done
+          echo "Instabox didn't answer; using a backup machine."
+          echo 'runs_on=["self-hosted","tess-agent","tess-backup"]' >> "$GITHUB_OUTPUT"
 
   review:
     needs: gate
     if: needs.gate.outputs.allowed == 'true'
-    runs-on: [self-hosted, tess-agent]
+    runs-on: ${{ fromJSON(needs.gate.outputs.runs_on) }}
+    # A box that freezes mid-job fails the review after 30 minutes. This does not cover a job still waiting in the
+    # queue: if the box pauses after answering ready, the job waits for it (up to GitHub's 24-hour limit).
+    timeout-minutes: 30
     permissions:
       contents: read
       issues: write
