@@ -54,7 +54,9 @@ case "$1" in
         fi
         ;;
       log) tail -100 "$T/rescue/rescue.log" 2>/dev/null || echo "No rescue orders have run." ;;
-      *) [ -f "$T/rescue-off" ] && echo "The Tess rescue line is off. (tess rescue on)" || echo "The Tess rescue line is on. (tess rescue off)" ;;
+      *) if [ -f "$T/rescue-off" ]; then echo "The Tess rescue line is off. (tess rescue on)"
+         elif [ ! -x "$T/rescue/tess-rescue-verify" ]; then echo "The Tess rescue line is not installed on this Mac."
+         else echo "The Tess rescue line is on. (tess rescue off)"; fi ;;
     esac ;;
   status)
     VERSION=$(cat "$T/state/version" 2>/dev/null || echo unknown)

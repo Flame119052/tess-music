@@ -21,7 +21,7 @@ helper blanked its Spotify).
 | # | Priority | Area | What | State / next step |
 | --- | --- | --- | --- | --- |
 | #56 | `P0` | `installer`, `release-ci` | Security audit (DeepSeek V4.1 via OpenCode Go): 25 findings, 2 Critical, 4 High | Open; Phase 1 top priority. |
-| #68 | `P1` | `installer`, `release-ci` | Rescue line: start a new order within a minute instead of waiting up to six hours | Removed from Tess (owner: no remote-control helpers for users, #69). Exists only on two Macs by the owner's decision. |
+| #68 | `P1` | `installer`, `release-ci` | Rescue line: start a new order within a minute instead of waiting up to six hours | Shipped to every Mac as the 5-minute wake check (D-63, #75): it reads two public files and starts the updater or the rescue line, which can only run its five actions (#69). Users can turn the rescue line off with `tess rescue off` (#53). |
 | #53 | `P1` | `installer` | Tell users about the rescue line; `tess rescue off`, `tess status` | PR #75 review fixes implemented; sandbox checks cover persistent opt-out and older channel installs. Awaiting CI and reviewer acceptance; not released. |
 | #54 | `P1` | `docs`, `release-ci` | Purge old issue revisions and commit messages with personal details | Waiting on Krish (Phase 1). |
 | #71 | `P1` | `installer`, `release-ci` | Issue → approach → PR → dev → beta → stable, with reviewer agents | Parts B–C implemented in PR; runner registration and repository settings remain owner steps. |

@@ -286,7 +286,8 @@ restore_part() {
   case "$name" in
     doctor|updater|installer|uninstall|wake|command)
       file=$(part_file "$name"); [ -f "$good" ] || return 1
-      cp "$good" "$file" && chmod +x "$file"
+      # Write beside it and rename: zsh reads a running script as it goes, so overwriting it in place could run a mix.
+      cp "$good" "$file.restore" && chmod +x "$file.restore" && mv -f "$file.restore" "$file"
       if [ "$name" = wake ]; then install_wake; fi ;;
     patcher)
       [ -d "$good" ] || return 1

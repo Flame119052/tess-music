@@ -63,10 +63,11 @@ spotify_playing() {
     END { exit !found }'
 }
 wait_for_idle() {
-  # Someone running the install line in Terminal wants it now; background repairs wait, but at most 30 minutes.
+  # Someone running the install line in Terminal wants it now; background repairs wait, but at most 12 minutes, which
+  # stays under the rescue line's 15-minute watchdog so a repair order is never killed half-way.
   [ -t 1 ] && return 0
   waiting=""; i=0
-  while spotify_playing && [ $i -lt 120 ]; do
+  while spotify_playing && [ $i -lt ${TESS_IDLE_WAIT_TRIES:-48} ]; do
     i=$((i+1))
     [ -n "$waiting" ] || { step "Waiting for the current song to stop before restarting Spotify…"; waiting=1; }
     [ -e "$HOME_TESS/.installing" ] && touch "$HOME_TESS/.installing"
@@ -263,7 +264,7 @@ for n in installer uninstall wake; do
 done
 [ -f "$HOME_TESS/install-id" ] || od -An -tx1 -N16 /dev/urandom | tr -d ' \n' > "$HOME_TESS/install-id"
 # Older channels have no local repair or uninstall parts.
-[ -s "$HOME_TESS/installer.sh" ] || { cp "$0" "$HOME_TESS/installer.sh"; chmod +x "$HOME_TESS/installer.sh"; }
+[ -s "$HOME_TESS/installer.sh" ] || { [ -f "$0" ] && cp "$0" "$HOME_TESS/installer.sh" && chmod +x "$HOME_TESS/installer.sh"; } || true
 if [ ! -s "$HOME_TESS/uninstall.sh" ]; then
   cat > "$HOME_TESS/uninstall.sh" <<'TESS_UNINSTALL'
 #!/bin/sh
@@ -367,7 +368,9 @@ case "$1" in
         fi
         ;;
       log) tail -100 "$T/rescue/rescue.log" 2>/dev/null || echo "No rescue orders have run." ;;
-      *) [ -f "$T/rescue-off" ] && echo "The Tess rescue line is off. (tess rescue on)" || echo "The Tess rescue line is on. (tess rescue off)" ;;
+      *) if [ -f "$T/rescue-off" ]; then echo "The Tess rescue line is off. (tess rescue on)"
+         elif [ ! -x "$T/rescue/tess-rescue-verify" ]; then echo "The Tess rescue line is not installed on this Mac."
+         else echo "The Tess rescue line is on. (tess rescue off)"; fi ;;
     esac ;;
   status)
     VERSION=$(cat "$T/state/version" 2>/dev/null || echo unknown)
