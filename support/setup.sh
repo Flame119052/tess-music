@@ -12,7 +12,9 @@
 # controls, and one allowlist has to be one list. The person's Mac runs nothing of Tess's but `tess report`, which they
 # start themselves (D-62, D-65).
 #
-# Safe to run twice. It never edits another Hermes profile, never touches Spotify, and never installs a service.
+# Safe to run twice. It never edits another Hermes profile and never touches Spotify. When systemd is available and this
+# is run with the right to install a unit, it starts the bot through that unit so its memory and CPU caps actually
+# apply; when it can't, it says plainly that the process is running uncapped.
 set -e
 
 NAME=tess-support
@@ -129,29 +131,40 @@ say "Model: $(get "$NAME" model.default) ($(get "$NAME" model.provider))"
 "$HERMES" -p "$NAME" config set TESS_SUPPORT_TOKEN "$SUPTOKEN" >/dev/null 2>&1 || die "couldn't store the support token"
 say "Reports go to $INBOX, which you read with: node tools/reports.mjs support list"
 
+# Hermes' own admin gate: the gateway checks this before the model runs, so Hermes' admin commands are Krish's alone.
+"$HERMES" -p "$NAME" config set gateway.platforms.telegram.extra.allow_admin_from "[\"$OWNER\"]" >/dev/null 2>&1 \
+  || say "Couldn't write the admin gate; set it by hand before anyone else is added."
+
 # The allowlist starts with Krish on it and nobody else. He adds people from the chat, which the skill explains.
 TESS_OWNER_ID="$OWNER" HERMES_HOME="$HERMES_HOME" TESS_PROFILE="$NAME" \
   node "$BASE_DIR/bot/skills/tess-support/scripts/allowlist.mjs" add "$OWNER" Krish --as "$OWNER" >/dev/null 2>&1 \
   || die "couldn't write the allowlist"
 
-# --- 6. Start it ------------------------------------------------------------------------------------------------------
-say "Starting the gateway for '$NAME'..."
-"$HERMES" -p "$NAME" gateway start >/dev/null 2>&1 \
-  || die "couldn't start the gateway; start it by hand with: hermes -p $NAME gateway start"
-
-# --- 7. A ceiling on the process -------------------------------------------------------------------------------------
-# Wherever this runs, the bot gets a memory and CPU cap: a support bot that leaks or spins must not take a machine with
-# it. Installed only when systemd is there and this is being run with the right to write units; otherwise said out loud.
+# --- 6. Start it, under a ceiling if this machine can enforce one -----------------------------------------------------
+# Wherever this runs the bot should get a memory and CPU cap, and the cap only means anything if systemd owns the
+# process. So: install the unit and start it through systemd when that is possible, and otherwise start the gateway
+# plainly and say out loud that nothing is capping it.
 UNIT="$BASE_DIR/tess-support.service"
-if command -v systemctl >/dev/null 2>&1 && [ -f "$UNIT" ]; then
-  if [ -w /etc/systemd/system ] 2>/dev/null; then
-    cp "$UNIT" /etc/systemd/system/tess-support.service 2>/dev/null && systemctl daemon-reload 2>/dev/null \
-      && say "Memory (1G) and CPU (50%) caps installed as a systemd unit." \
-      || say "Couldn't install the systemd unit; the gateway is running without a cap. See support/tess-support.service."
-  else
-    say "Not root, so the cap wasn't installed. To bound it:"
-    say "  sudo cp $UNIT /etc/systemd/system/ && sudo systemctl daemon-reload"
-  fi
+CAPPED=0
+if command -v systemctl >/dev/null 2>&1 && [ -f "$UNIT" ] && [ "$(id -u)" = 0 ]; then
+  # Fill the template in with the account that owns the profile, and the real hermes path.
+  REAL_HERMES=$(command -v hermes 2>/dev/null || echo "$HOME/.local/bin/hermes")
+  sed -e "s|__USER__|$(id -un)|g" -e "s|__HOME__|$HOME|g" -e "s|__HERMES__|$REAL_HERMES|g" "$UNIT" > /etc/systemd/system/tess-support.service \
+    && systemctl daemon-reload \
+    && systemctl enable --now tess-support >/dev/null 2>&1 \
+    && CAPPED=1 \
+    || say "Couldn't install the systemd unit; carrying on without a cap."
+fi
+
+if [ "$CAPPED" = 1 ]; then
+  say "Started under systemd: memory 1G, CPU 50%, its own unit."
+else
+  say "Starting the gateway for '$NAME'..."
+  "$HERMES" -p "$NAME" gateway start >/dev/null 2>&1 \
+    || die "couldn't start the gateway; start it by hand with: hermes -p $NAME gateway start"
+  say ""
+  say "This process is NOT capped. To bound it, run this script again as root on a systemd machine, or install"
+  say "$UNIT by hand after replacing __USER__, __HOME__ and __HERMES__."
 fi
 
 say ""
@@ -161,5 +174,5 @@ say "  · Add someone:  /allow <their id> <a name>     (their id comes from @use
 say "  · Remove them:  /deny <their id>"
 say "  · See the list: /who"
 say "  · Reports:      node tools/reports.mjs support list"
-say "  · Restart it:   hermes -p $NAME gateway restart"
+say "  · Restart it:   systemctl restart tess-support   (or: hermes -p $NAME gateway restart)"
 say ""

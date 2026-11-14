@@ -24,7 +24,7 @@ const docsPath = (path) => path.startsWith('docs/')
 const sensitivePath = (path) => path.startsWith('installer/')
   || path.startsWith('inbox/')
   || path.startsWith('patcher/')
-  // support/ ships a program that people run on their own Macs, so it gets the same review as installer/.
+  // support/ ships a bot and its setup script, which run a server and touch an inbox, so it gets installer-tier review.
   || path.startsWith('support/')
   || path.startsWith('.github/')
   || ['tools/release.mjs', 'tools/promote.mjs', 'tools/rescue.mjs', 'tools/check-safety.sh'].includes(path)

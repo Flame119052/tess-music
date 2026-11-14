@@ -124,6 +124,8 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
     silence — `unauthorized_dm_behavior: decline`, never a pairing code. Krish adds and removes people with `/allow`,
     `/deny` and `/who`; `scripts/allowlist.mjs` refuses a wildcard, a phone number, a request not from his id, and
     removing himself, rewrites the list and the `.env` at 600 atomically, logs every change, and restarts the gateway.
+    Hermes' own `allow_admin_from` is set to his id too, so Hermes' admin commands are his alone; the three support
+    commands above are not Hermes commands, so for those the script's own check is the gate, and the docs say so.
   - **Every report reaches him twice**: the issue is filed with its labels by an issues-only token on the server, and a
     one-line message with the link goes to him on every triage. Nothing is filed from a person's browser.
   - **Nothing of Tess's runs on anyone's Mac** and no Node is needed there. The only command is `tess report`, which the
@@ -156,7 +158,7 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
     ever grows a read API; today that would undo D-14's rule.
 
 - **D-67 · 14 Nov 2026 · Owner** — The support bot keeps a hard resource budget and cleans up after itself, and it is
-  made of six small skills rather than one long playbook. (#70)
+  made of seven small skills rather than one long playbook. (#70)
   - **One session folder per visit**, capped at 60 MB, holding the screenshots, the recording, the doctor output and the
     chat scratch. Anything older than 24 hours is swept on the same run, and the whole scratch space stays under 500 MB.
   - **Recordings are capped at 50 MB and 2 minutes.** Over the cap they are re-encoded down when `ffmpeg` exists and
@@ -167,9 +169,11 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   - **On the inbox side**, a recording goes to R2, never to the database, and is deleted when the report is filed or at
     14 days — by the scheduled job and by an R2 lifecycle rule, so an unapplied rule can't leave it lying there. There is
     no way to read one back.
-  - **The process is capped**: its own unprivileged user with `MemoryMax=1G` and `CPUQuota=50%` in
-    `support/tess-support.service`, and no background processes at all. It still refuses to run on paperclip-vps.
-  - **Six skills, one job each**: `tess-support` (front door), `tess-evidence`, `tess-repro`, `tess-duplicate`,
+  - **The process is capped where systemd can cap it**: `support/tess-support.service` gives it its own unprivileged
+    user with `MemoryMax=1G` and `CPUQuota=50%`, and `setup.sh` starts it through that unit when it runs as root on a
+    systemd machine. Where that isn't possible it starts the gateway plainly and says the process is uncapped rather
+    than claiming otherwise. No background processes either way. It still refuses to run on paperclip-vps.
+  - **Seven skills, one job each**: `tess-support` (front door), `tess-evidence`, `tess-repro`, `tess-duplicate`,
     `tess-gather`, `tess-triage`, `tess-handoff` — each with its own trigger, so the model loads one thing at a time
     instead of one long playbook and hoping it remembers the middle.
   - Trade-off: caps mean a genuinely large recording is refused rather than examined, so the bot asks for a shorter one.

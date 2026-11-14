@@ -94,7 +94,14 @@ try {
   const hedged = out(process.execPath, [TRIAGE, '--report', offFixture, '--words', fix('words-lyrics.txt'), '--mode', 'issue', '--also', 'area:theme', '--title', 'Lyrics drift half a second behind the song']);
   assert.match(hedged, /may not have gone through — reports are off on this Mac, or it was offline/, 'the person is not told a report went that did not');
 
-  // 10. The bot is six skills, each short enough to load on its own and each saying when to use it.
+  // 9b. The admin gate is Hermes', not the model's: configured, and written with Krish's own id by setup.sh.
+  const cfg = readFileSync(join(root, 'support/bot/config.yaml'), 'utf8');
+  assert.match(cfg, /allow_admin_from:/, 'the gateway has an admin list');
+  assert.match(cfg, /user_allowed_commands:/, 'and a short list of what everyone else may run');
+  const setupText = readFileSync(SETUP, 'utf8');
+  assert.match(setupText, /config set gateway\.platforms\.telegram\.extra\.allow_admin_from/, 'setup.sh writes the admin list from Krish\'s id');
+
+  // 10. The bot is seven skills, each short enough to load on its own and each saying when to use it.
   const skillNames = ['tess-support', 'tess-evidence', 'tess-repro', 'tess-duplicate', 'tess-gather', 'tess-triage', 'tess-handoff'];
   for (const name of skillNames) {
     const file = join(root, 'support/bot/skills', name, 'SKILL.md');
@@ -115,7 +122,12 @@ try {
   const envFile = join(prof, '.env'), listFile = join(prof, 'allow.txt');
   writeFileSync(envFile, 'TELEGRAM_BOT_TOKEN=test\n');
   chmodSync(envFile, 0o644);   // deliberately loose: the script must tighten it
-  const aenv = { HERMES_HOME: join(box, 'hermes'), TESS_OWNER_ID: '900000001' };
+  // A stub `hermes` on PATH, so --restart is actually exercised instead of silently skipped.
+  const hermesBin = join(box, 'hermes-bin');
+  mkdirSync(hermesBin, { recursive: true });
+  writeFileSync(join(hermesBin, 'hermes'), `#!/bin/sh\necho "hermes $*" >> "${join(box, 'hermes-calls')}"\nexit 0\n`);
+  chmodSync(join(hermesBin, 'hermes'), 0o755);
+  const aenv = { HERMES_HOME: join(box, 'hermes'), TESS_OWNER_ID: '900000001', PATH: `${hermesBin}:${process.env.PATH}` };
   const run = (...a) => out(process.execPath, [ALLOW, ...a], aenv);
   const denied = (...a) => {
     try { out(process.execPath, [ALLOW, ...a], aenv); assert.fail(`expected a refusal: ${a.join(' ')}`); } catch (e) { assert.notEqual(e.status, 0); assert.match(String(e.stderr), /Refused/); }
@@ -241,6 +253,8 @@ exit 0
     '  · a misread priority cannot go below the doctor\'s evidence, and --kind is checked against triage.md',
     '  · reports turned off are said out loud instead of being claimed as sent',
     '  · the allowlist refuses a wildcard, a phone number, a stranger and removing the owner, and keeps .env at 600',
+    '  · a removal rewrites the gateway list, and --restart actually restarts the gateway',
+    '  · the admin gate is Hermes\' own list, written with Krish\'s id by setup.sh',
     '  · setup.sh unpacks GitHub\'s real archive layout with the real tar, so the download path is actually tested',
     '  · it borrows the connected model, falls back to OpenCode\'s free tier, and stores the token, owner and inbox',
     '  · the payload it posts carries only fields the inbox accepts, and no token or personal data',

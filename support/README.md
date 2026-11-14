@@ -96,8 +96,11 @@ minute longer. `bot/skills/tess-support/scripts/session.mjs` enforces it:
 - **Anything older than 24 hours is swept**, and the total is held under **500 MB**, so a crash can't leave a folder
   behind and a burst can't fill the disk.
 - **No background processes.** Every command finishes; nothing watches a folder.
-- **The process is capped**: [`tess-support.service`](tess-support.service) gives it its own unprivileged user,
-  `MemoryMax=1G` and `CPUQuota=50%`. `setup.sh` installs it when it can, and prints the two commands when it can't.
+- **The process is capped only when systemd owns it.** [`tess-support.service`](tess-support.service) is a template
+  giving the bot its own user, `MemoryMax=1G` and `CPUQuota=50%`. `setup.sh` fills in your user and paths and starts the
+  bot **through that unit** when it runs as root on a systemd machine; otherwise it starts the gateway plainly and
+  **says the process is not capped**, because that is the truth. Two gateways on one profile fight over the same
+  session store, so it never does both.
 
 ## Where a report goes
 
@@ -168,8 +171,11 @@ Once it's running, four checks in order:
 ## Before it can work: two things on your side
 
 - **Applying the schema.** The new tables are in `inbox/schema.sql`; run it once against D1
-  (`npx wrangler@4 d1 execute tess-inbox --remote --file schema.sql` from `inbox/`). Without it the endpoint answers
-  `503` and nothing else breaks.
+  (`npx wrangler@4 d1 execute tess-inbox --remote --file schema.sql` from `inbox/`). Until then the support endpoint
+  answers `503` — and the nightly job still cleans the health reports, because that cleanup runs before the support one
+  and the support one is wrapped in its own `try`.
+- **Creating the R2 bucket** (`npx wrangler@4 r2 bucket create tess-support`) before `wrangler deploy`: a bound bucket
+  that doesn't exist fails the deploy outright.
 - **Deploying the Worker** (`npx wrangler@4 deploy` from `inbox/`). Neither is done by this PR, and neither was done by
   me.
 

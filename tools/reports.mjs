@@ -15,6 +15,7 @@
 //   node tools/reports.mjs support titles               refresh the open-issue title list the bot checks first
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
+import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const argv = process.argv.slice(2);
@@ -29,6 +30,25 @@ const cols = 'id, at, install, kind, tess, spotify, macos, status';
 
 const sq = (v) => String(v).replace(/'/g, "''");
 const PRI = (p) => p || '?';
+
+// The GitHub labels are "P2: medium", not "P2" — a bare priority makes `gh issue create` fail on every report.
+export const LABEL = { P0: 'P0: critical', P1: 'P1: high', P2: 'P2: medium', P3: 'P3: low' };
+
+// One line printed for Krish to paste. A single-quoted word is the only one a shell won't touch, so everything goes
+// through this — the title is written by a model reading a stranger's message, and a double-quoted `$(...)` in it
+// would run on his Mac the moment he pasted the line.
+export const shellQuote = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
+
+// The body goes in through a pipe, so a title can never be read as a command and a long report never hits an argument
+// limit. `support body <n>` is the other half of this line.
+export const issueCommand = (r) => {
+  const id = Number(r.id);
+  // The id is the one number on this line that isn't fixed text, and it goes into SQL on the other side of the pipe.
+  if (!Number.isInteger(id) || id < 1) throw new Error(`not a report number: ${r.id}`);
+  const areas = String(r.areas || '').split(/,\s*/).filter(Boolean);
+  const labels = [LABEL[r.priority], ...areas, r.kind].filter(Boolean);
+  return `node tools/reports.mjs support body ${id} | gh issue create -R Flame119052/tess-music --title ${shellQuote(r.title)} ${labels.map((l) => `--label ${shellQuote(l)}`).join(' ')} --body-file -`;
+};
 
 function support() {
   const sub = argv[1];
@@ -56,8 +76,16 @@ function support() {
     // The recording is in R2 and never served back; this is the only place it is named.
     console.log(r.recording ? `recording in R2: ${r.recording} (deleted when filed, or at 14 days)` : 'no recording');
     console.log(`\n--- what they said\n${r.words || '(nothing)'}\n\n--- what the bot worked out\n${r.diagnosis || '(nothing)'}\n\n--- the finished write-up\n${r.body || '(nothing)'}`);
-    console.log(`\nfile it with: gh issue create -R Flame119052/tess-music --title ${JSON.stringify(r.title)} ${[r.priority, ...areas, r.kind].filter(Boolean).map((l) => `--label ${JSON.stringify(l)}`).join(' ')} --body-file -`);
+    console.log(`\nfile it with:\n  ${issueCommand(r)}`);
     console.log(`then record it: node tools/reports.mjs support filed ${r.id} --issue <url>`);
+    return;
+  }
+
+  if (sub === 'body') {
+    // Only the write-up, so it can be piped straight into `gh issue create --body-file -`.
+    const [r] = q(`SELECT body FROM support_reports WHERE id = ${num(arg)}`);
+    if (!r) { console.error('no such support report'); process.exit(1); }
+    process.stdout.write(r.body || '');
     return;
   }
 
@@ -111,10 +139,11 @@ function support() {
     return;
   }
 
-  console.error('usage: support list | show <n> | filed <n> --issue <url> | tokens | token add <label> | token revoke <label> | titles');
+  console.error('usage: support list | show <n> | body <n> | filed <n> --issue <url> | tokens | token add <label> | token revoke <label> | titles');
   process.exit(1);
 }
 
+function main() {
 if (cmd === 'support') {
   support();
 } else if (cmd === 'show') {
@@ -130,3 +159,7 @@ if (cmd === 'support') {
 } else {
   q(`SELECT ${cols} FROM reports ORDER BY at DESC LIMIT 40`).forEach((r) => console.log(line(r)));
 }
+}
+
+// Imported by tools/test-reports.mjs, so the CLI only runs when this file is the entry point.
+if (basename(process.argv[1] || '') === 'reports.mjs') main();

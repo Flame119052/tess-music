@@ -101,8 +101,7 @@ A real terminal on Krish's server is the one power you hold. Keep it to:
 
 - `node "$SKILLS/…/session.mjs"`, `triage.mjs`, `allowlist.mjs`
 - `curl` **only** to `$TESS_INBOX`
-- `gh issue list` for reading the repo
-- reading the repo on `main` to match a report to real source
+- reading the repo on `main` (public), for matching a report to real source
 - writing under `$HOME/.hermes/cache/support`
 
 Nothing else. No `sudo`, no installs, no edits outside that folder, no other Hermes profile, nothing on any other

@@ -1,11 +1,14 @@
-# Tess Support on a server. Run as its own unprivileged user with a hard ceiling, so the worst a support bot can do to
-# the machine is bounded before anything about prompts or tokens matters.
+# Tess Support on a server: its own unprivileged user, a hard memory and CPU ceiling, and a foreground process that
+# systemd supervises.
 #
-#   sudo useradd --system --create-home --shell /usr/sbin/nologin tess-support
+# This file is a template: setup.sh fills in your user, home and Hermes path and installs it. To do it by hand, replace
+# __USER__, __HOME__ and __HERMES__ below and then:
+#
 #   sudo cp support/tess-support.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now tess-support
 #
-# Replace the ExecStart path if Hermes lives elsewhere (setup.sh prints the real one).
+# If it is started this way, do NOT also run `hermes gateway start`: two gateways on one profile fight over the same
+# session store.
 [Unit]
 Description=Tess support bot (Hermes)
 After=network-online.target
@@ -13,24 +16,25 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=tess-support
-Group=tess-support
-WorkingDirectory=/home/tess-support
+User=__USER__
+Group=__USER__
+WorkingDirectory=__HOME__
+Environment=HERMES_HOME=__HOME__/.hermes
+Environment=HOME=__HOME__
+# Foreground, so systemd owns the process and the caps apply to it.
+ExecStart=__HERMES__ -p tess-support gateway run
 # The caps: a support bot that leaks memory or spins cannot take the machine with it.
 MemoryMax=1G
 CPUQuota=50%
 TasksMax=64
-# Nothing it does needs to write outside its own home and the Hermes home.
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/tess-support/.hermes
-# A crash restarts it, but not in a loop that hammers the model or the inbox.
+ReadWritePaths=__HOME__/.hermes
 Restart=on-failure
 RestartSec=10
 StartLimitBurst=5
-StartLimitIntervalSec=300
 
 [Install]
 WantedBy=multi-user.target

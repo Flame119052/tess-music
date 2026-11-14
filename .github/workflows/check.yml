@@ -39,6 +39,8 @@ jobs:
         run: node tools/test-inbox.mjs
       - name: Support session folder tests
         run: node tools/test-session.mjs
+      - name: Support filing line tests
+        run: node tools/test-reports.mjs
       - name: Reviewer agent tests
         run: node tools/test-agent-review.mjs
       - name: Tools parse

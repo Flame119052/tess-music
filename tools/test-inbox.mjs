@@ -166,9 +166,31 @@ try {
   assert.ok(!bucket.has(`support/${id}.mov`), 'a filed report\'s recording is deleted');
   assert.equal(query(`SELECT recording FROM support_reports WHERE id = ${id}`)[0].recording, null, 'and the row stops pointing at it');
 
+  // 8b. A Worker deployed before inbox/schema.sql is applied must not take the health inbox down with it.
+  const oldDb = join(box, 'old-schema.db');
+  execFileSync('sqlite3', [oldDb, `CREATE TABLE reports (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER, install TEXT, kind TEXT, tess TEXT, spotify TEXT, macos TEXT, status TEXT, body TEXT); CREATE TABLE limits (k TEXT PRIMARY KEY, n INTEGER, until INTEGER); CREATE TABLE wake (id INTEGER PRIMARY KEY, serial INTEGER);`]);
+  execFileSync('sqlite3', [oldDb, `INSERT INTO reports (at, install, kind) VALUES (${Date.now() - 40 * 86400 * 1000}, '${'a'.repeat(32)}', 'problem'); INSERT INTO limits (k, n, until) VALUES ('old', 1, 1);`]);
+  const oldQuery = (sql) => { const t = execFileSync('sqlite3', ['-json', oldDb, sql], { encoding: 'utf8' }).trim(); return t ? JSON.parse(t) : []; };
+  const oldDBs = {
+    prepare: (sql) => ({
+      bind: (...a) => ({ first: async () => oldQuery(subs(sql, a))[0] ?? null, all: async () => ({ results: oldQuery(subs(sql, a)) }), run: async () => { execFileSync('sqlite3', [oldDb, subs(sql, a)]); return { meta: {} }; } }),
+      first: async () => oldQuery(sql)[0] ?? null, all: async () => ({ results: oldQuery(sql) }), run: async () => { execFileSync('sqlite3', [oldDb, sql]); return { meta: {} }; },
+    }),
+  };
+  await worker.scheduled({}, { DB: oldDBs, SALT: 'x', LIMIT: { limit: async () => ({ success: true }) }, RESCUE: { get: async () => null }, SUPPORT: { delete: async () => {} } });
+  assert.equal(oldQuery('SELECT COUNT(*) AS n FROM reports')[0].n, 0, 'the health-report cleanup still ran on a database without the support tables');
+  assert.equal(oldQuery('SELECT COUNT(*) AS n FROM limits')[0].n, 0, 'and so did the rate-limit cleanup');
+
+  // 8c. A title that would be read as a command is refused at the door.
+  for (const nasty of ['Lyrics $(touch /tmp/x)', 'Lyrics `id`', 'Lyrics \u0000 null']) {
+    assert.equal(await status(post('/v1/support', good({ title: nasty }), { authorization: `Bearer ${token}` })), 400, `a title with shell syntax is refused: ${JSON.stringify(nasty)}`);
+  }
+
   // 9. A WAF handler that only guards the old path would let floods through here too, so the limiter is checked.
   const denied = env({ LIMIT: { limit: async () => ({ success: false }) } });
   assert.notEqual(await status(post('/v1/support', good(), { authorization: `Bearer ${token}` }), denied), 201, 'a refused connection stores nothing');
+  const titlesDenied = await worker.fetch(new Request('https://inbox.test/v1/issues', { method: 'GET' }), env({ LIMIT: { limit: async () => ({ success: false }) } }));
+  assert.equal(titlesDenied.status, 429, 'and the public title list is behind the same limiter');
 
   console.log('support endpoint: all checks passed\n');
   console.log([
@@ -181,6 +203,9 @@ try {
     '  · the open-issue title list is served, with no report data in it',
     '  · a recording is refused without an approved token, refused if it is not video or over 50 MB, and can never be read back',
     '  · a filed report\'s recording is deleted by the sweep',
+    '  · a Worker deployed before the schema still runs the health-report cleanup instead of throwing',
+    '  · a title carrying shell syntax is refused at the door',
+    '  · the public title list sits behind Cloudflare\'s limiter',
     '  · nothing is stored when Cloudflare\'s own limiter refuses the request',
     '',
   ].join('\n'));

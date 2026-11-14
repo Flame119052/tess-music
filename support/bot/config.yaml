@@ -9,6 +9,18 @@ model:
 # This profile gets its own gateway so it can't disturb another profile's bots on the same machine.
 gateway:
   standalone: true
+  platforms:
+    telegram:
+      extra:
+        # Hermes' own gate, checked by the gateway before the model runs: only Krish may use Hermes' admin slash
+        # commands. setup.sh fills in his id here along with the allowlist; it is never left open.
+        allow_admin_from:
+          - "__OWNER_ID__"
+        # Everyone else on the allowlist keeps the read-only commands and nothing that changes state.
+        user_allowed_commands:
+          - status
+          - whoami
+          - help
 
 agent:
   # A screenshot is the main evidence a person can give, so let images through as images.

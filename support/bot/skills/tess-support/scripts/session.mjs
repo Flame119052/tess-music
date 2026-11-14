@@ -9,13 +9,13 @@
 // ffmpeg is on the machine and refuses when it isn't — it never takes a large file "to sort out later".
 //
 //   node session.mjs new                        prints the folder to use
-//   node session.mjs add <file> [--record]      checks size/type, re-encodes a big recording, records it
-//   node session.mjs handoff <report id>        one-line record, then deletes the folder
+//   node session.mjs add <dir> <file> [--record] checks size/type, re-encodes a big recording, records it
+//   node session.mjs handoff <dir> <report id>  one-line record, then deletes the folder
 //   node session.mjs sweep                      deletes folders older than 24h and holds the total under the cap
 //   node session.mjs size                       total bytes held right now
 // Runs on the server. Nothing here runs on anyone's Mac.
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -23,8 +23,10 @@ import { randomBytes } from 'node:crypto';
 export const MB = 1024 * 1024;
 export const MAX_RECORDING = 50 * MB;      // a Telegram upload, and a reasonable thing to re-encode
 export const MAX_SESSION = 60 * MB;        // everything one person sends in one visit
-export const MAX_TOTAL = 500 * MB;         // the whole bot's scratch space
-export const MAX_AGE_MS = 24 * 3600 * 1000;
+export const MAX_TOTAL = Number(process.env.TESS_MAX_TOTAL_MB || 500) * MB;   // the whole bot's scratch space
+// Both are overridable because an operator may want a smaller budget on a small disk, and because a test can then
+// prove the cap works without writing half a gigabyte to do it.
+export const MAX_AGE_MS = Number(process.env.TESS_MAX_AGE_HOURS || 24) * 3600 * 1000;
 export const MAX_MINUTES = 2;
 
 export const ROOT = process.env.TESS_SESSION_ROOT
@@ -35,6 +37,14 @@ const VIDEO = /\.(mov|mp4|m4v|webm|mkv)$/i;
 const IMAGE = /\.(png|jpe?g|heic|gif|webp)$/i;
 const TEXT = /\.(txt|log|md|json)$/i;
 const have = (bin) => { try { execFileSync('sh', ['-c', `command -v ${bin}`], { stdio: 'ignore' }); return true; } catch { return false; } };
+
+// Every path this file touches must be a direct child of the session root. The model passes these paths, and a model
+// reading a stranger's message is exactly the thing that must not be able to point `handoff` at, say, a home folder.
+export const inRoot = (dir) => {
+  const r = resolve(String(dir || ''));
+  if (dirname(r) !== resolve(ROOT)) throw new Error(`${dir} is not a session folder (it must sit directly in ${ROOT})`);
+  return r;
+};
 
 const folders = () => (existsSync(ROOT)
   ? readdirSync(ROOT, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => join(ROOT, d.name))
@@ -57,9 +67,9 @@ const save = (dir, m) => writeFileSync(join(dir, 'session.json'), JSON.stringify
 // --- commands ---------------------------------------------------------------------------------------------------------
 export const newSession = () => {
   mkdirSync(ROOT, { recursive: true });
-  // Refuse rather than grow: if the floor is already full, clean it before making another folder.
-  if (totalHeld() > MAX_TOTAL - MAX_SESSION) sweep();
-  if (totalHeld() > MAX_TOTAL - MAX_SESSION) throw new Error(`scratch space is over ${MAX_TOTAL / MB} MB; sweep before starting another session`);
+  // Refuse rather than grow: if the budget is spent, clean it before making another folder.
+  if (totalHeld() >= MAX_TOTAL) sweep();
+  if (totalHeld() >= MAX_TOTAL) throw new Error(`scratch space is at ${MAX_TOTAL / MB} MB; sweep before starting another session`);
   const id = `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}`;
   const dir = join(ROOT, id);
   mkdirSync(dir, { recursive: true });
@@ -68,6 +78,7 @@ export const newSession = () => {
 };
 
 export const addFile = (dir, file, { record = false } = {}) => {
+  dir = inRoot(dir);
   if (!existsSync(file)) throw new Error(`no such file: ${file}`);
   const name = file.split('/').pop();
   if (!(VIDEO.test(name) || IMAGE.test(name) || TEXT.test(name))) {
@@ -75,6 +86,13 @@ export const addFile = (dir, file, { record = false } = {}) => {
   }
   let size = statSync(file).size;
   let target = join(dir, name);
+
+  // A file that can't possibly fit is refused before it is copied, not after: a refused file must never be left on
+  // disk where nothing will ever clean it up.
+  const current = meta(dir).files.reduce((n, f) => n + f.size, 0);
+  if (current + size > MAX_SESSION && !VIDEO.test(name)) {
+    throw new Error(`this session is already ${Math.round(current / MB)} MB and one file is capped at ${MAX_SESSION / MB} MB in total`);
+  }
 
   if (VIDEO.test(name)) {
     if (size > MAX_RECORDING) {
@@ -88,7 +106,10 @@ export const addFile = (dir, file, { record = false } = {}) => {
         throw new Error(`that recording is ${Math.round(size / MB)} MB and couldn't be shrunk; ask for a shorter one`);
       }
       target = out; size = statSync(out).size;
-      if (size > MAX_RECORDING) throw new Error(`that recording is still ${Math.round(size / MB)} MB after shrinking; ask for a shorter one.`);
+      if (size > MAX_RECORDING) {
+        rmSync(out, { force: true });   // the shrunk copy is no good either; don't leave it behind
+        throw new Error(`that recording is still ${Math.round(size / MB)} MB after shrinking; ask for a shorter one.`);
+      }
     }
     // Duration is only checkable when ffprobe is there; the size cap still applies either way.
     if (have('ffprobe')) {
@@ -96,12 +117,21 @@ export const addFile = (dir, file, { record = false } = {}) => {
       if (Number.isFinite(secs) && secs > MAX_MINUTES * 60 + 5) throw new Error(`that recording is ${Math.round(secs)}s; ask for ${MAX_MINUTES} minutes or less`);
     }
   }
-  if (target !== file) { writeFileSync(target, readFileSync(file)); }
-
+  // Everything is checked before anything more is written, and every refusal cleans up after itself.
   const m = meta(dir);
   const held = m.files.reduce((n, f) => n + f.size, 0) + size;
-  if (held > MAX_SESSION) throw new Error(`this session is now ${Math.round(held / MB)} MB; one visit is capped at ${MAX_SESSION / MB}`);
-  if (totalHeld() + size > MAX_TOTAL) { sweep(); if (totalHeld() + size > MAX_TOTAL) throw new Error('scratch space is full; sweep before adding more'); }
+  const cleanup = () => { if (target !== file) rmSync(target, { force: true }); };
+  if (held > MAX_SESSION) { cleanup(); throw new Error(`this session would be ${Math.round(held / MB)} MB; one visit is capped at ${MAX_SESSION / MB}`); }
+  if (totalHeld() + size > MAX_TOTAL) {
+    sweep();
+    if (totalHeld() + size > MAX_TOTAL) { cleanup(); throw new Error('scratch space is full; sweep before adding more'); }
+  }
+
+  if (target !== file) {
+    try { writeFileSync(target, readFileSync(file)); }
+    catch (e) { rmSync(target, { force: true }); throw e; }
+  }
+
   m.files.push({ name: target.split('/').pop(), size, at: Date.now() });
   save(dir, m);
   return { path: target, size };
@@ -109,6 +139,7 @@ export const addFile = (dir, file, { record = false } = {}) => {
 
 // The hand-off is the point of no return: once the inbox has it, the local copies are a liability, not evidence.
 export const handoff = (dir, reportId) => {
+  dir = inRoot(dir);
   mkdirSync(ROOT, { recursive: true });
   const m = meta(dir);
   appendFileSync(RECORDS, `${new Date().toISOString()} report ${reportId} ${m.files.length} file(s) ${Math.round(bytesIn(dir) / 1024)} KB\n`);

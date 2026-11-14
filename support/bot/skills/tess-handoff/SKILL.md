@@ -37,17 +37,39 @@ A `201` with an `id` means it is stored; that number is how Krish finds it. Noth
 **One report per visit.** Not one per message, and never a second one "to be safe" — that is how the inbox fills with
 duplicates.
 
+## 1b. Send the recording, if there is one
+
+The report carries the words; the recording carries what a still can't show. It goes to the inbox straight after the
+report, against the id the inbox just gave you — **before** the folder is deleted.
+
+```sh
+# .mov -> video/quicktime, .mp4 -> video/mp4, .webm -> video/webm, .mkv -> video/x-matroska
+curl -fsS -X PUT "$TESS_INBOX/v1/support/recording/<report id>" \
+  -H "authorization: Bearer $TESS_SUPPORT_TOKEN" \
+  -H "content-type: video/quicktime" \
+  --data-binary @"<session dir>/<file>.mov"
+```
+
+`204` means it is stored. The inbox keeps it only until the issue is filed, or 14 days at most, and there is no way to
+read it back.
+
+If the upload fails, say so in the message to Krish — **do not** silently delete the recording, and do not retry more
+than once. A missing recording is worth knowing about; a person's screen left lying around is not.
+
+If there is no recording, skip this step.
+
 ## 2. Delete the session
 
-Only after the inbox answered `201`:
+Only after the inbox answered `201` **and** any recording has been sent (or there wasn't one):
 
 ```sh
 node "$SKILLS/tess-support/scripts/session.mjs" handoff <dir> <report id>
 ```
 
 It writes one line — report id, time, how many files, how big — to `handoffs.log` and removes the folder: the
-screenshots, the recording, the doctor output, the scratch. **If the send failed, do not delete** — the folder is the
-only copy, and the sweep will get it in 24 hours.
+screenshots, the recording, the doctor output, the scratch. It only ever deletes inside the session root, so a wrong
+path is refused rather than removed. **If the report or the recording failed to send, do not delete** — the folder is
+the only copy, and the sweep will get it in 24 hours.
 
 ## 3. Tell the person
 

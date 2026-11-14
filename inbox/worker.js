@@ -110,15 +110,22 @@ async function support(request, env) {
     .map((a) => String(a).trim().replace(/^area:\s*/, 'area: ')).filter(Boolean);
   if (!areas.length || areas.length > 3 || areas.some((a) => !AREAS.has(a))) return reply(400);
   if (!short(r.title, 120)) return reply(400);
+  if (/[`\u0000]|\$\(/.test(String(r.title))) return reply(400);
   const install = /^[0-9a-f]{32}$/.test(r.install || '') ? r.install : null;
-  const row = await env.DB.prepare(
-    'INSERT INTO support_reports (at, person, install, tess, spotify, macos, priority, areas, kind, title, words, diagnosis, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  ).bind(
+  let row;
+  try {
+    row = await env.DB.prepare(
+      'INSERT INTO support_reports (at, person, install, tess, spotify, macos, priority, areas, kind, title, words, diagnosis, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).bind(
     Date.now(), short(who.label, 60), install,
     short(r.tess, 40), short(r.spotify, 40), short(r.macos, 40),
     r.priority, areas.join(', '), r.kind, short(r.title, 120),
-    short(r.words, 4000), short(r.diagnosis, 2000), short(r.body, 24 * 1024),
-  ).run();
+      short(r.words, 4000), short(r.diagnosis, 2000), short(r.body, 24 * 1024),
+    ).run();
+  } catch {
+    // Most likely the schema hasn't been applied on this database yet. Say so, rather than leaking a D1 error.
+    return reply(503);
+  }
   return new Response(JSON.stringify({ ok: true, id: row.meta?.last_row_id ?? null }), {
     status: 201, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
   });
@@ -126,7 +133,9 @@ async function support(request, env) {
 
 // The titles of open issues, so a bot can check "is this already known" without a GitHub login. Public on purpose:
 // these are public issues already, and no report data is involved. Refreshed by the owner's tooling, never written here.
-async function issueTitles(env) {
+async function issueTitles(request, env) {
+  const { success } = await env.LIMIT.limit({ key: request.headers.get('cf-connecting-ip') || '' });
+  if (!success) return reply(429);
   try {
     const rows = await env.DB.prepare('SELECT n, title, updated FROM issue_titles ORDER BY n').all();
     const issues = (rows.results || []).map((r) => ({ n: r.n, title: r.title }));
@@ -139,22 +148,32 @@ async function issueTitles(env) {
 // A recording of the person's screen is the one thing here that must never be public, so it can be written and never
 // read back: no GET, and the scheduled job deletes it once the report is filed or after 14 days.
 async function recording(request, env, id) {
+  const { success } = await env.LIMIT.limit({ key: request.headers.get('cf-connecting-ip') || '' });
+  if (!success) return reply(429);
   const auth = request.headers.get('authorization') || '';
   const token = /^Bearer (.+)$/i.exec(auth.trim())?.[1] || '';
   if (!token) return reply(401);
-  const who = await env.DB.prepare('SELECT label FROM support_tokens WHERE sha = ? AND revoked IS NULL').bind(await shaFull(token)).first();
+  const sha = await shaFull(token);
+  let who, row;
+  try {
+    who = await env.DB.prepare('SELECT label FROM support_tokens WHERE sha = ? AND revoked IS NULL').bind(sha).first();
+    if (!/^\d+$/.test(id)) return reply(400);
+    row = await env.DB.prepare('SELECT id FROM support_reports WHERE id = ?').bind(Number(id)).first();
+  } catch { return reply(503); }
   if (!who) return reply(401);
-  if (!/^\d+$/.test(id)) return reply(400);
-  const row = await env.DB.prepare('SELECT id FROM support_reports WHERE id = ?').bind(Number(id)).first();
   if (!row) return reply(404);
+  // Uploads are heavier than a JSON post, so they get their own, smaller budget per token.
+  if (!(await hit(env, `rec:${sha.slice(0, 16)}`, 10, 3600))) return reply(429);
   const len = Number(request.headers.get('content-length') || 0);
   if (!len || len > MAX_RECORDING) return reply(413);
   const type = (request.headers.get('content-type') || '').split(';')[0].trim();
   if (!/^video\/(mp4|quicktime|x-matroska|webm)$/.test(type)) return reply(415);
   const ext = { 'video/quicktime': 'mov', 'video/webm': 'webm', 'video/x-matroska': 'mkv' }[type] || 'mp4';
   const key = `support/${id}.${ext}`;
-  await env.SUPPORT.put(key, await request.arrayBuffer(), { httpMetadata: { contentType: type } });
-  await env.DB.prepare('UPDATE support_reports SET recording = ? WHERE id = ?').bind(key, Number(id)).run();
+  try {
+    await env.SUPPORT.put(key, await request.arrayBuffer(), { httpMetadata: { contentType: type } });
+    await env.DB.prepare('UPDATE support_reports SET recording = ? WHERE id = ?').bind(key, Number(id)).run();
+  } catch { return reply(503); }
   return reply(204);
 }
 
@@ -163,7 +182,7 @@ export default {
     const { pathname } = new URL(request.url);
     if (request.method === 'POST' && pathname === '/v1/report') return report(request, env);
     if (request.method === 'POST' && pathname === '/v1/support') return support(request, env);
-    if (request.method === 'GET' && pathname === '/v1/issues') return issueTitles(env);
+    if (request.method === 'GET' && pathname === '/v1/issues') return issueTitles(request, env);
     if (request.method === 'PUT' && /^\/v1\/support\/recording\/\d+$/.test(pathname)) return recording(request, env, pathname.split('/').pop());
     if (request.method === 'GET' && (pathname === '/v1/rescue.txt' || pathname === '/v1/rescue.sig')) {
       const v = await env.RESCUE.get(pathname.slice(4));
@@ -185,14 +204,18 @@ export default {
   // keep 30 days of reports and drop finished rate-limit windows
   async scheduled(_event, env) {
     await env.DB.prepare('DELETE FROM reports WHERE at < ?').bind(Date.now() - 30 * 86400 * 1000).run();
-    // A filed support report is worth keeping; an unfiled one goes stale like any other report.
-    await env.DB.prepare('DELETE FROM support_reports WHERE at < ? AND issue IS NULL').bind(Date.now() - 30 * 86400 * 1000).run();
-    // Recordings go as soon as the report is filed, and at 14 days whether or not it was: a person's screen is a
-    // liability to keep, and the issue already has what matters. The R2 lifecycle rule is the second belt.
-    const cutoff = Date.now() - RECORDING_DAYS * 86400 * 1000;
-    const stale = await env.DB.prepare('SELECT id, recording FROM support_reports WHERE recording IS NOT NULL AND (issue IS NOT NULL OR at < ?)').bind(cutoff).all();
-    for (const r of stale.results || []) await env.SUPPORT.delete(r.recording);
-    await env.DB.prepare('UPDATE support_reports SET recording = NULL WHERE recording IS NOT NULL AND (issue IS NOT NULL OR at < ?)').bind(cutoff).run();
+    // Support cleanup last, and in its own try: a Worker deployed before the schema is applied must not stop the
+    // health-report cleanup above it. Losing a night of support cleanup is harmless; losing the limits sweep is not.
+    try {
+      // A filed support report is worth keeping; an unfiled one goes stale like any other report.
+      await env.DB.prepare('DELETE FROM support_reports WHERE at < ? AND issue IS NULL').bind(Date.now() - 30 * 86400 * 1000).run();
+      // Recordings go as soon as the report is filed, and at 14 days whether or not it was: a person's screen is a
+      // liability to keep, and the issue already has what matters. The R2 lifecycle rule is the second belt.
+      const cutoff = Date.now() - RECORDING_DAYS * 86400 * 1000;
+      const stale = await env.DB.prepare('SELECT id, recording FROM support_reports WHERE recording IS NOT NULL AND (issue IS NOT NULL OR at < ?)').bind(cutoff).all();
+      for (const r of stale.results || []) await env.SUPPORT.delete(r.recording);
+      await env.DB.prepare('UPDATE support_reports SET recording = NULL WHERE recording IS NOT NULL AND (issue IS NOT NULL OR at < ?)').bind(cutoff).run();
+    } catch { /* schema not applied yet, or R2 not bound: the health-report cleanup above already ran */ }
     await env.DB.prepare('DELETE FROM limits WHERE until < ?').bind(Math.floor(Date.now() / 1000)).run();
   },
 };

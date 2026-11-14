@@ -16,7 +16,3 @@ env_requires:
     description: "Krish's numeric Telegram id — the only person who can add or remove anyone"
     required: false
     default: ""
-  - name: GH_TOKEN
-    description: "Fine-grained GitHub token, Issues: write + Metadata: read on Flame119052/tess-music only"
-    required: false
-    default: ""

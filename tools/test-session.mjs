@@ -12,7 +12,9 @@ import assert from 'node:assert/strict';
 const box = mkdtempSync(join(tmpdir(), 'tess-session-test-'));
 // The module reads its root at import time, so the sandbox is set before it loads.
 process.env.TESS_SESSION_ROOT = join(box, 'sessions');
-const { ROOT, RECORDS, MAX_SESSION, newSession, addFile, handoff, sweep, size, MB } = await import(
+// A small total budget, so the cap is actually exercised: 540 MB of test files would take a minute and a half of disk.
+process.env.TESS_MAX_TOTAL_MB = '60';
+const { ROOT, RECORDS, MAX_SESSION, MAX_TOTAL, newSession, addFile, handoff, sweep, size, inRoot, MB } = await import(
   new URL('../support/bot/skills/tess-support/scripts/session.mjs', import.meta.url).href
 );
 
@@ -55,7 +57,7 @@ try {
   assert.match(line, /report 42 2 file\(s\) \d+ KB/, 'one line records the report it became');
   assert.ok(!line.includes('shot.png'), 'and no file name or path: the line is a receipt, not a copy');
 
-  // 4. A crash leaves a folder behind; the sweep takes it after 24 hours and says so.
+  // 4. A crash leaves a folder behind; the sweep takes it after 24 hours and says so, but only past that age.
   const stale = newSession();
   addFile(stale, file('old.png', 1024));
   const old = (Date.now() - 25 * 3600 * 1000) / 1000;
@@ -65,23 +67,47 @@ try {
   assert.ok(!existsSync(stale), 'and is really gone');
   assert.match(record(), /swept .* older than 24h/, 'the sweep leaves a line too');
 
-  // 5. A fresh folder is not swept, and the total is held under the cap.
+  // 5. A file refused for size leaves the folder exactly as it was — nothing half-written to clean up later.
+  const keep = newSession();
+  addFile(keep, file('ok.png', 2 * MB));
+  const beforeRefusal = readdirSync(keep).sort();
+  assert.throws(() => addFile(keep, file('huge.log', 59 * MB)), /capped at/, 'a file that would break the session cap is refused');
+  assert.deepEqual(readdirSync(keep).sort(), beforeRefusal, 'and nothing was left behind by the refusal');
+  handoff(keep, '44');
+
+  // 6. It only ever deletes inside its own root: a path from a message is not a path it may remove.
+  const elsewhere = join(box, 'not-a-session');
+  mkdirSync(elsewhere, { recursive: true });
+  writeFileSync(join(elsewhere, 'keep.txt'), 'precious');
+  assert.throws(() => handoff(elsewhere, '9'), /not a session folder/, 'handoff refuses a path outside the root');
+  assert.ok(existsSync(join(elsewhere, 'keep.txt')), 'and the file outside is still there');
+  assert.throws(() => addFile(elsewhere, file('x.png', 10)), /not a session folder/, 'add refuses one too');
+  assert.throws(() => inRoot('/'), /not a session folder/);
+
+  // 7. A fresh folder is not swept, and the total is held under the cap.
   const fresh = newSession();
   addFile(fresh, file('new.png', 1024));
   assert.deepEqual(sweep(), [], 'a fresh session survives a sweep');
   assert.ok(existsSync(fresh), 'and is still there for the person who is mid-conversation');
   handoff(fresh, '43');
 
-  // 6. The total cap: fill the scratch space with sessions and prove the sweep brings it back down.
-  for (let i = 0; i < 4; i += 1) {
+  // 8. The total cap, on folders that are all FRESH: the age sweep cannot rescue this, so the size loop has to.
+  // The folders are written directly, because addFile rightly refuses to go over the cap in the first place — this is
+  // the state left behind by an older version, which is exactly what the sweep exists to clean up.
+  const filled = [];
+  for (let i = 0; i < 3; i += 1) {
     const d = newSession();
-    addFile(d, file(`big-ish-${i}.png`, 20 * MB));
-    const t = (Date.now() - (30 - i) * 3600 * 1000) / 1000;
+    writeFileSync(join(d, `leftover-${i}.bin`), Buffer.alloc(30 * MB, 2));
+    const t = (Date.now() - (30 - i) * 60 * 1000) / 1000;
     utimesSync(d, t, t);
+    filled.push(d);
   }
-  assert.ok(size() > 0);
-  sweep();
-  assert.ok(size() <= MAX_SESSION * 2, 'after a sweep the scratch space is back under the cap');
+  assert.ok(size() > MAX_TOTAL, `the scratch space is genuinely over the cap (${Math.round(size() / MB)} MB > ${MAX_TOTAL / MB})`);
+  const sweptForSize = sweep();
+  assert.ok(size() <= MAX_TOTAL, 'and the sweep brings it back under the cap');
+  assert.ok(sweptForSize.length > 0, 'by removing whole sessions');
+  assert.ok(!existsSync(filled[0]), 'the oldest goes first');
+  assert.ok(existsSync(filled[2]), 'the newest is kept, so a live conversation survives');
 
   console.log('session folder: all checks passed\n');
   console.log([
@@ -91,6 +117,8 @@ try {
     '  · the folder and every file in it are deleted after a successful hand-off, leaving one line',
     '  · that line has the report id, the time, the count and the size — no file names, no paths',
     '  · a folder older than 24 hours is swept, and the sweep leaves its own line',
+    '  · a refused file leaves nothing behind, so the folder is exactly as it was',
+    '  · handoff and add refuse a path outside the session root, and the file outside it survives',
     '  · a fresh folder survives a sweep, so someone mid-conversation does not lose their evidence',
     '  · the total scratch space is held under the cap',
     '',

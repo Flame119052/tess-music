@@ -35,7 +35,7 @@ test('release, workflow, installer, inbox, patcher, signing, and rescue paths ar
   for (const path of [
     '.github/workflows/check.yml',
     'installer/updater.sh',
-    'support/install.sh',
+    'support/setup.sh',
     'inbox/worker.js',
     'patcher/src/cmd/swap.go',
     'tools/release.mjs',

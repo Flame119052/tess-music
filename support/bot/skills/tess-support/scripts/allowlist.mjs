@@ -31,8 +31,8 @@ const isId = (v) => /^\d{5,15}$/.test(v);
 // Every change records who asked for it. The id comes from the message envelope — the platform's own "this person sent
 // it" — never from anything typed in the message, and the skill forbids taking it from the text. This is a lock, not a
 // wall: the model writes the command line, so someone who talks it into typing the owner's id could still get through.
-// That is why the bot's GitHub token can only open issues on one repo, and why every change here is logged and echoed
-// to Krish in the same chat.
+// That is why the bot holds no GitHub token at all and can only write one report at a time to one inbox, and why every
+// change here is logged and echoed to Krish in the same chat.
 const askedBy = (() => {
   const i = process.argv.indexOf('--as');
   return i === -1 ? '' : String(process.argv[i + 1] || '').trim();
