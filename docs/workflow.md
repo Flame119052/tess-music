@@ -85,6 +85,43 @@ The agent that writes the approach comment or opens the PR picks who reviews it,
   - Fork PRs need approval before any workflow runs.
   - The reviewer's own comments carry a marker and never trigger another review.
 
+## Where work happens: branches, worktrees and machines
+
+These rules come from mistakes made while setting this up: agents started from the wrong branch, `git pull` failed, and copies of one PR were left on several machines.
+
+**GitHub is the one source of truth.**
+- `main` is dev.
+- `beta` and `stable` are written only by the release workflow (`declare`, `promote`). Nobody pushes them by hand.
+- Anything that isn't pushed doesn't exist for the next agent.
+
+**The checkouts on Krish's Mac:**
+
+| Checkout | What it's for | Rule |
+| --- | --- | --- |
+| `/Volumes/DellSSD/Spotify Wrapper` | T3 Code's project root. Every T3 thread and worktree starts here. | Always on `main`, always clean. Nobody edits in it. |
+| `~/Developer/tess-music` | Krish's own commands: `rescue.mjs` (the rescue key is only on this Mac), `reports.mjs`, hot-reloading the theme. | Always on `main`. `.build/channel` inside it is a tool-managed copy of `beta`; leave it alone. |
+| `~/.t3/worktrees/Spotify Wrapper/*` | Worktrees T3 makes for agents. | T3 removes them. Remove one by hand only if it is clean and pushed. |
+| `~/Developer/tess-wt/<branch>` | Worktrees made by hand. | Removed when the PR merges or closes. |
+
+**One piece of work is one issue, one branch, one worktree, one agent.**
+- **Name branches after the work,** e.g. `updates-wake-hardening` or `support-bot`.
+- **Start from `origin/main`.** Run `git fetch` first. The only exception is work that must build on an open PR: start from that PR's branch, and say so in your PR.
+- **Never start from whatever the project root happens to have checked out.** This is how a branch ended up carrying another PR's commits.
+- **Updating:** `git fetch origin` then `git merge --ff-only origin/main`. A plain `git pull` fails here with "Cannot fast-forward to multiple branches".
+- **A PR that conflicts with `main`:** rebase it, rerun its tests, and push with `--force-with-lease`. Never use a bare `--force`.
+- **Don't push to another agent's branch** while it is working. If its agent is gone, you may add commits, and you must leave a PR comment saying what you added.
+- **Leftovers:** a local branch that is pushed or merged gets deleted. One with unpushed commits stays until Krish says otherwise.
+- **No plans, notes or scratch files in the repo.** Keep them in your session's scratch folder. A merged PR and its issue are the record.
+
+**Which machine does what:**
+
+| Machine | Does | Never |
+| --- | --- | --- |
+| Krish's Mac | Holds the signing and rescue keys. Runs the real Spotify on `dev`. Krish's own commands. The T3 threads. | Hosts a GitHub runner. Holds secrets in the repo or in an external drive's `.env`. |
+| `omarchy`, `paperclip-vps` | The reviewer runners (`tess-agent`). Each job gets a fresh checkout, so nothing on them needs syncing. | Holds a Tess key. Runs the runner as root. |
+| GitHub's macOS machines | CI (`check.yml`) and every build and signature (`release.yml`). They are the only place the signing secrets are used. | Runs code from a fork PR without Krish's approval. |
+| Instabox | Optional Linux scratch box for an agent. | Holds a Tess key. Builds Tess, which needs macOS. |
+
 ## How Macs get updates
 
 - **Updater.** It runs every 30 minutes, and also whenever Spotify's files change.
