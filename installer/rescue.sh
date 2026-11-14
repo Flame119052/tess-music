@@ -29,8 +29,9 @@ VERIFY="$R/tess-rescue-verify"
 LOG="$R/rescue.log"
 REPO="Flame119052/tess-music"
 INBOX="https://tess-music-player.janus.ing"
-[ -f "$T/rescue-off" ] && exit 0
-[ -x "$VERIFY" ] || exit 0
+[ -f "$T/rescue-off" ] && [ "$1" != --adopt ] && exit 0
+refuse() { [ "$1" = --adopt ] && exit 1; exit 0; }
+[ -x "$VERIFY" ] || refuse "$1"
 mkdir -p "$R"
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 200000 ] && tail -c 100000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
@@ -52,17 +53,20 @@ for src in api raw inbox; do
   "$VERIFY" "$TMP/o" "$(tr -d '\n' < "$TMP/s")" && { got=$src; break; }
   log "order from $src failed its signature check; ignored"
 done
-[ -n "$got" ] || exit 0
+[ -n "$got" ] || refuse "$1"
 
 # Only the action format is accepted. The older format ("tess-rescue 1", which carried a script) is refused here.
-head -1 "$TMP/o" | grep -qx "tess-rescue 2" || exit 0
+head -1 "$TMP/o" | grep -qx "tess-rescue 2" || refuse "$1"
 field() { sed -n "s/^$1 \(.*\)$/\1/p" "$TMP/o" | head -1; }
 serial=$(field serial); expires=$(field expires); only=$(field only); action=$(field action)
-case $serial in ''|*[!0-9]*) exit 0 ;; esac
-case $expires in ''|*[!0-9]*) exit 0 ;; esac
+case $serial in ''|*[!0-9]*) refuse "$1" ;; esac
+case $expires in ''|*[!0-9]*) refuse "$1" ;; esac
 done_serial=$(cat "$R/serial" 2>/dev/null); done_serial=${done_serial:-0}
 # --adopt (used when the rescue line is first installed): note the current order as seen, without running it
-if [ "$1" = --adopt ]; then [ "$serial" -gt "$done_serial" ] && echo "$serial" > "$R/serial"; exit 0; fi
+if [ "$1" = --adopt ]; then
+  if [ "$serial" -gt "$done_serial" ]; then echo "$serial" > "$R/serial" || exit 1; fi
+  exit 0
+fi
 [ "$serial" -gt "$done_serial" ] || exit 0
 [ "$(date +%s)" -lt "$expires" ] || exit 0
 id=$(cat "$T/install-id" 2>/dev/null)

@@ -226,6 +226,32 @@ try {
     assert.ok(existsSync(join(s.box, 'reported')), 'signature failure reported');
   }
 
+  {
+    const s = sandbox();
+    rmSync(join(s.tess, 'bin/patcher/tess-patcher'));
+    execFileSync('go', ['build', '-o', join(s.tess, 'bin/patcher/tess-patcher'), '.'], { cwd: join(root, 'patcher') });
+    const prefs = join(s.box, 'prefs'), backup = join(s.box, 'backup');
+    mkdirSync(backup);
+    writeFileSync(join(backup, 'xpui.spa'), 'sandbox backup');
+    writeFileSync(prefs, 'app.last-launched-version=1.3.9.2055\n');
+    const originalConfig = `[Setting]\nspotify_path=${join(s.spotify, 'Contents/Resources')}\nprefs_path=${prefs}\ncurrent_theme=Tess\ncolor_scheme=base\ninject_css=1\ninject_theme_js=1\nreplace_colors=1\n[Backup]\nversion=1.3.9.2055\n`;
+    writeFileSync(join(s.config, 'config-xpui.ini'), originalConfig);
+    const theme = join(s.fixtures, 'Tess');
+    mkdirSync(theme);
+    writeFileSync(join(theme, 'theme.js'), 'TESS_BASELINE new theme');
+    writeFileSync(join(theme, 'user.css'), 'body { color: red; }');
+    writeFileSync(join(theme, 'color.ini'), '[base]\ntext=123456\n');
+    const archive = join(s.fixtures, 'theme.tgz');
+    execFileSync('tar', ['-czf', archive, '-C', s.fixtures, 'Tess']);
+    writeFileSync(join(s.fixtures, 'components.txt'), `theme ${sha(readFileSync(archive))} test://installer source\n`);
+    s.run({ TESS_ASSET: archive, SPICETIFY_STATE: backup });
+    assert.match(readFileSync(join(s.apps, 'xpui/colors.css'), 'utf8'), /18, ?52, ?86|123456/);
+    assert.equal(JSON.parse(readFileSync(join(s.apps, 'xpui/spicetify-config.json'), 'utf8')).schemes.base.text, '123456');
+    assert.match(readFileSync(join(s.apps, 'xpui/extensions/theme.js'), 'utf8'), /new theme/);
+    assert.equal(readFileSync(join(s.config, 'config-xpui.ini'), 'utf8'), originalConfig, 'staged refresh preserves live config');
+    console.log('theme update ran real patcher refresh on staged sandbox; colors and config generated');
+  }
+
   console.log('updater tests passed (success, fresh, blocked, failed swap, rollback/no-retry, playing/idle, list reports)');
 } finally {
   for (const box of boxes) rmSync(box, { recursive: true, force: true });

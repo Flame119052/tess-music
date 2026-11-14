@@ -31,7 +31,7 @@ const publish = (text, { badSig = false } = {}) => {
   writeFileSync(join(orders, 'rescue.sig'), sig + '\n');
 };
 const order = (serial, action, extra = []) => ['tess-rescue 2', `serial ${serial}`, `expires ${later()}`, ...extra, `action ${action}`].join('\n') + '\n';
-const run = () => execFileSync('/bin/zsh', [join(R, 'rescue.sh')], { env, encoding: 'utf8' });
+const run = (...args) => execFileSync('/bin/zsh', [join(R, 'rescue.sh'), ...args], { env, encoding: 'utf8' });
 const serial = () => Number(readFileSync(join(R, 'serial'), 'utf8'));
 const log = () => (existsSync(join(R, 'rescue.log')) ? readFileSync(join(R, 'rescue.log'), 'utf8') : '');
 const marker = join(box, 'PWNED');
@@ -72,6 +72,17 @@ try {
   // 9. ...and one naming this Mac runs
   publish(order(++s, 'check', [`only ${OTHER} ${ID}`])); run();
   assert.equal(serial(), s); assert.match(log().slice(n), /would run.*doctor/);
+  writeFileSync(join(T, 'rescue-off'), '');
+  publish(order(++s, 'uninstall'));
+  const beforeAdopt = log();
+  run('--adopt');
+  assert.equal(serial(), s, 'adopt records order while still off');
+  assert.equal(log(), beforeAdopt, 'adopt never executes the order');
+  publish(order(++s, 'check'), { badSig: true });
+  assert.throws(() => run('--adopt'), /Command failed/, 'bad signature fails adoption');
+  rmSync(join(orders, 'rescue.txt'));
+  assert.throws(() => run('--adopt'), /Command failed/, 'offline adoption fails');
+  assert.ok(existsSync(join(T, 'rescue-off')), 'adoption never removes opt-out');
   console.log('rescue tests passed (5 actions; script, unknown, injected, bad signature, expired, replay, other Mac)');
 } finally {
   rmSync(box, { recursive: true, force: true });

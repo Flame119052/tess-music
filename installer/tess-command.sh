@@ -26,13 +26,32 @@ case "$1" in
         rm -f "$LA/music.tess.rescue.plist"
         echo "The Tess rescue line is off. Updates will not turn it back on." ;;
       on)
+        if [ ! -x "$T/rescue/rescue.sh" ] || ! /bin/zsh "$T/rescue/rescue.sh" --adopt >/dev/null 2>&1; then
+          touch "$T/rescue-off"
+          launchctl disable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+          launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+          rm -f "$LA/music.tess.rescue.plist"
+          echo "Couldn't read the current rescue order; the rescue line stays off. Try again when online."
+          exit 1
+        fi
+        mkdir -p "$LA"
+        RESCUE_PATH=$(printf '%s' "$T/rescue/rescue.sh" | sed 's/\&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+        printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+          '<plist version="1.0"><dict><key>Label</key><string>music.tess.rescue</string>' \
+          "<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$RESCUE_PATH</string></array>" \
+          '<key>StartInterval</key><integer>21600</integer><key>RunAtLoad</key><true/></dict></plist>' > "$LA/music.tess.rescue.plist" || exit 1
         rm -f "$T/rescue-off"
         launchctl enable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
-        [ -f "$LA/music.tess.rescue.plist" ] || /usr/bin/env TESS_FORCE=1 /bin/zsh "$T/updater.sh" >/dev/null 2>&1
-        [ -x "$T/rescue/rescue.sh" ] && /bin/zsh "$T/rescue/rescue.sh" --adopt >/dev/null 2>&1
         launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
-        launchctl bootstrap "gui/$(id -u)" "$LA/music.tess.rescue.plist" >/dev/null 2>&1 \
-          && echo "The Tess rescue line is on. Orders sent while it was off will not run." || echo "The rescue line could not start; run tess doctor."
+        if launchctl bootstrap "gui/$(id -u)" "$LA/music.tess.rescue.plist" >/dev/null 2>&1; then
+          echo "The Tess rescue line is on. A current, unexpired order may run, including one sent while it was off."
+        else
+          touch "$T/rescue-off"
+          launchctl disable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+          rm -f "$LA/music.tess.rescue.plist"
+          echo "The rescue line could not start; it stays off. Run tess doctor."
+          exit 1
+        fi
         ;;
       log) tail -100 "$T/rescue/rescue.log" 2>/dev/null || echo "No rescue orders have run." ;;
       *) [ -f "$T/rescue-off" ] && echo "The Tess rescue line is off. (tess rescue on)" || echo "The Tess rescue line is on. (tess rescue off)" ;;

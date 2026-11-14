@@ -106,12 +106,21 @@ esac
   writeFileSync(join(tess, 'reports-off'), '');
   assert.match(run('status'), /Reports: off/);
 
+  writeFileSync(join(rescue, 'rescue.sh'), '#!/bin/zsh\nexit 1\n');
+  chmodSync(join(rescue, 'rescue.sh'), 0o755);
+  assert.throws(() => run('rescue', 'on'), /Command failed/);
+  assert.ok(existsSync(join(tess, 'rescue-off')), 'failed adoption stays off');
+  assert.ok(!existsSync(loadedRescue), 'failed adoption does not start agent');
+  writeFileSync(join(rescue, 'rescue.sh'), '#!/bin/zsh\nexit 0\n');
+  mkdirSync(join(tess, '.installing'));
+  writeFileSync(join(tess, 'updater.sh'), '#!/bin/zsh\necho unexpected-update >&2; exit 99\n');
   out = run('rescue', 'on');
   assert.match(out, /rescue line is on/i);
-  assert.match(out, /Orders sent while it was off will not run/);
+  assert.match(out, /including one sent while it was off/);
   assert.ok(!existsSync(join(box, 'rescue-disabled')), 'on enables launchd job');
   assert.ok(!existsSync(join(tess, 'rescue-off')), 'off marker removed');
-  assert.ok(existsSync(loadedRescue), 'rescue agent loaded');
+  assert.ok(existsSync(loadedRescue), 'rescue agent loaded despite updater lock');
+  execFileSync('/usr/bin/plutil', ['-lint', join(agents, 'music.tess.rescue.plist')]);
   assert.equal(readFileSync(join(rescue, 'tess-rescue-verify'), 'utf8'), 'test rescue verifier\n', 'ordinary update preserves independent rescue verifier');
   assert.match(readFileSync(launchLog, 'utf8'), /bootstrap .*music\.tess\.rescue\.plist/);
 

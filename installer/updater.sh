@@ -91,7 +91,7 @@ EOF
   fi
   [ -n "$TESS_TEST" ] && { log "update agent installed (test)"; return 0; }
   if [ -n "$changed" ]; then
-    log "update agent plist set to every 30 minutes"
+    log "update agent plist set to every 30 minutes; a loaded agent adopts it at next login"
   fi
   launchctl print "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 \
     || launchctl bootstrap "gui/$(id -u)" "$pl" >/dev/null 2>&1
@@ -353,13 +353,18 @@ while read -r name sha url _src; do
       # Stage a complete Apps folder and switch it in one checked rename, like every other Spotify change.
       [ -d "$APPS/xpui" ] || continue
       mkdir -p "$TMP/theme" && tar -xzf "$f" -C "$TMP/theme" && [ -f "$TMP/theme/Tess/theme.js" ] || { problem "theme: bad archive"; continue; }
-      rm -rf "$TMP/theme-apps"; ditto "$APPS" "$TMP/theme-apps" || { problem "theme: couldn't stage Spotify's files"; continue; }
-      mkdir -p "$TMP/theme-apps/xpui/extensions"
-      cp "$TMP/theme/Tess/user.css" "$TMP/theme-apps/xpui/user.css"
-      cp "$TMP/theme/Tess/theme.js" "$TMP/theme-apps/xpui/extensions/theme.js"
-      grep -q "TESS_BASELINE" "$TMP/theme-apps/xpui/extensions/theme.js" || { problem "theme: loader is incomplete"; continue; }
+      mkdir -p "$TMP/theme-spotify"
+      rm -rf "$TMP/theme-spotify/Apps"; ditto "$APPS" "$TMP/theme-spotify/Apps" || { problem "theme: couldn't stage Spotify's files"; continue; }
+      # Refresh also generates colors.css and spicetify-config.json; isolate both its config and Spotify target.
+      rm -rf "$TMP/theme-config"; ditto "$CONF" "$TMP/theme-config" || continue
+      mkdir -p "$TMP/theme-config/Themes"; rm -rf "$TMP/theme-config/Themes/Tess"
+      ditto "$TMP/theme/Tess" "$TMP/theme-config/Themes/Tess" || continue
+      SPICETIFY_CONFIG="$TMP/theme-config" "$PATCHER" config spotify_path "$TMP/theme-spotify" >/dev/null 2>&1 \
+        && SPICETIFY_CONFIG="$TMP/theme-config" "$PATCHER" refresh --no-restart >/dev/null 2>&1 \
+        || { problem "theme: staged refresh failed"; continue; }
+      grep -q "TESS_BASELINE" "$TMP/theme-spotify/Apps/xpui/extensions/theme.js" || { problem "theme: loader is incomplete"; continue; }
       mkdir -p "$CONF/Themes"; rm -rf "$CONF/Themes/Tess"; ditto "$TMP/theme/Tess" "$CONF/Themes/Tess"
-      swap_apps "$TMP/theme-apps" || { problem "theme: checked Spotify swap failed"; restore_part theme; continue; } ;;
+      swap_apps "$TMP/theme-spotify/Apps" || { problem "theme: checked Spotify swap failed"; restore_part theme; continue; } ;;
     *) continue ;;
   esac
   if [ "$baseline" = 0 ] && ! doctor --validate; then

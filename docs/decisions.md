@@ -176,3 +176,9 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   disables the launchd job and removes its login plist; ordinary updates preserve the independent rescue verifier.
   Part rollback requires a healthy doctor baseline so unrelated existing failures cannot ban good parts. Wake
   remembers the last rescue serial it triggered, including rejected or expired orders.
+
+- **14 Nov 2026 · PR #75 second review (#53, #71)** — Older channels retain the running installer and a built-in
+  uninstaller when signed parts are absent, without claiming signed-part hashes. Rescue on creates its own plist
+  and requires adoption success; wording permits an unexpired order sent while off because old rescue scripts
+  cannot report adoption failure reliably. Reinstall and uninstall clear launchd's persistent rescue disable.
+  Theme refresh runs with a copied config against staged Spotify files to preserve generated colors before swap.
