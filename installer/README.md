@@ -32,9 +32,11 @@ password or downloads. Spotify's User Guidelines say not to modify the client; n
 authors is documented, but the risk is yours to judge. Spotify updates remove Tess for a few seconds until the helper
 puts it back.
 
-Tess also has a rescue line: the maintainer can remotely make your Mac run one of five Tess actions (check, update,
-repair, restore Spotify, or uninstall) using orders signed with an offline key. See what ran with
-`~/Library/Application Support/Tess/tess rescue log`, and turn it off with
-`~/Library/Application Support/Tess/tess rescue off`.
+Tess also has a rescue line. On a current install the maintainer can remotely run one of five Tess actions
+(check, update, repair, restore Spotify, or uninstall) using orders signed with an offline key. Those orders
+cannot carry a script. Rescue lines installed before 13 Nov 2026 are older: a signed order can run any script
+as you, and updates never replace that script. Repair tells you if this Mac has one. See what ran with
+`~/Library/Application\ Support/Tess/tess rescue log`, and turn it off with
+`~/Library/Application\ Support/Tess/tess rescue off`.
 
 Credits and licences: see `NOTICE.md`.

@@ -15,6 +15,8 @@ INBOX="https://tess-music-player.janus.ing"
 LA="$HOME/Library/LaunchAgents"
 [ -n "$TESS_TEST" ] && LA="$T/LaunchAgents"
 UID_=$(id -u)
+# A launchd label is per user. A sandbox must not call /bin/launchctl, which is the owner's real job.
+real_launchctl() { [ -n "$TESS_TEST" ] && [ "$(command -v launchctl)" = /bin/launchctl ]; }
 MODE="${1:-check}"
 OUT=$(mktemp); trap 'rm -f "$OUT"' EXIT
 problems=0; fixed=0; st=()
@@ -144,7 +146,7 @@ fi
 rescue_fp=$(shasum -a 256 "$T/rescue/tess-rescue-verify" 2>/dev/null | cut -d' ' -f1)
 if [ -f "$T/rescue-off" ]; then
   # launchd loads a leftover plist again at login, so off has to unload the job and delete that plist
-  if launchctl print "gui/$UID_/music.tess.rescue" >/dev/null 2>&1; then
+  if ! real_launchctl && launchctl print "gui/$UID_/music.tess.rescue" >/dev/null 2>&1; then
     launchctl disable "gui/$UID_/music.tess.rescue" >/dev/null 2>&1 || true
     launchctl bootout "gui/$UID_/music.tess.rescue" >/dev/null 2>&1 || true
     rm -f "$LA/music.tess.rescue.plist"

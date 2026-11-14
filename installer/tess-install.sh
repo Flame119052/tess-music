@@ -13,6 +13,8 @@ if [ -n "$TESS_TEST" ]; then
   HOME_TESS="$TESS_HOME"; CONF="$TESS_CONFIG"
   export SPICETIFY_CONFIG="$TESS_CONFIG" SPICETIFY_STATE="$TESS_CONFIG/state"
 fi
+# A launchd label is per user. A sandbox must not call /bin/launchctl, which is the owner's real job.
+real_launchctl() { [ -n "$TESS_TEST" ] && [ "$(command -v launchctl)" = /bin/launchctl ]; }
 MIN_SPOTIFY="1.2.40"
 INBOX="https://tess-music-player.janus.ing"
 
@@ -170,7 +172,7 @@ PATCHER="$HOME_TESS/bin/patcher/tess-patcher"
 chmod +x "$PATCHER" "$HOME_TESS/bin/patcher/tess-verify"
 
 # --- pause the update helper while we work (it must never run at the same time) --------------------------------------
-launchctl bootout "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 || true
+real_launchctl || launchctl bootout "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 || true
 mkdir -p "$HOME_TESS"; touch "$HOME_TESS/.installing"; PAUSED=1
 
 # --- quit Spotify, undo any earlier patching ---------------------------------------------------------------------
@@ -279,7 +281,9 @@ CONF="${TESS_CONFIG:-$HOME/.config/tess-patcher}"
 [ -n "$TESS_CONFIG" ] && export SPICETIFY_CONFIG="$TESS_CONFIG"
 PATCHER="$HOME_TESS/bin/patcher/tess-patcher"
 echo; printf '\033[1m%s\033[0m\n\n' "Removing Tess Music"
-launchctl enable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+# A launchd label is per user. A sandbox must not call /bin/launchctl, which is the owner's real job.
+real_launchctl() { [ -n "$TESS_TEST" ] && [ "$(command -v launchctl)" = /bin/launchctl ]; }
+real_launchctl || launchctl enable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
 if [ -z "$TESS_TEST" ]; then
   for a in music.tess.guard music.tess.mini music.tess.rescue music.tess.wake; do
     launchctl bootout "gui/$(id -u)/$a" >/dev/null 2>&1 || true
@@ -322,6 +326,9 @@ channel() {
   CH=$(sed -n "s/^TESS_PARTS_CHANNEL='\(.*\)'$/\1/p" "$T/updater.env" 2>/dev/null)
   echo "${CH:-stable}"
 }
+# A launchd label is per user. Under TESS_TEST, /bin/launchctl is the owner's real jobs.
+real_launchctl() { [ -n "$TESS_TEST" ] && [ "$(command -v launchctl)" = /bin/launchctl ]; }
+lctl() { real_launchctl && return 1; command launchctl "$@"; }
 case "$1" in
   update) /usr/bin/env TESS_FORCE=1 /bin/zsh "$T/updater.sh" ;;
   repair) exec /usr/bin/env TESS_CHANNEL="$(channel)" /bin/sh "$T/installer.sh" ;;
@@ -338,15 +345,15 @@ case "$1" in
     case "$2" in
       off)
         touch "$T/rescue-off"
-        launchctl disable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
-        launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+        lctl disable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+        lctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
         rm -f "$LA/music.tess.rescue.plist"
         echo "The Tess rescue line is off. Updates will not turn it back on." ;;
       on)
         if [ ! -x "$T/rescue/rescue.sh" ] || ! /bin/zsh "$T/rescue/rescue.sh" --adopt >/dev/null 2>&1; then
           touch "$T/rescue-off"
-          launchctl disable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
-          launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+          lctl disable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+          lctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
           rm -f "$LA/music.tess.rescue.plist"
           echo "Couldn't read the current rescue order; the rescue line stays off. Try again when online."
           exit 1
@@ -358,13 +365,13 @@ case "$1" in
           "<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$RESCUE_PATH</string></array>" \
           '<key>StartInterval</key><integer>21600</integer><key>RunAtLoad</key><true/><key>AbandonProcessGroup</key><true/></dict></plist>' > "$LA/music.tess.rescue.plist" || exit 1
         rm -f "$T/rescue-off"
-        launchctl enable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
-        launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
-        if launchctl bootstrap "gui/$(id -u)" "$LA/music.tess.rescue.plist" >/dev/null 2>&1; then
+        lctl enable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+        lctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+        if lctl bootstrap "gui/$(id -u)" "$LA/music.tess.rescue.plist" >/dev/null 2>&1; then
           echo "The Tess rescue line is on. A current, unexpired order may run, including one sent while it was off."
         else
           touch "$T/rescue-off"
-          launchctl disable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+          lctl disable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
           rm -f "$LA/music.tess.rescue.plist"
           echo "The rescue line could not start; it stays off. Run tess doctor."
           exit 1
@@ -378,17 +385,17 @@ case "$1" in
   status)
     VERSION=$(cat "$T/state/version" 2>/dev/null || echo unknown)
     echo "Tess $VERSION ($(channel))"
-    launchctl print "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 && echo "Updater: running" || echo "Updater: stopped"
-    launchctl print "gui/$(id -u)/music.tess.wake" >/dev/null 2>&1 && echo "Wake check: running" || echo "Wake check: stopped"
+    lctl print "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 && echo "Updater: running" || echo "Updater: stopped"
+    lctl print "gui/$(id -u)/music.tess.wake" >/dev/null 2>&1 && echo "Wake check: running" || echo "Wake check: stopped"
     FP=$(shasum -a 256 "$T/rescue/tess-rescue-verify" 2>/dev/null | cut -d' ' -f1)
     [ -n "$FP" ] || FP=not-installed
     if [ -f "$T/rescue-off" ]; then
-      if launchctl print "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1; then
+      if lctl print "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1; then
         echo "Rescue: off, but the agent is still loaded; run: tess rescue off (verifier SHA-256 $FP)"
       else
         echo "Rescue: off (verifier SHA-256 $FP)"
       fi
-    elif launchctl print "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1; then
+    elif lctl print "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1; then
       echo "Rescue: on, running (verifier SHA-256 $FP)"
     else
       echo "Rescue: on, stopped (verifier SHA-256 $FP)"
@@ -416,7 +423,7 @@ rescue_notice() {
 }
 
 if [ -x "$HOME_TESS/rescue/rescue.sh" ] && [ ! -f "$HOME_TESS/rescue-off" ]; then
-  launchctl enable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+  real_launchctl || launchctl enable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
 fi
 
 if [ -n "$TESS_TEST" ]; then
@@ -442,12 +449,14 @@ EOF
 launchctl bootout "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.guard.plist" 2>/dev/null || true
 
-if [ -x "$HOME_TESS/wake.sh" ]; then
-"$HOME_TESS/wake.sh" --plist > "$HOME/Library/LaunchAgents/music.tess.wake.plist"
-plutil -lint "$HOME/Library/LaunchAgents/music.tess.wake.plist" >/dev/null
-launchctl bootout "gui/$(id -u)/music.tess.wake" >/dev/null 2>&1 || true
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.wake.plist" 2>/dev/null || true
-
+# A bad wake plist must not abort the rest of install: Mini, rescue and the notice still have to run.
+if [ -x "$HOME_TESS/wake.sh" ] && "$HOME_TESS/wake.sh" --plist > "$HOME/Library/LaunchAgents/music.tess.wake.plist.new" \
+   && plutil -lint "$HOME/Library/LaunchAgents/music.tess.wake.plist.new" >/dev/null; then
+  mv -f "$HOME/Library/LaunchAgents/music.tess.wake.plist.new" "$HOME/Library/LaunchAgents/music.tess.wake.plist"
+  launchctl bootout "gui/$(id -u)/music.tess.wake" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.wake.plist" 2>/dev/null || true
+else
+  rm -f "$HOME/Library/LaunchAgents/music.tess.wake.plist.new"
 fi
 
 if [ -x "$HOME_TESS/rescue/rescue.sh" ] && [ ! -f "$HOME_TESS/rescue-off" ]; then

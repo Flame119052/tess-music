@@ -11,6 +11,13 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const installer = readFileSync(join(root, 'installer', 'tess-install.sh'), 'utf8');
 const command = readFileSync(join(root, 'installer', 'tess-command.sh'), 'utf8');
+for (const name of ['README.md', 'installer/README.md', 'SECURITY.md']) {
+  const text = readFileSync(join(root, name), 'utf8');
+  assert.match(text, /before 13 Nov 2026/, `${name} names the older rescue scripts`);
+  assert.match(text, /any script/, `${name} says an older order can run a script`);
+}
+assert.match(readFileSync(join(root, 'README.md'), 'utf8'), /Application\\ Support\/Tess\/tess rescue off/);
+assert.match(readFileSync(join(root, 'installer/README.md'), 'utf8'), /Application\\ Support\/Tess\/tess rescue off/);
 assert.match(installer, /remotely run five Tess actions on this Mac, without asking/);
 assert.match(installer, /signed by the owner's offline rescue key/);
 assert.match(installer, /older Tess rescue line/);
@@ -147,7 +154,22 @@ esac
   assert.match(stopped, /Rescue: off \(verifier SHA-256/);
   assert.doesNotMatch(stopped, /still loaded/);
 
-  console.log('rescue control tests passed (notice, off/on persistence, status fingerprint, loaded-while-off)');
+  const predicate = readFileSync(join(root, 'installer', 'doctor.sh'), 'utf8').match(/real_launchctl\(\) \{[^}]+\}/);
+  assert.ok(predicate, 'doctor defines the sandbox launchctl guard');
+  const predict = (path) => execFileSync('/bin/sh', ['-c', `
+${predicate[0]}
+if ! real_launchctl && launchctl print "gui/1/music.tess.rescue"; then echo CALLED; else echo SKIPPED; fi
+`], { env: { ...env, TESS_TEST: '1', PATH: path }, encoding: 'utf8' });
+  const probeBin = join(box, 'probe-bin');
+  mkdirSync(probeBin);
+  writeFileSync(join(probeBin, 'launchctl'), '#!/bin/sh\necho "$@"\nexit 0\n');
+  chmodSync(join(probeBin, 'launchctl'), 0o755);
+  assert.match(predict(`/bin:${probeBin}`), /SKIPPED/, 'TESS_TEST does not call /bin/launchctl');
+  const called = predict(`${probeBin}:/bin`);
+  assert.match(called, /print gui\/1\/music.tess.rescue/, 'a fake launchctl is still used in the sandbox');
+  assert.match(called, /CALLED/);
+
+  console.log('rescue control tests passed (notice, off/on persistence, status fingerprint, loaded-while-off, sandbox launchctl)');
 } finally {
   rmSync(box, { recursive: true, force: true });
 }

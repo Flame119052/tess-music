@@ -7,7 +7,9 @@ CONF="${TESS_CONFIG:-$HOME/.config/tess-patcher}"
 [ -n "$TESS_CONFIG" ] && export SPICETIFY_CONFIG="$TESS_CONFIG"
 PATCHER="$HOME_TESS/bin/patcher/tess-patcher"
 echo; printf '\033[1m%s\033[0m\n\n' "Removing Tess Music"
-launchctl enable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+# A launchd label is per user. A sandbox must not call /bin/launchctl, which is the owner's real job.
+real_launchctl() { [ -n "$TESS_TEST" ] && [ "$(command -v launchctl)" = /bin/launchctl ]; }
+real_launchctl || launchctl enable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
 if [ -z "$TESS_TEST" ]; then
   for a in music.tess.guard music.tess.mini music.tess.rescue music.tess.wake; do
     launchctl bootout "gui/$(id -u)/$a" >/dev/null 2>&1 || true

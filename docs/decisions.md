@@ -178,6 +178,7 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   remembers the last rescue serial it triggered, including rejected or expired orders.
 
 - **14 Nov 2026 · PR #75 sixth review (#53)** — The wake check reads the release and the rescue order separately, and skips the rescue read when the line is off. A repair names an older rescue script as able to run scripts. `tess status` says when that agent is still loaded after off, and the doctor unloads it and removes its login plist.
+- **14 Nov 2026 · PR #75 seventh review (#53)** — Docs name the pre-13 Nov rescue scripts, which updates never replace and which can run a signed script. Existing Macs are not shown a new notice unless they repair or reinstall. #53's check is the install notice, the README, and SECURITY.md. That older format is the owner's Mac and one other (D-62); they see the plain wording the next time they repair. An unsolicited notice on every Mac is not part of this change. A sandbox calls launchctl only when a fake one is first on PATH, because the job label is the owner's real job.
 - **14 Nov 2026 · PR #75 second review (#53, #71)** — Older channels retain the running installer and a built-in
   uninstaller when signed parts are absent, without claiming signed-part hashes. Rescue on creates its own plist
   and requires adoption success; wording permits an unexpired order sent while off because old rescue scripts

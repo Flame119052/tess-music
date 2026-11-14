@@ -154,7 +154,40 @@ esac
   assert.ok(existsSync(installedPlist), 'updater installs wake LaunchAgent in sandbox');
   assert.match(readFileSync(installedPlist, 'utf8'), /<integer>300<\/integer>/);
 
-  console.log('wake tests passed (no change, version, serial, off skips rescue read, independent read failures, network backoff, lock, 5-minute agent)');
+  const installerSrc = readFileSync(join(root, 'installer', 'tess-install.sh'), 'utf8');
+  const wakeBlock = installerSrc.match(/if \[ -x "\$HOME_TESS\/wake\.sh" \] &&[\s\S]*?\nfi\n/);
+  assert.ok(wakeBlock, 'installer wake setup is one conditional');
+  const wakeUser = join(box, 'wake-user');
+  const wakeAgents = join(wakeUser, 'Library', 'LaunchAgents');
+  const wakeHome = join(box, 'wake-home');
+  mkdirSync(wakeAgents, { recursive: true });
+  mkdirSync(wakeHome, { recursive: true });
+  const priorPlist = join(wakeAgents, 'music.tess.wake.plist');
+  const runWakeBlock = (script) => {
+    writeFileSync(priorPlist, 'keep-me\n');
+    writeFileSync(join(wakeHome, 'wake.sh'), script);
+    chmodSync(join(wakeHome, 'wake.sh'), 0o755);
+    rmSync(launchLog, { force: true });
+    return spawnSync('/bin/sh', ['-c', `set -e\n${wakeBlock[0]}\necho CONTINUED\n`], {
+      env: { ...baseEnv, HOME: wakeUser, HOME_TESS: wakeHome },
+      encoding: 'utf8',
+    });
+  };
+  let wakeRun = runWakeBlock('#!/bin/zsh\nexit 1\n');
+  assert.equal(wakeRun.status, 0, wakeRun.stderr);
+  assert.match(wakeRun.stdout, /CONTINUED/, 'a failed wake plist does not stop the installer');
+  assert.equal(readFileSync(priorPlist, 'utf8'), 'keep-me\n', 'a failed wake plist leaves the previous one');
+  assert.ok(!existsSync(join(wakeAgents, 'music.tess.wake.plist.new')), 'a failed wake plist is not left behind');
+  wakeRun = runWakeBlock('#!/bin/zsh\nprintf %s \'{\'\n');
+  assert.equal(wakeRun.status, 0, wakeRun.stderr);
+  assert.match(wakeRun.stdout, /CONTINUED/, 'an invalid wake plist does not stop the installer');
+  assert.equal(readFileSync(priorPlist, 'utf8'), 'keep-me\n');
+  wakeRun = runWakeBlock(readFileSync(join(root, 'installer', 'wake.sh'), 'utf8'));
+  assert.equal(wakeRun.status, 0, wakeRun.stderr);
+  assert.match(readFileSync(priorPlist, 'utf8'), /<integer>300<\/integer>/, 'a valid wake plist replaces the old one');
+  assert.ok(lines(launchLog).some((line) => line.includes('bootstrap') && line.includes('music.tess.wake')), 'a valid wake plist is loaded');
+
+  console.log('wake tests passed (no change, version, serial, off skips rescue read, independent read failures, network backoff, lock, 5-minute agent, install continues)');
 } finally {
   rmSync(box, { recursive: true, force: true });
 }

@@ -45,10 +45,9 @@ order names one of five actions (`check`, `update`, `repair`, `restore-spotify`,
 own installed, signed tool (doctor, updater, the installed installer copy, the patcher's safe restore, the installed
 uninstaller). Rescue lines installed from this release on download nothing from `main`; `repair` runs the installer
 the Mac last installed with, which until the first promote can be the temporary `main` fallback (#77). Older installed rescue
-scripts remain unchanged and may still fetch repair and uninstall scripts from `main`. An order can't carry
-a script or a command, so the rescue key can only press those buttons; `tools/test-rescue.mjs` proves scripts, unknown
-actions and smuggled text are refused. (Rescue lines installed before 13 Nov 2026 used an older script format that new
-orders don't reach.)
+scripts remain unchanged and may still fetch repair and uninstall scripts from `main`. A current rescue script's
+order can't carry a script or a command, so the rescue key can only press those buttons; `tools/test-rescue.mjs` proves scripts, unknown
+actions and smuggled text are refused. Rescue lines installed before 13 Nov 2026 keep an older format whose signed orders can run any script, and updates never replace that script.
 
 ## Spotify updates itself
 
