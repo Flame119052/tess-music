@@ -17,7 +17,9 @@ jobs:
       allowed: ${{ steps.gate.outputs.allowed }}
       is_pr: ${{ steps.gate.outputs.is_pr }}
       pr_head_ref: ${{ steps.gate.outputs.pr_head_ref }}
+      pr_head_sha: ${{ steps.gate.outputs.pr_head_sha }}
       subject_url: ${{ steps.gate.outputs.subject_url }}
+      refusal: ${{ steps.gate.outputs.refusal }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,13 +40,18 @@ jobs:
             echo "allowed=false"
             echo "is_pr=false"
             echo "pr_head_ref="
+            echo "pr_head_sha="
             echo "subject_url="
+            echo "refusal="
           } >> "$GITHUB_OUTPUT"
 
+          # Marked bot comments never dispatch, so this lane cannot call itself.
           if [[ "$COMMENT_BODY" == *"<!-- tess-review-bot -->"* ]]; then
             exit 0
           fi
 
+          # Anyone may open an issue or a PR. Only an allowlisted account starts work, and a refusal for an
+          # account that is not allowed is deliberately silent.
           caller_allowed=false
           IFS=',' read -ra accounts <<< "$AGENT_ALLOWLIST"
           for account in "${accounts[@]}"; do
@@ -68,19 +75,24 @@ jobs:
           subject_url="$(jq -r '.html_url' <<< "$issue")"
           is_pr=false
           pr_head_ref=
+          pr_head_sha=
           pr_url="$(jq -r '.pull_request.url // empty' <<< "$issue")"
           if [[ -n "$pr_url" ]]; then
             is_pr=true
             pr="$(gh api "repos/$REPOSITORY/pulls/$ISSUE_NUMBER")"
-            head_sha="$(jq -r '.head.sha' <<< "$pr")"
             pr_head_ref="$(jq -r '.head.ref' <<< "$pr")"
             pr_head_repo="$(jq -r '.head.repo.full_name' <<< "$pr")"
-            conclusion="$(gh api "repos/$REPOSITORY/actions/workflows/check.yml/runs?head_sha=$head_sha&event=pull_request&per_page=100" \
-              --jq '.workflow_runs | sort_by(.created_at) | reverse | .[0].conclusion // ""')"
-            if [[ "$conclusion" != "success" ]]; then
+            # Text nobody here wrote must never reach a machine that holds keys or runs Paperclip. A fork PR is
+            # refused for every task, review included: plan mode is not a filesystem sandbox.
+            if [[ "$pr_head_repo" != "$REPOSITORY" ]]; then
+              echo "refusal=fork-pr"
               exit 0
             fi
-            if [[ "$task" == "fix" && "$pr_head_repo" != "$REPOSITORY" ]]; then
+            pr_head_sha="$(jq -r '.head.sha' <<< "$pr")"
+            conclusion="$(gh api "repos/$REPOSITORY/actions/workflows/check.yml/runs?head_sha=$pr_head_sha&event=pull_request&per_page=100" \
+              --jq '.workflow_runs | sort_by(.created_at) | reverse | .[0].conclusion // ""')"
+            if [[ "$conclusion" != "success" ]]; then
+              echo "refusal=ci-not-passed"
               exit 0
             fi
           fi
@@ -89,6 +101,7 @@ jobs:
             echo "allowed=true"
             echo "is_pr=$is_pr"
             echo "pr_head_ref=$pr_head_ref"
+            echo "pr_head_sha=$pr_head_sha"
             echo "subject_url=$subject_url"
           } >> "$GITHUB_OUTPUT"
 
@@ -99,18 +112,53 @@ jobs:
     timeout-minutes: 360
     permissions:
       contents: read
+    outputs:
+      refusal: ${{ steps.run.outputs.refusal }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
           persist-credentials: false
       - name: Start and follow the T3 thread
+        id: run
         env:
           COMMENT_BODY: ${{ github.event.comment.body }}
           COMMENT_ID: ${{ github.event.comment.id }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           IS_PR: ${{ needs.gate.outputs.is_pr }}
           PR_HEAD_REF: ${{ needs.gate.outputs.pr_head_ref }}
+          PR_HEAD_SHA: ${{ needs.gate.outputs.pr_head_sha }}
           REPOSITORY: ${{ github.repository }}
           SUBJECT_URL: ${{ needs.gate.outputs.subject_url }}
-        run: node tools/agent-dispatch.mjs
+          REFUSAL_FILE: ${{ runner.temp }}/tess-agent-refusal.json
+        run: |
+          set +e
+          node tools/agent-dispatch.mjs
+          status=$?
+          if [[ $status -ne 0 ]]; then
+            # Only the fixed code leaves this runner. The reason and the run link are posted by a GitHub-hosted job,
+            # which holds no dispatcher credential.
+            echo "refusal=$(node tools/agent-dispatch.mjs reason)" >> "$GITHUB_OUTPUT"
+          fi
+          exit $status
+
+  notice:
+    needs: [gate, dispatch]
+    if: always() && (needs.gate.outputs.refusal != '' || needs.dispatch.outputs.refusal != '')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Post the refusal
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPOSITORY: ${{ github.repository }}
+          REFUSAL_REASON: ${{ needs.gate.outputs.refusal || needs.dispatch.outputs.refusal }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node tools/agent-dispatch.mjs refuse
