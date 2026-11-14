@@ -31,7 +31,7 @@ Inside Spotify (`Spotify.app/Contents/Resources/Apps/xpui`): Spicetify's wrapper
 
 1. **Look and features** (the theme): on every Spotify start the loader fetches `dist/manifest.json` for its channel
    (`tess:settings.channel` in Spotify's localStorage; default `stable`) from GitHub's API, falling back to jsDelivr;
-   checks the signed envelope (`version`, `js`, `css`, `rev`, `min`) and the Ed25519 signatures of `theme.js` and
+   checks the signed envelope (`version`, `js`, `css`, `jsSha`, `cssSha`, `rev`) and the Ed25519 signatures of `theme.js` and
    `user.css`; runs it. `rev` only goes up per channel: a correctly signed but older release served by a mirror is
    refused. The cached copy is verified again on every read, so writing `tess:bundle` by hand no longer runs code. If a
    new release fails to start (`window.__tessReady` not set within 20 s), it's marked bad and the last good one (or the
@@ -83,7 +83,7 @@ Its files go back to stock (`Apps/xpui.spa`). The updater notices (LaunchAgent W
 
 `push to main` → `.github/workflows/release.yml`: `tools/check-safety.sh` → `tools/release.mjs auto dev`:
 build theme → sign → build patcher (+ tess-verify, rescue verify), Tess Mini (universal), sign binaries with the
-"Tess Music" identity → write `dist/` (manifest with `rev`/`min` and a signed envelope, theme, components list +
+"Tess Music" identity → write `dist/` (manifest with `rev` and a signed envelope binding both file hashes, theme, components list +
 signature + `rev`, `install.sh`, `install.sig`, `uninstall.sh`) to the
 `dev` branch → GitHub Release `vX.Y.Z` (prerelease, the part files) → mirror the branch to
 `Flame119052/tess-releases`.

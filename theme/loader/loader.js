@@ -30,13 +30,24 @@
       return await crypto.subtle.verify({ name: 'Ed25519' }, key, b64(sig), enc.encode(text));
     } catch { return false; }
   }
-  // The envelope covers what the loader acts on. `channel` is deliberately not in it: a promote changes only that
-  // field, and the signing key must not travel to the promote job.
-  const envelope = (m) => JSON.stringify({ version: m.version, js: m.js, css: m.css, rev: Number(m.rev), min: Number(m.min) });
+  // The envelope covers what the loader acts on, including the file contents. `channel` is deliberately not in it: a
+  // promote changes only that field, and the signing key must not travel to the promote job.
+  const hex = async (t) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(t)))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const envelope = (m) => JSON.stringify({ version: m.version, js: m.js, css: m.css, jsSha: m.jsSha, cssSha: m.cssSha, rev: Number(m.rev) });
   async function verified(b) {
-    return !!b && typeof b.js === 'string' && typeof b.css === 'string' &&
-      typeof b.sigJs === 'string' && typeof b.sigCss === 'string' &&
-      (await verify(b.js, b.sigJs)) && (await verify(b.css, b.sigCss));
+    if (!b || typeof b.js !== 'string' || typeof b.css !== 'string' || typeof b.sigJs !== 'string' || typeof b.sigCss !== 'string') return false;
+    if (!(await verify(b.js, b.sigJs)) || !(await verify(b.css, b.sigCss))) return false;
+    if (b.env) {
+      if (!(await verify(b.env, b.sigEnv))) return false;
+      let e;
+      try { e = JSON.parse(b.env); } catch { return false; }
+      if (e.version !== b.version || Number(e.rev) !== Number(b.rev)) return false;
+      if ((await hex(b.js)) !== e.jsSha || (await hex(b.css)) !== e.cssSha) return false;
+    } else if ((Number(b.rev) || 0) > 0) {
+      // A rev-tagged cache must carry the envelope that binds its version, rev and contents.
+      return false;
+    }
+    return true;
   }
   async function fetchRelease() {
     for (const get of SOURCES) {
@@ -47,8 +58,7 @@
         // Once this Mac has run a release with a rev, an older, pre-rev manifest is a downgrade too.
         if (!signed && floor() > 0) continue;
         if (signed) {
-          const min = Number(m.min);
-          if (!Number.isInteger(rev) || rev < 1 || !Number.isInteger(min) || min < 0 || rev < min) continue;
+          if (!Number.isInteger(rev) || rev < 1) continue;
           if (!(await verify(envelope(m), m.sig.envelope))) continue;
           if (rev < floor()) continue;
         }
@@ -56,7 +66,9 @@
         if (cached && cached.version === m.version && cached.channel === channel && (Number(cached.rev) || 0) === rev && (await verified(cached))) return cached;
         const [js, css] = await Promise.all([get(m.js), get(m.css)]);
         if (!(await verify(js, m.sig.js)) || !(await verify(css, m.sig.css))) continue;
-        const bundle = { version: m.version, channel, rev, js, css, sigJs: m.sig.js, sigCss: m.sig.css };
+        // The signatures prove each file, the envelope proves which files this rev is allowed to use.
+        if (signed && ((await hex(js)) !== m.jsSha || (await hex(css)) !== m.cssSha)) continue;
+        const bundle = { version: m.version, channel, rev, js, css, sigJs: m.sig.js, sigCss: m.sig.css, env: signed ? envelope(m) : null, sigEnv: signed ? m.sig.envelope : null };
         put('tess:bundle', bundle);
         return bundle;
       } catch {}
