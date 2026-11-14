@@ -263,7 +263,18 @@ if ! "$VERIFY" "$TMP/components.txt" "$(tr -d '\n' < "$TMP/components.sig")"; th
 fi
 rm -f "$STATE/.parts-list-reported"
 
-# each line: name sha256 url source-hash (and one "version X.Y.Z" line)
+# each line: name sha256 url source-hash (and one "version X.Y.Z" and one "rev N" line)
+rev=$(awk '$1 == "rev" { print $2 }' "$TMP/components.txt")
+last=$(cat "$STATE/rev-$CHANNEL" 2>/dev/null); case "$last" in ''|*[!0-9]*) last=0 ;; esac
+if [ -z "$rev" ]; then
+  # A pre-rev list is only acceptable before this channel has ever installed a rev; otherwise it is a replay.
+  [ "$last" -gt 0 ] && { problem "parts list has no rev but $last is installed; ignored"; report_parts_failure; exit 0; }
+else
+  case "$rev" in *[!0-9]*) problem "parts list has a bad rev; ignored"; report_parts_failure; exit 0 ;; esac
+  # correctly signed is not enough: an older list served by a mirror is still a downgrade
+  [ "$rev" -ge "$last" ] || { problem "parts list is older than the one already installed ($rev < $last); ignored"; report_parts_failure; exit 0; }
+fi
+# Only record the version once the list is accepted, so a refused downgrade cannot relabel the install.
 awk '$1 == "version" { print $2 }' "$TMP/components.txt" > "$STATE/version.new" && [ -s "$STATE/version.new" ] && mv "$STATE/version.new" "$STATE/version"
 part_file() {
   case "$1" in
@@ -386,6 +397,7 @@ while read -r name sha url _src; do
   touch "$LOCK"
   log "$name: updated"; changed=$((changed + 1))
 done < "$TMP/components.txt"
+[ -n "$rev" ] && echo "$rev" > "$STATE/rev-$CHANNEL"
 [ "$changed" -gt 0 ] && log "parts current ($changed updated)"
 # a newer patcher may support a Spotify version the old one could not
 [ -n "$new_patcher" ] && reapply now

@@ -10,7 +10,7 @@ real_launchctl() { [ -n "$TESS_TEST" ] && [ "$(command -v launchctl)" = /bin/lau
 lctl() { real_launchctl && return 1; command launchctl "$@"; }
 case "$1" in
   update) /usr/bin/env TESS_FORCE=1 /bin/zsh "$T/updater.sh" ;;
-  repair) exec /usr/bin/env TESS_CHANNEL="$(channel)" /bin/sh "$T/installer.sh" ;;
+  repair) V="$T/bin/patcher/tess-verify"; [ -x "$V" ] || { echo "Tess's verifier is missing; run the install line to repair Tess."; exit 1; }; exec /usr/bin/env TESS_CHANNEL="$(channel)" TESS_VERIFY="$V" /bin/sh "$T/installer.sh" ;;
   uninstall) exec /bin/sh "$T/uninstall.sh" ;;
   doctor) /bin/zsh "$T/doctor.sh" ;;
   report) /bin/zsh "$T/doctor.sh" --report ;;

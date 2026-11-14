@@ -5,6 +5,9 @@
 set -e
 
 REPO="Flame119052/tess-music"
+# The install stub passes the verifier it already downloaded and checked; absent only when this file is run by hand.
+VERIFY="${TESS_VERIFY:-}"
+DIST="${TESS_DIST_BASE:-https://raw.githubusercontent.com/$REPO}"
 HOME_TESS="$HOME/Library/Application Support/Tess"
 CONF="$HOME/.config/tess-patcher"
 if [ -n "$TESS_TEST" ]; then
@@ -151,14 +154,36 @@ REPAIR=$(repair_source || true)
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 step "Downloading Tess"
 CH="${TESS_CHANNEL:-${TESS_PARTS_CHANNEL:-stable}}"   # dev = internal builds (only the owner's Mac)
-getlist() { curl -fsSL --max-time 60 -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/dist/$1?ref=$CH" -o "$TMP/$1" \
-  || curl -fsSL --max-time 60 "https://raw.githubusercontent.com/$REPO/$CH/dist/$1" -o "$TMP/$1"; }
+getlist() {
+  # TESS_DIST_BASE is for sandbox tests: a local folder server instead of GitHub.
+  if [ -n "$TESS_TEST" ] && [ -n "$TESS_DIST_BASE" ]; then curl -fsSL --max-time 60 "$DIST/$CH/dist/$1" -o "$TMP/$1"; return; fi
+  curl -fsSL --max-time 60 -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/dist/$1?ref=$CH" -o "$TMP/$1" \
+    || curl -fsSL --max-time 60 "https://raw.githubusercontent.com/$REPO/$CH/dist/$1" -o "$TMP/$1"
+}
 getlist components.txt && getlist components.sig || fail "Download failed. Check your connection and try again."
+# Check the signed list before the patcher is fetched or unpacked: the verifier came from the stub, not from the
+# download it is checking. (A manual run without TESS_VERIFY keeps the old order; the install line always sets it.)
+if [ -n "$VERIFY" ]; then
+  [ -x "$VERIFY" ] || fail "Tess's installer couldn't find its signature checker, so nothing was installed."
+  "$VERIFY" "$TMP/components.txt" "$(tr -d '\n' < "$TMP/components.sig")" || fail "Tess's download didn't pass its signature check, so nothing was installed."
+fi
 part() { awk -v n="$1" '$1 == n { print $'"$2"' }' "$TMP/components.txt"; }
+# The same forward-only rule as the updater: a repair must not install an older release or reset the rev floor.
+rev=$(awk '$1 == "rev" { print $2 }' "$TMP/components.txt") || true
+old=$(cat "$HOME_TESS/state/rev-$CH" 2>/dev/null) || true; case "$old" in ''|*[!0-9]*) old=0 ;; esac
+if [ -z "$rev" ]; then
+  [ "$old" -gt 0 ] && fail "This installer's list has no rev, but version $old is already installed; nothing was changed."
+else
+  case "$rev" in *[!0-9]*) fail "This installer's list has a bad rev; nothing was changed." ;; esac
+  [ "$rev" -ge "$old" ] || fail "This installer is older than the version already installed; nothing was changed."
+fi
 fetch() { curl -fsSL --retry 2 --connect-timeout 20 --max-time 300 "$(part "$1" 3)" -o "$2" && [ "$(shasum -a 256 "$2" | cut -d' ' -f1)" = "$(part "$1" 2)" ]; }
 fetch patcher "$TMP/patcher.tgz" || fail "Download failed. Check your connection and try again."
 mkdir -p "$TMP/p" && tar -xzf "$TMP/patcher.tgz" -C "$TMP/p"
-"$TMP/p/tess-verify" "$TMP/components.txt" "$(tr -d '\n' < "$TMP/components.sig")" || fail "Tess's download didn't pass its signature check, so nothing was installed."
+if [ -z "$VERIFY" ]; then
+  # Manual run: the verifier comes from the archive it is about to check, so this only catches corruption in transit.
+  "$TMP/p/tess-verify" "$TMP/components.txt" "$(tr -d '\n' < "$TMP/components.sig")" || fail "Tess's download didn't pass its signature check, so nothing was installed."
+fi
 fetch theme "$TMP/theme.tgz" || fail "Download failed. Check your connection and try again."
 fetch updater "$TMP/updater.sh" || fail "Download failed. Check your connection and try again."
 fetch mini "$TMP/mini.zip" || rm -f "$TMP/mini.zip"
@@ -263,6 +288,7 @@ for n in patcher theme updater mini doctor installer uninstall wake command; do
   part $n 2 > "$HOME_TESS/state/$n"
 done
 awk '$1 == "version" { print $2 }' "$TMP/components.txt" > "$HOME_TESS/state/version"
+if [ -n "$rev" ]; then echo "$rev" > "$HOME_TESS/state/rev-$CH"; fi
 [ -s "$TMP/doctor.sh" ] && put "$TMP/doctor.sh" "$HOME_TESS/doctor.sh"
 for n in installer uninstall wake; do
   if [ -s "$TMP/$n.sh" ]; then put "$TMP/$n.sh" "$HOME_TESS/$n.sh"; fi
@@ -331,7 +357,7 @@ real_launchctl() { [ -n "$TESS_TEST" ] && [ "$(command -v launchctl)" = /bin/lau
 lctl() { real_launchctl && return 1; command launchctl "$@"; }
 case "$1" in
   update) /usr/bin/env TESS_FORCE=1 /bin/zsh "$T/updater.sh" ;;
-  repair) exec /usr/bin/env TESS_CHANNEL="$(channel)" /bin/sh "$T/installer.sh" ;;
+  repair) V="$T/bin/patcher/tess-verify"; [ -x "$V" ] || { echo "Tess's verifier is missing; run the install line to repair Tess."; exit 1; }; exec /usr/bin/env TESS_CHANNEL="$(channel)" TESS_VERIFY="$V" /bin/sh "$T/installer.sh" ;;
   uninstall) exec /bin/sh "$T/uninstall.sh" ;;
   doctor) /bin/zsh "$T/doctor.sh" ;;
   report) /bin/zsh "$T/doctor.sh" --report ;;

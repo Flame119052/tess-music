@@ -31,11 +31,15 @@ Inside Spotify (`Spotify.app/Contents/Resources/Apps/xpui`): Spicetify's wrapper
 
 1. **Look and features** (the theme): on every Spotify start the loader fetches `dist/manifest.json` for its channel
    (`tess:settings.channel` in Spotify's localStorage; default `stable`) from GitHub's API, falling back to jsDelivr;
-   checks the Ed25519 signatures of `theme.js` and `user.css`; runs it. If a new release fails to start
-   (`window.__tessReady` not set within 20 s), it's marked bad and the last good one (or the baseline) runs.
+   checks the signed envelope (`version`, `js`, `css`, `jsSha`, `cssSha`, `rev`) and the Ed25519 signatures of `theme.js` and
+   `user.css`; runs it. `rev` only goes up per channel: a correctly signed but older release served by a mirror is
+   refused. The cached copy is verified again on every read, so writing `tess:bundle` by hand no longer runs code. If a
+   new release fails to start (`window.__tessReady` not set within 20 s), it's marked bad and the last good one (or the
+   baseline) runs.
 2. **Everything else** (updater, patcher, Tess Mini, doctor, loader theme): `updater.sh` reads the signed
-   `dist/components.txt` for its channel (`name sha256 url source-hash` per line + `version`), verifies the signature
-   with `tess-verify`, downloads only parts whose sha changed, checks each sha, installs. A new patcher triggers a
+   `dist/components.txt` for its channel (`name sha256 url source-hash` per line, plus `version` and `rev`), verifies
+   the signature with `tess-verify`, refuses a lower `rev` than the channel has already installed, downloads only parts
+   whose sha changed, checks each sha, installs. A new patcher triggers a
    re-apply check. The updater updates itself first.
 
 ## Rescue line
@@ -66,6 +70,9 @@ Its files go back to stock (`Apps/xpui.spa`). The updater notices (LaunchAgent W
 | Safety copy + repair | `original-<ver>/`, patcher backup, known stock SHA-256s | lost interface files |
 | Release gate | `tools/check-safety.sh` (CI + release script) | shipping a destructive or unparsable script |
 | Signed content | Ed25519 release key (CI secret + Krish's Mac) | tampered downloads |
+| Pinned verifier | `installer/install.sh` + `installer/verify/<sha>` | a channel or mirror swapping the checker and installer together |
+| Signed envelope + `rev` floor | `dist/manifest.json`, `components.txt`, loader | a correctly signed but older release (downgrade) |
+| Verified cache | `theme/loader/loader.js` | code written into `tess:bundle` by another extension or an XSS |
 | Stable code signature | "Tess Music" self-signed identity | macOS re-asking for permissions every update |
 | Loader fallback | `theme/loader/loader.js` | a broken theme release |
 | Channels | `dev` → declare → `beta` → promote → `stable` | untested builds reaching users |
@@ -76,17 +83,21 @@ Its files go back to stock (`Apps/xpui.spa`). The updater notices (LaunchAgent W
 
 `push to main` → `.github/workflows/release.yml`: `tools/check-safety.sh` → `tools/release.mjs auto dev`:
 build theme → sign → build patcher (+ tess-verify, rescue verify), Tess Mini (universal), sign binaries with the
-"Tess Music" identity → write `dist/` (manifest, theme, components list + signature, `install.sh`, `uninstall.sh`) to
-the `dev` branch → GitHub Release `vX.Y.Z` (prerelease, the part files) → mirror the branch to
+"Tess Music" identity → write `dist/` (manifest with `rev` and a signed envelope binding both file hashes, theme, components list +
+signature + `rev`, `install.sh`, `install.sig`, `uninstall.sh`) to the
+`dev` branch → GitHub Release `vX.Y.Z` (prerelease, the part files) → mirror the branch to
 `Flame119052/tess-releases`.
-Declaration (`tools/declare.mjs`): copy `dev`'s `dist/` byte for byte to `beta` (only the unsigned manifest channel
-changes), copy the installer stub to the channel root, record the source `main` commit, and write release notes from
-every PR merged since the previous beta. Promotion (`tools/promote.mjs`): copy that exact beta to `stable`, including
-its notes and channel-root stub, mirror it, and mark the release latest. Both public-channel jobs use the protected
-GitHub `release` environment and support a no-write `--dry-run`.
+Declaration (`tools/declare.mjs`): copy `dev`'s `dist/` byte for byte to `beta` (only the manifest's channel field
+changes; it is outside the signed envelope), copy the install line to the channel root, record the source `main`
+commit, and write release notes from every PR merged since the previous beta. Promotion (`tools/promote.mjs`): copy
+that exact beta to `stable`, including its notes and channel-root install line, mirror it, and mark the release latest.
+Both public-channel jobs use the protected GitHub `release` environment and support a no-write `--dry-run`.
 
-Install line: `installer/install.sh` (stub on `main`) → downloads `dist/install.sh` from the channel (`stable` unless
-`TESS_CHANNEL=dev|beta`) → runs it. It falls back to `main/installer/tess-install.sh` only if the channel has none.
+Install line: `installer/install.sh` (forwarder on `main`) pins the committed verifier's SHA-256, downloads
+`main/installer/verify/<sha>`, checks it, then downloads `$CH/dist/install.sh` and `dist/install.sig` and verifies the
+installer before running it with that verifier → the installer checks `components.txt` before unpacking the patcher.
+A channel published before the first promote has no signed installer; it gets `main`'s installer (temporary, #77), and
+the safety gate fails if that fallback outlives stable's signed installer.
 
 ## Secrets
 

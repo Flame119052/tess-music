@@ -74,9 +74,17 @@ catch { run('git', ['-C', root, 'worktree', 'add', '-q', '--orphan', '-b', chann
 
 // signed bundle the loader fetches
 mkdirSync(`${out}dist`, { recursive: true });
+// The release number only goes up across every channel, so recreating a branch or losing a manifest cannot reset it
+// below a rev a Mac already runs.
+const prevManifest = (() => { try { return JSON.parse(readFileSync(`${out}dist/manifest.json`, 'utf8')); } catch { return {}; } })();
+const revOf = (ref) => { try { return Number(JSON.parse(execFileSync('git', ['-C', root, 'show', `${ref}:dist/manifest.json`], { encoding: 'utf8' })).rev) || 0; } catch { return 0; } };
+const rev = Math.max(Number(prevManifest.rev) || 0, revOf('origin/dev'), revOf('origin/beta'), revOf('origin/stable')) + 1;
+const sha = (s) => createHash('sha256').update(s).digest('hex');
+// The envelope binds the file contents too: a mirror cannot pair a fresh rev with older, correctly signed files.
+const envelope = { version, js: 'theme.js', css: 'user.css', jsSha: sha(stamped), cssSha: sha(css), rev };
 writeFileSync(`${out}dist/theme.js`, stamped);
 writeFileSync(`${out}dist/user.css`, css);
-writeFileSync(`${out}dist/manifest.json`, JSON.stringify({ version, channel, js: 'theme.js', css: 'user.css', sig: { js: sig(stamped), css: sig(css) } }, null, 2));
+writeFileSync(`${out}dist/manifest.json`, JSON.stringify({ ...envelope, channel, sig: { js: sig(stamped), css: sig(css), envelope: sig(JSON.stringify(envelope)) } }, null, 2));
 
 // the theme the installer writes into Spotify: loader + this release as the offline baseline
 const loader = readFileSync(`${root}theme/loader/loader.js`, 'utf8').replace('__TESS_PUBLIC_KEY__', pub);
@@ -99,9 +107,13 @@ writeFileSync(`${mini}Info.plist`, readFileSync(`${root}mini/Info.plist`, 'utf8'
 codesign(`${build}Tess Mini.app`);
 run('ditto', ['-c', '-k', '--keepParent', `${build}Tess Mini.app`, `${build}tess-mini.zip`]);
 
-// the installer travels with the release, so the public install line only ever runs a promoted installer
-cpSync(`${root}installer/tess-install.sh`, `${out}dist/install.sh`);
-cpSync(`${root}installer/uninstall.sh`, `${out}dist/uninstall.sh`);
+// the installer travels with the release, so the public install line only ever runs a promoted installer. The
+// forwarder checks the verifier's pin (in installer/install.sh) and the installer's signature before running it.
+const installText = readFileSync(`${root}installer/tess-install.sh`, 'utf8');
+const uninstallText = readFileSync(`${root}installer/uninstall.sh`, 'utf8');
+writeFileSync(`${out}dist/install.sh`, installText);
+writeFileSync(`${out}dist/uninstall.sh`, uninstallText);
+writeFileSync(`${out}dist/install.sig`, sig(installText) + '\n');
 writeFileSync(`${out}README.md`, `Release channel \`${channel}\` of Tess Music. Source and install: https://github.com/Flame119052/tess-music\n`);
 // the patcher, built from patcher/ (fork of Spicetify CLI) plus Spicetify's compiled helper scripts
 const pdir = `${build}patcher/`;
@@ -109,9 +121,11 @@ mkdirSync(`${pdir}pkg`, { recursive: true });
 for (const a of ['arm64', 'amd64']) run('go', ['build', '-ldflags', '-s -w -X main.version=2.46.4', '-o', `${pdir}tp-${a}`, '.'], { cwd: `${root}patcher`, env: { ...process.env, CGO_ENABLED: '0', GOOS: 'darwin', GOARCH: a } });
 run('lipo', ['-create', `${pdir}tp-arm64`, `${pdir}tp-amd64`, '-output', `${pdir}pkg/tess-patcher`]);
 codesign(`${pdir}pkg/tess-patcher`, 'music.tess.patcher');
-for (const a of ['arm64', 'amd64']) run('go', ['build', '-ldflags', '-s -w', '-o', `${pdir}tv-${a}`, './tessverify'], { cwd: `${root}patcher`, env: { ...process.env, CGO_ENABLED: '0', GOOS: 'darwin', GOARCH: a } });
+for (const a of ['arm64', 'amd64']) run('go', ['build', '-trimpath', '-buildvcs=false', '-ldflags', '-s -w', '-o', `${pdir}tv-${a}`, './tessverify'], { cwd: `${root}patcher`, env: { ...process.env, CGO_ENABLED: '0', GOOS: 'darwin', GOARCH: a } });
 run('lipo', ['-create', `${pdir}tv-arm64`, `${pdir}tv-amd64`, '-output', `${pdir}pkg/tess-verify`]);
 codesign(`${pdir}pkg/tess-verify`, 'music.tess.verify');
+// The install line runs the verifier committed at installer/verify/<sha>, pinned by SHA-256 in installer/install.sh;
+// the copy in the patcher archive above is the one the updater installs and is signed with the Tess identity.
 // the rescue line: the same checker built with the rescue key (kept offline, never in CI), plus rescue.sh.
 // Macs copy these once into Tess/rescue and updates never replace them (see installer/rescue.sh).
 const RESCUE_PUBLIC_KEY = 'cC+AMjfi/tOWQ7pvldMC+m5O0n+2TLQ2rW2PhoAsbhk=';
@@ -120,11 +134,10 @@ for (const a of ['arm64', 'amd64']) run('go', ['build', '-ldflags', `-s -w -X ma
 run('lipo', ['-create', `${pdir}trv-arm64`, `${pdir}trv-amd64`, '-output', `${pdir}pkg/rescue/tess-rescue-verify`]);
 codesign(`${pdir}pkg/rescue/tess-rescue-verify`, 'music.tess.rescue-verify');
 cpSync(`${root}installer/rescue.sh`, `${pdir}pkg/rescue/rescue.sh`);
-run('curl', ['-fsSL', '-o', `${pdir}up.tgz`, 'https://github.com/spicetify/cli/releases/download/v2.46.4/spicetify-2.46.4-darwin-arm64.tar.gz']);
-mkdirSync(`${pdir}up`, { recursive: true });
-run('tar', ['-xzf', `${pdir}up.tgz`, '-C', `${pdir}up`]);
-cpSync(`${pdir}up/jsHelper`, `${pdir}pkg/jsHelper`, { recursive: true });
-cpSync(`${pdir}up/css-map.json`, `${pdir}pkg/css-map.json`);
+// Spicetify's prebuilt helper files are vendored (patcher/prebuilt/spicetify-2.46.4) and copied here: the release no
+// longer downloads anything from Spicetify, so a compromised upstream release cannot ride Tess's signature.
+cpSync(`${root}patcher/prebuilt/spicetify-2.46.4/jsHelper`, `${pdir}pkg/jsHelper`, { recursive: true });
+cpSync(`${root}patcher/prebuilt/spicetify-2.46.4/css-map.json`, `${pdir}pkg/css-map.json`);
 cpSync(`${root}patcher/LICENSE`, `${pdir}pkg/LICENSE`);
 cpSync(`${root}patcher/NOTICE.md`, `${pdir}pkg/NOTICE.md`);
 for (const d of ['Themes', 'Extensions', 'CustomApps']) mkdirSync(`${pdir}pkg/${d}`, { recursive: true });
@@ -157,7 +170,7 @@ const lines = Object.entries(parts).map(([n, p]) => {
   const sha = createHash('sha256').update(readFileSync(p.file)).digest('hex');
   return `${n} ${sha} https://github.com/Flame119052/tess-music/releases/download/v${version}/${p.file.split('/').pop()} ${p.src}`;
 });
-const components = lines.join('\n') + `\nversion ${version}\n`;
+const components = lines.join('\n') + `\nversion ${version}\nrev ${rev}\n`;
 writeFileSync(`${out}dist/components.txt`, components);
 writeFileSync(`${out}dist/components.sig`, sig(components));
 run('git', ['-C', out, 'add', '-A']);

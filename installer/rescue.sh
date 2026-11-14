@@ -79,7 +79,7 @@ PATCHER="$T/bin/patcher/tess-patcher"
 case $action in
   check)           cmd=(/bin/zsh "$T/doctor.sh" --report) ;;
   update)          cmd=(/usr/bin/env TESS_FORCE=1 /bin/zsh "$T/updater.sh") ;;
-  repair)          cmd=(/usr/bin/env TESS_CHANNEL="${CH:-stable}" /bin/sh "$T/installer.sh") ;;
+  repair)          V="$T/bin/patcher/tess-verify"; if [ ! -x "$V" ]; then log "repair: no verifier installed; refused"; exit 0; fi; cmd=(/usr/bin/env TESS_CHANNEL="${CH:-stable}" TESS_VERIFY="$V" /bin/sh "$T/installer.sh") ;;
   # the patcher's restore swaps in Spotify's own files as one checked copy (swapApps), never delete-then-copy
   restore-spotify) cmd=(/bin/zsh -c '[ -f "$1/updater.env" ] && . "$1/updater.env"; [ -n "$TESS_CONFIG" ] && export SPICETIFY_CONFIG="$TESS_CONFIG"; exec "$2" restore' _ "$T" "$PATCHER") ;;
   uninstall)       cmd=(/bin/sh "$T/uninstall.sh") ;;

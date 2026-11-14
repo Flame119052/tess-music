@@ -18,6 +18,15 @@ jobs:
         run: git fetch --depth=1 origin stable:refs/remotes/origin/stable || true
       - name: Safety checks (installer, updater, doctor, rescue, patcher swap)
         run: tools/check-safety.sh
+      - name: Committed verifier matches patcher/tessverify
+        working-directory: patcher
+        run: |
+          pin=$(sed -n "s/^VERIFY_SHA='\([0-9a-f]\{64\}\)'$/\1/p" ../installer/install.sh)
+          for a in arm64 amd64; do
+            CGO_ENABLED=0 GOOS=darwin GOARCH=$a go build -trimpath -buildvcs=false -ldflags '-s -w' -o "$RUNNER_TEMP/tv-$a" ./tessverify
+          done
+          lipo -create "$RUNNER_TEMP/tv-arm64" "$RUNNER_TEMP/tv-amd64" -output "$RUNNER_TEMP/tess-verify"
+          [ "$(shasum -a 256 "$RUNNER_TEMP/tess-verify" | cut -d' ' -f1)" = "$pin" ] || { echo "installer/verify/<sha> is stale; rebuild it, commit it under its hash, and update VERIFY_SHA"; exit 1; }
       - name: Theme builds and parses
         run: node tools/build.mjs && node --check theme/Tess/theme.js && node --check theme/loader/loader.js
       - name: Patcher builds
@@ -35,5 +44,11 @@ jobs:
         run: node tools/test-dial-pick.mjs
       - name: Reviewer agent tests
         run: node tools/test-agent-review.mjs
+      - name: Trust tests (signed manifest, loader floor and cache, install stub, sandbox install)
+        run: |
+          node tools/test-manifest.mjs
+          node tools/test-loader.mjs
+          node tools/test-install-line.mjs
+          node tools/test-install.mjs
       - name: Tools parse
         run: for f in tools/*.mjs; do node --check "$f"; done
