@@ -29,7 +29,9 @@ writeFileSync(join(dist, 'install.sig'), 'good\n');
 writeFileSync(join(main, 'tess-install.sh'), installer);
 const sha = createHash('sha256').update(readFileSync(verifier)).digest('hex');
 
+let serverStatus = 0;
 const server = createServer((req, res) => {
+  if (serverStatus && req.url.endsWith('/dist/install.sh')) { res.writeHead(serverStatus); res.end(); return; }
   const file = join(www, req.url.split('?')[0]);
   if (!existsSync(file)) { res.writeHead(404); res.end(); return; }
   res.writeHead(200, { 'content-type': 'application/octet-stream' });
@@ -80,8 +82,18 @@ try {
   rmSync(marker, { force: true });
   r = await run();
   assert.equal(r.status, 0, r.stderr);
-  assert.match(outcome(), /installer-ran/, "main's installer ran as the last resort");
+  assert.match(outcome(), /installer-ran\nverifier-ok/, "main's installer ran with the checked verifier");
   assert.match(r.stdout, /temporary installer/, 'the temporary fallback is announced');
+
+  // 4b. any status other than 404 is an error, not a fallback to main
+  writeFileSync(join(dist, 'install.sh'), installer);
+  serverStatus = 503;
+  rmSync(marker, { force: true });
+  r = await run();
+  assert.notEqual(r.status, 0, 'a 503 exits non-zero');
+  assert.equal(outcome(), '', 'nothing ran after a 503');
+  assert.match(r.stdout, /HTTP 503/, 'the HTTP status is named');
+  serverStatus = 0;
 
   // 5. an installer with no signature on the channel is refused (not silently downgraded to main)
   writeFileSync(join(dist, 'install.sh'), installer);
