@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { eligibleModels, looksSecret, parseRequest, providerHasUsage, resolveReviewers, tierForPaths } from './agent-review.mjs';
+import { eligibleModels, looksSecret, parseRequest, providerHasUsage, resolveReviewers, reviewerEnv, tierForPaths } from './agent-review.mjs';
 
 const config = JSON.parse(readFileSync(new URL('../.github/agents.json', import.meta.url), 'utf8'));
 const available = (usedPercent) => ({ windows: [{ usedPercent }] });
@@ -107,4 +107,10 @@ test('review text that looks like a key or token is never posted', () => {
   assert.ok(looksSecret('token ghp_' + 'a'.repeat(36)));
   assert.ok(looksSecret('x'.repeat(10) + 'A'.repeat(130)));
   assert.ok(!looksSecret('Looks fine. The swap keeps a checked copy.\nVerdict: approve'));
+});
+
+test('the reviewer gets Claude its sign-in but never the GitHub token', () => {
+  const env = reviewerEnv({ HOME: '/home/r', PATH: '/bin', GH_TOKEN: 'ghs_x', GITHUB_TOKEN: 'ghs_y', CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-x', OTHER: '1' });
+  assert.deepEqual(Object.keys(env).sort(), ['CLAUDE_CODE_OAUTH_TOKEN', 'HOME', 'PATH']);
+  assert.ok(looksSecret('sk-ant-oat01-' + 'a'.repeat(80)));
 });

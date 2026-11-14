@@ -103,3 +103,15 @@ setup.
    block force-pushes and deletions, and grant only the release workflow the bypass needed to update channel branches.
 5. **Runner access:** keep the runner repository-scoped (or in a runner group limited to this repository) and confirm
    that it has the `tess-agent` label.
+
+## What a runner machine has (set up 14 Nov on `omarchy` and `paperclip-vps`)
+
+- A `tess-runner` account with no `sudo` rights. The runner lives in `~/actions-runner` and runs as the
+  `actions.runner.Flame119052-tess-music.<name>` system service, as that user.
+- In `~tess-runner/.local/bin`, installed from the official releases with checked hashes: `claude` and `gh`.
+- Claude signs in with a long-lived code from `claude setup-token`, which only works through the
+  `CLAUDE_CODE_OAUTH_TOKEN` variable. It sits in the runner's `.env` (mode 600). `config.sh` rewrites `.env` and
+  `.path`, so set both again after re-registering, then restart the service. The reviewer passes only this one variable
+  on from the job; `GH_TOKEN` never reaches it.
+- Krish's Mac makes the registration token and sends it over SSH standard input, so the token never sits in a file or in
+  an agent's instructions.

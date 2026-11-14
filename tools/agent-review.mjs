@@ -129,9 +129,11 @@ function reviewPrompt(role, context) {
   return `${common}\n\nLINKED ISSUE\n${context.issue}\n\nAPPROACH\n${context.approach}\n\nPULL REQUEST DIFF\n${context.diff}`;
 }
 
-function reviewerEnv() {
-  const allowed = ['HOME', 'PATH', 'TMPDIR', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL'];
-  return Object.fromEntries(allowed.flatMap((name) => process.env[name] ? [[name, process.env[name]]] : []));
+// The reviewer never sees GH_TOKEN or anything else from the job. CLAUDE_CODE_OAUTH_TOKEN is Claude's own sign-in
+// on a headless runner (made with `claude setup-token`, kept in the runner's .env); without it Claude can't start.
+export function reviewerEnv(env = process.env) {
+  const allowed = ['HOME', 'PATH', 'TMPDIR', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'CLAUDE_CODE_OAUTH_TOKEN'];
+  return Object.fromEntries(allowed.flatMap((name) => env[name] ? [[name, env[name]]] : []));
 }
 
 function cliInvocation(provider, model, prompt, effort) {
