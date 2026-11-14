@@ -54,6 +54,7 @@ esac
   const output = execFileSync('/bin/sh', [join(root, 'installer/tess-install.sh')], { env: { ...process.env, HOME: home, TESS_TEST: '1', TESS_HOME: tess, TESS_CONFIG: config, TESS_SPOTIFY: spotify, FIXTURES: fixtures, PATH: `${bin}:${process.env.PATH}` }, encoding: 'utf8' });
   assert.match(output, /Test install.*finished/);
   assert.match(output, /The Tess rescue line isn't set up on this Mac\./, 'no rescue line yet: the notice says so');
+  assert.ok(!existsSync(join(tess, 'state', 'rescue-notice-shown')), 'a missing rescue line is not marked as disclosed');
   assert.match(readFileSync(join(spotify, 'Contents/Resources/Apps/xpui/index.html'), 'utf8'), /spicetifyWrapper/);
   for (const part of ['installer', 'uninstall', 'wake', ...(withCommand ? [] : ['command'])]) assert.ok(!existsSync(join(tess, 'state', part)), `${part} absent, no false installed state`);
   assert.equal(readFileSync(join(tess, 'tess'), 'utf8'), readFileSync(join(root, 'installer/tess-command.sh'), 'utf8'), 'installer installs signed command');
@@ -65,6 +66,7 @@ esac
   const repair = execFileSync('/bin/sh', [join(tess, 'tess'), 'repair'], { env, encoding: 'utf8' });
   assert.match(repair, /Test install.*finished/);
   assert.match(repair, /remotely run five Tess actions on this Mac, without asking/, 'with a current rescue line, repair shows the five-action notice');
+  assert.ok(existsSync(join(tess, 'state', 'rescue-notice-shown')), 'the five-action notice records that this Mac was told');
   assert.doesNotMatch(repair, /older Tess rescue line/, 'a current rescue line is not described as the old script format');
   assert.match(readFileSync(join(fixtures, 'launchctl.log'), 'utf8'), /enable .*music.tess.rescue/, 'reinstall enables rescue');
   script(join(tess, 'rescue/rescue.sh'), '#!/bin/zsh\nexit 0\n');

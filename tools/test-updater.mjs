@@ -93,6 +93,7 @@ done
 case "$url" in
   *components.txt*) cp "$TESS_COMPONENTS" "$out" ;;
   *components.sig*) cp "$TESS_SIGNATURE" "$out" ;;
+  test://doctor) cp "$TESS_DOCTOR_ASSET" "$out" ;;
   test://installer) cp "$TESS_ASSET" "$out" ;;
   *) exit 22 ;;
 esac
@@ -179,6 +180,36 @@ try {
     s.run({ TESS_APPLY_FAIL: '1' });
     assert.equal(readFileSync(join(s.apps, 'xpui.spa'), 'utf8'), 'stock Spotify interface\n', 'failed apply restores complete stock Apps');
     assert.ok(!existsSync(join(s.apps, 'xpui')), 'partial Apps removed');
+  }
+
+  {
+    const s = sandbox();
+    const newDoctor = '#!/bin/zsh\nexit 1\n';
+    const installer = '#!/bin/sh\necho new installer\n';
+    writeFileSync(join(s.fixtures, 'doctor.sh'), newDoctor);
+    writeFileSync(join(s.fixtures, 'installer.sh'), installer);
+    writeFileSync(join(s.fixtures, 'components.txt'), `doctor ${sha(newDoctor)} test://doctor source\ninstaller ${sha(installer)} test://installer source\n`);
+    writeFileSync(join(s.tess, 'doctor.sh'), '#!/bin/zsh\nexit 0\n');
+    s.run({ TESS_DOCTOR_ASSET: join(s.fixtures, 'doctor.sh') });
+    assert.equal(readFileSync(join(s.tess, 'doctor.sh'), 'utf8'), newDoctor, 'a stricter doctor is not rolled back against the previous doctor');
+    assert.ok(!existsSync(join(s.state, `bad-doctor-${sha(newDoctor)}`)), 'a stricter doctor is not banned');
+    assert.equal(readFileSync(join(s.tess, 'installer.sh'), 'utf8'), installer, 'later parts use the new doctor as the baseline');
+    assert.ok(!existsSync(join(s.state, `bad-installer-${sha(installer)}`)), 'a pre-existing doctor failure does not ban the next part');
+  }
+
+  {
+    const s = sandbox();
+    const src = join(s.tess, 'bin', 'patcher', 'rescue');
+    mkdirSync(src);
+    writeFileSync(join(src, 'tess-rescue-verify'), '#!/bin/sh\nexit 0\n');
+    writeFileSync(join(src, 'rescue.sh'), '#!/bin/zsh\nexit 0\n');
+    chmodSync(join(src, 'tess-rescue-verify'), 0o755);
+    chmodSync(join(src, 'rescue.sh'), 0o755);
+    s.run();
+    assert.ok(!existsSync(join(s.tess, 'rescue', 'rescue.sh')), 'updater does not add a rescue line the notice never described');
+    writeFileSync(join(s.state, 'rescue-notice-shown'), '');
+    s.run();
+    assert.equal(readFileSync(join(s.tess, 'rescue', 'rescue.sh'), 'utf8'), '#!/bin/zsh\nexit 0\n', 'updater may restore a rescue line after the notice');
   }
 
   {

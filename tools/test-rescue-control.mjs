@@ -86,6 +86,7 @@ esac
   assert.match(out, new RegExp(`Rescue: on, running \\(verifier SHA-256 ${fingerprint}\\)`));
   assert.match(out, /Reports: on/);
   assert.match(out, /Wake check: stopped/);
+  assert.doesNotMatch(out, /Rescue format: older/);
 
   out = run('rescue', 'off');
   assert.match(out, /rescue line is off/i);
@@ -141,6 +142,7 @@ esac
   const stillLoaded = run('status');
   assert.match(stillLoaded, /Rescue: off, but the agent is still loaded; run: tess rescue off/);
   assert.match(stillLoaded, new RegExp(`verifier SHA-256 ${fingerprint}`));
+  assert.match(stillLoaded, /Rescue format: older \(a signed order can run any script as you/);
   writeFileSync(join(bin, 'curl'), '#!/bin/sh\nexit 22\n');
   chmodSync(join(bin, 'curl'), 0o755);
   writeFileSync(join(tess, 'doctor.sh'), readFileSync(join(root, 'installer', 'doctor.sh')));
@@ -153,6 +155,26 @@ esac
   const stopped = run('status');
   assert.match(stopped, /Rescue: off \(verifier SHA-256/);
   assert.doesNotMatch(stopped, /still loaded/);
+
+  rmSync(loadedRescue, { force: true });
+  rmSync(join(box, 'rescue-disabled'), { force: true });
+  writeFileSync(join(tess, 'rescue-off'), '');
+  writeFileSync(join(agents, 'music.tess.rescue.plist'), 'leftover plist\n');
+  const unloaded = execFileSync('/bin/zsh', [join(tess, 'doctor.sh')], { env, encoding: 'utf8' });
+  assert.match(unloaded, /removed the rescue line's login file/);
+  assert.doesNotMatch(unloaded, /stopped the rescue line you turned off/);
+  assert.ok(!existsSync(join(agents, 'music.tess.rescue.plist')), 'doctor removes a rescue login plist that is not loaded');
+  assert.ok(existsSync(join(box, 'rescue-disabled')), 'doctor disables rescue even when the job is not loaded');
+
+  rmSync(join(rescue, 'tess-rescue-verify'));
+  rmSync(join(tess, 'rescue-off'), { force: true });
+  const missing = run('status');
+  assert.match(missing, /Rescue: not installed/);
+  assert.doesNotMatch(missing, /Rescue: on/);
+  writeFileSync(join(tess, 'rescue-off'), '');
+  const missingOff = run('status');
+  assert.match(missingOff, /Rescue: not installed/);
+  assert.doesNotMatch(missingOff, /Rescue: off \(/);
 
   const predicate = readFileSync(join(root, 'installer', 'doctor.sh'), 'utf8').match(/real_launchctl\(\) \{[^}]+\}/);
   assert.ok(predicate, 'doctor defines the sandbox launchctl guard');

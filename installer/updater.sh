@@ -112,6 +112,10 @@ install_rescue() {
     return 0
   fi
   [ -x "$src/tess-rescue-verify" ] && [ -f "$src/rescue.sh" ] || return 0
+  # The install notice is the only place a person is told this line exists. Do not add it later on a Mac that was told it is not there.
+  if [ ! -f "$dst/rescue.sh" ] && [ ! -f "$STATE/rescue-notice-shown" ]; then
+    return 0
+  fi
   local fresh=""
   mkdir -p "$dst"
   if [ ! -x "$dst/tess-rescue-verify" ]; then
@@ -368,7 +372,10 @@ while read -r name sha url _src; do
       swap_apps "$TMP/theme-spotify/Apps" || { problem "theme: checked Spotify swap failed"; restore_part theme; continue; } ;;
     *) continue ;;
   esac
-  if [ "$baseline" = 0 ] && ! doctor --validate; then
+  if [ "$name" = doctor ]; then
+    # The doctor is the checker. A result from the doctor already on the Mac cannot judge the one just installed.
+    baseline=0; doctor --validate || baseline=$?
+  elif [ "$baseline" = 0 ] && ! doctor --validate; then
     restore_part "$name" && restored="restored last good" || restored="no last good was available"
     touch "$STATE/bad-$name-$sha"
     problem "$name: doctor rejected $sha; $restored; marked bad"

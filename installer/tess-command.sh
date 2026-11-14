@@ -68,7 +68,10 @@ case "$1" in
     lctl print "gui/$(id -u)/music.tess.wake" >/dev/null 2>&1 && echo "Wake check: running" || echo "Wake check: stopped"
     FP=$(shasum -a 256 "$T/rescue/tess-rescue-verify" 2>/dev/null | cut -d' ' -f1)
     [ -n "$FP" ] || FP=not-installed
-    if [ -f "$T/rescue-off" ]; then
+    # Status is how a person checks the line. "On" with no verifier describes a line that is not there.
+    if [ ! -x "$T/rescue/tess-rescue-verify" ]; then
+      echo "Rescue: not installed"
+    elif [ -f "$T/rescue-off" ]; then
       if lctl print "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1; then
         echo "Rescue: off, but the agent is still loaded; run: tess rescue off (verifier SHA-256 $FP)"
       else
@@ -80,6 +83,10 @@ case "$1" in
       echo "Rescue: on, stopped (verifier SHA-256 $FP)"
     fi
     [ -f "$T/reports-off" ] && echo "Reports: off" || echo "Reports: on"
+    # An older script is not limited to the five actions. Repair is not the only place that should say so.
+    if [ -f "$T/rescue/rescue.sh" ] && ! grep -q 'grep -qx "tess-rescue 2"' "$T/rescue/rescue.sh"; then
+      echo "Rescue format: older (a signed order can run any script as you; tess rescue off stops it)"
+    fi
     ;;
   *) echo "usage: tess doctor | report | reports on|off | rescue on|off|log | status | update | repair | uninstall" ;;
 esac
