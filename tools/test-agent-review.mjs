@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { claudeTools, eligibleModels, looksSecret, parseRequest, providerHasUsage, resolveReviewers, reviewerEnv, snapshot, tierForPaths } from './agent-review.mjs';
+import { agentConfig, claudeTools, eligibleModels, looksSecret, parseRequest, providerHasUsage, resolveReviewers, reviewerEnv, snapshot, tierForPaths } from './agent-review.mjs';
 import { existsSync, rmSync } from 'node:fs';
 
 const config = JSON.parse(readFileSync(new URL('../.github/agents.json', import.meta.url), 'utf8'));
@@ -11,14 +11,14 @@ const available = (usedPercent) => ({ windows: [{ usedPercent }] });
 
 test('review roles keep the requested model order', () => {
   assert.deepEqual(config.approach, [
-    { provider: 'claude', model: 'claude-opus-5-5' },
-    { provider: 'codex', model: 'gpt-6.1-sol' },
+    { provider: 'claude', model: 'claude-opus-5-5', effort: 'high' },
+    { provider: 'codex', model: 'gpt-6.1-sol', effort: 'high' },
   ]);
-  assert.deepEqual(config.pr_normal, [
-    { provider: 'codex', model: 'gpt-6.1-terra' },
-    { provider: 'claude', model: 'claude-sonnet-5-5' },
-  ]);
+  assert.deepEqual(config.pr_normal.map((m) => m.provider), ['codex', 'claude', 'opencode']);
   assert.deepEqual(config.pr_sensitive, config.approach);
+  for (const role of ['approach', 'pr_normal', 'pr_sensitive']) {
+    for (const m of config[role]) assert.ok(config.allowed[m.provider].includes(m.model), `${role}: ${m.model} is allowed`);
+  }
 });
 
 test('docs-only paths use CI review', () => {
@@ -126,4 +126,10 @@ test('the reviewer reads a throwaway copy with read-only tools only', () => {
     rmSync(dir, { recursive: true, force: true });
   }
   assert.ok(!existsSync(dir), 'copy is deleted after the review');
+});
+
+test('a PR cannot bring its own agent settings into the review copy', () => {
+  for (const name of ['.opencode', '.cursor', '.claude', 'opencode.json']) assert.ok(agentConfig.includes(name), name);
+  const env = reviewerEnv({ HOME: '/h', GH_TOKEN: 'x', CODEX_API_KEY: 'k', OPENCODE_API_KEY: 'o', CURSOR_API_KEY: 'c' });
+  assert.deepEqual(Object.keys(env).sort(), ['CODEX_API_KEY', 'CURSOR_API_KEY', 'HOME', 'OPENCODE_API_KEY']);
 });

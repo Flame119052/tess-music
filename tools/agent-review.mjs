@@ -136,7 +136,8 @@ function reviewPrompt(role, context) {
 // The reviewer never sees GH_TOKEN or anything else from the job. CLAUDE_CODE_OAUTH_TOKEN is Claude's own sign-in
 // on a headless runner (made with `claude setup-token`, kept in the runner's .env); without it Claude can't start.
 export function reviewerEnv(env = process.env) {
-  const allowed = ['HOME', 'PATH', 'TMPDIR', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'CLAUDE_CODE_OAUTH_TOKEN'];
+  const allowed = ['HOME', 'PATH', 'TMPDIR', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL',
+    'CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_API_KEY', 'CURSOR_API_KEY', 'OPENCODE_API_KEY'];
   return Object.fromEntries(allowed.flatMap((name) => env[name] ? [[name, env[name]]] : []));
 }
 
@@ -145,10 +146,15 @@ export function reviewerEnv(env = process.env) {
 export function snapshot(ref) {
   const dir = mkdtempSync(join(process.env.RUNNER_TEMP || tmpdir(), 'tess-review-'));
   execFileSync('sh', ['-c', 'git -C "$1" archive "$2" | tar -x -C "$3"', 'sh', root, ref, dir]);
+  for (const name of agentConfig) rmSync(join(dir, name), { recursive: true, force: true });
   return dir;
 }
 
 export const claudeTools = 'Read,Grep,Glob';
+
+// A PR could ship its own agent settings (an OpenCode agent named like ours, Cursor rules, Claude hooks) to widen what
+// the reviewer may do. They are removed from the copy; the reviewer only ever uses the settings on the runner.
+export const agentConfig = ['.opencode', 'opencode.json', 'opencode.jsonc', '.cursor', '.cursorrules', '.claude', '.codex', '.mcp.json'];
 
 function cliInvocation(provider, model, prompt, effort, work = root) {
   const env = reviewerEnv();
@@ -171,7 +177,7 @@ function cliInvocation(provider, model, prompt, effort, work = root) {
     });
   }
   if (provider === 'cursor') {
-    return spawnSync('cursor-agent', ['--print', '--mode', 'ask', '--model', model, '--workspace', work, prompt], {
+    return spawnSync('cursor-agent', ['--print', '--mode', 'ask', '--sandbox', 'enabled', '--trust', '--model', model, '--workspace', work, prompt], {
       cwd: work,
       env,
       encoding: 'utf8',
@@ -179,7 +185,7 @@ function cliInvocation(provider, model, prompt, effort, work = root) {
     });
   }
   if (provider === 'opencode') {
-    return spawnSync('opencode', ['run', '--agent', 'plan', '--model', model, '--archived', prompt], {
+    return spawnSync('opencode', ['run', '--agent', 'tess-reviewer', '--model', model, ...(effort ? ['--variant', effort] : []), '--archived', prompt], {
       cwd: work,
       env,
       encoding: 'utf8',

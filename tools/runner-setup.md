@@ -115,3 +115,11 @@ setup.
   on from the job; `GH_TOKEN` never reaches it.
 - Krish's Mac makes the registration token and sends it over SSH standard input, so the token never sits in a file or in
   an agent's instructions.
+
+## Adding another reviewer provider to a runner
+
+Install the CLI under `tess-runner` (in `~/.local/bin`), sign it in as that user, and pass only its key through the
+runner's `.env` (`CODEX_API_KEY`, `CURSOR_API_KEY` or `OPENCODE_API_KEY`; the reviewer passes on nothing else). For
+OpenCode, also copy `tools/opencode-reviewer.md` to `~tess-runner/.config/opencode/agents/tess-reviewer.md`; without it
+the `tess-reviewer` agent doesn't exist and the review fails instead of running with wider rights. Then restart the
+runner service. A provider with no CLI on the machine is simply skipped.

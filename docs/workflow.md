@@ -56,14 +56,41 @@ The agent that writes the approach comment or opens the PR picks who reviews it,
 1. Check usage with the usage tool (`provider_usage` in T3; it reads the same hub the runners read). Skip any provider near its limit.
 2. Pick using this table.
 
-| The work | Stage | Reviewer | Effort |
+Which model is good at what comes from the providers' own docs, review benchmarks, and what developers said on X,
+Hacker News and Reddit in Sep–Nov 2026. Sources are in [`docs/research/reviewer-models-2026-11.md`](research/reviewer-models-2026-11.md).
+The first choice in each row is the default; the runner moves down the list when a provider has no usage left.
+
+| The work | 1st choice | 2nd | 3rd |
 | --- | --- | --- | --- |
-| Docs only | PR | none (CI is the review) | — |
-| Small theme/tool change, one file, clear check | PR | lighter: `codex gpt-6.1-terra` or `claude claude-sonnet-5-5` | low–medium |
-| Bigger theme work, several files, new behaviour | approach | strong | medium |
-|  | PR | lighter | medium–high |
-| Sensitive (installer, updater, rescue, inbox, patcher, release, signing) | approach and PR | strong only: `claude claude-opus-5-5` or `codex gpt-6.1-sol` | high |
-| Security fixes, or anything that can stop Spotify working | approach and PR | strong, and a *different* provider from the one that wrote it | high–max |
+| **Approach** (is the design right?) | `claude claude-opus-5-5` high: best design judgement | `codex gpt-6.1-sol` high: close second at half the cost, and a different way of reading a plan | none yet. Gemini via Antigravity is the planned third, once it can sign in on a runner |
+| **Normal PR** (theme, Tess Mini, tools) | `codex gpt-6.1-terra` medium: cheapest strong reviewer, fast | `claude claude-sonnet-5-5` medium: good when Codex is low on weekly quota | `opencode opencode-go/glm-5.3` high: pennies per review, good at root causes, sometimes loops |
+| **Sensitive PR** (installer, updater, rescue, inbox, patcher, release, signing) | `claude claude-opus-5-5` high | `codex gpt-6.1-sol` high | none. Sensitive work waits for one of the two strong models rather than using a weaker one |
+| **Docs** | none: CI is the review | | |
+
+What each model is known for (opinions are labelled in the research note):
+- **Claude Opus 5.5:** strongest at design and safety reasoning. Expensive: it draws on Krish's own Claude allowance.
+- **GPT-6.1 Sol:** top code-review score in one developer's test, roughly half Opus's cost. Treat a fresh release as unproven for a week.
+- **GPT-6.1 Terra / Claude Sonnet 5.5:** fast, sensible everyday reviewers.
+- **GLM-5.3 (OpenCode):** cheap; its maker says it's the best open model at finding vulnerabilities. Testers say it can loop and break repo rules more often than DeepSeek.
+- **DeepSeek V4.1 Flash, Kimi K3 (OpenCode):** allowed in a tag for cheap second opinions, not defaults.
+- **Cursor `gpt-5.6-sol`:** works, but has no review benchmark and bills extra on top of the subscription. A spare.
+
+**Left out on purpose:**
+- **Grok 4.7:** reviews well but uses by far the most tokens per review.
+- **Zed:** hosts other agents and has no command-line reviewer of its own.
+- **Devin:** has no read-only mode when run without a person.
+- **ZCode:** starts with every permission on when run without a person.
+- **Cline:** can't block shell commands without a hook.
+- **Copilot:** possible later.
+- **Antigravity:** can't sign in on a server yet.
+
+Every reviewer runs read-only, whichever provider it is:
+- Claude: `--restricted --safe-mode` with only the Read, Grep and Glob tools.
+- Codex: `--sandbox read-only`.
+- Cursor: `--mode ask --sandbox enabled`.
+- OpenCode: the `tess-reviewer` agent (`tools/opencode-reviewer.md`), which denies everything except reading.
+
+Any agent settings shipped inside a PR (`.opencode`, `.cursor`, `.claude` and the like) are removed from the review copy first.
 
 **Rules.**
 - Don't use the strongest model at both stages unless the work is sensitive.
