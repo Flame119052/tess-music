@@ -1,5 +1,5 @@
 // A real TESS_TEST install into a fake Spotify, from a local dist: the installer must check the signed list with the
-// verifier the stub passed *before* it unpacks the patcher. Run: node tools/test-install.mjs
+// verifier the install line passed *before* it unpacks the patcher. Run: node tools/test-install.mjs
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';

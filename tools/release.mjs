@@ -105,14 +105,13 @@ writeFileSync(`${mini}Info.plist`, readFileSync(`${root}mini/Info.plist`, 'utf8'
 codesign(`${build}Tess Mini.app`);
 run('ditto', ['-c', '-k', '--keepParent', `${build}Tess Mini.app`, `${build}tess-mini.zip`]);
 
-// the installer travels with the release, so the public install line only ever runs a promoted installer. The stub
-// checks the verifier's pinned SHA-256 and the installer's signature before running it.
+// the installer travels with the release, so the public install line only ever runs a promoted installer. The
+// forwarder checks the verifier's pin (in installer/install.sh) and the installer's signature before running it.
 const installText = readFileSync(`${root}installer/tess-install.sh`, 'utf8');
 const uninstallText = readFileSync(`${root}installer/uninstall.sh`, 'utf8');
 writeFileSync(`${out}dist/install.sh`, installText);
 writeFileSync(`${out}dist/uninstall.sh`, uninstallText);
 writeFileSync(`${out}dist/install.sig`, sig(installText) + '\n');
-writeFileSync(`${out}dist/uninstall.sig`, sig(uninstallText) + '\n');
 writeFileSync(`${out}README.md`, `Release channel \`${channel}\` of Tess Music. Source and install: https://github.com/Flame119052/tess-music\n`);
 // the patcher, built from patcher/ (fork of Spicetify CLI) plus Spicetify's compiled helper scripts
 const pdir = `${build}patcher/`;
@@ -123,11 +122,8 @@ codesign(`${pdir}pkg/tess-patcher`, 'music.tess.patcher');
 for (const a of ['arm64', 'amd64']) run('go', ['build', '-trimpath', '-buildvcs=false', '-ldflags', '-s -w', '-o', `${pdir}tv-${a}`, './tessverify'], { cwd: `${root}patcher`, env: { ...process.env, CGO_ENABLED: '0', GOOS: 'darwin', GOARCH: a } });
 run('lipo', ['-create', `${pdir}tv-arm64`, `${pdir}tv-amd64`, '-output', `${pdir}pkg/tess-verify`]);
 codesign(`${pdir}pkg/tess-verify`, 'music.tess.verify');
-// The stub downloads this verifier and checks the SHA-256 pinned into the stub generated just below. -trimpath and
-// -buildvcs=false keep the bytes reproducible, so the pin is a property of the source, not of the build machine.
-cpSync(`${pdir}pkg/tess-verify`, `${out}dist/tess-verify`);
-const verifySha = createHash('sha256').update(readFileSync(`${out}dist/tess-verify`)).digest('hex');
-writeFileSync(`${out}dist/stub.sh`, readFileSync(`${root}installer/stub.sh`, 'utf8').replace('__TESS_VERIFY_SHA__', verifySha));
+// The install line runs the verifier committed at installer/tess-verify, pinned by SHA-256 in installer/install.sh;
+// the copy in the patcher archive above is the one the updater installs and is signed with the Tess identity.
 // the rescue line: the same checker built with the rescue key (kept offline, never in CI), plus rescue.sh.
 // Macs copy these once into Tess/rescue and updates never replace them (see installer/rescue.sh).
 const RESCUE_PUBLIC_KEY = 'cC+AMjfi/tOWQ7pvldMC+m5O0n+2TLQ2rW2PhoAsbhk=';
