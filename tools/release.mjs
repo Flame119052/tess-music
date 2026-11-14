@@ -74,12 +74,14 @@ catch { run('git', ['-C', root, 'worktree', 'add', '-q', '--orphan', '-b', chann
 
 // signed bundle the loader fetches
 mkdirSync(`${out}dist`, { recursive: true });
-// The release number only goes up, per channel. `min` is the previous one: a manifest below its own floor, or one
-// below what this Mac has already run, is refused by the loader.
+// The release number only goes up across every channel, so recreating a branch or losing a manifest cannot reset it
+// below a rev a Mac already runs.
 const prevManifest = (() => { try { return JSON.parse(readFileSync(`${out}dist/manifest.json`, 'utf8')); } catch { return {}; } })();
-const rev = (Number(prevManifest.rev) || 0) + 1;
-const min = Number(prevManifest.rev) || 0;
-const envelope = { version, js: 'theme.js', css: 'user.css', rev, min };
+const revOf = (ref) => { try { return Number(JSON.parse(execFileSync('git', ['-C', root, 'show', `${ref}:dist/manifest.json`], { encoding: 'utf8' })).rev) || 0; } catch { return 0; } };
+const rev = Math.max(Number(prevManifest.rev) || 0, revOf('origin/dev'), revOf('origin/beta'), revOf('origin/stable')) + 1;
+const sha = (s) => createHash('sha256').update(s).digest('hex');
+// The envelope binds the file contents too: a mirror cannot pair a fresh rev with older, correctly signed files.
+const envelope = { version, js: 'theme.js', css: 'user.css', jsSha: sha(stamped), cssSha: sha(css), rev };
 writeFileSync(`${out}dist/theme.js`, stamped);
 writeFileSync(`${out}dist/user.css`, css);
 writeFileSync(`${out}dist/manifest.json`, JSON.stringify({ ...envelope, channel, sig: { js: sig(stamped), css: sig(css), envelope: sig(JSON.stringify(envelope)) } }, null, 2));

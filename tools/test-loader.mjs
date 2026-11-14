@@ -11,16 +11,19 @@ const enc = new TextEncoder();
 const keys = await webcrypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
 const pub = Buffer.from(await webcrypto.subtle.exportKey('raw', keys.publicKey)).toString('base64');
 const sig = async (text) => Buffer.from(await webcrypto.subtle.sign('Ed25519', keys.privateKey, enc.encode(text))).toString('base64');
+const sha = async (text) => [...new Uint8Array(await webcrypto.subtle.digest('SHA-256', enc.encode(text)))].map((b) => b.toString(16).padStart(2, '0')).join('');
 
 const release = async (rev, version, { ready = true } = {}) => {
   const js = ready
     ? `window.__tessReady = true; (window.__ran = window.__ran || []).push('${version}');`
     : `// __tessReady stays false\n(window.__ran = window.__ran || []).push('${version}-broken');`;
   const css = `/* ${version} */`;
-  const env = { version, js: 'theme.js', css: 'user.css', rev, min: Math.max(0, rev - 1) };
+  const env = { version, js: 'theme.js', css: 'user.css', jsSha: await sha(js), cssSha: await sha(css), rev };
+  const envText = JSON.stringify(env);
   return {
-    manifest: { ...env, channel: 'stable', sig: { js: await sig(js), css: await sig(css), envelope: await sig(JSON.stringify(env)) } },
+    manifest: { ...env, channel: 'stable', sig: { js: await sig(js), css: await sig(css), envelope: await sig(envText) } },
     files: { 'theme.js': js, 'user.css': css },
+    envText,
   };
 };
 const legacy = async (version, { ready = true } = {}) => {
@@ -102,6 +105,22 @@ bad.manifest.sig.envelope = await sig('not the manifest');
 r = await runLoader({ served: await serve(bad) });
 assert.ok(!r.ran.includes('v4'), 'a bad envelope is refused');
 
+// 4b. a mirror pairs a fresh envelope with older, genuinely signed files
+const newer = await release(5, 'v5');
+const older = await release(3, 'old');
+newer.files = { ...older.files };
+newer.manifest.sig.js = older.manifest.sig.js;
+newer.manifest.sig.css = older.manifest.sig.css;
+r = await runLoader({ served: await serve(newer) });
+assert.ok(!r.ran.includes('old') && !r.ran.includes('v5'), 'old files under a new envelope are refused');
+
+// 4c. a rev-tagged cache without its envelope is not run
+r = await runLoader({
+  served: await serve(await release(5, 'v5')),
+  store: { 'tess:bundle': { version: 'v5', channel: 'stable', rev: 5, js: older.files['theme.js'], css: older.files['user.css'], sigJs: older.manifest.sig.js, sigCss: older.manifest.sig.css } },
+});
+assert.ok(!r.ran.includes('old') && r.ran.includes('v5'), 'a relabelled old cache is refetched');
+
 // 5. a legacy manifest (no envelope, no rev) still runs on a Mac that has no rev floor yet
 r = await runLoader({ served: await serve(await legacy('legacy')) });
 assert.deepEqual(r.ran, ['legacy'], 'a legacy manifest still runs');
@@ -112,7 +131,7 @@ assert.ok(!r.ran.includes('old'), 'a pre-rev manifest is refused after a rev flo
 
 // 6. a release that never starts falls back to the last good copy, which is verified first
 const good = await release(3, 'good');
-const goodBundle = { version: 'good', channel: 'stable', rev: 3, js: good.files['theme.js'], css: good.files['user.css'], sigJs: good.manifest.sig.js, sigCss: good.manifest.sig.css };
+const goodBundle = { version: 'good', channel: 'stable', rev: 3, js: good.files['theme.js'], css: good.files['user.css'], sigJs: good.manifest.sig.js, sigCss: good.manifest.sig.css, env: good.envText, sigEnv: good.manifest.sig.envelope };
 r = await runLoader({
   served: await serve(await release(4, 'v4-broken', { ready: false })),
   store: { 'tess:good': goodBundle, 'tess:rev:stable': 3 },
