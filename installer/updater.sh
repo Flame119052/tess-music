@@ -126,7 +126,7 @@ install_rescue() {
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
     '<plist version="1.0"><dict>' '<key>Label</key><string>music.tess.rescue</string>' \
     "<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$dst/rescue.sh</string></array>" \
-    '<key>StartInterval</key><integer>21600</integer>' '<key>RunAtLoad</key><true/>' '</dict></plist>' > "$pl"
+    '<key>StartInterval</key><integer>21600</integer>' '<key>RunAtLoad</key><true/>' '<key>AbandonProcessGroup</key><true/>' '</dict></plist>' > "$pl"
   [ -n "$TESS_TEST" ] && { log "rescue line installed (test)"; return 0; }
   launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1
   launchctl bootstrap "gui/$(id -u)" "$pl" >/dev/null 2>&1

@@ -353,7 +353,7 @@ case "$1" in
         printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
           '<plist version="1.0"><dict><key>Label</key><string>music.tess.rescue</string>' \
           "<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$RESCUE_PATH</string></array>" \
-          '<key>StartInterval</key><integer>21600</integer><key>RunAtLoad</key><true/></dict></plist>' > "$LA/music.tess.rescue.plist" || exit 1
+          '<key>StartInterval</key><integer>21600</integer><key>RunAtLoad</key><true/><key>AbandonProcessGroup</key><true/></dict></plist>' > "$LA/music.tess.rescue.plist" || exit 1
         rm -f "$T/rescue-off"
         launchctl enable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
         launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
@@ -395,8 +395,14 @@ fi
 chmod +x "$HOME_TESS/tess"
 
 rescue_notice() {
-  echo "  Tess's maintainer can remotely run five Tess actions on this Mac, without asking: check, update, repair, restore Spotify, or uninstall Tess."
-  echo "  It accepts only orders signed by the owner's offline rescue key. Turn it off any time: \"$HOME_TESS/tess\" rescue off"
+  if [ -f "$HOME_TESS/rescue-off" ]; then
+    echo "  The Tess rescue line is off on this Mac. Turn it back on: \"$HOME_TESS/tess\" rescue on"
+  elif [ -x "$HOME_TESS/rescue/rescue.sh" ]; then
+    echo "  Tess's maintainer can remotely run five Tess actions on this Mac, without asking: check, update, repair, restore Spotify, or uninstall Tess."
+    echo "  It accepts only orders signed by the owner's offline rescue key. Turn it off any time: \"$HOME_TESS/tess\" rescue off"
+  else
+    echo "  The Tess rescue line isn't set up on this Mac."
+  fi
 }
 
 if [ -x "$HOME_TESS/rescue/rescue.sh" ] && [ ! -f "$HOME_TESS/rescue-off" ]; then
@@ -443,6 +449,7 @@ cat > "$HOME/Library/LaunchAgents/music.tess.rescue.plist" <<EOF
 <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$HOME_TESS/rescue/rescue.sh</string></array>
 <key>StartInterval</key><integer>21600</integer>
 <key>RunAtLoad</key><true/>
+<key>AbandonProcessGroup</key><true/>
 </dict></plist>
 EOF
 launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true

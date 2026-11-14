@@ -43,7 +43,8 @@ Inside Spotify (`Spotify.app/Contents/Resources/Apps/xpui`): Spicetify's wrapper
 `rescue.sh` runs every six hours, at login, and within about 5 minutes of a new order (the wake check sees the new serial on the public `rescue` branch and starts it). `tess rescue off` turns it off for good; `tess status` shows whether it's on and which rescue key it trusts. The installer tells every user this. What it can do is fixed in the file and limited to Tess and Spotify: an
 order names one of five actions (`check`, `update`, `repair`, `restore-spotify`, `uninstall`), each of which calls Tess's
 own installed, signed tool (doctor, updater, the installed installer copy, the patcher's safe restore, the installed
-uninstaller). Rescue lines installed from this release on download nothing from `main`. Older installed rescue
+uninstaller). Rescue lines installed from this release on download nothing from `main`; `repair` runs the installer
+the Mac last installed with, which until the first promote can be the temporary `main` fallback (#77). Older installed rescue
 scripts remain unchanged and may still fetch repair and uninstall scripts from `main`. An order can't carry
 a script or a command, so the rescue key can only press those buttons; `tools/test-rescue.mjs` proves scripts, unknown
 actions and smuggled text are refused. (Rescue lines installed before 13 Nov 2026 used an older script format that new

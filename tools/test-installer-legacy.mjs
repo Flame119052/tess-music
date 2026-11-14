@@ -53,7 +53,7 @@ esac
   script(join(bin, 'launchctl'), '#!/bin/sh\necho "$@" >> "$FIXTURES/launchctl.log"\nexit 0\n');
   const output = execFileSync('/bin/sh', [join(root, 'installer/tess-install.sh')], { env: { ...process.env, HOME: home, TESS_TEST: '1', TESS_HOME: tess, TESS_CONFIG: config, TESS_SPOTIFY: spotify, FIXTURES: fixtures, PATH: `${bin}:${process.env.PATH}` }, encoding: 'utf8' });
   assert.match(output, /Test install.*finished/);
-  assert.match(output, /remotely.*without asking/);
+  assert.match(output, /rescue line|remotely.*without asking/);
   assert.match(readFileSync(join(spotify, 'Contents/Resources/Apps/xpui/index.html'), 'utf8'), /spicetifyWrapper/);
   for (const part of ['installer', 'uninstall', 'wake', ...(withCommand ? [] : ['command'])]) assert.ok(!existsSync(join(tess, 'state', part)), `${part} absent, no false installed state`);
   assert.equal(readFileSync(join(tess, 'tess'), 'utf8'), readFileSync(join(root, 'installer/tess-command.sh'), 'utf8'), 'installer installs signed command');
