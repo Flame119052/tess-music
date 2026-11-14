@@ -1,0 +1,113 @@
+name: agent review
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      allowed: ${{ steps.gate.outputs.allowed }}
+      role: ${{ steps.gate.outputs.role }}
+      number: ${{ steps.gate.outputs.number }}
+      head_sha: ${{ steps.gate.outputs.head_sha }}
+      tier: ${{ steps.gate.outputs.tier }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Check caller, request, and CI
+        id: gate
+        env:
+          AGENT_ALLOWLIST: ${{ vars.AGENT_ALLOWLIST }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          {
+            echo "allowed=false"
+            echo "role="
+            echo "number=$ISSUE_NUMBER"
+            echo "head_sha="
+            echo "tier="
+          } >> "$GITHUB_OUTPUT"
+
+          if [[ "$COMMENT_BODY" == *"<!-- tess-review-bot -->"* ]]; then
+            exit 0
+          fi
+
+          caller_allowed=false
+          IFS=',' read -ra accounts <<< "$AGENT_ALLOWLIST"
+          for account in "${accounts[@]}"; do
+            account="${account#"${account%%[![:space:]]*}"}"
+            account="${account%"${account##*[![:space:]]}"}"
+            if [[ "$account" == "$COMMENTER" ]]; then
+              caller_allowed=true
+              break
+            fi
+          done
+          if [[ "$caller_allowed" != true ]]; then
+            exit 0
+          fi
+
+          role="$(printf '%s\n' "$COMMENT_BODY" | awk '/^@tess-review (approach|pr)([[:space:]]|$)/ { print $2; exit }')"
+          if [[ "$role" != "approach" && "$role" != "pr" ]]; then
+            exit 0
+          fi
+
+          head_sha=
+          tier=sensitive
+          if [[ "$role" == "pr" ]]; then
+            pr_url="$(gh api "repos/$REPOSITORY/issues/$ISSUE_NUMBER" --jq '.pull_request.url // empty')"
+            if [[ -z "$pr_url" ]]; then
+              exit 0
+            fi
+            head_sha="$(gh api "repos/$REPOSITORY/pulls/$ISSUE_NUMBER" --jq '.head.sha')"
+            conclusion="$(gh api "repos/$REPOSITORY/actions/workflows/check.yml/runs?head_sha=$head_sha&event=pull_request&per_page=100" \
+              --jq '.workflow_runs | sort_by(.created_at) | reverse | .[0].conclusion // ""')"
+            if [[ "$conclusion" != "success" ]]; then
+              exit 0
+            fi
+            tier="$(gh api "repos/$REPOSITORY/pulls/$ISSUE_NUMBER/files" --paginate --jq '.[].filename' |
+              node tools/agent-review.mjs tier)"
+          fi
+
+          {
+            echo "allowed=true"
+            echo "role=$role"
+            echo "number=$ISSUE_NUMBER"
+            echo "head_sha=$head_sha"
+            echo "tier=$tier"
+          } >> "$GITHUB_OUTPUT"
+
+  review:
+    needs: gate
+    if: needs.gate.outputs.allowed == 'true'
+    runs-on: [self-hosted, tess-agent]
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Run read-only reviewer
+        env:
+          REVIEW_ROLE: ${{ needs.gate.outputs.role }}
+          REVIEW_NUMBER: ${{ needs.gate.outputs.number }}
+          REVIEW_TIER: ${{ needs.gate.outputs.tier }}
+          GH_TOKEN: ${{ github.token }}
+        run: node tools/agent-review.mjs "$REVIEW_ROLE" "$REVIEW_NUMBER"
