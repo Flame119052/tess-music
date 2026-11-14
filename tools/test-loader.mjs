@@ -102,9 +102,13 @@ bad.manifest.sig.envelope = await sig('not the manifest');
 r = await runLoader({ served: await serve(bad) });
 assert.ok(!r.ran.includes('v4'), 'a bad envelope is refused');
 
-// 5. a legacy manifest (no envelope, no rev) still runs
+// 5. a legacy manifest (no envelope, no rev) still runs on a Mac that has no rev floor yet
 r = await runLoader({ served: await serve(await legacy('legacy')) });
 assert.deepEqual(r.ran, ['legacy'], 'a legacy manifest still runs');
+
+// 5b. ...but not once this Mac has run a release with a rev
+r = await runLoader({ served: await serve(await legacy('old')), store: { 'tess:rev:stable': 3 } });
+assert.ok(!r.ran.includes('old'), 'a pre-rev manifest is refused after a rev floor exists');
 
 // 6. a release that never starts falls back to the last good copy, which is verified first
 const good = await release(3, 'good');
