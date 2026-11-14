@@ -64,6 +64,7 @@ for f in patcher/prebuilt/spicetify-2.46.4/css-map.json patcher/prebuilt/spiceti
   [ -s "$f" ] || fail "$f is missing; vendor Spicetify's prebuilt files"
 done
 (cd patcher/prebuilt/spicetify-2.46.4 && shasum -a 256 -c SHA256SUMS >/dev/null) || fail "the vendored Spicetify files do not match SHA256SUMS"
+(cd patcher/prebuilt/spicetify-2.46.4 && [ "$(find css-map.json jsHelper -type f | sort)" = "$(awk '{print $2}' SHA256SUMS | sort)" ]) || fail "the vendored Spicetify files and SHA256SUMS list differ"
 if grep -q 'spicetify-2.46.4-darwin' tools/release.mjs; then fail "release.mjs downloads Spicetify; use patcher/prebuilt"; fi
 
 echo "safety checks passed"
