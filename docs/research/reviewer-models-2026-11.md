@@ -13,8 +13,9 @@ options we could add.
   Cline work with the right flags. Devin and ZCode are awkward. Zed has no such mode.
 - **The best reviewer is not the best coder.** Review rewards a model that finds a different bug from the author. Opus
   5.5 and GPT-6.1 Sol are the two strongest and they disagree usefully.
-- **Two of the three strongest providers are nearly out of quota** on Krish's hub (Claude session 98%, Codex weekly
-  96%). Every role below therefore has a cheap third choice.
+- **Quota is shared with Krish's own use.** On 14 Nov at 07:10 UTC the hub showed Claude with 83% of its session and 38%
+  of its week left, and Codex with 58% of its session and 91% of its week left. (An earlier draft read these numbers as
+  "used"; the hub reports what is left.) Every role below still has a cheap third choice for the days one runs low.
 - **Cost is not the constraint it looks like.** A full Opus 5.5 review of 12 patches cost $15.40 (measured, below).
 
 ## What "read-only reviewer" has to mean
@@ -382,8 +383,9 @@ two threads call it out (<https://www.reddit.com/r/cursor/comments/1wu9jj0/>) â€
 2. **Antigravity:** whether a copied `~/.gemini` profile is enough on `omarchy`, or whether `agy` demands a fresh login.
 3. **OpenCode:** whether a deny-everything reviewer agent beats the built-in `plan` agent, which still allows
    permission-controlled shell (<https://opencode.ai/docs/agents/>).
-4. **Every provider:** the usage hub is the real gate. Claude at 98% of its session and Codex at 96% of its week means
-   the fallback order in `agents.json` gets exercised often.
+4. **Every provider:** the usage hub is the real gate. The cache files store `usedPercent`; the reviewer skips a
+   provider only when a window reaches 100% used. Claude's weekly allowance (38% left on 14 Nov) is the one most likely
+   to run out, so the fallback order in `agents.json` matters.
 
 ## Summary
 
