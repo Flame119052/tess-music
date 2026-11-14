@@ -17,17 +17,21 @@ const box = mkdtempSync(join(tmpdir(), 'tess-install-line-'));
 const www = join(box, 'www');
 const main = join(www, 'main', 'installer');
 const dist = join(www, 'stable', 'dist');
-mkdirSync(main, { recursive: true });
+const verifyDir = join(main, 'verify');
+mkdirSync(verifyDir, { recursive: true });
 mkdirSync(dist, { recursive: true });
 
-// A stand-in for the committed tess-verify: accepts only the exact signature text "good".
-const verifier = join(main, 'tess-verify');
-writeFileSync(verifier, '#!/bin/sh\n[ "$2" = good ] || exit 1\n');
+// A stand-in for the committed tess-verify: accepts only the exact signature text "good". It is stored under its
+// own SHA-256, so an older copy of the install line keeps working after the verifier is rebuilt.
+const verifierText = '#!/bin/sh\n[ "$2" = good ] || exit 1\n';
+const sha = createHash('sha256').update(verifierText).digest('hex');
+const verifier = join(verifyDir, sha);
+writeFileSync(verifier, verifierText);
 const installer = '#!/bin/sh\necho installer-ran > "$TESS_TEST_MARKER"\n[ -x "$TESS_VERIFY" ] && echo verifier-ok >> "$TESS_TEST_MARKER"\nexit 0\n';
+writeFileSync(join(dist, 'components.txt'), 'version 0.2.22\n');
 writeFileSync(join(dist, 'install.sh'), installer);
 writeFileSync(join(dist, 'install.sig'), 'good\n');
 writeFileSync(join(main, 'tess-install.sh'), installer);
-const sha = createHash('sha256').update(readFileSync(verifier)).digest('hex');
 
 let serverStatus = 0;
 const server = createServer((req, res) => {
@@ -94,6 +98,15 @@ try {
   assert.equal(outcome(), '', 'nothing ran after a 503');
   assert.match(r.stdout, /HTTP 503/, 'the HTTP status is named');
   serverStatus = 0;
+
+  // 4c. a channel that already has a rev must not fall back when its installer is missing
+  writeFileSync(join(dist, 'components.txt'), 'version 0.2.99\nrev 5\n');
+  rmSync(join(dist, 'install.sh'), { force: true });
+  rmSync(marker, { force: true });
+  r = await run();
+  assert.notEqual(r.status, 0, 'a newer channel with no installer fails');
+  assert.equal(outcome(), '', 'nothing ran when a newer channel has no installer');
+  assert.match(r.stdout, /nothing was installed/, 'the failure is explained');
 
   // 5. an installer with no signature on the channel is refused (not silently downgraded to main)
   writeFileSync(join(dist, 'install.sh'), installer);

@@ -54,10 +54,11 @@ swap_hashes=$(
 recovery_count=$(grep -lF 'if [ ! -d "$APPS" ] && [ -d "$_old" ]; then mv "$_old" "$APPS" || return 1; fi' \
   installer/tess-install.sh installer/updater.sh installer/doctor.sh | wc -l | tr -d ' ')
 [ "$recovery_count" = 3 ] || fail "every swap_apps must restore an interrupted .tess-old swap first"
-# 8. the install line pins the committed verifier, and the verifier is the one the pin names
+# 8. the install line pins the committed verifier, and the verifier is stored under its own hash
 pin=$(sed -n "s/^VERIFY_SHA='\([0-9a-f]\{64\}\)'$/\1/p" installer/install.sh)
 [ -n "$pin" ] || fail "installer/install.sh has no VERIFY_SHA pin"
-[ "$(shasum -a 256 installer/tess-verify | cut -d' ' -f1)" = "$pin" ] || fail "installer/tess-verify does not match the pin in installer/install.sh"
+[ -f "installer/verify/$pin" ] || fail "installer/verify/$pin is missing"
+[ "$(shasum -a 256 "installer/verify/$pin" | cut -d' ' -f1)" = "$pin" ] || fail "installer/verify/$pin does not match its name"
 
 # 9. Spicetify's prebuilt files are vendored; the release never downloads them, and the committed bytes match
 for f in patcher/prebuilt/spicetify-2.46.4/css-map.json patcher/prebuilt/spicetify-2.46.4/jsHelper/spicetifyWrapper.js; do

@@ -124,7 +124,7 @@ codesign(`${pdir}pkg/tess-patcher`, 'music.tess.patcher');
 for (const a of ['arm64', 'amd64']) run('go', ['build', '-trimpath', '-buildvcs=false', '-ldflags', '-s -w', '-o', `${pdir}tv-${a}`, './tessverify'], { cwd: `${root}patcher`, env: { ...process.env, CGO_ENABLED: '0', GOOS: 'darwin', GOARCH: a } });
 run('lipo', ['-create', `${pdir}tv-arm64`, `${pdir}tv-amd64`, '-output', `${pdir}pkg/tess-verify`]);
 codesign(`${pdir}pkg/tess-verify`, 'music.tess.verify');
-// The install line runs the verifier committed at installer/tess-verify, pinned by SHA-256 in installer/install.sh;
+// The install line runs the verifier committed at installer/verify/<sha>, pinned by SHA-256 in installer/install.sh;
 // the copy in the patcher archive above is the one the updater installs and is signed with the Tess identity.
 // the rescue line: the same checker built with the rescue key (kept offline, never in CI), plus rescue.sh.
 // Macs copy these once into Tess/rescue and updates never replace them (see installer/rescue.sh).

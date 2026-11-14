@@ -13,7 +13,7 @@ trap 'rm -rf "$D"' EXIT
 fail() { echo "$1"; exit 1; }
 
 # 1. The verifier comes from main and must match the pin above. A channel cannot swap it.
-curl -fsSL --max-time 60 "$BASE/main/installer/tess-verify" -o "$D/tess-verify" \
+curl -fsSL --max-time 60 "$BASE/main/installer/verify/$VERIFY_SHA" -o "$D/tess-verify" \
   || fail "Couldn't download Tess's signature checker. Check your connection and try again."
 [ "$(shasum -a 256 "$D/tess-verify" | cut -d' ' -f1)" = "$VERIFY_SHA" ] \
   || fail "Tess's signature checker didn't match its published checksum, so nothing was installed."
@@ -23,6 +23,11 @@ chmod +x "$D/tess-verify" || fail "Couldn't prepare Tess's signature checker."
 # main's installer; after that the channel's installer must be signed and the fallback goes.
 code=$(curl -sS -L --max-time 60 -w '%{http_code}' -o "$D/install.sh" "$BASE/$CH/dist/install.sh" 2>/dev/null) || code=000
 if [ "$code" = 404 ]; then
+  # A channel built after this PR carries a rev. If its installer is missing, that is a fault, not a cue to run
+  # something older from main.
+  if curl -fsSL --max-time 60 "$BASE/$CH/dist/components.txt" 2>/dev/null | grep -q '^rev '; then
+    fail "Tess's installer is missing on $CH, so nothing was installed. Try again in a few minutes."
+  fi
   echo "Tess's installer isn't on $CH yet; using the temporary installer."
   curl -fsSL --max-time 60 "$BASE/main/installer/tess-install.sh" -o "$D/install.sh" \
     || fail "Couldn't download Tess's installer. Check your connection and try again."
