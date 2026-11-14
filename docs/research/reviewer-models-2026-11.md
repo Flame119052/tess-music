@@ -359,6 +359,12 @@ person, useless for a bot (<https://zed.dev/docs/ai/agents>). The rest fail one 
 
 ## Who reviews what
 
+> **Superseded in part, 14 November 2026.** Where this table and `docs/workflow.md` plus `.github/agents.json` disagree,
+> those two win, because they are what the runner reads. Two rows are out of date: sensitive PRs now have **no third
+> choice** — sensitive work waits for Opus 5.5 or GPT-6.1 Sol rather than going to a cheaper model, so do not add GLM to
+> `pr_sensitive` — and the Antigravity third choice for approaches is not used yet, because it cannot sign in on a runner.
+> Keeping the table as written finds the best third choice if one is ever needed; it is not a list to copy into the config.
+
 Rules that shaped this: the reviewer comes from a different provider than the author; the strongest model does not run
 twice on one change unless a Mac can break; the third choice must be cheap enough to run on a bad day. Model ids are the
 ones this repo already allows (<https://github.com/Flame119052/tess-music/blob/main/.github/agents.json>); the tiers come
@@ -366,9 +372,9 @@ from `docs/workflow.md` (<https://github.com/Flame119052/tess-music/blob/main/do
 
 | Role | First choice | Second choice | Third choice |
 | --- | --- | --- | --- |
-| **Approach review** (is this the right design?) | **claude `claude-opus-5-5`, effort high** — best design judgement, and the only model here with an independent review benchmark behind it | **codex `gpt-6.1-sol`, effort high** — close second, half the cost per task, and a genuinely different reading of a plan | **antigravity `gemini-4-argon-high`, effort high** — strongest planner outside the big two; burns quota, so use when the first two are out |
+| **Approach review** (is this the right design?) | **claude `claude-opus-5-5`, effort high** — best design judgement, and the only model here with an independent review benchmark behind it | **codex `gpt-6.1-sol`, effort high** — close second, half the cost per task, and a genuinely different reading of a plan | **antigravity `gemini-4-argon-high`, effort high** — strongest planner outside the big two; burns quota, so use when the first two are out (**not used yet**: no headless sign-in on a runner) |
 | **Normal PR** (theme, Tess Mini, tools) | **codex `gpt-6.1-terra`, effort medium** — cheapest strong reviewer, fast, and a different provider from a Claude author | **claude `claude-sonnet-5-5`, effort medium** — good balance when Codex is short of weekly quota | **opencode `glm-5.3`, effort high** — pennies per review and good at root causes, run with the deny-everything agent |
-| **Sensitive PR** (installer, patcher, release, rescue, signing) | **claude `claude-opus-5-5`, effort high** — strongest reviewer for a change that can break someone's Mac | **codex `gpt-6.1-sol`, effort high** — the closest thing to a second opinion, and must be the other provider from the author | **opencode `glm-5.3`, effort max** — open-weight leader on vulnerability discovery; a useful third pair of eyes on security |
+| **Sensitive PR** (installer, patcher, release, rescue, signing) | **claude `claude-opus-5-5`, effort high** — strongest reviewer for a change that can break someone's Mac | **codex `gpt-6.1-sol`, effort high** — the closest thing to a second opinion, and must be the other provider from the author | **superseded: none.** GLM-5.3 is the best third pair of eyes on security, but sensitive work waits for a strong model instead |
 | **Docs** | **opencode `deepseek-v4.1-flash`, effort medium** — $0.30/$1.20 per million and good enough for prose and links | **codex `gpt-6.1-terra`, effort low** — quick sanity read when OpenCode is not set up | **claude `claude-haiku-5-5`, effort low** — the cheap Claude, if a docs change touches a safety claim |
 
 Two deliberate omissions. **Grok 4.7** reviews better than it codes, but its token burn per review is the worst here and
