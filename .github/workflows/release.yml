@@ -22,7 +22,9 @@ on:
         type: string
         default: ''
         required: false
-concurrency: { group: release, cancel-in-progress: false }
+# One group so a declare never races a dev build; queue: max keeps every waiting run (the default keeps one and
+# drops the older, which could silently lose a declare or promote queued behind a build).
+concurrency: { group: release, cancel-in-progress: false, queue: max }
 permissions: { contents: write }
 jobs:
   release:
