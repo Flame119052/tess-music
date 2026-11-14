@@ -88,7 +88,7 @@ setup.
 ## Repository settings Krish must set
 
 1. **Actions variable:** set `AGENT_ALLOWLIST` to the comma-separated GitHub logins allowed to call
-   `@tess-review`.
+   `@tess-review` and `@tess-agent`.
 2. **Fork pull requests — before registering any runner:** under **Settings → Actions → General**, choose
    **"Require approval for all outside collaborators"**. The default only stops first-time contributors, and a fork PR
    could edit `check.yml` to run on `[self-hosted, tess-agent]`. On a personal repo this approval is the only thing
@@ -115,3 +115,47 @@ setup.
   on from the job; `GH_TOKEN` never reaches it.
 - Krish's Mac makes the registration token and sends it over SSH standard input, so the token never sits in a file or in
   an agent's instructions.
+
+## One-time `@tess-agent` dispatcher setup
+
+The dispatcher is separate from the read-only reviewer. Run exactly two GitHub runner instances as the same
+dedicated, unprivileged user and give both the `tess-dispatch` label. They may share a host, but each Actions runner
+needs its own installation directory and service. Both must inherit the same private slot directory. GitHub leaves a
+third job queued while the two instances are busy; the slots are a second cap if another runner is registered by
+mistake.
+
+On the Mac, turn on linked environments and link Instabox, `paperclip-vps`, and `omarchy`. Make sure this repository
+is a T3 project on each target. The Mac itself is the fourth target. Sign `gh` in on each target so the started
+thread can post its marked result and, for `fix`, push its branch.
+
+The dispatcher signs in to the Mac's HTTPS `/mcp` address as an outside OAuth client. Use an OAuth-capable MCP client
+on the dispatcher host to start that sign-in, approve it once in T3 with your own pairing code, and choose an access
+ceiling that can start the intended threads. A plain environment token, T3 Connect relay token, provider login, or
+GitHub token does not work. This repository does not register the OAuth client and must never receive the pairing
+code. The approval lasts 30 days; repeat the outside-agent sign-in when it expires.
+
+Put only the OAuth-issued MCP credential and routing values in each runner installation's private `.env` (mode 600),
+never in this repository or a GitHub secret:
+
+```dotenv
+TESS_T3_MCP_URL=https://<mac-environment-address>/mcp
+TESS_T3_MCP_OAUTH_TOKEN=<OAuth-issued outside-agent access token>
+TESS_AGENT_SLOT_DIR=/home/tess-runner/.local/state/tess-agent-dispatch
+
+TESS_T3_INSTABOX_ENVIRONMENT_ID=<T3 environment id>
+TESS_T3_INSTABOX_PROJECT_ID=<Tess project id there>
+TESS_T3_VPS_ENVIRONMENT_ID=<T3 environment id>
+TESS_T3_VPS_PROJECT_ID=<Tess project id there>
+TESS_T3_OMARCHY_ENVIRONMENT_ID=<T3 environment id>
+TESS_T3_OMARCHY_PROJECT_ID=<Tess project id there>
+TESS_T3_MAC_ENVIRONMENT_ID=<Mac T3 environment id; optional because the endpoint reports it>
+TESS_T3_MAC_PROJECT_ID=<Tess project id on the Mac>
+```
+
+Use the T3 environment and project IDs shown by T3; labels are not stable identifiers. Restart both runner services
+after changing `.env`.
+
+Each occupied slot contains `owner.json` with the GitHub comment and launch retry key. A slot normally disappears
+after `t3_thread_wait` confirms the thread and all of its delegated work settled. If a network failure leaves one
+behind, find that thread in T3 by its `Tess <task>: #<number>` title and GitHub comment, then confirm it completed or
+stop it. Remove that one slot directory only after reconciliation. Never clear all slots just to make the queue move.

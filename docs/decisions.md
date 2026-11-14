@@ -143,6 +143,13 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   exhausted quota window, and retries the next configured provider only when the CLI reports a usage limit.
   *This makes later release-note ranges exact and keeps model fallback deterministic without a network usage query.*
   Trade-off: the first declaration's range is time-based because old beta branches did not record their source.
+- **D-65 · 14 Nov 2026 · Owner** — An allowlisted `@tess-agent` GitHub comment starts a T3 Code thread through the
+  Mac's outside-agent OAuth MCP endpoint. With no named machine it tries Instabox, `paperclip-vps`, `omarchy`, then
+  the Mac, skipping unreachable links. At most two dispatched threads run; an uncertain lost reply keeps its slot
+  occupied. VPS prompts put Paperclip first, forbid access to Paperclip and its data or services, forbid builds and
+  long tests, and require worktree cleanup. *The owner wants every T3 provider available from GitHub and made this
+  the latest machine policy for #88.* Trade-off: the VPS boundary is a prompt policy rather than an OS sandbox, and
+  a stuck slot needs manual reconciliation.
 
 ## Design and performance
 
