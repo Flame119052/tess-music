@@ -11,7 +11,7 @@ if grep -nE 'rm -rf "?\$(APPS|A0)"?( |;|$)' installer/*.sh; then fail "a script 
 if grep -rn 'RemoveAll(appDestPath)' patcher/src; then fail "the patcher deletes Spotify's interface folder directly; use swapApps"; fi
 
 # 2. every script parses
-for f in installer/install.sh installer/stub.sh installer/tess-install.sh installer/uninstall.sh installer/tess-command.sh; do sh -n "$f" || fail "$f does not parse"; done
+for f in installer/install.sh installer/tess-install.sh installer/uninstall.sh installer/tess-command.sh; do sh -n "$f" || fail "$f does not parse"; done
 for f in installer/updater.sh installer/doctor.sh installer/rescue.sh installer/wake.sh; do zsh -n "$f" || fail "$f does not parse"; done
 node --check theme/loader/loader.js || fail "theme/loader/loader.js does not parse"
 
@@ -40,8 +40,8 @@ if grep -nE 'curl[^|]*\|[[:space:]]*([^[:space:]]+[[:space:]]+)*(sh|zsh)([[:spac
   fail "an installed script pipes a download into a shell"
 fi
 # The public forwarder's main fallback is allowed only while stable lacks dist/install.sh (temporary, #77).
-if grep -q 'main/installer/tess-install.sh' installer/install.sh && git cat-file -e origin/stable:dist/install.sh 2>/dev/null; then
-  fail "stable has dist/install.sh but installer/install.sh still falls back to main; remove it (#77)"
+if grep -q 'main/installer/tess-install.sh' installer/install.sh && git cat-file -e origin/stable:dist/install.sig 2>/dev/null; then
+  fail "stable has a signed installer but installer/install.sh still falls back to main; remove it (#77)"
 fi
 
 # The three shell swaps protect the same precious folder and must not drift.
@@ -54,14 +54,16 @@ swap_hashes=$(
 recovery_count=$(grep -lF 'if [ ! -d "$APPS" ] && [ -d "$_old" ]; then mv "$_old" "$APPS" || return 1; fi' \
   installer/tess-install.sh installer/updater.sh installer/doctor.sh | wc -l | tr -d ' ')
 [ "$recovery_count" = 3 ] || fail "every swap_apps must restore an interrupted .tess-old swap first"
-# 8. the verifying stub reads only its channel and keeps the placeholder the release fills
-if grep -nE 'tess-music/main' installer/stub.sh; then fail "the verifying stub reads main"; fi
-grep -q '__TESS_VERIFY_SHA__' installer/stub.sh || fail "installer/stub.sh lost its verifier pin placeholder"
+# 8. the install line pins the committed verifier, and the verifier is the one the pin names
+pin=$(sed -n "s/^VERIFY_SHA='\([0-9a-f]\{64\}\)'$/\1/p" installer/install.sh)
+[ -n "$pin" ] || fail "installer/install.sh has no VERIFY_SHA pin"
+[ "$(shasum -a 256 installer/tess-verify | cut -d' ' -f1)" = "$pin" ] || fail "installer/tess-verify does not match the pin in installer/install.sh"
 
-# 9. Spicetify's prebuilt files are vendored; the release never downloads them
+# 9. Spicetify's prebuilt files are vendored; the release never downloads them, and the committed bytes match
 for f in patcher/prebuilt/spicetify-2.46.4/css-map.json patcher/prebuilt/spicetify-2.46.4/jsHelper/spicetifyWrapper.js; do
   [ -s "$f" ] || fail "$f is missing; vendor Spicetify's prebuilt files"
 done
+(cd patcher/prebuilt/spicetify-2.46.4 && shasum -a 256 -c SHA256SUMS >/dev/null) || fail "the vendored Spicetify files do not match SHA256SUMS"
 if grep -q 'spicetify-2.46.4-darwin' tools/release.mjs; then fail "release.mjs downloads Spicetify; use patcher/prebuilt"; fi
 
 echo "safety checks passed"

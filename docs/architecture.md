@@ -70,6 +70,7 @@ Its files go back to stock (`Apps/xpui.spa`). The updater notices (LaunchAgent W
 | Safety copy + repair | `original-<ver>/`, patcher backup, known stock SHA-256s | lost interface files |
 | Release gate | `tools/check-safety.sh` (CI + release script) | shipping a destructive or unparsable script |
 | Signed content | Ed25519 release key (CI secret + Krish's Mac) | tampered downloads |
+| Pinned verifier | `installer/install.sh` + `installer/tess-verify` | a channel or mirror swapping the checker and installer together |
 | Signed envelope + `rev` floor | `dist/manifest.json`, `components.txt`, loader | a correctly signed but older release (downgrade) |
 | Verified cache | `theme/loader/loader.js` | code written into `tess:bundle` by another extension or an XSS |
 | Stable code signature | "Tess Music" self-signed identity | macOS re-asking for permissions every update |
@@ -83,20 +84,20 @@ Its files go back to stock (`Apps/xpui.spa`). The updater notices (LaunchAgent W
 `push to main` → `.github/workflows/release.yml`: `tools/check-safety.sh` → `tools/release.mjs auto dev`:
 build theme → sign → build patcher (+ tess-verify, rescue verify), Tess Mini (universal), sign binaries with the
 "Tess Music" identity → write `dist/` (manifest with `rev`/`min` and a signed envelope, theme, components list +
-signature + `rev`, `install.sh`, `install.sig`, `uninstall.sh`, `uninstall.sig`, `tess-verify`, `stub.sh`) to the
+signature + `rev`, `install.sh`, `install.sig`, `uninstall.sh`) to the
 `dev` branch → GitHub Release `vX.Y.Z` (prerelease, the part files) → mirror the branch to
 `Flame119052/tess-releases`.
 Declaration (`tools/declare.mjs`): copy `dev`'s `dist/` byte for byte to `beta` (only the manifest's channel field
-changes; it is outside the signed envelope), copy the installer stub to the channel root, record the source `main`
+changes; it is outside the signed envelope), copy the install line to the channel root, record the source `main`
 commit, and write release notes from every PR merged since the previous beta. Promotion (`tools/promote.mjs`): copy
-that exact beta to `stable`, including its notes and channel-root stub, mirror it, and mark the release latest. Both
-public-channel jobs use the protected GitHub `release` environment and support a no-write `--dry-run`.
+that exact beta to `stable`, including its notes and channel-root install line, mirror it, and mark the release latest.
+Both public-channel jobs use the protected GitHub `release` environment and support a no-write `--dry-run`.
 
-Install line: `installer/install.sh` (forwarder on `main`) → downloads `$CH/dist/stub.sh` → the stub checks the pinned
-SHA-256 of `dist/tess-verify`, verifies `dist/install.sh` against `dist/install.sig`, then runs it with that verifier →
-the installer checks `components.txt` before unpacking the patcher. Fallback order is the channel stub, the channel's
-own `dist/install.sh`, then (temporary, #77) `main`'s installer; the last step goes once stable carries the installer,
-and the safety gate fails if it outlives it.
+Install line: `installer/install.sh` (forwarder on `main`) pins the committed verifier's SHA-256, downloads
+`main/installer/tess-verify`, checks it, then downloads `$CH/dist/install.sh` and `dist/install.sig` and verifies the
+installer before running it with that verifier → the installer checks `components.txt` before unpacking the patcher.
+A channel published before the first promote has no signed installer; it gets `main`'s installer (temporary, #77), and
+the safety gate fails if that fallback outlives stable's signed installer.
 
 ## Secrets
 
