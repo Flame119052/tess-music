@@ -19,6 +19,10 @@ jobs:
       number: ${{ steps.gate.outputs.number }}
       head_sha: ${{ steps.gate.outputs.head_sha }}
       tier: ${{ steps.gate.outputs.tier }}
+      # Where this tag runs: `github` (the job below) or a machine whose own watcher opens a T3 thread.
+      machine: ${{ steps.gate.outputs.machine }}
+      # A fixed refusal code, or empty. Only the notice job reads it, and it posts the fixed text for that code.
+      refusal: ${{ steps.gate.outputs.refusal }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,7 +43,9 @@ jobs:
 
   review:
     needs: gate
-    if: needs.gate.outputs.allowed == 'true'
+    # Only a tag that names no machine, or names `machine=github`, runs here. A tag for the Mac or omarchy is read and
+    # checked by the gate and then runs on that machine's own watcher, which opens a T3 thread there.
+    if: needs.gate.outputs.allowed == 'true' && needs.gate.outputs.machine == 'github'
     # A fresh GitHub-hosted Ubuntu machine for every review, deleted when the job ends. Public repositories get these
     # free and without a limit, and none of Krish's machines, keys or Paperclip is on it. The gate above has already
     # checked the caller, the head's repository and the exact commit, so a fork PR never reaches this job.
@@ -166,3 +172,38 @@ jobs:
           elif [ "$PICK" = failure ]; then why="choosing the reviewer failed"
           fi
           node tools/agent-review.mjs stop "$why"
+
+  # Everything the gate decided without running a reviewer: a refusal (in fixed words, because a script's message can
+  # carry a path or a key), or a tag that was checked here and runs on a machine's own watcher. This job holds only the
+  # workflow's own token. It never touches a provider login.
+  notice:
+    needs: gate
+    if: always() && (needs.gate.outputs.refusal != '' || (needs.gate.outputs.allowed == 'true' && needs.gate.outputs.machine != 'github'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Say why the review did not run
+        if: needs.gate.outputs.refusal != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ needs.gate.outputs.number }}
+          REVIEW_REFUSAL: ${{ needs.gate.outputs.refusal }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node tools/agent-review.mjs refuse "$REVIEW_REFUSAL"
+      - name: Say where the review is queued
+        if: needs.gate.outputs.allowed == 'true' && needs.gate.outputs.machine != 'github'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ needs.gate.outputs.number }}
+          REVIEW_MACHINE: ${{ needs.gate.outputs.machine }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: printf '%s' "$COMMENT_BODY" | node tools/agent-review.mjs queued
