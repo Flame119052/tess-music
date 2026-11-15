@@ -68,8 +68,9 @@ func swapApps(fill func(dir string) error) error {
 // helper, so a background theme update could never reach Spotify through a shell. Exit 0 swapped, 3 macOS blocked it,
 // 4 the files belong to another user, 1 anything else.
 //
-// The check and the swap are the same folder even if the path is moved underneath them: the folder the check resolved
-// is opened once and every step runs relative to that descriptor (swapAppsAt).
+// The check and the swap are the same folder, not the same path: checkSpotifyApps opens the bundle, reads its
+// Info.plist and opens Resources relative to it, so a folder moved into that name between the check and the first write
+// is refused rather than swapped. Every step after that runs relative to the descriptor it holds (swapAppsAt).
 func SwapApps(args []string) int {
 	if len(args) != 2 {
 		utils.PrintError(`usage: tess-patcher swap-apps <Spotify's Apps folder> <staged folder>`)
@@ -78,13 +79,9 @@ func SwapApps(args []string) int {
 	dest, src := filepath.Clean(args[0]), filepath.Clean(args[1])
 	// Only Spotify's own interface folder: the swap renames the folder aside and then deletes it, so a typo or a
 	// lookalike path must never be able to reach some other folder.
-	resources, err := checkSpotifyApps(dest)
+	swap, err := checkSpotifyApps(dest)
 	if err != nil {
 		utils.PrintError(dest + ": " + err.Error() + "; nothing was changed")
-		return 1
-	}
-	if st, err := os.Stat(dest); err == nil && !st.IsDir() {
-		utils.PrintError(dest + " is not a folder; nothing was changed")
 		return 1
 	}
 	appDestPath = dest
@@ -100,7 +97,7 @@ func SwapApps(args []string) int {
 			}
 		}
 	}
-	err = swapAppsAt(resources, func(dirfd int) error {
+	err = swapAppsAt(swap, func(dirfd int) error {
 		if st, err := os.Stat(src); err != nil || !st.IsDir() {
 			return errors.New("the staged folder is missing or is not a folder")
 		}
@@ -123,53 +120,44 @@ func SwapApps(args []string) int {
 // to replace Resources with a symlink at the one moment a caller could, and so prove the swap cannot follow it.
 var swapHook func()
 
-// checkSpotifyApps answers "is this really Spotify's own interface folder?" and returns the resolved Resources folder
-// that the swap must then open. Resolving happens here, once: everything after this is descriptor-relative.
-//
-// A string ending is not enough. `…/NotContents/Resources/Apps` ends in the same words, and a `Resources` that is a
-// symlink to somewhere else ends in them too, yet the swap would rename that folder aside and then delete it. So the
-// path must end in a separator-bounded `Contents/Resources/Apps`, its parent must still end in
-// `Contents/Resources` after its symlinks are resolved (which is what lets `/var` stand for `/private/var`, and what
-// refuses a symlinked `Resources`), and the bundle around it must be the app whose Info.plist names Spotify.
-func checkSpotifyApps(dest string) (string, error) {
-	suffix := string(filepath.Separator) + filepath.Join("Contents", "Resources", "Apps")
-	folder := string(filepath.Separator) + filepath.Join("Contents", "Resources")
-	if !filepath.IsAbs(dest) || len(dest) <= len(suffix) || !strings.HasSuffix(dest, suffix) {
-		return "", errors.New(`not a Spotify "Contents/Resources/Apps" folder`)
-	}
-	// A run killed between the two renames leaves Apps absent, so only the parent is resolved: it still has to be a
-	// real Resources folder, which is all "Apps is missing" says about the folder that is about to come back.
-	resolved, err := filepath.EvalSymlinks(filepath.Dir(dest))
-	if err != nil || len(resolved) <= len(folder) || !strings.HasSuffix(resolved, folder) {
-		return "", errors.New(`its symlinks lead outside a "Contents/Resources/Apps" folder`)
-	}
-	bundle := filepath.Dir(filepath.Dir(resolved))
-	if filepath.Ext(bundle) != ".app" {
-		return "", errors.New(`not inside an ".app" bundle`)
-	}
-	id, err := bundleIdentifier(filepath.Join(bundle, "Contents", "Info.plist"))
-	if err != nil {
-		return "", errors.New("its Info.plist cannot be read: " + err.Error())
-	}
-	if id != spotifyBundleID {
-		return "", errors.New(`it belongs to "` + id + `", not ` + spotifyBundleID)
-	}
-	return resolved, nil
+// plistHook runs once, between reading Info.plist through the open bundle and validating what it says. It is nil in the
+// shipped binary; a test uses it to move another real folder into Resources (or Contents) while the plist read is
+// running, and so prove the folder that is swapped is the folder that was checked.
+var plistHook func()
+
+// appsSwap is Spotify's Resources folder, open, plus the identity the check saw so it can be compared again later. It is
+// declared here rather than beside the descriptor steps so both builds know the type; those steps are in swap-at.go.
+type appsSwap struct {
+	fd   int
+	path string // the resolved path, only used to notice it being replaced
+	dev  uint64
+	ino  uint64
 }
 
 const spotifyBundleID = "com.spotify.client"
 
-// Spotify's real Info.plist is a binary plist; a test bundle's is XML. XML is read here in Go, and the binary form is
-// left to PlistBuddy, which the updater already uses to read the same file for Spotify's version.
-func bundleIdentifier(plist string) (string, error) {
-	b, err := os.ReadFile(plist)
-	if err != nil {
-		return "", err
-	}
+// plistIdentifier returns CFBundleIdentifier from Info.plist bytes read through the open bundle. Spotify's real plist is
+// a binary one and a test bundle's is XML: XML is read here in Go, and the binary form is copied into a temporary file
+// that PlistBuddy is pointed at, so the tool reads the bytes that came out of the bundle instead of resolving its path
+// again.
+func plistIdentifier(b []byte) (string, error) {
 	if !bytes.HasPrefix(b, []byte("bplist")) {
 		return xmlStringValue(b, "CFBundleIdentifier")
 	}
-	out, err := exec.Command("/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", plist).Output()
+	f, err := os.CreateTemp("", "tess-plist")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+	defer os.Remove(name)
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	out, err := exec.Command("/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", name).Output()
 	if err != nil {
 		return "", err
 	}

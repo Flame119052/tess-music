@@ -334,6 +334,60 @@ func TestSwapAppsAbortsWhenResourcesReplacedDuringCopy(t *testing.T) {
 	}
 }
 
+// The check's slow step is the plist read, and the folder it proves has to be the folder that is swapped even when a
+// caller moves another real folder into that name while it runs. Every component of the replacement is a real
+// directory, so O_NOFOLLOW looks fine on it; what refuses it is that Resources was opened and its device and inode
+// recorded before the read, so the path no longer matches afterwards.
+//
+// The old order validated a path and then opened it, so the folder that arrived was compared against its own inode: its
+// Apps was replaced, its own keep-me deleted, and the command exited 0 while the folder that had been there was left
+// untouched. Both halves are checked here: the folder that arrived keeps every file, and the one the check did validate
+// is exactly as it was, with no half-made copy beside its Apps.
+func TestSwapAppsAbortsWhenFolderReplacedDuringPlistRead(t *testing.T) {
+	for _, what := range []string{"Resources", "Contents"} {
+		t.Run(what, func(t *testing.T) {
+			apps, staged := setupSpotify(t)
+			target := filepath.Dir(apps) // …/Contents/Resources
+			if what == "Contents" {
+				target = filepath.Dir(target)
+			}
+			// A real folder, not a symlink: a folder planted inside Spotify.app is exactly what the path check cannot
+			// see, because every component of it is a directory.
+			victim := filepath.Join(t.TempDir(), "elsewhere")
+			inner := "Apps"
+			if what == "Contents" {
+				inner = filepath.Join("Resources", "Apps")
+			}
+			victimApps := filepath.Join(victim, inner)
+			os.MkdirAll(victimApps, 0o755)
+			os.WriteFile(filepath.Join(victimApps, "xpui.spa"), []byte("original"), 0o644)
+			os.WriteFile(filepath.Join(victimApps, "keep-me"), []byte("keep"), 0o644)
+			moved := target + "-real"
+			plistHook = func() {
+				if err := os.Rename(target, moved); err != nil {
+					t.Errorf("cannot move %s aside: %v", what, err)
+					return
+				}
+				if err := os.Rename(victim, target); err != nil {
+					t.Errorf("cannot move another folder into %s: %v", what, err)
+				}
+			}
+			defer func() { plistHook = nil }()
+			if code := SwapApps([]string{apps, staged}); code != 1 {
+				t.Fatalf("a %s folder replaced during the check stops the swap (exit 1), got %d", what, code)
+			}
+			assertKept(t, filepath.Join(target, inner)) // the folder that arrived was never the one that was checked
+			origApps := filepath.Join(moved, inner)
+			assertKept(t, origApps) // and the checked folder is exactly as it was
+			for _, leftover := range []string{origApps + ".tess-new", origApps + ".tess-old"} {
+				if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+					t.Fatalf("the aborted run left %s", leftover)
+				}
+			}
+		})
+	}
+}
+
 func TestSwapAppsMissingStagedFolder(t *testing.T) {
 	apps, staged := setupSpotify(t)
 	if code := SwapApps([]string{apps, filepath.Join(filepath.Dir(staged), "missing")}); code == 0 {
