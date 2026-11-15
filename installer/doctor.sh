@@ -220,8 +220,21 @@ fi
 # tess-patcher, not in this script: macOS's App Management protection denies /usr/bin/ditto when launchd starts a
 # script under /bin/zsh. tools/check-safety.sh enforces it.
 swap_apps() {
-  [ -x "$T/bin/patcher/tess-patcher" ] || return 1
-  "$T/bin/patcher/tess-patcher" swap-apps "$APPS" "$1" >/dev/null 2>&1
+  if [ ! -x "$T/bin/patcher/tess-patcher" ]; then
+    bad "tess-patcher is missing, so Spotify's folder cannot be switched"; return 1
+  fi
+  local log="$TMP/swap.log" rc=0
+  "$T/bin/patcher/tess-patcher" swap-apps "$APPS" "$1" >"$log" 2>&1 || rc=$?
+  [ $rc -eq 0 ] && return 0
+  # Keep the patcher's own line. "A swap failed" hides that macOS denied the copy, which is the one thing the person
+  # can act on; the exit code says the same thing the updater logs (3 blocked, 4 another user's files).
+  while IFS= read -r line; do say "    $line"; done < "$log"
+  case $rc in
+    3) bad "macOS is blocking tess-patcher: System Settings › Privacy & Security › App Management, turn on tess-patcher" ;;
+    4) bad "Spotify's files belong to another user; tess-patcher could not change them" ;;
+    *) bad "tess-patcher couldn't switch Spotify's folder (code $rc)" ;;
+  esac
+  return 1
 }
 # --- Spotify's interface -------------------------------------------------------------------------------------------
 if [ -f "$APPS/xpui/index.html" ] && grep -q spicetifyWrapper "$APPS/xpui/index.html" 2>/dev/null; then

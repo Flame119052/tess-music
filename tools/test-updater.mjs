@@ -61,6 +61,7 @@ case "$*" in
   *can-write*) exit "\${TESS_CAN_WRITE:-0}" ;;
   # The same checked swap the Go patcher does: copy beside Apps, check it, switch with two renames.
   *"swap-apps"*)
+    [ -n "$TESS_SWAP_EXIT" ] && { echo "tess-patcher: macOS denied the copy" >&2; exit "$TESS_SWAP_EXIT"; }
     [ "$TESS_SWAP_FAIL" = 1 ] && exit 1
     dest=$2; src=$3
     [ -d "$src" ] || exit 1
@@ -387,6 +388,23 @@ try {
     assert.ok(!existsSync(join(s.box, 'ditto.log')), 'the update itself never called ditto inside Spotify.app');
     assert.ok(!existsSync(`${s.apps}.tess-old`) && !existsSync(`${s.apps}.tess-new`), 'no swap leftovers');
     console.log('theme update succeeded with ditto denied inside Spotify.app (#108)');
+  }
+
+  {
+    // A repair that fails has to say why: the doctor used to throw away both the patcher's own line and its exit code,
+    // so a blocked swap read as "nothing happened". A block must read as a block. (Grok review, #110.)
+    const s = sandbox({ realDoctor: true });
+    rmSync(s.apps, { recursive: true, force: true });
+    mkdirSync(s.apps, { recursive: true });
+    const copy = join(s.tess, 'original-1.3.9.2055');
+    mkdirSync(copy, { recursive: true });
+    writeFileSync(join(copy, 'xpui.spa'), "Spotify's own interface\n");
+    const out = execFileSync('/bin/zsh', [join(s.tess, 'doctor.sh'), 'check'],
+      { env: { ...s.env, TESS_SWAP_EXIT: '3' }, encoding: 'utf8' });
+    assert.match(out, /macOS denied the copy/, "the doctor shows the patcher's own line");
+    assert.match(out, /macOS is blocking tess-patcher/, 'a blocked swap is named as App Management');
+    assert.equal(readFileSync(join(copy, 'xpui.spa'), 'utf8'), "Spotify's own interface\n", 'the safety copy is untouched');
+    console.log('doctor repair names why a swap failed (#110)');
   }
 
   console.log('updater tests passed (success, fresh, blocked, failed swap, rollback/no-retry, playing/idle, list reports, theme swap with ditto denied)');
