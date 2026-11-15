@@ -40,7 +40,10 @@ Inside Spotify (`Spotify.app/Contents/Resources/Apps/xpui`): Spicetify's wrapper
    `dist/components.txt` for its channel (`name sha256 url source-hash` per line, plus `version` and `rev`), verifies
    the signature with `tess-verify`, refuses a lower `rev` than the channel has already installed, downloads only parts
    whose sha changed, checks each sha, installs. A new patcher triggers a
-   re-apply check. The updater updates itself first.
+   re-apply check. The updater updates itself first. A theme part is staged as a complete `Apps` copy in a temp folder
+   and switched in by `tess-patcher swap-apps`: macOS's App Management protection denies `/usr/bin/ditto` when launchd
+   starts a script under `/bin/zsh`, so a background update cannot copy into Spotify itself. The swap (copy beside
+   `Apps`, check it, two renames, restore on any failure) lives in the signed patcher; the scripts only call it.
 
 ## Rescue line
 
@@ -71,7 +74,7 @@ Its files go back to stock (`Apps/xpui.spa`). The updater notices (LaunchAgent W
 
 | Mechanism | Where | Protects against |
 | --- | --- | --- |
-| Safe folder swap | `patcher/src/cmd/swap.go`, `swap_apps` in scripts | a half-done change leaving Spotify with no interface |
+| Safe folder swap | `patcher/src/cmd/swap.go`, run as `tess-patcher swap-apps` from the scripts | a half-done change leaving Spotify with no interface; macOS refusing a shell's copy in the background |
 | Permission check first | `tess-patcher can-write` | macOS blocking mid-change |
 | Safety copy + repair | `original-<ver>/`, patcher backup, known stock SHA-256s | lost interface files |
 | Release gate | `tools/check-safety.sh` (CI + release script) | shipping a destructive or unparsable script |

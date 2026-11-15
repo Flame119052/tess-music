@@ -41,6 +41,7 @@ helper blanked its Spotify).
 | #4 | `P2` | `theme` | Album and playlist pages: review round with Krish | Waiting on Krish's review (Phase 2). |
 | #49 | `P2` | `theme`, `mini` | Visual check: verify About/Credits dialogs, tooltips, library expand animation, and Tess Mini | Open testing (Phase 2). |
 | #50 | `P2` | `installer`, `patcher` | Compatibility testing: test on Intel Macs, macOS 12–14, `~/Applications`, and fresh setups | Open testing (Phase 2). |
+| #108 | `P2` | `installer`, `patcher` | A background theme update logged "checked Spotify swap failed" (macOS App Management denied the helper's `ditto`) | Fixed: the swap runs inside `tess-patcher swap-apps`; Go and sandbox tests cover a blocked write, a failure partway through, and a kill mid-swap. PR pending CI. |
 | #47 | `P2` | `theme` | Liquid Glass: Apple-level polish | Open (Phase 3). |
 | #46 | `P2` | `theme` | Library: smoother, more creative animation when expanding from sidebar to full screen | Open (Phase 3). |
 | #48 | `P2` | `theme` | Icons: carry Tess's icon set to the rest of Spotify | Open (Phase 3). |
