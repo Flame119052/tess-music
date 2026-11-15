@@ -75,30 +75,104 @@ fi
 # A script may only read Spotify's folder out (ditto "$APPS" "$TMP/…"). A write, a move or a delete of it must stay
 # inside tess-patcher: a fallback added to any one of the three swap_apps bodies would pass the checks above and still
 # be the copy that macOS denies, or the delete-then-copy that leaves Spotify with no interface at all.
+#
+# Any use of the folder counts, not just the bare quoted name: `rm -rf "$APPS/xpui"` and `ditto "$1" "${APPS}"` write
+# the live interface in place exactly as `ditto "$1" "$APPS"` does, and a kill halfway leaves Spotify half-updated.
+# So each statement is split out and a write verb in it that names the folder fails the gate. The one allowed write
+# shape is a copy whose *source* is the folder (a read out); ditto is the only verb that may do that.
 apps_write() {
   awk '
+    BEGIN {
+      QUOTE = sprintf("%c", 39)
+      VERBS = "rm mv cp ditto mkdir rmdir install ln touch chmod chown tee truncate rsync dd unlink sed"
+    }
+    function isword(c) { return c ~ /[A-Za-z0-9_]/ }
+    function has_folder(t) { return t ~ /[$][{]?(APPS|A0)([^A-Za-z0-9_]|$)/ }
+    # One shell line is several statements: `rm -rf "$bak"; ditto "$APPS" "$bak"` reads the folder and is fine.
+    function split_statements(line,   i, c, q, cur, n) {
+      delete parts
+      n = 0; cur = ""; q = ""
+      for (i = 1; i <= length(line); i++) {
+        c = substr(line, i, 1)
+        if (q != "") { cur = cur c; if (c == q) q = ""; continue }
+        if (c == "\"" || c == QUOTE) { q = c; cur = cur c; continue }
+        if (c == ";" || c == "&" || c == "|") {
+          parts[++n] = cur; cur = ""
+          if (c != ";" && substr(line, i + 1, 1) == c) i++
+          continue
+        }
+        cur = cur c
+      }
+      parts[++n] = cur
+      return n
+    }
+    function statement_writes(stmt,   i, c, q, k, v, args, a, n, verbs) {
+      n = split(VERBS, verbs, " ")
+      q = ""
+      for (i = 1; i <= length(stmt); i++) {
+        c = substr(stmt, i, 1)
+        if (q != "") { if (c == q) q = ""; continue }
+        if (c == "\"" || c == QUOTE) { q = c; continue }
+        if (c == ">") {                       # >"$APPS/x" writes the folder with no verb at all
+          a = substr(stmt, i + 1)
+          sub(/^[[:space:]]+/, "", a)
+          if (substr(a, 1, 1) == "\"" || substr(a, 1, 1) == QUOTE) a = substr(a, 2)
+          if (a ~ /^[$][{]?(APPS|A0)([^A-Za-z0-9_]|$)/) return 1
+          continue
+        }
+        for (k = 1; k <= n; k++) {
+          v = verbs[k]
+          if (substr(stmt, i, length(v)) != v) continue
+          if (isword(substr(stmt, i - 1, 1)) || isword(substr(stmt, i + length(v), 1))) continue
+          args = substr(stmt, i + length(v))
+          if (!has_folder(args)) continue
+          if (v == "ditto") {                 # ditto "$APPS" "$DEST" copies the folder out; any other place writes it
+            a = args
+            sub(/^[[:space:]]+/, "", a)
+            if (substr(a, 1, 1) == "\"" || substr(a, 1, 1) == QUOTE) a = substr(a, 2)
+            if (a ~ /^[$][{]?(APPS|A0)([^A-Za-z0-9_]|$)/) continue
+          }
+          return 1
+        }
+      }
+      return 0
+    }
     /^[[:space:]]*#/ { next }
     {
-      rest = $0
-      while (match(rest, /"[$](APPS|A0)"|"[$](APPS|A0)\/"/)) {
-        before = substr(rest, 1, RSTART - 1)
-        if (before !~ /(ditto|cp|swap-apps|can-write|ls -[a-zA-Z]+|shasum -a [0-9]+|-[dfex])[[:space:]]*$/) {
-          print FILENAME ":" FNR ": " $0; break
-        }
-        rest = substr(rest, RSTART + RLENGTH)
-      }
+      n = split_statements($0)
+      for (j = 1; j <= n; j++)
+        if (statement_writes(parts[j])) { print FILENAME ":" FNR ": " $0; break }
     }' "$@"
 }
 if out=$(apps_write installer/*.sh) && [ -n "$out" ]; then
   echo "$out"; fail "a script would write, move or delete Spotify's interface folder; use tess-patcher swap-apps"
 fi
-# The rule is only worth having if it still catches a fallback and still allows a read out.
-fixture=$(mktemp)
-printf 'swap_apps() {\n  ditto "$1" "$APPS"\n}\n' > "$fixture"
-[ -n "$(apps_write "$fixture")" ] || { rm -f "$fixture"; fail "the Apps write check lets a copy into Spotify's folder through"; }
-printf 'copy_out() {\n  ditto "$APPS" "$TMP/a"\n}\n' > "$fixture"
-[ -z "$(apps_write "$fixture")" ] || { rm -f "$fixture"; fail "the Apps write check rejects reading Spotify's folder out"; }
-rm -f "$fixture"
+# The rule is only worth having if it still catches a write and still allows a read out.
+apps_write_fixture() { # apps_write_fixture caught|allowed <line>
+  fixture=$(mktemp)
+  printf 'thing() {\n  %s\n}\n' "$2" > "$fixture"
+  found=$(apps_write "$fixture")
+  rm -f "$fixture"
+  if [ "$1" = caught ]; then
+    [ -n "$found" ] || fail "the Apps write check lets this through: $2"
+  else
+    [ -z "$found" ] || fail "the Apps write check rejects this: $2"
+  fi
+}
+apps_write_fixture caught 'ditto "$1" "$APPS"'
+apps_write_fixture caught 'rm -rf "$APPS/xpui"'
+apps_write_fixture caught 'ditto "$1" "${APPS}"'
+apps_write_fixture caught 'ditto "$1" $APPS'
+apps_write_fixture caught 'cp -R "$1" "$APPS/"'
+apps_write_fixture caught 'mv "$APPS" "$TMP/a"'
+apps_write_fixture caught 'touch "$A0/xpui.spa"'
+apps_write_fixture allowed 'ditto "$APPS" "$TMP/a"'
+apps_write_fixture allowed 'ditto "$APPS/" "$TMP/a"'
+apps_write_fixture allowed '"$PATCHER" swap-apps "$APPS" "$1"'
+apps_write_fixture allowed '"$PATCHER" can-write "$APPS"'
+apps_write_fixture allowed '[ -f "$APPS/xpui.spa" ] || fail "Spotify is incomplete"'
+apps_write_fixture allowed 'rm -rf "$bak"; ditto "$APPS" "$bak" || return 0'
+apps_write_fixture allowed 'if grep -q spicetifyWrapper "$APPS/xpui/index.html"; then'
 # 8. the install line pins the committed verifier, and the verifier is stored under its own hash
 pin=$(sed -n "s/^VERIFY_SHA='\([0-9a-f]\{64\}\)'$/\1/p" installer/install.sh)
 [ -n "$pin" ] || fail "installer/install.sh has no VERIFY_SHA pin"
