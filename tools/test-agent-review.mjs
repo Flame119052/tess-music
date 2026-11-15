@@ -2,7 +2,10 @@
 // Usage: node tools/test-agent-review.mjs
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import http from 'node:http';
+import https from 'node:https';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -16,14 +19,27 @@ import {
   capsFor,
   containsHeldSecret,
   eligibleModels,
+  extraSkipped,
+  failureSummary,
+  forkProblem,
   freshestSnapshot,
+  headAnswer,
+  headFacts,
   headMismatchMessage,
+  headReviewProblem,
+  installedProviders,
   looksSecret,
   parseClaudeOutput,
   parseCodexOutput,
   parseRequest,
   parseSnapshot,
+  pinnedReviewer,
+  postVerdict,
   providerHasUsage,
+  providerKeys,
+  proxiedProviders,
+  startReviewProxy,
+  redactText,
   reserveProblem,
   reservationEnd,
   resolveReviewers,
@@ -37,6 +53,7 @@ import {
   sandboxArgv,
   sandboxHome,
   sandboxProblem,
+  sanitizeLine,
   skipReason,
   skippedLine,
   snapshot,
@@ -44,11 +61,14 @@ import {
   stripAgentConfig,
   timeoutSeconds,
   tierForPaths,
+  snapshotAge,
+  snapshotMaxAgeMs,
   usageNote,
   usageProblem,
   usedLine,
   verifyPrHead,
 } from './agent-review.mjs';
+import { createReviewProxy, maxProxyBodyBytes, matchProxyRoute, proxyRoutes, proxyReviewerConfig } from './review-proxy.mjs';
 
 const config = JSON.parse(readFileSync(new URL('../.github/agents.json', import.meta.url), 'utf8'));
 const agentFile = new URL('../tools/opencode-reviewer.md', import.meta.url);
@@ -58,77 +78,82 @@ const available = (usedPercent) => ({ windows: [{ usedPercent }] });
 const retries = (result) => skipReason(result) !== null;
 const temp = () => mkdtempSync(join(tmpdir(), 'tess-test-'));
 
-// Run the workflow's machine-picking step for real, with fake `curl` and `sleep` in front of PATH, using the same shell
-// options GitHub Actions uses for `run:` blocks (`bash --noprofile --norc -eo pipefail`).
-function pickMachine({ wakeUrl, readyBody = '', curlFails = false, curlExit = 0, readyOnTry = 1, countCalls = false, expectUrl }) {
-  const workflow = readFileSync(new URL('../.github/workflows/agent-review.yml', import.meta.url), 'utf8').split('\n');
-  const stepLines = workflow.filter((line) => line.trim() === '- name: Pick the reviewer machine (Instabox first, then the VPS or omarchy)');
-  assert.equal(stepLines.length, 1, 'the workflow has exactly one machine-picking step');
-  const start = workflow.findIndex((line) => line.trim() === '- name: Pick the reviewer machine (Instabox first, then the VPS or omarchy)');
-  assert.ok(start > 0, 'the workflow still has the machine step');
-  const runAt = workflow.findIndex((line, i) => i > start && line.trim() === 'run: |');
-  assert.ok(workflow.slice(start, runAt).some((line) => line.trim() === "if: steps.gate.outputs.allowed == 'true'"),
-    'the Instabox wake probe only runs after the gate allows the caller');
-  const indent = workflow[runAt].search(/\S/);
-  const script = [];
-  for (const line of workflow.slice(runAt + 1)) {
-    if (line.trim() !== '' && line.search(/\S/) <= indent) break;
-    script.push(line.slice(indent + 2));
-  }
+// The review job runs on a fresh GitHub-hosted machine, and only the CLI for the reviewer it picked is installed.
+// These tests read the real workflow so the retired self-hosted path cannot creep back in unnoticed.
+const workflowText = () => readFileSync(new URL('../.github/workflows/agent-review.yml', import.meta.url), 'utf8');
 
-  const dir = mkdtempSync(join(tmpdir(), 'tess-machine-'));
-  try {
-    const out = join(dir, 'output');
-    writeFileSync(out, '');
-    // The fake curl records the arguments it was given, so the test checks the URL the workflow actually asks for, not
-    // just the answer it gets back. One line per call, which also drives the "wakes on a later try" case.
-    const calls = join(dir, 'calls');
-    writeFileSync(join(dir, 'curl'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n` + (curlFails
-      ? 'exit 7\n'
-      : `[ "$(wc -l < '${calls}')" -ge ${readyOnTry} ] && printf '%s' '${readyBody}'\nprintf '|200'\nexit ${curlExit}\n`));
-    writeFileSync(join(dir, 'sleep'), '#!/bin/sh\nexit 0\n');
-    chmodSync(join(dir, 'curl'), 0o755);
-    chmodSync(join(dir, 'sleep'), 0o755);
-    const env = { PATH: `${dir}:${process.env.PATH}`, GITHUB_OUTPUT: out, HOME: dir };
-    if (wakeUrl !== undefined) env.WAKE_URL = wakeUrl;
-    execFileSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', script.join('\n')], { env, stdio: 'pipe' });
-    const result = readFileSync(out, 'utf8').trim();
-    if (expectUrl) {
-      const asked = readFileSync(calls, 'utf8').split('\n').filter(Boolean);
-      assert.ok(asked.length > 0, 'the step asked the wake URL something');
-      for (const line of asked) assert.ok(line.endsWith(` ${expectUrl}`), `asked for ${line}, wanted ...${expectUrl}`);
-    }
-    if (!countCalls) return result;
-    return { result, calls: existsSync(calls) ? readFileSync(calls, 'utf8').split('\n').filter(Boolean).length : 0 };
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+function jobBlock(name) {
+  const lines = workflowText().split('\n');
+  const start = lines.findIndex((line) => line === `  ${name}:`);
+  assert.ok(start > 0, `the workflow has a ${name} job`);
+  const block = [];
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (/^  \S/.test(lines[i])) break;
+    block.push(lines[i]);
   }
+  return block.join('\n');
 }
 
-test('no wake URL keeps the old behaviour: any tess-agent runner', () => {
-  assert.equal(pickMachine({}), 'runs_on=["self-hosted","tess-agent"]');
-  assert.equal(pickMachine({ wakeUrl: '' }), 'runs_on=["self-hosted","tess-agent"]');
+function stepBlock(job, name) {
+  const lines = job.split('\n');
+  const start = lines.findIndex((line) => line.trim() === `- name: ${name}`);
+  assert.ok(start >= 0, `the workflow has a "${name}" step`);
+  const base = lines[start].search(/\S/);
+  const block = [];
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (lines[i].trim() !== '' && lines[i].search(/\S/) <= base) break;
+    block.push(lines[i]);
+  }
+  return block.join('\n');
+}
+
+test('the review runs on a fresh GitHub-hosted machine, never a self-hosted runner', () => {
+  const text = workflowText();
+  const review = jobBlock('review');
+  assert.match(review, /runs-on: ubuntu-latest/, 'the review job is a standard GitHub-hosted job');
+  assert.match(review, /timeout-minutes: 30/, 'a stuck job fails instead of holding a machine');
+  assert.match(review, /if: needs\.gate\.outputs\.allowed == 'true'/, 'the gate decides before anything runs');
+  assert.match(jobBlock('gate'), /runs-on: ubuntu-latest/);
+
+  // The whole self-hosted path is retired: labels, the Instabox wake probe and its variable.
+  for (const gone of ['self-hosted', 'tess-agent', 'tess-primary', 'tess-backup', 'REVIEW_WAKE_URL', '/ready', 'runs_on']) {
+    assert.ok(!text.includes(gone), `${gone} is gone from the workflow`);
+  }
 });
 
-test('only the exact ready answer pins the job to Instabox', () => {
-  const pinned = 'runs_on=["self-hosted","tess-agent","tess-primary"]';
-  // REVIEW_WAKE_URL is the box's host (the step adds /ready itself), so a value without a path is the real shape.
-  assert.equal(pickMachine({ wakeUrl: 'https://box.example', readyBody: 'tess-ready', expectUrl: 'https://box.example/ready' }), pinned);
-  // A trailing slash must not turn the request into //ready, and a platform's 200 "starting…" page is not ready.
-  assert.equal(pickMachine({ wakeUrl: 'https://box.example/', readyBody: 'tess-ready', expectUrl: 'https://box.example/ready' }), pinned);
-  const backup = 'runs_on=["self-hosted","tess-agent","tess-backup"]';
-  assert.equal(pickMachine({ wakeUrl: 'https://box.example', readyBody: 'starting…', expectUrl: 'https://box.example/ready' }), backup);
-  assert.equal(pickMachine({ wakeUrl: 'https://box.example', curlFails: true, expectUrl: 'https://box.example/ready' }), backup);
-  // Trailing newlines are not trimmed into a match, and a curl that fails after printing the ready text doesn't count.
-  assert.equal(pickMachine({ wakeUrl: 'https://box.example', readyBody: 'tess-ready\n\n' }), backup);
-  assert.equal(pickMachine({ wakeUrl: 'https://box.example', readyBody: 'tess-ready', curlExit: 7 }), backup);
+test('only the chosen reviewer\'s CLI is installed, at a pinned version', () => {
+  const review = jobBlock('review');
+  const installs = { claude: 'Install Claude Code', codex: 'Install Codex', opencode: 'Install OpenCode' };
+  for (const [provider, step] of Object.entries(installs)) {
+    const block = stepBlock(review, step);
+    assert.match(block, new RegExp(`if: steps\\.pick\\.outputs\\.provider == '${provider}'`),
+      `${step} only runs when ${provider} was picked`);
+    assert.match(block, /@\d+\.\d+\.\d+/, `${step} pins the CLI version`);
+  }
+  // Everything else is a standard runner tool: node, and bubblewrap checked before a reviewer can start.
+  const sandbox = stepBlock(review, 'Let bubblewrap start its sandbox');
+  assert.match(sandbox, /kernel\.apparmor_restrict_unprivileged_userns=0/,
+    'Ubuntu 24.04 lets unprivileged user namespaces through before bubblewrap starts');
+  assert.match(sandbox, /bwrap --unshare-all/, 'the job proves the sandbox really starts');
 });
 
-test('a box that wakes on a later try still gets the job, and the check gives up after 12 tries', () => {
-  const late = pickMachine({ wakeUrl: 'https://box.example', readyBody: 'tess-ready', readyOnTry: 3, countCalls: true });
-  assert.deepEqual(late, { result: 'runs_on=["self-hosted","tess-agent","tess-primary"]', calls: 3 });
-  const never = pickMachine({ wakeUrl: 'https://box.example', curlFails: true, countCalls: true });
-  assert.deepEqual(never, { result: 'runs_on=["self-hosted","tess-agent","tess-backup"]', calls: 12 });
+test('the review step holds one provider key and never a second provider\'s', () => {
+  const review = jobBlock('review');
+  assert.ok(!/^    env:/m.test(review), 'the job sets no environment that every step inherits');
+  const run = stepBlock(review, 'Run read-only reviewer');
+  for (const [provider, names] of Object.entries(providerKeys)) {
+    for (const name of names) {
+      const line = run.split('\n').find((entry) => entry.trim().startsWith(`${name}:`));
+      if (!installedProviders.includes(provider)) {
+        assert.ok(!line, `${name} is not wired: ${provider} is optional`);
+        continue;
+      }
+      assert.ok(line, `${name} is on the review step`);
+      assert.match(line, new RegExp(`provider == '${provider}'`), `${name} is only passed when ${provider} is picked`);
+    }
+  }
+  assert.match(run, /GH_TOKEN: \$\{\{ github\.token \}\}/, 'the job can post the comment');
+  assert.match(run, /node tools\/agent-review\.mjs/, 'the script itself strips GH_TOKEN before the reviewer starts');
 });
 
 test('review refuses when the PR head moved after the CI gate or gated SHA is missing', () => {
@@ -165,6 +190,10 @@ if [ "$1" = "api" ] && [ "$2" = "repos/Flame119052/tess-music/issues/89" ]; then
   printf '{"number":89,"title":"t","html_url":"https://example.invalid/89","body":""}'
   exit 0
 fi
+if [ "$1" = "api" ] && [ "$2" = "repos/Flame119052/tess-music/pulls/89" ]; then
+  printf '{"head":{"sha":"cafebabe","repo":{"full_name":"Flame119052/tess-music","fork":false}}}'
+  exit 0
+fi
 if [ "$1" = "issue" ] && [ "$2" = "comment" ]; then
   cat > '${commentOut}'
   exit 0
@@ -181,7 +210,7 @@ exit 99
     assert.match(postedBody, /deadbeef → cafebabe/);
     assert.match(postedBody, /Verdict: changes needed/);
 
-    // And if the PR moves between FETCH_HEAD and `gh pr diff`, it still refuses before snapshotting or running a model.
+    // And a head that already disagrees with the gate stops the run before anything is fetched, snapshotted or reviewed.
     writeFileSync(join(dir, 'git'), `#!/bin/sh
 case "$*" in
   *" rev-parse FETCH_HEAD"*) printf 'deadbeef\\n' ;;
@@ -203,7 +232,7 @@ if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
   exit 0
 fi
 if [ "$1" = "api" ] && [ "$2" = "repos/Flame119052/tess-music/pulls/89" ]; then
-  printf 'cafebabe\\n'
+  printf '{"head":{"sha":"cafebabe","repo":{"full_name":"Flame119052/tess-music","fork":false}}}'
   exit 0
 fi
 if [ "$1" = "issue" ] && [ "$2" = "comment" ]; then
@@ -221,6 +250,40 @@ exit 99
     const raceBody = readFileSync(commentOut, 'utf8');
     assert.match(raceBody, /deadbeef → cafebabe/);
     assert.match(raceBody, /Verdict: changes needed/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an approach review reaches the review-copy snapshot without shadowing it', () => {
+  // `main` calls snapshot('HEAD') for the copy; a usage snapshot variable with the same name once hid that function, so
+  // this drives the real script far enough to call it. The fake CLIs are absent on PATH, so it stops at "no reviewer".
+  const dir = temp();
+  const scriptPath = fileURLToPath(new URL('./agent-review.mjs', import.meta.url));
+  try {
+    writeFileSync(join(dir, 'git'), '#!/bin/sh\nexit 0\n');
+    writeFileSync(join(dir, 'gh'), `#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "repos/Flame119052/tess-music/issues/42" ]; then
+  printf '{"number":42,"title":"t","html_url":"https://example.invalid/42","body":""}'
+  exit 0
+fi
+exit 99
+`);
+    chmodSync(join(dir, 'git'), 0o755);
+    chmodSync(join(dir, 'gh'), 0o755);
+    let error;
+    try {
+      execFileSync(process.execPath, [scriptPath, 'approach', '42'], {
+        env: { ...process.env, HOME: dir, PATH: `${dir}:/usr/bin:/bin` },
+        stdio: 'pipe',
+      });
+    } catch (thrown) {
+      error = thrown;
+    }
+    assert.ok(error, 'the run has to stop somewhere');
+    const output = `${error.stderr || ''}${error.stdout || ''}${error.message || ''}`;
+    assert.match(output, /no reviewer could run/, 'it stopped after making the review copy, not before');
+    assert.ok(!/is not a function/.test(output), 'the usage snapshot never shadows snapshot()');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -347,9 +410,10 @@ test('a review that quotes a key the job holds is never posted', () => {
     CODEX_API_KEY: 'codex-key-' + 'c'.repeat(20),
     CURSOR_API_KEY: 'cursor-key-' + 'd'.repeat(20),
     OPENCODE_API_KEY: 'opencode-key-' + 'e'.repeat(20),
+    ZHIPU_API_KEY: 'zhipu-key-' + 'f'.repeat(20),
     HOME: '/home/r',
   };
-  for (const name of ['GH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_API_KEY', 'CURSOR_API_KEY', 'OPENCODE_API_KEY']) {
+  for (const name of ['GH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_API_KEY', 'CURSOR_API_KEY', 'OPENCODE_API_KEY', 'ZHIPU_API_KEY']) {
     assert.ok(containsHeldSecret(`the environment had ${env[name]} in it`, env), name);
   }
   assert.ok(!containsHeldSecret('Looks fine. The swap keeps a checked copy.', env));
@@ -360,22 +424,46 @@ test('a review that quotes a key the job holds is never posted', () => {
   assert.ok(!containsHeldSecret('nothing held', {}));
 });
 
-test('the reviewer gets only its own provider key, never the GitHub token', () => {
+test('the reviewer gets only its own provider keys, never the GitHub token', () => {
   const env = {
     HOME: '/home/r', PATH: '/bin', TMPDIR: '/tmp', GH_TOKEN: 'ghs_x', GITHUB_TOKEN: 'ghs_y',
-    CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-x', CODEX_API_KEY: 'ck', CURSOR_API_KEY: 'cu', OPENCODE_API_KEY: 'oc',
-    OTHER: '1',
+    CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-x', CODEX_API_KEY: 'ck', CURSOR_API_KEY: 'cu',
+    OPENCODE_API_KEY: 'oc', ZHIPU_API_KEY: 'zp', OTHER: '1',
   };
   assert.deepEqual(Object.keys(reviewerEnv(env, 'claude')).sort(), ['CLAUDE_CODE_OAUTH_TOKEN', 'HOME', 'PATH', 'TMPDIR']);
-  assert.deepEqual(Object.keys(reviewerEnv(env, 'opencode')).sort(), ['HOME', 'OPENCODE_API_KEY', 'PATH', 'TMPDIR']);
+  assert.deepEqual(Object.keys(reviewerEnv(env, 'opencode')).sort(),
+    ['HOME', 'OPENCODE_API_KEY', 'PATH', 'TMPDIR', 'ZHIPU_API_KEY']);
   for (const provider of ['claude', 'codex', 'cursor', 'opencode']) {
     const keys = Object.keys(reviewerEnv(env, provider));
     assert.ok(!keys.includes('GH_TOKEN') && !keys.includes('GITHUB_TOKEN'), `${provider} gets no GitHub token`);
-    assert.equal(keys.filter((key) => key.endsWith('_TOKEN') || key.endsWith('_KEY')).length, 1, `${provider} gets one key`);
+    // Exactly this provider's keys, and no other provider's. OpenCode has two signed-in connectors of its own.
+    assert.deepEqual(keys.filter((key) => key.endsWith('_TOKEN') || key.endsWith('_KEY')).sort(),
+      [...providerKeys[provider]].sort(), `${provider} gets only its own keys`);
+    for (const [other, otherKeys] of Object.entries(providerKeys)) {
+      if (other === provider) continue;
+      for (const key of otherKeys) assert.ok(!keys.includes(key), `${provider} never gets ${other}'s ${key}`);
+    }
   }
   // no provider means no key at all, rather than every key
   assert.deepEqual(Object.keys(reviewerEnv(env, 'nobody')).sort(), ['HOME', 'PATH', 'TMPDIR']);
   assert.ok(looksSecret('sk-ant-oat01-' + 'a'.repeat(80)));
+
+  // Behind the proxy the key is not in the sandbox at all, under any name: the CLI gets the proxy and a token that dies
+  // with the job. This is the provider a diff *can* reach, because its tool list has no shell but its environment was
+  // one flag away from being readable.
+  const proxy = { url: 'http://127.0.0.1:9', token: 'per-review-token' };
+  for (const provider of proxiedProviders) {
+    const proxied = reviewerEnv(env, provider, proxy);
+    assert.equal(proxied.CLAUDE_CODE_OAUTH_TOKEN, undefined, 'the Claude key never enters the sandbox');
+    assert.equal(proxied.CODEX_API_KEY, undefined, 'the Codex key never enters the sandbox');
+    assert.equal(JSON.stringify(proxied).includes('sk-ant-oat01-x'), false);
+    assert.equal(JSON.stringify(proxied).includes('ck'), false);
+    assert.ok(!Object.keys(proxied).some((key) => providerKeys[provider].includes(key)));
+    assert.equal(proxied.HOME, '/home/r', 'the sandbox still gets a home and a PATH');
+  }
+  assert.equal(reviewerEnv(env, 'claude', proxy).ANTHROPIC_AUTH_TOKEN, 'per-review-token');
+  assert.equal(reviewerEnv(env, 'claude', proxy).ANTHROPIC_BASE_URL, 'http://127.0.0.1:9/claude');
+  assert.equal(reviewerEnv(env, 'codex', proxy).TESS_REVIEW_TOKEN, 'per-review-token');
 });
 
 test('the reviewer reads a throwaway copy with read-only tools only', () => {
@@ -1143,6 +1231,246 @@ test('the OpenCode agent denies everything outside reading the copy', () => {
 // Every reviewer is wrapped the same way, so the boundary is a fact about the runner, not a promise in a prompt. The
 // snapshot is the only folder from the job that is bound in; the runner's home is not, apart from the one config folder
 // the provider itself needs.
+// The review proxy, driven for real: the child process starts, the sandbox's token is what it accepts, the provider's key
+// is what it adds, and nothing else gets through. A fake upstream stands in for the provider, so this runs with no key and
+// no network.
+const httpRequest = (url, options = {}) => new Promise((resolve, reject) => {
+  const client = url.startsWith('https:') ? https : http;
+  const req = client.request(url, options, (res) => {
+    let body = '';
+    res.on('data', (chunk) => { body += chunk; });
+    res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
+  });
+  req.on('error', reject);
+  if (options.body) req.write(options.body);
+  req.end();
+});
+
+async function fakeUpstream() {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      seen.push({ method: req.method, url: req.url, headers: req.headers, body });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+  });
+  await new Promise((done) => server.listen(0, '127.0.0.1', done));
+  return { url: `http://127.0.0.1:${server.address().port}`, seen, close: () => new Promise((done) => server.close(done)) };
+}
+
+test('the review proxy adds the key and refuses everything that is not this review', async () => {
+  const upstream = await fakeUpstream();
+  const proxy = await createReviewProxy({ provider: 'claude', key: 'sk-ant-oat01-real', token: 'this-review', upstream: upstream.url });
+  try {
+    // The call the CLI would make: the token stands in the Authorization header, the path keeps its provider prefix.
+    const ok = await httpRequest(`${proxy.url}/claude/v1/messages`, {
+      method: 'POST', headers: { authorization: 'Bearer this-review', 'content-type': 'application/json' }, body: '{"a":1}',
+    });
+    assert.equal(ok.status, 200);
+    assert.equal(upstream.seen.length, 1, 'the request reached the upstream');
+    assert.equal(upstream.seen[0].url, '/v1/messages', 'the provider prefix is stripped, the path is not rewritten');
+    assert.equal(upstream.seen[0].headers.authorization, 'Bearer sk-ant-oat01-real', 'the real key is added here');
+    assert.equal(upstream.seen[0].body, '{"a":1}', 'the body is passed through untouched');
+
+    // No token, another review's token, and a route outside the provider all stop before the upstream sees anything.
+    for (const attempt of [
+      { url: `${proxy.url}/claude/v1/messages`, headers: {} },
+      { url: `${proxy.url}/claude/v1/messages`, headers: { authorization: 'Bearer someone-else' } },
+      { url: `${proxy.url}/openai/v1/responses`, headers: { authorization: 'Bearer this-review' } },
+    ]) {
+      const refused = await httpRequest(attempt.url, { headers: attempt.headers });
+      assert.ok(refused.status === 401 || refused.status === 403, `${attempt.url} → ${refused.status}`);
+      assert.ok(!refused.body.includes('sk-ant-oat01-real'), 'a refusal never quotes the key');
+    }
+    assert.equal(upstream.seen.length, 1, 'a refused call never reaches the provider');
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});
+
+// A raw socket, because a test has to be able to write a request line Node's own client would rewrite or never send: an
+// absolute-form URL, a CONNECT, a fragment, a dot segment, an encoded slash.
+const rawRequest = (port, requestLine, extraHeaders = '') => new Promise((resolve, reject) => {
+  const socket = net.connect(port, '127.0.0.1', () => {
+    socket.write(`${requestLine}\r\nHost: 127.0.0.1\r\n${extraHeaders}Connection: close\r\n\r\n`);
+  });
+  let data = '';
+  socket.setTimeout(5000, () => { socket.destroy(); resolve({ status: 0, body: data }); });
+  socket.on('data', (chunk) => { data += chunk; });
+  socket.on('end', () => {
+    const status = Number((data.match(/^HTTP\/1\.[01] (\d{3})/) || [])[1] || 0);
+    resolve({ status, body: data });
+  });
+  socket.on('error', reject);
+});
+
+// The route list is not a guess: it is what the pinned CLIs were seen to send, measured against a logging upstream.
+test('the proxy allows only the requests the pinned CLIs were measured to make', () => {
+  assert.deepEqual(proxyRoutes.claude, [{ method: 'POST', path: '/v1/messages', query: ['beta'] }]);
+  assert.deepEqual(proxyRoutes.codex, [{ method: 'POST', path: '/v1/responses', query: [] }]);
+  assert.equal(maxProxyBodyBytes, 10 * 1024 * 1024, 'a review body is capped at 10 MB');
+});
+
+// The reviewer's token is a way to make one inference call, not a way to use everything the provider's key can reach.
+// The loopback proxy forwards the real key to the routes above and refuses the rest with a 403, without forwarding.
+test('the review proxy forwards the injected key to inference routes and refuses every other request', async () => {
+  const upstream = await fakeUpstream();
+  const proxy = await createReviewProxy({ provider: 'claude', key: 'sk-ant-oat01-real', token: 'this-review', upstream: upstream.url });
+  const port = Number(new URL(proxy.url).port);
+  const auth = { authorization: 'Bearer this-review' };
+  try {
+    // What the CLI sends is what gets through: the path and the one query key it was seen to send, with the real key.
+    const allowed = await httpRequest(`${proxy.url}/claude/v1/messages?beta=true`, {
+      method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: '{"model":"x"}',
+    });
+    assert.equal(allowed.status, 200);
+    assert.equal(upstream.seen.length, 1);
+    assert.equal(upstream.seen[0].url, '/v1/messages?beta=true', 'the path and its query reach the provider unchanged');
+    assert.equal(upstream.seen[0].headers.authorization, 'Bearer sk-ant-oat01-real', 'the real key is added here');
+
+    // Another method, and another path, are refused: the DELETE the reviewer reproduced, a read, a management route.
+    for (const attempt of [
+      { method: 'DELETE', url: `${proxy.url}/claude/v1/files/file-123` },
+      { method: 'DELETE', url: `${proxy.url}/claude/v1/messages` },
+      { method: 'GET', url: `${proxy.url}/claude/v1/messages` },
+      { method: 'GET', url: `${proxy.url}/claude/v1/models` },
+      { method: 'POST', url: `${proxy.url}/claude/v1/files` },
+      { method: 'POST', url: `${proxy.url}/claude/v1/messages/batches` },
+      { method: 'POST', url: `${proxy.url}/claude/v1/messages/count_tokens` },
+    ]) {
+      const answer = await httpRequest(attempt.url, { method: attempt.method, headers: auth, body: '{"a":1}' });
+      assert.equal(answer.status, 403, `${attempt.method} ${attempt.url} → ${answer.status}`);
+      assert.ok(!answer.body.includes('sk-ant-oat01-real'), 'a refusal never quotes the key');
+    }
+    assert.equal(upstream.seen.length, 1, 'no refused call reached the provider');
+
+    // Every way a request line can look like the allowed path without being it, written as raw bytes so the client
+    // cannot tidy it up first.
+    for (const line of [
+      'POST /claude/v1/messages/../files/file-123 HTTP/1.1',
+      'POST /claude/v1/../v1/files HTTP/1.1',
+      'POST /claude/v1/messages/..%2ffiles HTTP/1.1',
+      'POST /claude/v1/messages%2f..%2ffiles HTTP/1.1',
+      'POST /claude/v1/%2e%2e/v1/files HTTP/1.1',
+      'POST /claude//v1/messages HTTP/1.1',
+      'POST /claude/v1/messages%00 HTTP/1.1',
+      'POST /claude/v1/messages/ HTTP/1.1',
+      'POST /claude/v1/MESSAGES HTTP/1.1',
+      'POST /claude/v1/messages?beta=true&path=/v1/files HTTP/1.1',
+      'POST /claude/v1/messages?/v1/files HTTP/1.1',
+      'POST /claude/v1/messages#/v1/files HTTP/1.1',
+      'POST http://127.0.0.1:9/claude/v1/messages HTTP/1.1',
+      'CONNECT api.openai.com:443 HTTP/1.1',
+    ]) {
+      const answer = await rawRequest(port, line, 'Authorization: Bearer this-review\r\nContent-Length: 2\r\n\r\n');
+      assert.equal(answer.status, 403, `${line} → ${answer.status}`);
+    }
+    assert.equal(upstream.seen.length, 1, 'a path trick or a tunnel never reached the provider');
+
+    // A credential the request brings is dropped, and the host is the proxy's, never one from the request or its headers.
+    const smuggled = await httpRequest(`${proxy.url}/claude/v1/messages`, {
+      method: 'POST',
+      headers: { 'x-api-key': 'this-review', 'proxy-authorization': 'Bearer sk-attacker', host: 'api.openai.com' },
+      body: '{}',
+    });
+    assert.equal(smuggled.status, 200);
+    const seen = upstream.seen[upstream.seen.length - 1];
+    assert.equal(seen.headers.authorization, 'Bearer sk-ant-oat01-real', 'the real key replaces whatever was offered');
+    assert.equal(seen.headers['x-api-key'], undefined, 'a client-supplied key is dropped');
+    assert.equal(seen.headers['proxy-authorization'], undefined, 'a client-supplied proxy credential is dropped');
+    assert.notEqual(seen.headers.host, 'api.openai.com', 'the upstream host comes from the proxy, not the request');
+    assert.ok(!JSON.stringify(seen.headers).includes('sk-attacker'), 'nothing the client offered as a key travels');
+
+    // A body past the cap is refused before it is read.
+    const huge = await httpRequest(`${proxy.url}/claude/v1/messages`, {
+      method: 'POST', headers: { ...auth, 'content-length': String(maxProxyBodyBytes + 1) }, body: '{}',
+    });
+    assert.equal(huge.status, 413, 'an oversized request is refused');
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});
+
+test('the sandbox is pointed at the proxy, and the proxy process serves it', async () => {  const upstream = await fakeUpstream();
+  const dir = temp();
+  // The real child process the review starts, with the real ready file: this is the path a review takes on the runner.
+  const config = { provider: 'codex', key: 'sk-codex-real-key', token: 'codex-review-token', upstream: upstream.url };
+  const configPath = join(dir, 'proxy.json');
+  const readyPath = join(dir, 'proxy.url');
+  writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
+  const child = spawn(process.execPath, [fileURLToPath(new URL('./review-proxy.mjs', import.meta.url)),
+    '--config', configPath, '--ready', readyPath], { stdio: 'ignore' });
+  try {
+    const started = Date.now();
+    while (!existsSync(readyPath)) {
+      await new Promise((done) => setTimeout(done, 25));
+      assert.ok(Date.now() - started < 5000, 'the proxy reported its address');
+    }
+    const url = readFileSync(readyPath, 'utf8').trim();
+    assert.match(url, /^http:\/\/127\.0\.0\.1:\d+$/, 'it listens on loopback only');
+
+    // What the CLI is told: an endpoint on the proxy, and the token in place of the key. The key itself is nowhere.
+    const settings = proxyReviewerConfig('codex', url, 'codex-review-token');
+    assert.ok(!JSON.stringify(settings).includes('sk-codex-real-key'), 'the key is not in what the sandbox is given');
+    assert.ok(settings.args.some((arg) => arg.includes(`base_url="http://127.0.0.1:`)));
+    assert.ok(settings.args.some((arg) => arg === 'model_providers.tess_review_proxy.env_key="TESS_REVIEW_TOKEN"'));
+    assert.deepEqual(settings.removedKeys, ['CODEX_API_KEY', 'OPENAI_API_KEY']);
+
+    const answer = await httpRequest(`${url}/codex/v1/responses`, {
+      method: 'POST', headers: { authorization: 'Bearer codex-review-token' }, body: '{"model":"gpt-6.1-terra"}',
+    });
+    assert.equal(answer.status, 200);
+    assert.equal(upstream.seen[0].url, '/v1/responses');
+    assert.equal(upstream.seen[0].headers.authorization, 'Bearer sk-codex-real-key');
+  } finally {
+    child.kill('SIGKILL');
+    await upstream.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the review proxy is started only where a key actually has to be kept out, and the CLI is configured for it', () => {
+  const env = { PATH: '/bin', CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-real', CODEX_API_KEY: 'sk-codex-real', OPENCODE_API_KEY: 'oc' };
+  const calls = [];
+  const fakeSpawn = (command, args) => { calls.push({ command, args }); return { kill: () => {} }; };
+  const dir = temp();
+  try {
+    // OpenCode keeps its own key: its agent file denies every read outside the copy, so there is nothing to proxy it to.
+    assert.equal(startReviewProxy('opencode', { env, dir, spawnChild: fakeSpawn }), null);
+    // No key, no proxy: a review with no credential fails where the direct one would work, and nothing is leaked either way.
+    assert.equal(startReviewProxy('codex', { env: { PATH: '/bin' }, dir, spawnChild: fakeSpawn }), null);
+
+    // With a key the child is started with the config path, and a proxy that never reports an address stops the review
+    // instead of quietly running the CLI with the key in its environment.
+    assert.throws(() => startReviewProxy('claude', {
+      env, dir, spawnChild: fakeSpawn, timeoutMs: 0, sleep: () => {},
+    }), /never sees its key in the sandbox/);
+    assert.equal(calls.length, 1, 'the proxy process was started');
+
+    // The argv each CLI gets: Claude through the gateway variables, Codex through `-c` provider overrides.
+    const proxy = { url: 'http://127.0.0.1:1234', token: 'tok' };
+    const claude = cliArgs('claude', 'claude-opus-5-5', '', '/w', capsFor(config), proxy);
+    assert.ok(claude.includes('--tools') && claude.includes(claudeTools), 'the read-only tool list is unchanged');
+    const codex = cliArgs('codex', 'gpt-6.1-terra', 'high', '/w', capsFor(config), proxy);
+    assert.ok(codex.includes('model_providers.tess_review_proxy.base_url="http://127.0.0.1:1234/codex/v1"'));
+    assert.ok(codex.includes('model_provider="tess_review_proxy"'));
+    assert.ok(!JSON.stringify(codex).includes('sk-codex-real'), 'the key is not on the command line');
+    // Without a proxy the argv is exactly what it was, ten arguments shorter: the direct path still works where a proxy
+    // does not apply, and it never grew a flag nobody tested.
+    const direct = cliArgs('codex', 'gpt-6.1-terra', 'high', '/w', capsFor(config));
+    assert.ok(!JSON.stringify(direct).includes('tess_review_proxy'));
+    assert.ok(direct.includes('--skip-git-repo-check') && direct.includes('exec'));
+    assert.equal(codex.length, direct.length + 10, 'five `-c key=value` pairs are the whole proxy change');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('every reviewer runs inside bubblewrap with only the copy and its own config', () => {
   const binds = (args) => args.flatMap((arg, index) =>
     ['--ro-bind', '--bind'].includes(arg) ? [{ mode: arg, from: args[index + 1], to: args[index + 2] }] : []);
@@ -1379,86 +1707,95 @@ test('the config is the one place the changeable facts live', () => {
   assert.match(setup, /user namespaces/i, 'and shows how to check user namespaces');
 });
 
-// Address arithmetic for the drop-in below, kept here rather than in tools/ because nothing else needs it.
-function addressBits(text) {
-  if (!text.includes(':')) {
-    const parts = text.split('.').map(Number);
-    assert.equal(parts.length, 4, `bad IPv4 address ${text}`);
-    return { family: 4, width: 32, value: parts.reduce((acc, part) => (acc << 8n) | BigInt(part), 0n) };
-  }
-  const [head, tail] = text.split('::');
-  const left = head ? head.split(':') : [];
-  const right = tail ? tail.split(':') : [];
-  const groups = text.includes('::')
-    ? [...left, ...Array(8 - left.length - right.length).fill('0'), ...right]
-    : left;
-  assert.equal(groups.length, 8, `bad IPv6 address ${text}`);
-  return { family: 6, width: 128, value: groups.reduce((acc, group) => (acc << 16n) | BigInt(parseInt(group || '0', 16)), 0n) };
-}
-
-function networkOf(text) {
-  const [address, bits] = text.split('/');
-  const parsed = addressBits(address);
-  const width = bits === undefined ? parsed.width : Number(bits);
-  return { family: parsed.family, width, text, value: parsed.value >> BigInt(parsed.width - width) };
-}
-
-// `outer` holds all of `range`: same family, at least as wide, and the same leading bits.
-const covers = (outer, range) => outer.family === range.family && outer.width <= range.width
-  && (range.value >> BigInt(range.width - outer.width)) === outer.value;
-
-// The network boundary is the runner service, not a CLI flag, so it covers Claude and every other provider at once.
-// bubblewrap keeps the host network namespace on purpose, because the review's API call needs it: an untrusted diff
-// that talks a model into running a shell command must still reach only its provider. On paperclip-vps the rest of the
-// namespace is Paperclip's PostgreSQL, its services and the Tincan relay.
-test('the runner network drop-in refuses the machine and its local networks', () => {
-  const conf = readFileSync(new URL('./runner/network.conf', import.meta.url), 'utf8');
-  const lines = conf.split('\n').map((line) => line.trim()).filter((line) => line && !line.startsWith('#'));
-  assert.equal(lines.shift(), '[Service]', 'it is a drop-in for the runner service, not a whole unit');
-  for (const line of lines) {
-    assert.match(line, /^IPAddress(Allow|Deny)=/, `a drop-in sets these two keys and nothing else: ${line}`);
-  }
-  const values = (key) => lines.filter((line) => line.startsWith(`${key}=`))
-    .flatMap((line) => line.slice(key.length + 1).split(/\s+/).filter(Boolean));
-
-  const deny = values('IPAddressDeny').map(networkOf);
-  for (const required of ['127.0.0.0/8', '::1/128', '169.254.0.0/16', 'fe80::/10', '224.0.0.0/4', 'ff00::/8',
-    '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10', 'fc00::/7']) {
-    const range = networkOf(required);
-    assert.ok(deny.some((entry) => covers(entry, range)), `${required} is refused`);
-  }
-
-  // The allow list is the only hole, so it holds single addresses and only a local resolver: never a range, never a
-  // LAN address, never something that could carry a service.
-  const allow = values('IPAddressAllow').map(networkOf);
-  assert.ok(allow.length, 'DNS itself must still resolve, or no provider can be reached');
-  for (const entry of allow) {
-    assert.equal(entry.width, entry.family === 4 ? 32 : 128, `${entry.text} is one address, not a range`);
-    assert.ok(covers(networkOf('127.0.0.0/8'), entry) || covers(networkOf('::1/128'), entry),
-      `${entry.text} is a loopback address`);
-  }
-  // Ubuntu's systemd-resolved answers on this stub, so the shipped file has to let it through.
-  assert.ok(allow.some((entry) => entry.family === 4 && entry.value === addressBits('127.0.0.53').value),
-    'the systemd-resolved stub is allowed');
-
-  // The setup page says where the file goes, how to tell what is really in force, and both ways DNS is set up.
-  const setup = readFileSync(new URL('./runner-setup.md', import.meta.url), 'utf8');
-  assert.match(setup, /tools\/runner\/network\.conf/, 'the setup page names the file');
-  assert.match(setup, /actions\.runner\.[^\s`]*\.service\.d/, 'and the unit folder it goes in');
-  assert.match(setup, /127\.0\.0\.1:5432/, 'the doc checks a local service stays unreachable');
-  assert.match(setup, /169\.254\.169\.254/, 'and the cloud metadata address');
-  assert.match(setup, /systemd-resolved/, 'the doc handles the resolved stub');
-  assert.match(setup, /Arch|omarchy/, 'and the Arch case, where the resolver is usually the router');
-  assert.match(setup, /approves|approve/, 'and says applying it to a machine is the owner\'s decision');
+test('the review runs exactly the reviewer whose CLI the job installed', () => {
+  assert.deepEqual(pinnedReviewer(config, {
+    REVIEW_PROVIDER: 'codex', REVIEW_MODEL: 'gpt-6.1-terra', REVIEW_EFFORT: 'high',
+  }), { provider: 'codex', model: 'gpt-6.1-terra', effort: 'high' });
+  assert.equal(pinnedReviewer(config, {}), null, 'no pin means the normal selection runs');
+  assert.equal(pinnedReviewer(config, { REVIEW_PROVIDER: 'none' }), null, 'docs-only installs nothing');
+  // The environment is still checked against the rules, not trusted.
+  assert.throws(() => pinnedReviewer(config, { REVIEW_PROVIDER: 'codex', REVIEW_MODEL: 'gpt-9' }), /not in/);
+  assert.throws(() => pinnedReviewer(config, { REVIEW_PROVIDER: 'nobody', REVIEW_MODEL: 'x' }), /not in/);
 });
 
-test("an npm-installed CLI starts: its package folder and its own Node are bound", () => {
+test('the pick step chooses one provider and names the ones it skipped', () => {
+  const dir = temp();
+  const scriptPath = fileURLToPath(new URL('./agent-review.mjs', import.meta.url));
+  const run = (args, body, extra = {}) => execFileSync(process.execPath, [scriptPath, 'pick', ...args], {
+    input: body,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      // An empty HOME keeps this machine's real usage hub out of the test.
+      HOME: dir,
+      GITHUB_OUTPUT: '',
+      ...extra,
+    },
+  }).trim();
+  // #93's snapshot shape: one entry per provider instance, `leftPercent` rather than `usedPercent`.
+  const exhausted = (...entries) => JSON.stringify({
+    version: 1,
+    machine: 'mac',
+    takenAt: new Date().toISOString(),
+    providers: entries.map((entry) => (typeof entry === 'string'
+      ? { provider: entry, instance: entry, windows: [{ kind: 'weekly', leftPercent: 0, resetsAt: '2099-01-01T00:00:00Z' }] }
+      : entry)),
+  });
+  const claude = { provider: 'claude', instance: 'claudeAgent', windows: [{ kind: 'weekly', leftPercent: 0, resetsAt: '2099-01-01T00:00:00Z' }] };
+  try {
+    // With no numbers the first default is chosen, as before.
+    assert.equal(run(['pr', 'normal'], '@tess-review pr'), 'provider=codex\nmodel=gpt-6.1-terra\neffort=medium\nskipped=[]');
+    // A snapshot can move the choice to the next provider, and the skip is reported.
+    const moved = run(['pr', 'normal'], '@tess-review pr', { USAGE_SNAPSHOT_MAC: exhausted('codex') });
+    assert.match(moved, /^provider=claude\nmodel=claude-sonnet-5-5/);
+    assert.match(moved, /codex\/gpt-6\.1-terra \(no usage left in its weekly window\)/);
+    // The tag still decides when it names an allowed reviewer.
+    assert.match(run(['approach', 'sensitive'], '@tess-review approach provider=codex model=gpt-6.1-sol'),
+      /^provider=codex\nmodel=gpt-6\.1-sol/);
+    // Cursor is optional and its CLI is not installed in the job, so a tag naming it falls back and says why.
+    const cursorModel = config.allowed.cursor[0];
+    const cursor = run(['pr', 'normal'], `@tess-review pr provider=cursor model=${cursorModel}`);
+    assert.match(cursor, /^provider=codex/);
+    assert.ok(cursor.includes(`cursor/${cursorModel} (its CLI is not installed in this job)`), cursor);
+    // Docs-only needs no CLI at all.
+    assert.match(run(['pr', 'docs'], '@tess-review pr'), /^provider=none/);
+    // When every candidate is out, the job stops before installing or running anything.
+    assert.throws(() => run(['approach', 'sensitive'], '@tess-review approach', {
+      USAGE_SNAPSHOT_MAC: exhausted(claude, 'codex'),
+    }), /no reviewer could run/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the reasons the pick step skipped a reviewer reach the posted comment', () => {
+  assert.deepEqual(extraSkipped({ REVIEW_SKIPPED: JSON.stringify(['codex/gpt-6.1-terra (no usage left)']) }),
+    ['codex/gpt-6.1-terra (no usage left)']);
+  assert.deepEqual(extraSkipped({}), []);
+  assert.deepEqual(extraSkipped({ REVIEW_SKIPPED: 'not json' }), []);
+  const result = runReviewer([{ provider: 'claude', model: 'claude-sonnet-5-5' }], 'p', '/w', {
+    usageFor: () => undefined,
+    commandAvailable: () => true,
+    sandbox: () => null,
+    skipped: ['codex/gpt-6.1-terra (no usage left in its weekly window)'],
+    invoke: () => ({ status: 0, stdout: 'fine' }),
+  });
+  assert.match(skippedLine(result), /codex\/gpt-6\.1-terra \(no usage left/);
+});
+
+test("an npm-installed CLI starts: the packages it loads and its own Node are bound", () => {
   const dir = temp();
   try {
-    const pkg = join(dir, 'node_modules', '@openai', 'codex');
+    // Codex's entry point is a launcher, and the binary it runs comes from a sibling platform package. Binding only the
+    // package it sits in would leave the launcher unable to find its binary inside the sandbox.
+    const nodeModules = join(dir, 'node_modules');
+    const pkg = join(nodeModules, '@openai', 'codex');
+    const native = join(nodeModules, '@openai', 'codex-linux-x64');
     const bin = join(pkg, 'bin');
     mkdirSync(bin, { recursive: true });
+    mkdirSync(join(native, 'vendor', 'x86_64-unknown-linux-musl', 'bin'), { recursive: true });
     writeFileSync(join(bin, 'codex.js'), '#!/usr/bin/env node\n// entry point\n');
+    writeFileSync(join(native, 'vendor', 'x86_64-unknown-linux-musl', 'bin', 'codex'), 'x');
     const nodeDir = join(dir, 'node');
     mkdirSync(nodeDir, { recursive: true });
     writeFileSync(join(nodeDir, 'node'), 'x');
@@ -1468,7 +1805,8 @@ test("an npm-installed CLI starts: its package folder and its own Node are bound
     });
     const binds = sandbox.args.flatMap((arg, index) =>
       arg === '--ro-bind' ? [sandbox.args[index + 1]] : []);
-    assert.ok(binds.includes(pkg), 'the whole package is bound, not just its entry file');
+    assert.ok(binds.includes(nodeModules), 'the install tree is bound, so the launcher finds its sibling package');
+    assert.ok(!binds.includes(pkg) || binds.includes(nodeModules), 'the package sits inside that tree');
     assert.ok(binds.includes(nodeDir), "the CLI's own Node is bound, even outside /usr");
     assert.ok(sandbox.path.startsWith(`${nodeDir}:`), 'and that Node leads PATH, because the entry asks for `node`');
     assert.equal(sandbox.args.at(-3), join(bin, 'codex.js'), 'the entry point is still started by absolute path');
@@ -1503,4 +1841,297 @@ test('duplicate entries for one provider are merged, so an exhausted window in t
     invoke: (provider) => { called.push(provider); return { status: 0, text: 'Looks right.\nVerdict: approve' }; },
   });
   assert.deepEqual(called, ['claude']);
+});
+
+// The gate runs the rules from `tools/agent-gate.sh` with a fake `gh`, so the fork boundary is a tested fact rather than
+// something a reader has to trust in YAML. `gh` answers a pull request with the JSON GitHub really sends and the gate
+// reads it in Node: a `--jq` filter mocked at the shell is exactly how `fork: false` once became "not ours" while every
+// test still passed.
+const gateScript = fileURLToPath(new URL('./agent-gate.sh', import.meta.url));
+
+function runGate({ answers = {}, env = {} } = {}) {
+  const dir = temp();
+  const out = join(dir, 'out');
+  const log = join(dir, 'calls');
+  const { issue = '', issueUrl = '', pull = '', ci = '', files = '' } = answers;
+  try {
+    writeFileSync(join(dir, 'gh'), `#!/bin/sh
+printf '%s\\n' "$2" >> '${log}'
+case "$2" in
+  *"/issues/"*) if [ "$3" = "--jq" ]; then printf '%s' '${issueUrl}'; else printf '%s' '${issue}'; fi ;;
+  # The two filters that remain in the gate (the file list and the CI conclusion) have no false/no-value trap in them;
+  # the one that did has moved into the gate's own Node code, where a fake gh cannot hide it.
+  *"/files") printf '%s' '${files}' ;;
+  *"/pulls/"*) printf '%s' '${pull}' ;;
+  *"/actions/"*) if [ "$3" = "--jq" ]; then printf '%s' '${ci}'; else printf '{"workflow_runs":[{"conclusion":"%s"}]}' '${ci}'; fi ;;
+  *) exit 99 ;;
+esac
+exit 0
+`);
+    chmodSync(join(dir, 'gh'), 0o755);
+    execFileSync('bash', [gateScript], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        GITHUB_OUTPUT: out,
+        REPOSITORY: 'Flame119052/tess-music',
+        ISSUE_NUMBER: '7',
+        AGENT_ALLOWLIST: ' Flame119052 , someone ',
+        COMMENTER: 'Flame119052',
+        COMMENT_BODY: '@tess-review pr',
+        ...env,
+      },
+    });
+    const text = readFileSync(out, 'utf8');
+    const values = Object.fromEntries(text.trim().split('\n').map((line) => {
+      const at = line.indexOf('=');
+      return [line.slice(0, at), line.slice(at + 1)];
+    }));
+    values.calls = existsSync(log) ? readFileSync(log, 'utf8') : '';
+    return values;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// GitHub's own answer for the head, not a pre-cut TSV: the gate parses it, so a `false` that jq would swallow is a
+// `false` here too.
+const prHead = (sha = 'abc123') => JSON.stringify({ head: { sha, repo: { full_name: 'Flame119052/tess-music', fork: false } } });
+const prComment = {
+  issue: '{"number":7,"pull_request":{"url":"https://api.github.com/repos/x/y/pulls/7"}}',
+  issueUrl: 'https://api.github.com/repos/x/y/pulls/7',
+};
+
+test('a normal pull request of this repository is allowed, and only a fork is refused', () => {
+  // The bug this covers: `(.head.repo.fork // true)` read a real `fork: false` as missing, so every ordinary PR was
+  // refused and no review could ever run. A same-repository PR must pass on its own merits.
+  const grown = runGate({ answers: { ...prComment, pull: prHead(), ci: 'success', files: 'theme/Tess/src/core.js\n' } });
+  assert.equal(grown.allowed, 'true', 'a same-repository head with green CI is reviewed');
+  assert.equal(grown.head_sha, 'abc123', 'the review reads the commit the gate checked');
+  assert.ok(!/fork/i.test(grown.allowed), 'a non-fork is not held to the fork rule');
+});
+
+test('the gate lets an allowlisted tag through only for this repository\'s own green commit', () => {
+  const allowed = runGate({ answers: { ...prComment, pull: prHead(), ci: 'success', files: 'theme/Tess/src/core.js\n' } });
+  assert.deepEqual({ allowed: allowed.allowed, role: allowed.role, head_sha: allowed.head_sha, tier: allowed.tier },
+    { allowed: 'true', role: 'pr', head_sha: 'abc123', tier: 'normal' });
+  assert.equal(allowed.number, '7');
+
+  // A docs-only PR still runs no CLI, but it is still a PR of this repository.
+  assert.equal(runGate({ answers: { ...prComment, pull: prHead(), ci: 'success', files: 'docs/workflow.md\n' } }).tier, 'docs');
+
+  // An approach review reads main, not a branch, so no pull request has to exist.
+  const approach = runGate({ env: { COMMENT_BODY: '@tess-review approach' } });
+  assert.deepEqual({ allowed: approach.allowed, role: approach.role, tier: approach.tier },
+    { allowed: 'true', role: 'approach', tier: 'sensitive' });
+  assert.equal(approach.calls, '', 'an approach review asks GitHub nothing about a pull request');
+});
+
+test('a fork head is refused at the gate, so its content never reaches the job holding a key', () => {
+  // An allowlisted maintainer tagged a fork PR whose CI is green: the fork author still wrote the diff, so no review.
+  const fork = runGate({
+    answers: { ...prComment, ci: 'success', pull: JSON.stringify({ head: { sha: 'abc123', repo: { full_name: 'outside/tess-music', fork: true } } }) },
+  });
+  assert.equal(fork.allowed, 'false');
+  assert.equal(fork.head_sha, '', 'a refused tag leaves no commit for the review job to pick up');
+
+  // A deleted or missing head repository, no `fork` flag at all, a null flag, and a fork flag that says true all refuse:
+  // the rule needs a positive `fork: false` from this repository, so an absent answer fails closed.
+  const heads = [
+    { head: { sha: 'abc123', repo: null } },
+    { head: { sha: 'abc123' } },
+    { head: { sha: 'abc123', repo: { full_name: 'Flame119052/tess-music' } } },
+    { head: { sha: 'abc123', repo: { full_name: 'Flame119052/tess-music', fork: null } } },
+    { head: { sha: 'abc123', repo: { full_name: 'Flame119052/tess-music', fork: true } } },
+    { head: { sha: 'abc123', repo: { full_name: 'Flame119052/tess-music', fork: 'false' } } },
+    { head: { repo: { full_name: 'Flame119052/tess-music', fork: false } } },
+  ];
+  for (const head of heads) {
+    assert.equal(runGate({ answers: { ...prComment, pull: JSON.stringify(head), ci: 'success' } }).allowed, 'false',
+      JSON.stringify(head));
+  }
+
+  // Everything else that used to refuse still refuses.
+  assert.equal(runGate({ answers: { ...prComment, pull: prHead(), ci: 'failure' } }).allowed, 'false', 'red CI');
+  assert.equal(runGate({ answers: { issue: '{"number":7}', issueUrl: '' } }).allowed, 'false', 'a plain issue is not a PR');
+  assert.equal(runGate({ env: { COMMENTER: 'stranger' } }).allowed, 'false', 'the caller is not on the allowlist');
+  const stranger = runGate({ env: { COMMENTER: 'stranger' } });
+  assert.equal(stranger.calls, '', 'a stranger\'s comment reads nothing');
+  assert.equal(runGate({ env: { COMMENT_BODY: '@tess-review pr\n<!-- tess-review-bot -->' } }).allowed, 'false',
+    'the bot never re-triggers itself');
+  assert.equal(runGate({ env: { COMMENT_BODY: 'lgtm' } }).allowed, 'false', 'no tag, no review');
+});
+
+test('the workflow gate runs the tested script instead of its own copy of the rules', () => {
+  const gate = jobBlock('gate');
+  assert.match(gate, /run: bash tools\/agent-gate\.sh/, 'the gate job runs the script the tests drive');
+  assert.ok(!/gh api/.test(gate), 'the rules are not also written in YAML, where a test cannot reach them');
+  assert.match(gate, /GH_TOKEN: \$\{\{ github\.token \}\}/, 'the gate can read the PR and its CI');
+});
+
+test('a fork head is refused inside the review as well as at the gate', () => {
+  const repo = 'Flame119052/tess-music';
+  assert.equal(forkProblem({ full_name: repo, fork: false }, repo), null);
+  assert.match(forkProblem({ full_name: 'outside/tess-music', fork: true }, repo), /outside\/tess-music/);
+  assert.match(forkProblem({ full_name: repo, fork: true }, repo), /fork/, 'a fork flag wins over a matching name');
+  assert.match(forkProblem(null, repo), /missing or was deleted/, 'a deleted head repository fails closed');
+  assert.match(forkProblem({ full_name: repo }, repo), /fork/, 'an unknown flag fails closed too');
+
+  // The gate's own parse of GitHub's answer: the same-repository head it must allow, and every shape it must refuse.
+  assert.deepEqual(headFacts({ head: { sha: 'abc123', repo: { full_name: repo, fork: false } } }, repo),
+    { sha: 'abc123', problem: '' }, 'a real fork: false is a review, not a refusal');
+  assert.equal(headAnswer(headFacts({ head: { sha: 'abc123', repo: { full_name: repo, fork: false } } }, repo)),
+    'review abc123\n');
+  assert.equal(headAnswer(headFacts({ head: { sha: 'abc123', repo: { full_name: repo, fork: true } } }, repo)),
+    'refuse abc123\n', 'a fork is refused, and its sha is still named in the log');
+  assert.match(headFacts(null, repo).problem, /missing or was deleted/, 'an empty answer fails closed');
+  assert.match(headFacts({ head: { repo: { full_name: repo, fork: false } } }, repo).problem, /no head commit/);
+
+  const facts = { head: { sha: 'abc123', repo: { full_name: 'outside/tess-music', fork: true } } };
+  const message = headReviewProblem(facts, repo, 'abc123');
+  assert.match(message, /did not run/);
+  assert.match(message, /Verdict: changes needed/, 'a refused review never reads as an approval');
+});
+
+test('a verdict names the commit it read and is never posted for a newer head', () => {
+  const repo = 'Flame119052/tess-music';
+  const gated = 'abc123';
+  const factsFor = (sha) => ({ head: { sha, repo: { full_name: repo, fork: false } } });
+  const posts = [];
+
+  // The head moved while the reviewer was reading: the verdict is dropped and the refusal is posted instead.
+  const moved = postVerdict({
+    gated, repo, facts: factsFor('def456'), post: (message) => posts.push(message), body: () => 'VERDICT BODY',
+  });
+  assert.equal(moved, null);
+  assert.equal(posts.length, 1);
+  assert.match(posts[0], /abc123 → def456/);
+  assert.ok(!posts.includes('VERDICT BODY'), 'no verdict is attached to a commit nobody read');
+
+  // A fork head is refused at posting time too.
+  posts.length = 0;
+  assert.equal(postVerdict({
+    gated, repo, facts: { head: { sha: gated, repo: { full_name: 'outside/tess-music', fork: true } } },
+    post: (message) => posts.push(message), body: () => 'VERDICT BODY',
+  }), null);
+  assert.match(posts[0], /did not run/);
+
+  // Unchanged head: the verdict is posted, and it says which commit that was.
+  posts.length = 0;
+  assert.equal(postVerdict({
+    gated, repo, facts: factsFor(gated), post: (message) => posts.push(message), body: (sha) => `Reviewed: ${sha}\nVERDICT BODY`,
+  }), gated);
+  assert.match(posts[0], /Reviewed: abc123/);
+});
+
+test('a push during the review turns a docs-only approval into a refusal', () => {
+  // The real script, the real docs-only path, with GitHub answering a different head the second time it is asked.
+  const dir = temp();
+  const scriptPath = fileURLToPath(new URL('./agent-review.mjs', import.meta.url));
+  const commentOut = join(dir, 'comment');
+  const asks = join(dir, 'asks');
+  const fakePr = (dir, second) => `#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "repos/Flame119052/tess-music/issues/89" ]; then
+  printf '{"number":89,"title":"t","html_url":"https://example.invalid/89","body":""}'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "repos/Flame119052/tess-music/pulls/89/files" ]; then
+  printf 'docs/workflow.md\\n'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "repos/Flame119052/tess-music/pulls/89" ]; then
+  n=$(cat '${asks}' 2>/dev/null || printf 0)
+  n=$((n + 1))
+  printf '%s' "$n" > '${asks}'
+  if [ "$n" -ge 2 ]; then sha='${second}'; else sha='deadbeef'; fi
+  printf '{"head":{"sha":"%s","repo":{"full_name":"Flame119052/tess-music","fork":false}}}' "$sha"
+  exit 0
+fi
+if [ "$1" = "issue" ] && [ "$2" = "comment" ]; then
+  cat > '${commentOut}'
+  exit 0
+fi
+exit 99
+`;
+  try {
+    writeFileSync(join(dir, 'git'), '#!/bin/sh\nprintf \'deadbeef\\n\'\n');
+    writeFileSync(join(dir, 'gh'), fakePr(dir, 'cafebabe'));
+    chmodSync(join(dir, 'git'), 0o755);
+    chmodSync(join(dir, 'gh'), 0o755);
+    execFileSync(process.execPath, [scriptPath, 'pr', '89'], {
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, REVIEW_HEAD_SHA: 'deadbeef' },
+      stdio: 'pipe',
+    });
+    const moved = readFileSync(commentOut, 'utf8');
+    assert.match(moved, /deadbeef → cafebabe/);
+    assert.match(moved, /Verdict: changes needed/);
+    assert.ok(!/approve/.test(moved), 'the approval is never posted for the newer commit');
+
+    // A head that stays put is approved, and the approval names the commit.
+    rmSync(asks, { force: true });
+    rmSync(commentOut, { force: true });
+    writeFileSync(join(dir, 'gh'), fakePr(dir, 'deadbeef'));
+    chmodSync(join(dir, 'gh'), 0o755);
+    execFileSync(process.execPath, [scriptPath, 'pr', '89'], {
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, REVIEW_HEAD_SHA: 'deadbeef' },
+      stdio: 'pipe',
+    });
+    const approved = readFileSync(commentOut, 'utf8');
+    assert.match(approved, /Reviewed: deadbeef/);
+    assert.match(approved, /Verdict: approve/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a held key is caught split, encoded or wrapped, and a failed reviewer never logs its output', () => {
+  const key = `oc-go-${'Zx9'.repeat(10)}`;
+  const env = { OPENCODE_API_KEY: key, HOME: '/home/r' };
+  const half = `${key.slice(0, 8)}\n  ${key.slice(8, 20)} ${key.slice(20)}`;
+  const shapes = [
+    key,
+    half,
+    Buffer.from(key).toString('base64'),
+    Buffer.from(key).toString('base64').replace(/=+$/, ''),
+    Buffer.from(key).toString('hex'),
+    encodeURIComponent(key),
+  ];
+  for (const shape of shapes) assert.ok(containsHeldSecret(`here: ${shape}`, env), shape);
+  assert.ok(!containsHeldSecret('GLM is cheap and DeepSeek is cheaper', env));
+  assert.ok(!containsHeldSecret('the token is abc', { OPENCODE_API_KEY: 'abc' }), 'a short value is not a key');
+
+  // Cleaning a log line takes the key out in each of those shapes.
+  for (const shape of [half, Buffer.from(key).toString('base64'), Buffer.from(key).toString('hex')]) {
+    const clean = redactText(`warning: ${shape} rejected`, env);
+    assert.ok(!clean.includes(key.slice(0, 8)), clean);
+    assert.match(clean, /\[redacted\]/);
+  }
+  // Colours and control codes never reach a log, and the line is capped.
+  assert.equal(sanitizeLine('\u001b[31mboom\u001b[0m\u0000\u0007 now'), 'boom now');
+  const long = failureSummary({ stderr: `x ${'y'.repeat(400)}` }, env);
+  assert.ok(long.length <= 201, long.length);
+
+  // A failure keeps one redacted line of stderr, and never the stdout the diff could have dictated.
+  const summary = failureSummary({ status: 3, stderr: `bad key ${key}\nsecond line`, stdout: 'SECRET REVIEW TEXT' }, env);
+  assert.ok(!summary.includes(key), summary);
+  assert.match(summary, /bad key/);
+  assert.ok(!summary.includes('SECRET REVIEW TEXT'));
+
+  let thrown;
+  try {
+    runReviewer([{ provider: 'codex', model: 'gpt-6.1-terra' }], 'p', '/w', {
+      usageFor: () => undefined,
+      commandAvailable: () => true,
+      sandbox: () => null,
+      invoke: () => ({ status: 1, stderr: `auth failed for ${key}`, stdout: 'SECRET REVIEW TEXT' }),
+      env,
+    });
+  } catch (error) {
+    thrown = error;
+  }
+  assert.ok(thrown, 'a real failure still fails loudly');
+  assert.ok(!thrown.message.includes(key), thrown.message);
+  assert.ok(!thrown.message.includes('SECRET REVIEW TEXT'), thrown.message);
+  assert.match(thrown.message, /auth failed for/, 'the one line that helps is kept');
 });

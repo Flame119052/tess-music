@@ -3,11 +3,13 @@
 // The tag may name the reviewer: `@tess-review pr provider=codex model=gpt-6.1-sol effort=high`. Only models listed in
 // .github/agents.json `allowed` are accepted; sensitive work must use a `strong` model. Anything else falls back to
 // the role's defaults, and the comment says why.
-import { execFileSync, spawnSync } from 'node:child_process';
-import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { appendFileSync, closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { proxyProviders, proxyReviewerConfig } from './review-proxy.mjs';
 import { machines, normalizeProviders, parseIsoTimestamp, snapshotVersion } from './usage-publish/publish.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -23,13 +25,25 @@ const providerDetails = {
   opencode: { command: 'opencode', cache: 'opencode.json', home: ['.config/opencode', '.local/share/opencode/auth.json'] },
 };
 
-// The key each provider signs in with on a headless runner. A review gets its own provider's key and nothing else.
-const providerKeys = {
-  claude: 'CLAUDE_CODE_OAUTH_TOKEN',
-  codex: 'CODEX_API_KEY',
-  cursor: 'CURSOR_API_KEY',
-  opencode: 'OPENCODE_API_KEY',
+// The keys each provider signs in with, as GitHub Actions secrets on a hosted job. A review gets only its own
+// provider's keys and nothing else. OpenCode has two signed-in connectors on the owner's account (OpenCode Go and the
+// Z.ai coding plan), and models.dev gives them separate variables, so both belong to the OpenCode reviewer.
+export const providerKeys = {
+  claude: ['CLAUDE_CODE_OAUTH_TOKEN'],
+  codex: ['CODEX_API_KEY'],
+  cursor: ['CURSOR_API_KEY'],
+  opencode: ['OPENCODE_API_KEY', 'ZHIPU_API_KEY'],
 };
+
+// The providers whose CLI the review workflow installs. Cursor is optional (#71) and is not installed there, so the
+// pick step never sends a review to it; a tag that names it falls back to the role's defaults and says so.
+export const installedProviders = ['claude', 'codex', 'opencode'];
+
+// The providers whose key never enters the sandbox, because their CLI takes a gateway endpoint: the review process holds
+// a per-review token, a proxy in this process holds the key, and the proxy adds it to the request it forwards. A
+// provider absent here keeps its own key in the sandbox, which is safe only while its tool list cannot read an
+// environment (`claudeTools`, and `tools/opencode-reviewer.md` denies every read outside the copy).
+export const proxiedProviders = ['claude', 'codex'];
 
 // The OpenCode agent file decides what the OpenCode reviewer may read, so loosening it is a security change even though
 // it ends in .md. It is never a docs-only path.
@@ -324,6 +338,29 @@ function readUsage(provider) {
   }
 }
 
+// The review job installs exactly one provider's CLI and hands the review that pick, so the same model is guaranteed
+// to be the one the workflow prepared a key for. It is still checked against `allowed`: the environment is not a
+// reason to skip a rule.
+export function pinnedReviewer(config, env = process.env) {
+  const provider = env.REVIEW_PROVIDER;
+  const model = env.REVIEW_MODEL;
+  if (!provider || provider === 'none') return null;
+  if (!model || !(config.allowed?.[provider] || []).includes(model)) {
+    throw new Error(`REVIEW_PROVIDER=${provider} with model ${model || '(none)'} is not in .github/agents.json allowed`);
+  }
+  return { provider, model, ...(env.REVIEW_EFFORT ? { effort: env.REVIEW_EFFORT } : {}) };
+}
+
+// The reasons the pick step gave for the candidates it did not choose, carried into the comment.
+export function extraSkipped(env = process.env) {
+  try {
+    const list = JSON.parse(env.REVIEW_SKIPPED || '[]');
+    return Array.isArray(list) ? list.filter((entry) => typeof entry === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 function gh(args, options = {}) {
   return execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 30 * 1024 * 1024, ...options }).trim();
 }
@@ -371,12 +408,21 @@ function reviewPrompt(role, context) {
   return `${common}\n\nLINKED ISSUE\n${context.issue}\n\nAPPROACH\n${context.approach}\n\nPULL REQUEST DIFF\n${context.diff}`;
 }
 
-// The reviewer never sees GH_TOKEN or another provider's key. It gets only the key its own CLI signs in with
-// (CLAUDE_CODE_OAUTH_TOKEN is Claude's headless sign-in, made with `claude setup-token`, kept in the runner's .env).
-export function reviewerEnv(env = process.env, provider) {
-  const allowed = ['HOME', 'PATH', 'TMPDIR', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', providerKeys[provider]]
-    .filter(Boolean);
-  return Object.fromEntries(allowed.flatMap((name) => env[name] ? [[name, env[name]]] : []));
+const proxySettings = (provider, proxy) => (proxy ? proxyReviewerConfig(provider, proxy.url, proxy.token) : null);
+
+// The reviewer never sees GH_TOKEN or another provider's keys. For a proxied provider it sees neither the key nor any
+// env var it lives in: the CLI is pointed at the review proxy with a token that can spend nothing outside this job
+// (`proxiedProviders`). Any other provider gets only its own CLI's key (CLAUDE_CODE_OAUTH_TOKEN is Claude's headless
+// sign-in, made with `claude setup-token`).
+export function reviewerEnv(env = process.env, provider, proxy = null) {
+  const names = ['HOME', 'PATH', 'TMPDIR', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL'];
+  const settings = proxySettings(provider, proxy);
+  const keys = settings ? [] : (providerKeys[provider] || []);
+  const kept = Object.fromEntries([...names, ...keys].flatMap((name) => env[name] ? [[name, env[name]]] : []));
+  if (!settings) return kept;
+  const cleaned = { ...kept };
+  for (const name of settings.removedKeys) delete cleaned[name];
+  return { ...cleaned, ...settings.env };
 }
 
 // A plain copy of one commit's files (git archive): no .git folder, no remote, no credentials, deleted after the review.
@@ -414,11 +460,12 @@ export function stripAgentConfig(dir) {
 }
 
 // Every reviewer runs inside bubblewrap: an unprivileged OS boundary, not a promise in the prompt. The sandbox starts
-// empty, so a diff that talks the model into running a shell command finds no runner files at all: not `~/actions-runner`,
-// not the job's environment, not another provider's directory. Bound read-only: the copy under review, the CLI, its
+// empty, so a diff that talks the model into running a shell command finds no job files at all: not the checkout, not
+// the job's environment, not another provider's directory. Bound read-only: the copy under review, the CLI, its
 // runtime, what it needs for TLS and DNS, and its own sign-in state. Network stays on, because the API call needs it;
-// what that network may reach is decided by the runner service (`tools/runner/network.conf`), so the same limit covers
-// every provider and an induced command reaches its own API and nothing else on the machine.
+// on a GitHub-hosted job the machine is a fresh disposable VM that holds only this review's token (Claude's and Codex's
+// keys stay in the review process that starts the proxy, D-69) and a GITHUB_TOKEN that can comment on this repo, so
+// there is nothing else on it to reach.
 export const sandboxRuntime = ['/usr', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/libx32', '/etc/ssl',
   '/etc/ca-certificates', '/etc/ca-certificates.conf', '/etc/resolv.conf', '/etc/hosts', '/etc/nsswitch.conf',
   '/etc/passwd', '/etc/group', '/etc/localtime', '/etc/alternatives', '/etc/ld.so.cache', '/etc/ld.so.conf',
@@ -433,14 +480,15 @@ function commandLocation(command) {
   try { return realpathSync(path); } catch { return path; }
 }
 
-// An installed CLI may be one binary, or a script in an npm package that loads the rest of its folder. Binding the
-// package root is what lets it start without handing the sandbox the runner's whole home.
+// An installed CLI is rarely one file: Codex is a small launcher that resolves its native binary from a sibling
+// platform package (`@openai/codex-linux-x64`), and OpenCode copies its binary into its own package. The smallest folder
+// that holds all of that is the npm `node_modules` directory around it. A CLI installed as one binary (a release
+// download) needs only its own folder.
 export function installRoot(commandPath) {
   const parts = commandPath.split('/');
   const at = parts.lastIndexOf('node_modules');
   if (at < 0) return dirname(commandPath);
-  const name = parts[at + 1]?.startsWith('@') ? 2 : 1;
-  return parts.slice(0, at + 1 + name).join('/');
+  return parts.slice(0, at + 1).join('/');
 }
 
 function firstLine(path) {
@@ -528,15 +576,17 @@ export function sandboxProblem(options = {}) {
 // (`opencode run` has no --variant) and takes its step limit from the agent file. Claude's `--max-turns` is real but hidden
 // from `--help` in 2.1.x; `--max-budget-usd` is an estimate of API list prices, so it is a guardrail beside the turn cap.
 // Codex has no turn or budget cap at all, so its effort and auto-compaction limit are the only levers.
-export function cliArgs(provider, model, effort, work = root, caps = defaultCaps) {
+export function cliArgs(provider, model, effort, work = root, caps = defaultCaps, proxy = null) {
+  const settings = proxySettings(provider, proxy);
   if (provider === 'claude') {
     return ['-p', '--model', model, ...(effort ? ['--effort', effort] : []),
       '--max-turns', String(caps.claude.max_turns), '--max-budget-usd', String(budgetUsd({ model }, caps)),
-      '--output-format', 'json', '--restricted', '--safe-mode', '--tools', claudeTools];
+      '--output-format', 'json', '--restricted', '--safe-mode', '--tools', claudeTools, ...(settings?.args || [])];
   }
   if (provider === 'codex') {
     // The review copy is a `git archive`, so it has no `.git`: without --skip-git-repo-check Codex refuses it outright.
     return ['-c', 'project_doc_max_bytes=0', '-c', `model_auto_compact_token_limit=${caps.codex.auto_compact_token_limit}`,
+      ...(settings?.args || []),
       'exec', '--model', model, ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []),
       '--sandbox', 'read-only', '--ephemeral', '--ignore-rules', '--skip-git-repo-check', '--json', '-C', work, '-'];
   }
@@ -629,41 +679,94 @@ export function parseCodexOutput(stdout) {
   return { text: messages.length ? messages.at(-1) : String(stdout || '').trim(), usage };
 }
 
+// The review proxy, as a child process: the reviewer itself is spawned with `spawnSync`, which blocks this process's
+// event loop, so an in-process server could never answer a request while the CLI waits. The URL arrives in a file the
+// child writes once it is listening, and the wait for it is a real sleep (`Atomics.wait`) rather than a busy loop. If it
+// does not arrive, the review stops: falling back to the key in the sandbox is exactly what this exists to prevent.
+export function startReviewProxy(provider, options = {}) {
+  const {
+    env = process.env,
+    spawnChild = spawn,
+    sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms),
+    now = Date.now,
+    timeoutMs = 5000,
+    dir = process.env.RUNNER_TEMP || tmpdir(),
+    scriptPath = fileURLToPath(new URL('./review-proxy.mjs', import.meta.url)),
+    execPath = process.execPath,
+  } = options;
+  const keys = (providerKeys[provider] || []).map((name) => env[name]).filter(Boolean);
+  if (!proxiedProviders.includes(provider) || !keys.length) return null;
+  const token = randomBytes(32).toString('hex');
+  const base = join(dir, `tess-review-proxy-${process.pid}-${now()}`);
+  const configPath = `${base}.json`;
+  const readyPath = `${base}.url`;
+  const discard = () => { for (const path of [configPath, readyPath]) { try { unlinkSync(path); } catch { /* already gone */ } } };
+  // 0600, and outside the sandbox: bubblewrap gives the reviewer an empty `/tmp` and binds nothing from RUNNER_TEMP.
+  writeFileSync(configPath, JSON.stringify({ provider, key: keys[0], token, upstream: proxyProviders[provider].upstream }), { mode: 0o600 });
+  const child = spawnChild(execPath, [scriptPath, '--config', configPath, '--ready', readyPath], { stdio: 'ignore' });
+  const started = now();
+  while (!existsSync(readyPath)) {
+    if (now() - started > timeoutMs) {
+      child.kill('SIGKILL');
+      discard();
+      throw new Error(`the ${provider} review proxy did not start, so this review never sees its key in the sandbox`);
+    }
+    sleep(25);
+  }
+  let url = '';
+  try { url = readFileSync(readyPath, 'utf8').trim(); } catch { url = ''; }
+  if (!url) {
+    child.kill('SIGKILL');
+    discard();
+    throw new Error(`the ${provider} review proxy started without an address`);
+  }
+  return {
+    url,
+    token,
+    stop: () => { child.kill('SIGTERM'); discard(); },
+  };
+}
+
 function cliInvocation(provider, model, prompt, effort, work = root, options = {}) {
   const caps = options.caps || defaultCaps;
   if (provider === 'opencode') assertReviewerAgent(options.agentInstalled, options.agentSource);
-  // Cursor takes the prompt as an argument; the others read it on stdin, which has no length limit for a big diff.
-  const args = [...cliArgs(provider, model, effort, work, caps), ...(provider === 'cursor' ? [prompt] : [])];
-  const sandbox = sandboxArgv(provider, work, args, options);
-  const timeout = timeoutSeconds({ provider, model }, caps) * 1000;
-  // A review that runs past its limit is killed, not waited on. bubblewrap's --die-with-parent takes the CLI with it, so
-  // nothing keeps spending after the job moves to the next reviewer.
-  const result = spawnSync(sandbox.command, sandbox.args, {
-    cwd: work,
-    env: {
-      ...reviewerEnv(process.env, provider),
-      HOME: sandbox.home,
-      TMPDIR: '/tmp',
-      PATH: sandbox.path,
-    },
-    input: provider === 'cursor' ? undefined : prompt,
-    encoding: 'utf8',
-    timeout,
-    killSignal: 'SIGKILL',
-    maxBuffer: 30 * 1024 * 1024,
-  });
-  const timedOut = result.error?.code === 'ETIMEDOUT' || result.signal === 'SIGKILL'
-    || result.signal === 'SIGTERM';
-  const parsed = provider === 'claude' ? parseClaudeOutput(result.stdout)
-    : provider === 'codex' ? parseCodexOutput(result.stdout)
-      : { text: String(result.stdout || '').trim(), usage: null };
-  return {
-    ...result,
-    timedOut,
-    text: parsed.text,
-    usage: parsed.usage,
-    stderr: parsed.errorText ? `${result.stderr || ''}\n${parsed.errorText}`.trim() : result.stderr,
-  };
+  const proxy = options.proxy === undefined ? startReviewProxy(provider, options.proxyOptions) : options.proxy;
+  try {
+    // Cursor takes the prompt as an argument; the others read it on stdin, which has no length limit for a big diff.
+    const args = [...cliArgs(provider, model, effort, work, caps, proxy), ...(provider === 'cursor' ? [prompt] : [])];
+    const sandbox = sandboxArgv(provider, work, args, options);
+    const timeout = timeoutSeconds({ provider, model }, caps) * 1000;
+    // A review that runs past its limit is killed, not waited on. bubblewrap's --die-with-parent takes the CLI with it, so
+    // nothing keeps spending after the job moves to the next reviewer.
+    const result = spawnSync(sandbox.command, sandbox.args, {
+      cwd: work,
+      env: {
+        ...reviewerEnv(process.env, provider, proxy),
+        HOME: sandbox.home,
+        TMPDIR: '/tmp',
+        PATH: sandbox.path,
+      },
+      input: provider === 'cursor' ? undefined : prompt,
+      encoding: 'utf8',
+      timeout,
+      killSignal: 'SIGKILL',
+      maxBuffer: 30 * 1024 * 1024,
+    });
+    const timedOut = result.error?.code === 'ETIMEDOUT' || result.signal === 'SIGKILL'
+      || result.signal === 'SIGTERM';
+    const parsed = provider === 'claude' ? parseClaudeOutput(result.stdout)
+      : provider === 'codex' ? parseCodexOutput(result.stdout)
+        : { text: String(result.stdout || '').trim(), usage: null };
+    return {
+      ...result,
+      timedOut,
+      text: parsed.text,
+      usage: parsed.usage,
+      stderr: parsed.errorText ? `${result.stderr || ''}\n${parsed.errorText}`.trim() : result.stderr,
+    };
+  } finally {
+    proxy?.stop?.();
+  }
 }
 
 function usageLimitError(result) {
@@ -738,6 +841,8 @@ export function runReviewer(models, prompt, work, deps = {}) {
     snapshot = null,
     now = Date.now(),
     invoke = cliInvocation,
+    skipped: alreadySkipped = [],
+    env = process.env,
   } = deps;
   const validProviders = snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)
     ? normalizeProviders(snapshot.providers)
@@ -757,7 +862,7 @@ export function runReviewer(models, prompt, work, deps = {}) {
     usageByProvider, usageByModel, commandAvailable, sandboxProblem: sandbox, reserve, caps, now,
   });
 
-  const skipped = filtered.map(({ provider, model, reason }) => `${provider}/${model} (${reason})`);
+  const skipped = [...alreadySkipped, ...filtered.map(({ provider, model, reason }) => `${provider}/${model} (${reason})`)];
   if (!candidates.length) throw new Error(`no reviewer could run: ${skipped.join(', ')}`);
 
   for (const candidate of candidates) {
@@ -774,7 +879,9 @@ export function runReviewer(models, prompt, work, deps = {}) {
       skipped.push(`${candidate.provider}/${candidate.model} (${reason})`);
       continue;
     }
-    throw new Error(`${candidate.provider} reviewer failed: ${(result.stderr || result.stdout || 'unknown error').trim()}`);
+    // Its own output is untrusted: the log gets one redacted line of stderr and never the stream it printed, in case a
+    // diff talked it into quoting its key there.
+    throw new Error(`${candidate.provider} reviewer failed (exit ${result.status ?? 'no status'}): ${failureSummary(result, env)}`);
   }
   throw new Error(`every configured reviewer was skipped: ${skipped.join(', ')}`);
 }
@@ -792,19 +899,80 @@ export function looksSecret(text) {
 
 // The patterns above only know some key shapes. Provider keys (OpenCode, Cursor, Codex) have their own, so also refuse
 // any review that quotes the value of a key this job is holding, GH_TOKEN included.
-export const heldSecretNames = ['GH_TOKEN', 'GITHUB_TOKEN', ...Object.values(providerKeys)];
+export const heldSecretNames = ['GH_TOKEN', 'GITHUB_TOKEN', ...Object.values(providerKeys).flat()];
 
 export function heldSecrets(env = process.env) {
   return heldSecretNames.map((name) => env[name]).filter((value) => value && value.length >= 12);
 }
 
+// A prompt-injected diff does not have to quote a key exactly to leak it: it can split one over two lines, or ask for it
+// base64'd, hex'd or percent-encoded, which is what a model prints when it wants the text to look like nothing. Each held
+// value is therefore matched as itself with any whitespace between its characters, and as each of those encodings.
+const secretPatternCache = new Map();
+
+export function secretPatterns(value) {
+  const raw = String(value || '');
+  if (raw.length < 12) return [];
+  const cached = secretPatternCache.get(raw);
+  if (cached) return cached;
+  const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const forms = new Set([raw, raw.replace(/\s+/g, '')]);
+  try {
+    const bytes = Buffer.from(raw);
+    forms.add(bytes.toString('base64'));
+    forms.add(bytes.toString('base64').replace(/=+$/, ''));
+    forms.add(bytes.toString('base64url'));
+    forms.add(bytes.toString('hex'));
+    forms.add(encodeURIComponent(raw));
+  } catch {
+    // an unencodable value is still matched as it is
+  }
+  const patterns = [new RegExp(raw.split('').map(escape).join('\\s*'), 'g'),
+    ...[...forms].filter((form) => form.length >= 12).map((form) => new RegExp(escape(form), 'g'))];
+  secretPatternCache.set(raw, patterns);
+  return patterns;
+}
+
 export function containsHeldSecret(text, env = process.env) {
-  return heldSecrets(env).some((value) => String(text).includes(value));
+  const body = String(text ?? '');
+  return heldSecrets(env).some((value) => secretPatterns(value)
+    .some((pattern) => { pattern.lastIndex = 0; return pattern.test(body); }));
+}
+
+// The key shapes `looksSecret` knows about, in one place, so a log line can be cleaned the same way a comment is judged.
+const secretShape = /gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*(?:PRIVATE KEY|OPENSSH|PGP)[^-]*-----/g;
+
+export function redactText(text, env = process.env) {
+  let out = String(text ?? '');
+  for (const value of heldSecrets(env)) {
+    for (const pattern of secretPatterns(value)) {
+      pattern.lastIndex = 0;
+      out = out.replace(pattern, '[redacted]');
+    }
+  }
+  return out.replace(secretShape, '[redacted]');
+}
+
+// One line of a CLI's stderr, safe to put in a log: control codes and colours out, a held key out, length capped. Its
+// stdout is never used for this, because stdout is the review text, which is exactly what a diff can talk it into writing.
+export function sanitizeLine(text) {
+  return String(text ?? '')
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
+    .replace(/[^\t\x20-\x7e]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function failureSummary(result, env = process.env) {
+  const line = String(result?.stderr || '').split('\n')
+    .map((entry) => sanitizeLine(redactText(entry, env)))
+    .find(Boolean) || 'no message on stderr';
+  return line.length > 200 ? `${line.slice(0, 200)}…` : line;
 }
 
 function postComment(repo, number, body) {
   if (looksSecret(body) || containsHeldSecret(body)) {
-    body = `${marker}\n\nThe review was not posted: its text looked like it contained a key or token. Krish, check the runner's log on the machine that ran it.`;
+    body = `${marker}\n\nThe review was not posted: its text contained a key or token, so nothing from it is safe to show here. Krish, tag again once the diff no longer asks the reviewer to quote one.`;
   }
   execFileSync('gh', ['issue', 'comment', String(number), '-R', repo, '--body-file', '-'], {
     input: body,
@@ -830,11 +998,129 @@ export function verifyPrHead(gated, fetchHead, postMismatch) {
   return fetched;
 }
 
+// A review reads a diff and a snapshot the PR author wrote, and the review job holds a provider key, so the branch under
+// review must be this repository's own. The gate refuses a fork already; this is the same rule inside the review, where it
+// also catches a head repository that was deleted or swapped between the gate and this run. Unknown counts as not ours.
+export function forkProblem(headRepo, repo) {
+  const full = String(headRepo?.full_name || '');
+  if (!full) return 'its head repository is missing or was deleted';
+  if (full !== repo) return `its head lives in ${full}, not ${repo}`;
+  if (headRepo.fork !== false) return `its head is in a fork (${full})`;
+  return null;
+}
+
+// The gate makes the same fork decision as the review, from the same function, so the two doors cannot disagree: the
+// gate asks which commit to review and refuses anything that is not this repository's own branch, before the job that
+// holds a provider key exists. The answer is one line, `review <sha>` or `refuse <sha>`, because a tab-separated
+// answer with an empty first field is exactly the shape bash's `read` quietly shifts along.
+export function headFacts(pullRequest, repo) {
+  const head = pullRequest?.head && typeof pullRequest.head === 'object' ? pullRequest.head : {};
+  const sha = typeof head.sha === 'string' ? head.sha : '';
+  const problem = forkProblem(head.repo, repo) || (sha ? '' : 'the pull request has no head commit');
+  return { sha, problem };
+}
+
+export const headAnswer = (facts) => `${facts.problem ? 'refuse' : 'review'} ${facts.sha || '-'}\n`;
+
+// The one guard every PR review passes: this repository's own branch, at the commit CI passed.
+export function headReviewProblem(facts, repo, gated) {
+  const head = facts?.head || {};
+  const fork = forkProblem(head.repo, repo);
+  if (fork) {
+    return `${marker}\n\nThe review did not run: ${fork}. A review only reads a branch of ${repo}, because the job that reads it holds a provider key.\n\nVerdict: changes needed`;
+  }
+  return headMismatchMessage(gated, head.sha);
+}
+
+export function verifyReviewHead({ gated, repo, facts, post }) {
+  const problem = headReviewProblem(facts, repo, gated);
+  if (problem) {
+    post(problem);
+    return null;
+  }
+  return facts.head.sha;
+}
+
+// Posting is the last moment the head can be checked, and the one a reader relies on: a push during a ten-minute review
+// would otherwise attach the verdict to a commit nobody read. So the verdict is built from the commit actually verified,
+// and every posted verdict names it.
+export function postVerdict({ gated, repo, facts, post, body }) {
+  const sha = verifyReviewHead({ gated, repo, facts, post });
+  if (!sha) return null;
+  post(body(sha));
+  return sha;
+}
+
+// The review job cannot know which CLI to install until a reviewer has been chosen, and only that reviewer's key may
+// reach the job. So the workflow asks here first: `pick <approach|pr> <docs|normal|sensitive>`, with the tag text on
+// stdin, prints provider/model/effort, and installs just that CLI. The same rules as the review apply (the requested
+// reviewer, the role's order, usage, reserve), and only a provider the job installs is offered.
+const pickOutput = (values) => {
+  const text = Object.entries(values).map(([key, value]) => `${key}=${value ?? ''}`).join('\n');
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${text}\n`);
+  else console.log(text);
+};
+
 async function main() {
   const [role, numberText] = process.argv.slice(2);
   if (role === 'tier') {
     const paths = readFileSync(0, 'utf8').split('\n');
     console.log(tierForPaths(paths));
+    return;
+  }
+  // `head <owner/repo>`: read a pull request as GitHub answered it and say whether its head may be reviewed. Node reads
+  // the JSON because jq's `//` treats `false` as missing, which once turned every `fork: false` head into a refusal.
+  if (role === 'head') {
+    const repo = process.argv[3] || '';
+    if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) {
+      console.error('usage: node tools/agent-review.mjs head <owner/repo>');
+      process.exit(1);
+    }
+    // A body GitHub did not send, or sent malformed, is not a reason to start a review: it reads as "not ours".
+    let pull = null;
+    try { pull = JSON.parse(readFileSync(0, 'utf8') || 'null'); } catch { pull = null; }
+    const facts = headFacts(pull, repo);
+    if (facts.problem) console.error(`refused: ${facts.problem}`);
+    process.stdout.write(headAnswer(facts));
+    return;
+  }
+  if (role === 'pick') {
+    const [reviewRole, tierText] = process.argv.slice(3);
+    if (!['approach', 'pr'].includes(reviewRole)) {
+      console.error('usage: node tools/agent-review.mjs pick <approach|pr> <docs|normal|sensitive>');
+      process.exit(1);
+    }
+    const tier = reviewRole === 'approach' ? 'sensitive'
+      : ['docs', 'normal', 'sensitive'].includes(tierText) ? tierText : 'normal';
+    if (tier === 'docs') {
+      pickOutput({ provider: 'none', model: '', effort: '', skipped: '[]' });
+      return;
+    }
+    const config = JSON.parse(readFileSync(`${root}.github/agents.json`, 'utf8'));
+    const key = reviewRole === 'approach' ? 'approach' : tier === 'sensitive' ? 'pr_sensitive' : 'pr_normal';
+    const pick = resolveReviewers(config, config[key], parseRequest(readFileSync(0, 'utf8')), tier);
+    const offered = [];
+    const notInstalled = [];
+    for (const model of pick.models) {
+      if (installedProviders.includes(model.provider)) offered.push(model);
+      else notInstalled.push(`${model.provider}/${model.model} (its CLI is not installed in this job)`);
+    }
+    const snapshot = freshestSnapshot();
+    const usageByProvider = Object.fromEntries([...new Set(offered.map((m) => m.provider))]
+      .map((provider) => [provider, readUsage(provider)]));
+    const usageByModel = Object.fromEntries(offered
+      .map((model) => [modelKey(model), snapshot ? snapshotUsage(snapshot, model) : undefined])
+      .filter(([, usage]) => usage));
+    const { candidates, skipped } = reviewerCandidates(offered, {
+      usageByProvider, usageByModel, reserve: config.reserve, caps: capsFor(config), commandAvailable: () => true,
+    });
+    const reasons = [...notInstalled, ...skipped.map(({ provider, model, reason }) => `${provider}/${model} (${reason})`)];
+    const chosen = candidates[0];
+    if (!chosen) {
+      console.error(`no reviewer could run: ${reasons.join(', ')}`);
+      process.exit(1);
+    }
+    pickOutput({ provider: chosen.provider, model: chosen.model, effort: chosen.effort || '', skipped: JSON.stringify(reasons) });
     return;
   }
   const number = Number(numberText);
@@ -847,8 +1133,12 @@ async function main() {
   const config = JSON.parse(readFileSync(`${root}.github/agents.json`, 'utf8'));
   const caps = capsFor(config);
   // The freshest snapshot from any of Krish's machines, or none: with none, selection reads the local hub as before.
-  const snapshot = freshestSnapshot();
+  // Named `usageSnapshot` so it never hides the `snapshot(ref)` function that makes the review's copy of the code.
+  const usageSnapshot = freshestSnapshot();
   const issue = apiJson(`repos/${repo}/issues/${number}`);
+  const pinned = pinnedReviewer(config);
+  const modelList = (pick) => (pinned ? [pinned] : pick.models);
+  const notes = (pick, result) => [pick.note, usageNote(result).trim()].filter(Boolean).map((line) => `\n${line}`).join('');
 
   if (role === 'approach') {
     const approach = eventComment();
@@ -856,34 +1146,44 @@ async function main() {
     const work = snapshot('HEAD');
     let result;
     try {
-      result = runReviewer(pick.models, reviewPrompt(role, { issue: issueText(issue), approach }), work, {
+      result = runReviewer(modelList(pick), reviewPrompt(role, { issue: issueText(issue), approach }), work, {
         reserve: config.reserve,
         caps,
-        snapshot,
+        snapshot: usageSnapshot,
+        skipped: pinned ? extraSkipped() : [],
       });
     } finally {
       rmSync(work, { recursive: true, force: true });
     }
     const verdict = verdictFor(result.text);
     const review = result.text.replaceAll(marker, '').replace(/\n?Verdict:\s*(?:approve|changes needed)\s*$/i, '').trim();
-    postComment(repo, number, `${marker}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${usedLine(result, caps)}${usageNote(result)}${skippedLine(result)}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
+    postComment(repo, number, `${marker}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${usedLine(result, caps)}${skippedLine(result)}${notes(pick, result)}\n\n${review}\n\nVerdict: ${verdict}`);
     return;
   }
 
   const gated = process.env.REVIEW_HEAD_SHA || '';
   const post = (msg) => postComment(repo, number, msg);
+  const facts = () => apiJson(`repos/${repo}/pulls/${number}`);
+  // Before anything is fetched or read: this repository's own branch, at the commit CI passed. A fork's head stops here.
+  if (!verifyReviewHead({ gated, repo, facts: facts(), post })) return;
   const fetchHead = () => {
     execFileSync('git', ['-C', root, 'fetch', '--quiet', '--depth=1', 'origin', `pull/${number}/head`]);
     return execFileSync('git', ['-C', root, 'rev-parse', 'FETCH_HEAD'], { encoding: 'utf8' }).trim();
   };
+  // FETCH_HEAD is what gets snapshotted below, so it has to be that same commit, not a newer one that CI has not seen.
   if (!verifyPrHead(gated, fetchHead, post)) return;
 
   const files = gh(['api', `repos/${repo}/pulls/${number}/files`, '--paginate', '--jq', '.[].filename']).split('\n').filter(Boolean);
   const tier = tierForPaths(files);
   if (tier === 'docs') {
-    // Re-check live head before auto-approving docs-only so a race push cannot slip a non-docs change through.
-    if (!verifyPrHead(gated, () => gh(['api', `repos/${repo}/pulls/${number}`, '--jq', '.head.sha']), post)) return;
-    postComment(repo, number, `${marker}\n\ndocs-only: CI is the review\n\nVerdict: approve`);
+    // Checked again, and named, immediately before approving, so a push during CI cannot slip a change past CI's review.
+    postVerdict({
+      gated,
+      repo,
+      facts: facts(),
+      post,
+      body: (sha) => `${marker}\nReviewed: ${sha}\n\ndocs-only: CI is the review\n\nVerdict: approve`,
+    });
     return;
   }
 
@@ -899,21 +1199,34 @@ async function main() {
   const pick = resolveReviewers(config, config[key], parseRequest(eventComment()), tier);
   const diff = gh(['pr', 'diff', String(number), '-R', repo]);
   // Confirm the PR head did not move while reading `gh pr diff`, so the diff and the snapshot are the same commit.
-  if (!verifyPrHead(gated, () => gh(['api', `repos/${repo}/pulls/${number}`, '--jq', '.head.sha']), post)) return;
+  if (!verifyReviewHead({ gated, repo, facts: facts(), post })) return;
   const work = snapshot('FETCH_HEAD');
   let result;
   try {
-    result = runReviewer(pick.models, reviewPrompt(role, {
+    result = runReviewer(modelList(pick), reviewPrompt(role, {
       issue: linked ? issueText(linked) : '(no linked issue found)',
       approach,
       diff,
-    }), work, { reserve: config.reserve, caps, snapshot });
+    }), work, {
+      reserve: config.reserve,
+      caps,
+      snapshot: usageSnapshot,
+      skipped: pinned ? extraSkipped() : [],
+    });
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
   const verdict = verdictFor(result.text);
   const review = result.text.replaceAll(marker, '').replace(/\n?Verdict:\s*(?:approve|changes needed)\s*$/i, '').trim();
-  postComment(repo, number, `${marker}\nTier: ${tier}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${usedLine(result, caps)}${usageNote(result)}${skippedLine(result)}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
+  // The head is checked once more here, after the review has taken its minutes: a verdict is only posted for the commit
+  // the review read, and it says which commit that was.
+  postVerdict({
+    gated,
+    repo,
+    facts: facts(),
+    post,
+    body: (sha) => `${marker}\nReviewed: ${sha}\nTier: ${tier}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${usedLine(result, caps)}${skippedLine(result)}${notes(pick, result)}\n\n${review}\n\nVerdict: ${verdict}`,
+  });
 }
 
 if (resolve(process.argv[1] || '') === fileURLToPath(import.meta.url)) {

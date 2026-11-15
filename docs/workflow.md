@@ -19,7 +19,7 @@ Only `beta` and `stable` are public. The release workflow does it:
 
 1. **Issue.** Every change starts as an issue. It says the goal, the check, and what blocks it.
 2. **Approach.** The agent picking up the issue posts its plan as a comment: what changes, which files, how it will be checked.
-3. **Approach review.** For changes that need one (see tiers below), the agent tags the reviewer in that comment (`@tess-review approach`). A reviewer agent runs on a self-hosted runner on one of the reviewer machines (Instabox, or whichever backup is idle), reads the issue and the plan, and replies **approve** or **changes needed**.
+3. **Approach review.** For changes that need one (see tiers below), the agent tags the reviewer in that comment (`@tess-review approach`). A reviewer agent runs on a fresh GitHub-hosted Linux machine (an ordinary GitHub Actions job, free for this public repo), reads the issue and the plan, and replies **approve** or **changes needed**.
 4. **PR.** The change lands as a pull request into `main`, with `(#issue)` in its title.
 5. **Checks.** CI (`check.yml`: safety gate, builds, tests) must pass. No AI reviewer runs on a PR whose checks haven't passed.
 6. **PR review.** The agent tags `@tess-review pr`. The reviewer reads the diff against the approved plan and the issue's check, and posts a review.
@@ -67,9 +67,9 @@ read it and when to change it; it does not repeat the values.
 | `reserve` | quota kept back per provider, as the % left per window kind, with a plain `note` and an optional `until` date |
 | `notes` | dated, temporary facts, such as a model with its own pool; not rules |
 
-**The runner picks by itself.** It tries the role's list from the top and skips a candidate, naming it and the reason in
+**The job picks by itself.** It walks the role's list from the top and skips a candidate, naming it and the reason in
 the posted comment, when:
-- its CLI is not installed on that machine;
+- the job does not install its CLI (Cursor today; the review job installs one provider's CLI, the one it picked);
 - a usage window is already used up (a window that has reset no longer counts);
 - it is **on pace to run out before its reset**, even with usage left — Claude at 84% of a week with two days to go;
 - fewer than three reviews are left in its 5-hour window (each model has its own per-review share in `caps`, so a cheap
@@ -77,12 +77,12 @@ the posted comment, when:
 - it is inside a `reserve` amount that has not expired;
 - the machine has no working `bubblewrap` sandbox (see below).
 
-A requested reviewer that is filtered out is named in the comment too, never silently replaced. Usage the hub has no
-numbers for is treated as usable, and the CLI's own error then moves the runner on, which the comment also names.
+A requested reviewer that is filtered out is named in the comment too, never silently replaced. Usage the job has no
+numbers for is treated as usable, and the CLI's own error then moves the job on, which the comment also names.
 
-**What the agent still checks by hand, before tagging.** The runner knows usage; it does not know what the change is
+**What the agent still checks by hand, before tagging.** The job knows usage; it does not know what the change is
 worth.
-1. **Open `provider_usage` in T3** — the tool that reads the same hub the runners read. It shows the **session (5-hour)**
+1. **Open `provider_usage` in T3** — the tool that reads the same hub the snapshots come from. It shows the **session (5-hour)**
    and **weekly** windows, the share left in each, and when each renews.
 2. **Read the pace, not just what is left.** On the morning of 15 Nov, Claude had 59% of its session left but only 16% of
    its week, with two days to run; Codex had 93% of its session and 89% of its week. Only one was safe to spend that
@@ -111,32 +111,43 @@ unprivileged, with `--unshare-all --share-net --die-with-parent`) in an empty fi
 read-only: the review copy, the CLI and its runtime (`/usr`, `/lib*`, `/etc/ssl`, `/etc/resolv.conf`), and that
 provider's own config and sign-in files, mounted **inside** the throwaway `HOME` at the paths its CLI looks in
 (`~/.codex` for Codex, `~/.config/opencode` and `~/.local/share/opencode/auth.json` for OpenCode) — a mount at the
-runner's real home is invisible once `HOME` changes. It gets only its own key in the environment. It cannot see
-`~/actions-runner`, the job's other keys, or another provider's folder. A machine without `bubblewrap`, or with user
-namespaces switched off, refuses that provider with a skip reason and tries the next one: no reviewer is run bare.
-`--share-net` is deliberate, because the API call needs it, so the **network** is limited one level up: the
-`actions.runner.*` service carries [`tools/runner/network.conf`](../tools/runner/network.conf), which refuses loopback,
-link-local, multicast, every private range, Tailscale and the cloud metadata address, and allows only the local DNS stub.
-One file therefore covers Claude and every other provider, and a command a diff talks a model into running reaches its
-own API and nothing else on the machine.
+job's real home is invisible once `HOME` changes. It gets only its own key in the environment, and `GH_TOKEN` is
+removed before the reviewer starts. A machine without `bubblewrap`, or with user namespaces switched off, refuses that
+provider with a skip reason and tries the next one: no reviewer is run bare. `--share-net` is deliberate, because the
+API call needs it, and the network is the review VM's own: that machine is created for this one review and holds only
+this review's one key and a `GITHUB_TOKEN` that can comment on this repo, so a command a diff talks a model into
+running can reach the internet and nothing of Krish's.
 
 On top of that, each CLI is told to stay read-only:
 - Claude: `--restricted --safe-mode` with only the Read, Grep and Glob tools.
 - Codex: `--sandbox read-only --ephemeral --ignore-rules --skip-git-repo-check`, with project document loading off
   (`project_doc_max_bytes=0`). That flag limits the shell commands the model may ask for; the boundary above is what
-  stops it reading the runner. The git check has to be skipped because the review copy is a `git archive`, with no
+  stops it reading the job's files. The git check has to be skipped because the review copy is a `git archive`, with no
   `.git` in it.
 - Cursor: `--mode ask --sandbox enabled`.
 - OpenCode: the `tess-reviewer` agent (`tools/opencode-reviewer.md`), which denies everything except reading, and denies
-  `external_directory` so reads stop at the review copy. The runner's copy must match that file on `main` exactly, or the
+  `external_directory` so reads stop at the review copy. The installed copy must match that file on `main` exactly, or the
   review stops instead of running under wider rules. That file is sensitive work: a PR that changes it gets the strong
   reviewer, never "docs only".
 
 Any agent settings shipped inside a PR (`.opencode`, `.cursor`, `.claude` and the like) are removed from the review copy
 first, at any depth and in any letter case, together with the PR's own `AGENTS.md` and `CLAUDE.md`: a reviewer reads a PR
-as data, never as instructions. A file that is a link is removed too, because a link can point at the runner's own files
-(the diff already shows where a link pointed). Before a review is posted, it is also refused if its text contains the
-value of any key the job holds, `GH_TOKEN` included.
+as data, never as instructions. A file that is a link is removed too, because a link can point at the job's own files
+(the diff already shows where a link pointed).
+
+A review only ever reads a branch of **this** repository. The gate refuses a fork's head by asking which repository the
+head lives in, not merely by checking that CI passed, so a maintainer tagging a green fork PR does not hand a fork
+author's diff to a reviewer holding a provider key; a deleted or unknown head repository is refused the same way. The
+review checks the same rule again before it fetches anything.
+
+Before a review is posted it is refused if its text contains the value of any key the job holds, `GH_TOKEN` included —
+as the key is, and base64'd, hex'd, percent-encoded, or split over lines, which is what a diff would ask for if it were
+trying to slip a key past the check. A failed reviewer is different: its own output is untrusted, so the log gets one
+redacted line of its stderr (never its stdout, which is the review text) instead of the whole stream.
+
+Every posted verdict names the commit it read (`Reviewed: <sha>`), and the head is checked one last time immediately
+before posting. A push during a ten-minute review therefore costs a re-tag instead of attaching an approval to a commit
+nobody read.
 
 ### Every review has a hard cap
 
@@ -163,8 +174,8 @@ the cautious 10% fallback. A model with no figure therefore behaves exactly as b
 **Rules.**
 - Don't use the strongest model at both stages unless the work is sensitive.
 - The reviewer should come from a different provider than the agent that wrote the change, so it doesn't share the same blind spots.
-- Usage comes before preference, and the runner applies it: exhausted usage, a provider on pace to run out, or reserved quota all skip it before it starts.
-- Only models listed under `allowed` in `.github/agents.json` are accepted. Sensitive work must use one listed under `strong`. If the request breaks a rule, the runner falls back to the defaults for that role and says so in its comment.
+- Usage comes before preference, and the job applies it: exhausted usage, a provider on pace to run out, or reserved quota all skip it before it starts.
+- Only models listed under `allowed` in `.github/agents.json` are accepted. Sensitive work must use one listed under `strong`. If the request breaks a rule, the job falls back to the defaults for that role and says so in its comment.
 - Leaving the choice out is fine: the defaults are the first model in that role's list that can run.
 - Only allowlisted accounts can tag. Krish can use the same syntax himself.
 
@@ -195,24 +206,17 @@ caps name allowed models, that the OpenCode step cap matches the agent file, and
   `cost`, unless you are keeping both as the measured record of why it is out. Sensitive work must keep at least the two
   strong models in `approach` and `pr_sensitive`.
 
-## Reviewer agents on the reviewer machines
+## Reviewer agents on GitHub's machines
 
 - **Who can call them.** Only GitHub accounts in the allowlist (the repo variable `AGENT_ALLOWLIST`, today just `Flame119052`). A tag from anyone else is ignored. Anyone can still open issues and PRs.
-- **Where runners may live.** Only on machines that hold no Tess keys: the Instabox box `tess-reviewer` (the default), and the VPS `paperclip-vps` and `omarchy` (backups). Instabox is a third-party host, so it gets no vault and holds no Tess keys: only the reviewer's Claude login token, its GitHub runner credentials and, during a job, that job's `GITHUB_TOKEN` (D-65). Krish's Mac keeps the signing and rescue keys, and a reviewer reading an outside diff could be tricked into printing files it can read. A Mac runner is allowed only under a separate macOS user that can't read Krish's home folder. As a second guard, the reviewer refuses to post any text that looks like a key or token.
-- **How the job reaches a machine.** Each runner machine runs a GitHub self-hosted runner labelled `tess-agent`, and the job is pinned by label: the Instabox runner is also `tess-primary`, the two backups are `tess-backup`. A `gate` step wakes the paused Instabox box through its public `/ready` page and waits up to 2 minutes for it to answer `tess-ready` (which it only does when its runner is active and idle); if it doesn't, the job is given the `tess-backup` label and GitHub gives it to whichever backup runner is online and idle. If the box pauses (or another review takes it) between answering ready and picking the job up, cancel the run and tag again so the next check routes to a backup. Each job checks out a fresh copy of the repo, so the machines need no extra syncing.
-- **Picking the model.** `.github/agents.json` lists the reviewer models per role, default first. Each runner takes the first one that has a local CLI, enough usage (both windows and pace), no unexpired reservation, and a working `bubblewrap` sandbox, and names everything it skipped in the comment. Usage comes from the local hub; a provider with no numbers is treated as usable.
-- **Where its usage numbers come from.** A reviewer shares nothing with Krish's own machines, so each of them publishes a
-  quota-only snapshot every few minutes as a repository variable (`USAGE_SNAPSHOT_MAC`, `_VPS`, `_OMARCHY`), written by
-  [`tools/usage-publish`](../tools/usage-publish/README.md). The freshest snapshot no older than 30 minutes wins for the
-  models it covers, and the posted comment says which machine it came from and how old it was
-  (`Usage: vps, 5 min old`). A missing, broken or stale snapshot changes nothing: the runner reads its own hub, as
-  before. A snapshot holds no keys, no account names and no balances, and an OpenCode model is matched to its own
-  connector's pool, because `opencode-go` and `zai-coding-plan` are separate allowances.
+- **Where they run.** A standard GitHub Actions job on `ubuntu-latest`: one fresh virtual machine per review, deleted when the job ends. GitHub-hosted Linux machines are free and unlimited for this public repository, so there is no runner to keep online, no box to wake, and no machine of Krish's in the path (D-66). Nothing of Krish's is on the VM: no signing or rescue keys, no Paperclip, no other job's secrets.
+- **What the VM holds.** Only the chosen reviewer's key and a `GITHUB_TOKEN` that can comment on this repository. The reviewer is chosen first (`node tools/agent-review.mjs pick ...`), then that one provider's CLI is installed at a pinned version, and only that provider's secret is given to the step. A review can never hold a second provider's key. For Claude and Codex the key stays in the review process and the sandbox gets a per-review token instead (`tools/review-proxy.mjs`, D-69); that proxy forwards only the one inference route its pinned CLI was measured to call and answers everything else with a 403, so the token is not a way to reach the rest of what the key can do. OpenCode keeps its own key, which its agent file cannot read. `GH_TOKEN` is on the step so the review can be posted, and the script removes it before the reviewer process starts.
+- **Picking the model.** `.github/agents.json` lists the reviewer models per role, default first. The pick takes the first one that the job can install, with enough usage (both windows and pace) and no unexpired reservation, and names everything it skipped in the comment. The review then refuses a provider whose `bubblewrap` sandbox cannot start, and names that too. Usage comes from [#93](https://github.com/Flame119052/tess-music/issues/93)'s quota-only snapshots, one repository variable per machine (`USAGE_SNAPSHOT_MAC`, `_VPS`, `_OMARCHY`): the freshest under 30 minutes wins, and the comment names the machine and age; with none fresh, "no numbers" counts as usable, as before.
 - **Safety, because the repo is public:**
   - The workflow is triggered only by `issue_comment`, which always runs the workflow file from `main`, never from a PR.
-  - The first job runs on GitHub's own machine. It checks the commenter against the allowlist and checks that CI passed on the PR's exact commit. Only then does a job reach a self-hosted runner.
+  - The first job runs on GitHub's own machine. It checks the commenter against the allowlist and checks that CI passed on the PR's exact commit. Only then does the review job start.
+  - Fork PRs never reach the review job, so they never get a secret. Approval is still required before any workflow runs for an outside collaborator.
   - The reviewer reads the diff and the files. It never runs, builds or installs anything from the PR.
-  - Fork PRs need approval before any workflow runs.
   - The reviewer's own comments carry a marker and never trigger another review.
 
 ## Where work happens: branches, worktrees and machines
@@ -254,14 +258,14 @@ These rules come from mistakes made while setting this up: agents started from t
 | Machine | Does | Never |
 | --- | --- | --- |
 | Krish's Mac | Holds the signing and rescue keys. Runs the real Spotify on `dev`. Krish's own commands. The T3 threads. | Hosts a GitHub runner. Holds secrets in the repo or in an external drive's `.env`. |
-| `paperclip-vps` (reach with `ssh vps`), `omarchy` | The backup reviewer runners (`tess-agent`, `tess-backup`), used whenever Instabox isn't ready. Each job gets a fresh checkout, so nothing on them needs syncing. | Holds a Tess key. Runs the runner as root. |
+| GitHub's Linux machines | Every review (`agent-review.yml`): a fresh `ubuntu-latest` VM per review, holding only that review's one provider key and a comment-scoped `GITHUB_TOKEN`. | Gets a fork PR, a second provider's key, or any Tess key. |
 | GitHub's macOS machines | CI (`check.yml`) and every build and signature (`release.yml`). They are the only place the signing secrets are used. | Runs code from a fork PR without Krish's approval. |
-| Instabox | The default reviewer runner (`tess-agent`, `tess-primary`), made with `--no-vault` so it holds no Tess keys: only the reviewer's Claude login token, its runner credentials, and a job's `GITHUB_TOKEN` while one runs. A review wakes it through its public `/ready` page and waits up to 2 minutes before falling back to a backup. | Holds a Tess key. Builds Tess, which needs macOS. Runs the runner as root. |
+| `paperclip-vps` (reach with `ssh vps`), `omarchy` | Paperclip on the VPS; an agent scratch machine on omarchy. | Holds a Tess key. Hosts a reviewer runner. |
+| Instabox | Optional Linux scratch box for an agent. | Holds a Tess key. Builds Tess, which needs macOS. Hosts a reviewer runner. |
 
 **`paperclip-vps` runs Paperclip first. Tess work there must never slow it down or touch it.**
-- **The reviewer runner** runs as `tess-runner`, with no admin rights and a hard cap: 1 CPU core and 1.5 GB of memory, at the lowest priority for CPU and disk. If it runs out, the review fails; Paperclip doesn't. `omarchy` has the same setup with a 2 GB cap.
-- **No Tess agent edits, restarts or reads Paperclip.** That covers `/srv/paperclip`, its PostgreSQL database, its services, and the Tincan relay. Nothing for Tess is installed system-wide there. Everything lives in `~tess-runner`. The runner's network drop-in is the guard: a review cannot open a connection to any local address, so a diff cannot talk a model into reaching Paperclip even if it gets a shell command run.
-- **No builds or tests run on the VPS,** only reviews, which read code. Heavy work goes to GitHub's machines or `omarchy`.
+- **No Tess agent edits, restarts or reads Paperclip.** That covers `/srv/paperclip`, its PostgreSQL database, its services, and the Tincan relay. Nothing for Tess is installed system-wide there. Reviews no longer run there at all: they moved to GitHub's machines (D-66), which also retires the runner network filter.
+- **No builds or tests run on the VPS.** Heavy work goes to GitHub's machines or `omarchy`.
 - **Tess agents don't run on the VPS through T3 Code.** T3 runs as root there, so any agent it starts has root power next to Paperclip. Claude refuses full access as root, and we leave that check on. Tess agent work goes to Krish's Mac or `omarchy`. Moving T3 on the VPS to a normal account is a separate decision for Krish.
 
 ## How Macs get updates
@@ -275,4 +279,4 @@ These rules come from mistakes made while setting this up: agents started from t
 ## CI
 
 - `check.yml` runs on GitHub's macOS machines, which are free for public repos. It's the deterministic gate: the safety check, theme build, patcher build and tests.
-- An Instabox cloud machine runs Linux, so it can't build Tess Mini or run the macOS checks. It is the default reviewer runner for agents, and nothing else.
+- `agent-review.yml` runs a review on a fresh GitHub-hosted Linux machine, also free for this public repo. One VM per review, deleted afterwards; it can't build Tess Mini or run the macOS checks, which is `check.yml`'s job.
