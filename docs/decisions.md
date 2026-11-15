@@ -237,6 +237,20 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   a tag now carries one more field, and the tagging agent has to state something the job cannot verify by itself.
   *Guard, not permission:* no wording anywhere can make a review run that a rule would refuse.
 
+- **D-76 · 15 Nov 2026 · Owner** — One review tag names the model, the **machine** and an optional focus:
+  `@tess-review pr provider=… model=… effort=… author=… machine=github|mac|omarchy prompt="…"`. `machine=` omitted means
+  today's GitHub-hosted review, so no existing tag changes meaning; `prompt=` becomes the reviewer's focus, capped at 400
+  characters and framed as extra attention, never permission. A tag for `mac` or `omarchy` is checked by the workflow,
+  answered with `Review queued for <machine>`, and run by a watcher **on that machine**, which polls GitHub and opens the
+  review with that machine's own `t3 thread start`; the thread posts its own review with the marker and the commit it
+  read. `machine=vps` is refused with its reason. *Why:* GitHub-hosted jobs cannot reach Krish's machines and the
+  self-hosted runners are gone (D-66), so a pull model is the only way to get a review into T3 where he can watch or
+  steer it — with no inbound access and no T3 credential on GitHub. *Trade-off:* the machine path is not a sandbox (a T3
+  thread has that machine's own permissions), so GitHub stays the default and the Mac is named only when he wants to
+  watch; the queue notice and the watcher's comment are an extra step before a review appears. Reuses the two-slot cap,
+  the fixed refusal codes and the CRLF-safe parser from #90, whose dispatcher needed a runner and a stored T3 sign-in;
+  that PR is closed in favour of this. (#71)
+
 ## Releases and process
 
 - **D-30 · 12 Nov 2026 · Owner** — Any change pushed to the repo ships automatically as a regular update.

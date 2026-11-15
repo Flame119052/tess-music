@@ -112,7 +112,9 @@ nothing; Krish using the Mac adds noise, so alternate with/without and repeat (t
   approach` or `@tess-review pr` to call a reviewer agent; the tier (docs / normal / sensitive) decides which reviews a
   change needs. Name the reviewer you chose in the tag — `provider=… model=… effort=… author=…` plus one line saying why —
   because the job runs that model or refuses with a comment; it never picks one for you. `author=` is the provider that
-  wrote the change, and it must be a different one from the reviewer (docs/workflow.md → Choosing a reviewer). Small,
+  wrote the change, and it must be a different one from the reviewer. `machine=github|mac|omarchy` chooses where it runs
+  (omitted = GitHub), `machine=vps` is refused, and an optional `prompt="…"` (400 characters) adds the owner's focus
+  (docs/workflow.md → Choosing a reviewer). Small,
   focused commits; the message says what changed for the user and why, and ends with the issue number, e.g. `(#30)`.
 - Update `docs/status.md` when something user-visible changes state.
 
