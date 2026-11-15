@@ -77,6 +77,7 @@ import {
   usedLine,
   verifyPrHead,
 } from './agent-review.mjs';
+import * as agentReview from './agent-review.mjs';
 import { proxyProviders, proxyRoutes } from './review-proxy.mjs';
 import { createReviewProxy, maxProxyBodyBytes, matchProxyRoute, proxyReviewerConfig } from './review-proxy.mjs';
 
@@ -732,12 +733,17 @@ test('every review carries a hard cap, spelled the way its CLI takes it', () => 
   assert.deepEqual(opus.slice(opus.indexOf('--output-format'), opus.indexOf('--output-format') + 2), ['--output-format', 'json'],
     'the JSON result is what reports the turns and dollars a review used');
 
-  // Codex has no turn or budget cap, so effort and auto-compaction are its levers, and --json is what reports tokens.
+  // Codex gets a lower auto-compact threshold plus a hard rollout token cap (both via rollout_budget and the --json stream).
   const codex = cliArgs('codex', 'gpt-6.1-terra', 'medium', '/w', caps);
-  assert.ok(codex.includes('model_auto_compact_token_limit=180000'), 'Codex compacts instead of filling its window');
+  assert.ok(codex.includes('model_auto_compact_token_limit=64000'), 'Codex compacts at 64k instead of waiting until 180k');
+  assert.ok(codex.includes('features.rollout_budget.enabled=true'), 'Codex rollout budget feature is enabled');
+  assert.ok(codex.includes('features.rollout_budget.enforce_limit=true'), 'Codex rollout budget is enforced');
+  assert.ok(codex.includes('features.rollout_budget.limit_tokens=200000'), 'Codex rollout budget carries max_tokens');
+  assert.ok(codex.includes('features.rollout_budget.reminder_at_remaining_tokens=[50000]'), 'Codex rollout budget warns before the cap');
   assert.ok(codex.includes('model_reasoning_effort=medium'));
   assert.ok(codex.includes('--json'), 'Codex reports the tokens a review used');
   assert.ok(codex.includes('--skip-git-repo-check'), 'the review copy has no .git, so Codex has to be told that');
+  assert.equal(caps.codex.max_tokens, 200000);
 
   // Cursor is not offered: a Claude or GPT model inside it bills prepaid credit from the first request, which breaks the
   // plans-only rule, and the job installs no Cursor CLI anyway.
@@ -2513,5 +2519,197 @@ test('the review workflow has a failure step that comments, and it holds no prov
   assert.match(step, /agent-review\.mjs stop/, 'the tested script posts the comment');
   for (const names of Object.values(providerKeys)) {
     for (const name of names) assert.ok(!step.includes(name), `${name} is never on the failure step`);
+  }
+});
+
+test('the review comment puts Used and Usage on separate lines and prints one Verdict line (#103)', () => {
+  const caps = capsFor(config);
+  const { formatReviewComment, verdictFor } = agentReview;
+  assert.equal(typeof formatReviewComment, 'function', 'formatReviewComment is exported');
+
+  // The exact shape that broke on PR #76: Used + Usage glued together, and `Verdict: changes needed.` duplicated.
+  const comment = formatReviewComment({
+    role: 'pr',
+    sha: '3668e7eab1419df116674d0ee152608049c2ef73',
+    tier: 'sensitive',
+    caps,
+    result: {
+      provider: 'codex',
+      model: 'gpt-6.1-sol',
+      effort: 'high',
+      text: [
+        '- **Critical — `installer/install.sh`:** unsigned fallback.',
+        '',
+        'The script prints `Verdict: approve` when valid.',
+        '',
+        'Verdict: changes needed.',
+      ].join('\n'),
+      usage: { input: 24000, output: 800 },
+      snapshot: { source: 'vps', ageMs: 2 * 60000 },
+    },
+  });
+
+  const lines = comment.split('\n');
+  assert.ok(lines.includes('Used: 24,800 tokens (24,000 in, 800 out)'), 'Used sits on its own line');
+  assert.ok(lines.includes('Usage: vps, 2 min old'), 'Usage sits on the next line, never glued onto Used');
+  assert.ok(!/Used:[^\n]+Usage:/.test(comment), 'Used and Usage are separated by a newline');
+  assert.equal(lines.filter((line) => /^\s*[*_`]*Verdict\s*:/i.test(line)).length, 1, 'exactly one Verdict line is printed');
+  assert.equal(lines.at(-1), 'Verdict: changes needed');
+  assert.match(comment, /The script prints `Verdict: approve` when valid\./, 'inline prose mentioning Verdict is preserved');
+
+  // Bold, exclamation marks, trailing spaces, and approach comments all normalize to one clean Verdict line.
+  for (const rawEnding of ['**Verdict: approve.**', 'Verdict: approve!', '- Verdict: approve.', 'Verdict: changes needed.\n\nVerdict: approve.']) {
+    const formatted = formatReviewComment({
+      role: 'approach',
+      caps,
+      result: {
+        provider: 'claude',
+        model: 'claude-opus-5-5',
+        effort: 'high',
+        text: `Finding or summary.\n\n${rawEnding}\n`,
+        usage: { turns: 3, costUsd: 0.04, input: 10000, output: 400 },
+        snapshot: { source: 'mac', ageMs: 60000 },
+      },
+    });
+    const verdictLines = formatted.split('\n').filter((line) => /^\s*[*_`]*Verdict\s*:/i.test(line));
+    assert.equal(verdictLines.length, 1, `single Verdict line for ${JSON.stringify(rawEnding)}`);
+    assert.equal(verdictFor(`Summary.\n\n${rawEnding}`), rawEnding.includes('approve') ? 'approve' : 'changes needed');
+    assert.match(formatted, /\nUsed: 3 turns · \$0\.0400 of its \$0\.6 cap · 10,400 tokens \(10,000 in, 400 out\)\nUsage: mac, 1 min old\n/);
+  }
+});
+
+test('large PR diffs omit vendored/generated files, bound oversized hunks, and pass changed files inline (#103)', () => {
+  const { compactDiff, buildPrContext, reviewPrompt } = agentReview;
+  assert.equal(typeof compactDiff, 'function', 'compactDiff is exported');
+  assert.equal(typeof buildPrContext, 'function', 'buildPrContext is exported');
+  assert.equal(typeof reviewPrompt, 'function', 'reviewPrompt is exported');
+
+  const dir = temp();
+  try {
+    mkdirSync(join(dir, 'installer'), { recursive: true });
+    mkdirSync(join(dir, 'tools'), { recursive: true });
+    mkdirSync(join(dir, 'patcher/prebuilt/spicetify-2.46.4/jsHelper'), { recursive: true });
+
+    writeFileSync(join(dir, 'installer/install.sh'), '#!/bin/sh\necho "updated"\n');
+    writeFileSync(join(dir, 'tools/new-helper.mjs'), 'export const x = 1;\n');
+    // A large modified file (>16 KB) so the prompt extracts hunk context instead of dumping the whole file.
+    const bigLines = Array.from({ length: 600 }, (_, i) => `// padding line ${i + 1}: ${'a'.repeat(40)}`);
+    bigLines[299] = 'export const changedAnchor = true;';
+    writeFileSync(join(dir, 'tools/big.mjs'), `${bigLines.join('\n')}\n`);
+    writeFileSync(join(dir, 'patcher/prebuilt/spicetify-2.46.4/css-map.json'), `{"k":"${'v'.repeat(50000)}"}`);
+
+    const rawDiff = [
+      `diff --git a/patcher/prebuilt/spicetify-2.46.4/css-map.json b/patcher/prebuilt/spicetify-2.46.4/css-map.json\nnew file mode 100644\nindex 000..111\n--- /dev/null\n+++ b/patcher/prebuilt/spicetify-2.46.4/css-map.json\n@@ -0,0 +1 @@\n+{"k":"${'v'.repeat(50000)}"}`,
+      `diff --git a/patcher/prebuilt/spicetify-2.46.4/jsHelper/spicetifyWrapper.js.map b/patcher/prebuilt/spicetify-2.46.4/jsHelper/spicetifyWrapper.js.map\nnew file mode 100644\n--- /dev/null\n+++ b/patcher/prebuilt/spicetify-2.46.4/jsHelper/spicetifyWrapper.js.map\n@@ -0,0 +1 @@\n+{"mappings":"${'A'.repeat(40000)}"}`,
+      'diff --git a/theme/Tess/theme.js b/theme/Tess/theme.js\nindex 111..222 100644\n--- a/theme/Tess/theme.js\n+++ b/theme/Tess/theme.js\n@@ -1 +1 @@\n-old\n+new bundle',
+      'diff --git a/installer/install.sh b/installer/install.sh\nindex 111..222 100755\n--- a/installer/install.sh\n+++ b/installer/install.sh\n@@ -1,2 +1,2 @@\n #!/bin/sh\n-echo "old"\n+echo "updated"',
+      'diff --git a/tools/new-helper.mjs b/tools/new-helper.mjs\nnew file mode 100644\n--- /dev/null\n+++ b/tools/new-helper.mjs\n@@ -0,0 +1 @@\n+export const x = 1;',
+      'diff --git a/tools/big.mjs b/tools/big.mjs\nindex 111..222 100644\n--- a/tools/big.mjs\n+++ b/tools/big.mjs\n@@ -299,2 +299,2 @@\n-export const changedAnchor = false;\n+export const changedAnchor = true;',
+    ].join('\n');
+
+    const compacted = compactDiff(rawDiff);
+    assert.ok(!compacted.text.includes('vvvvvvvv'), 'vendored css-map.json payload is omitted from prompt diff');
+    assert.ok(!compacted.text.includes('AAAAAAAA'), 'sourcemap payload is omitted from prompt diff');
+    assert.ok(!compacted.text.includes('+new bundle'), 'built theme bundle diff is omitted from prompt diff');
+    assert.match(compacted.text, /css-map\.json.*omitted/i, 'omission notice names the vendored file');
+    assert.match(compacted.text, /echo "updated"/, 'real code diffs stay intact');
+
+    const context = buildPrContext({
+      issue: '#103',
+      approach: 'approach text',
+      diff: rawDiff,
+      files: [
+        'patcher/prebuilt/spicetify-2.46.4/css-map.json',
+        'patcher/prebuilt/spicetify-2.46.4/jsHelper/spicetifyWrapper.js.map',
+        'theme/Tess/theme.js',
+        'installer/install.sh',
+        'tools/new-helper.mjs',
+        'tools/big.mjs',
+      ],
+      work: dir,
+    });
+    const prompt = reviewPrompt('pr', context);
+    assert.match(prompt, /CHANGED FILES/, 'prompt lists and supplies changed files');
+    assert.match(prompt, /--- installer\/install\.sh/, 'small modified file is included inline');
+    assert.ok(!prompt.includes('--- tools/new-helper.mjs'), 'newly added file already shown in full in diff is not duplicated');
+    assert.match(prompt, /tools\/big\.mjs.*excerpt|--- tools\/big\.mjs/, 'large modified file provides hunk-centered context');
+    assert.match(prompt, /export const changedAnchor = true;/, 'changed anchor line is included in hunk excerpt');
+    assert.ok(!prompt.includes('padding line 1:'), 'far-away lines of a large modified file are omitted to save tokens');
+    assert.match(prompt, /working copy.*read-only|available read-only/i, 'rest of repo stays available read-only if needed');
+    assert.ok(prompt.length < 30000, `compacted prompt stays small (${prompt.length} chars) instead of 90k+`);
+
+    // Oversized single-file diff & total diff budget are both bounded cleanly.
+    const hugeRealDiff = [
+      `diff --git a/tools/a.mjs b/tools/a.mjs\nindex 1..2 100644\n--- a/tools/a.mjs\n+++ b/tools/a.mjs\n@@ -1 +1 @@\n+${'line\n'.repeat(6000)}`,
+      `diff --git a/tools/b.mjs b/tools/b.mjs\nindex 1..2 100644\n--- a/tools/b.mjs\n+++ b/tools/b.mjs\n@@ -1 +1 @@\n+const ok = 1;`,
+    ].join('\n');
+    const bounded = compactDiff(hugeRealDiff, { maxFileBytes: 2048, maxTotalBytes: 3000 });
+    assert.ok(bounded.text.length < 4000, 'diff obeys per-file and total byte caps');
+    assert.match(bounded.text, /truncated.*tools\/a\.mjs/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Codex multi-turn usage is summed and streaming past max_tokens aborts with a cap refusal (#103)', async () => {
+  const { streamCommand, runReviewerAsync } = agentReview;
+  assert.equal(typeof streamCommand, 'function', 'streamCommand is exported');
+  assert.equal(typeof runReviewerAsync, 'function', 'runReviewerAsync is exported');
+
+  // Multiple turn.completed events sum up instead of discarding earlier turns.
+  const multiTurn = parseCodexOutput([
+    '{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Draft"}}',
+    '{"type":"turn.completed","usage":{"input_tokens":80000,"cached_input_tokens":10000,"output_tokens":400}}',
+    '{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Final.\\nVerdict: approve"}}',
+    '{"type":"turn.completed","usage":{"input_tokens":70000,"cached_input_tokens":50000,"output_tokens":600}}',
+  ].join('\n'));
+  assert.equal(multiTurn.text, 'Final.\nVerdict: approve');
+  assert.deepEqual(multiTurn.usage, { input: 150000, output: 1000, cached: 60000 });
+
+  // A child process that streams JSON usage lines past maxTokens is killed immediately instead of running further turns.
+  const dir = temp();
+  try {
+    const fakeCli = join(dir, 'fake-codex.mjs');
+    const markerFile = join(dir, 'continued');
+    writeFileSync(fakeCli, `
+      import { writeFileSync } from 'node:fs';
+      console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 120000, output_tokens: 500 } }));
+      setTimeout(() => {
+        console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 90000, output_tokens: 500 } }));
+      }, 40);
+      setTimeout(() => {
+        writeFileSync(${JSON.stringify(markerFile)}, 'should-not-run');
+        console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Too late\\nVerdict: approve' } }));
+        process.exit(0);
+      }, 300);
+    `);
+
+    const streamed = await streamCommand(process.execPath, [fakeCli], {
+      provider: 'codex',
+      maxTokens: 200000,
+      timeout: 5000,
+    });
+    assert.equal(streamed.hitTokenCap, true, 'streamCommand stops as soon as cumulative tokens pass 200k');
+    assert.equal(streamed.timedOut, false, 'a token-cap abort is not mislabelled as a wall-clock timeout');
+    assert.equal(existsSync(markerFile), false, 'the child process was killed before continuing past the cap');
+    assert.equal(skipReason(streamed), 'hit its cap');
+
+    // runReviewerAsync surfaces a token-cap abort as a refusal naming the cap, never as a verdict.
+    let refused;
+    try {
+      await runReviewerAsync([{ provider: 'codex', model: 'gpt-6.1-sol', effort: 'high' }], 'prompt', '/w', {
+        usageFor: () => undefined,
+        commandAvailable: () => true,
+        sandbox: () => null,
+        caps: capsFor(config),
+        invoke: async () => streamed,
+      });
+    } catch (error) {
+      refused = error;
+    }
+    assert.ok(refused?.refusal, 'an over-cap run throws a refusal for a PR comment');
+    assert.match(refused.refusal.reason, /hit its cap/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

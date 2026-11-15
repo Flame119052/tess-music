@@ -196,7 +196,7 @@ A review must never take a large share of an allowance, so each one is bounded b
 | Provider | What stops a review | Notes |
 | --- | --- | --- |
 | Claude | `--max-turns 12`, `--max-budget-usd` (60 cents for Opus, 30 for Sonnet), `--output-format json` | `--max-turns` is real but hidden from `--help` in 2.1.x. The dollar figure is a client-side estimate of API list prices, not the plan's own meter, so it is a guardrail beside the turn cap. The JSON result is what lets the comment say the turns, dollars and tokens a review used. |
-| Codex | `-c model_reasoning_effort=…`, `-c model_auto_compact_token_limit=180000`, `--json` | Codex has no turn or budget cap in `exec` mode. Compaction at 180k tokens keeps one review inside the context it started with, and `--json` reports the tokens used, which the comment then states. |
+| Codex | `-c model_reasoning_effort=…`, `-c model_auto_compact_token_limit=64000`, `-c features.rollout_budget.*`, `--json` stream monitor | `features.rollout_budget.limit_tokens=200000` (with `enforce_limit=true` and `reminder_at_remaining_tokens=[50000]`) caps session tokens inside Codex, and the runner also monitors the `--json` stream so any run crossing `caps.codex.max_tokens` (200,000) is killed immediately and refused with a comment. Compaction at 64k tokens keeps multi-turn context lean. |
 | Cursor | the 480 s timeout, `--mode ask`, `--sandbox enabled` | Not offered today (see "Left out on purpose"). Only Cursor's own models (Composer) would be allowed, because a Claude or GPT model inside Cursor bills prepaid credit from the first request. |
 | OpenCode | `steps: 12` in the `tess-reviewer` agent file | On the last step OpenCode drops the tools and asks for a summary, which is the review. The agent file must match `tools/opencode-reviewer.md` exactly, and the test keeps its number equal to `caps.opencode.steps`. |
 | **All of them** | a 600 s wall clock (480 s for `gpt-6.1-terra` and GLM-5.3-Flash) | The process is killed at the limit, bubblewrap takes its children with it, and the posted comment says so: `codex/gpt-6.1-sol timed out after 600s`. The job then stops instead of running a different model. |
@@ -204,12 +204,15 @@ A review must never take a large share of an allowance, so each one is bounded b
 A review's wall clock and its share of a window are different things: the timeout stops a stuck or runaway run, while
 `caps.per_review_pct` decides whether there is enough left to start one (three reviews kept in hand). A CLI that stops
 because of one of these caps is reported in a comment and the job stops there, because a review that ran out of turns
-says nothing about the change and the agent that chose the reviewer has to choose again.
+or tokens says nothing about the change and the agent that chose the reviewer has to choose again.
 
-The measured shares, as a share of a 5-hour window: `gpt-6.1-sol` 7, `gpt-6.1-terra` 3, `opencode-go/glm-5.3` 4,
-`opencode-go/glm-5.3-flash` 0.2, `opencode-go/deepseek-v4.1-flash` 0.1, and a cautious 1 for `zai-coding-plan/glm-5.3`
-and 0.2 for `zai-coding-plan/glm-5.3-flash` carried over from the OpenCode Go measurements until a Z.ai window has been
-watched. Claude reports no numbers of its own, so it keeps the cautious 10%.
+**Prompt size and expected per-review cost:**
+- PR reviews inline the compacted diff (omitting vendored `patcher/prebuilt/`, generated theme bundles, sourcemaps, lockfiles, and binary assets, and capping each file diff at 16 KB / 64 KB total) plus the changed files (up to 16 KB per file / 64 KB total, using hunk excerpts when a modified file is larger) and tell the reviewer to read from those first rather than scanning the repo. The full snapshot remains read-only in the sandbox when an external caller or contract must be checked.
+- With prompt compaction and the 200k-token Codex cap, a typical PR review uses ~25k–100k tokens (~1–4% of a 5-hour window on `gpt-6.1-sol`), and even a worst-case capped run stays at or below 200k tokens (~7% on `gpt-6.1-sol`, matching PR #76's uncompacted 779,470-token outlier being cut to a hard ceiling).
+- The measured shares, as a share of a 5-hour window: `gpt-6.1-sol` 7, `gpt-6.1-terra` 3, `opencode-go/glm-5.3` 4,
+  `opencode-go/glm-5.3-flash` 0.2, `opencode-go/deepseek-v4.1-flash` 0.1, and a cautious 1 for `zai-coding-plan/glm-5.3`
+  and 0.2 for `zai-coding-plan/glm-5.3-flash` carried over from the OpenCode Go measurements until a Z.ai window has been
+  watched. Claude reports no numbers of its own, so it keeps the cautious 10%.
 
 **Rules.**
 - Don't use the strongest model at both stages unless the work is sensitive.
@@ -235,7 +238,8 @@ agent file, that no retired API-key secret is used anywhere, and that every note
   entry falls back to a cautious 10% in `tools/agent-review.mjs`, changed only with a measured cost per review to point
   at.
 - **Change what one review may spend.** Edit `caps` in `.github/agents.json`: `timeout_s` and `timeout_s_by_model` (the
-  wall clock), `claude.max_turns` and `claude.max_budget_usd`, `codex.auto_compact_token_limit`, and `opencode.steps`.
+  wall clock), `claude.max_turns` and `claude.max_budget_usd`, `codex.auto_compact_token_limit` and `codex.max_tokens`,
+  and `opencode.steps`.
   `opencode.steps` must equal `steps:` in `tools/opencode-reviewer.md`, because that file is what the runner copies and
   the test compares the two; copy the file again on any machine that runs OpenCode reviews. Then run
   `node tools/test-agent-review.mjs` and say in the PR what MADE the old number wrong (a run that hit it, or a measured

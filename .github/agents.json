@@ -132,7 +132,8 @@
       }
     },
     "codex": {
-      "auto_compact_token_limit": 180000
+      "auto_compact_token_limit": 64000,
+      "max_tokens": 200000
     },
     "opencode": {
       "steps": 12
@@ -162,7 +163,7 @@
     },
     {
       "date": "2026-11-15",
-      "note": "Codex has no turn or budget cap in exec mode; model_reasoning_effort and model_auto_compact_token_limit are the only levers, and turn.completed in --json reports the tokens used. A ChatGPT-plan access token lasts about 10 days; `node tools/codex-ci-login.mjs` renews the CI login, and a review refuses with a named reason instead of running on an expired one."
+      "note": "Codex has no turn or dollar cap in exec mode; we bound it with model_auto_compact_token_limit=64000, features.rollout_budget (enabled + enforce_limit + limit_tokens=200000), and a hard abort on the --json usage stream if cumulative tokens exceed max_tokens (200,000). On PR #76 an uncapped gpt-6.1-sol run used 779,470 tokens (777,093 in, 2,377 out) because 578 KB of vendored/sourcemap diffs pushed Turn 1 near 195k tokens across 4 turns. With vendored/generated diffs omitted, diff + changed files bounded, and the 200k cap enforced, expected per-review usage is ~25k-100k tokens (~1-4% of a 5-hour session window, 7% max for sol / 3% for terra at the 200k cap). A ChatGPT-plan access token lasts about 10 days; `node tools/codex-ci-login.mjs` renews the CI login."
     },
     {
       "date": "2026-11-15",
