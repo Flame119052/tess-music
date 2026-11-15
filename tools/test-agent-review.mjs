@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { execFileSync, spawn } from 'node:child_process';
 import http from 'node:http';
 import https from 'node:https';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -67,7 +68,7 @@ import {
   usedLine,
   verifyPrHead,
 } from './agent-review.mjs';
-import { createReviewProxy, proxyReviewerConfig } from './review-proxy.mjs';
+import { createReviewProxy, maxProxyBodyBytes, matchProxyRoute, proxyRoutes, proxyReviewerConfig } from './review-proxy.mjs';
 
 const config = JSON.parse(readFileSync(new URL('../.github/agents.json', import.meta.url), 'utf8'));
 const agentFile = new URL('../tools/opencode-reviewer.md', import.meta.url);
@@ -1281,7 +1282,7 @@ test('the review proxy adds the key and refuses everything that is not this revi
       { url: `${proxy.url}/openai/v1/responses`, headers: { authorization: 'Bearer this-review' } },
     ]) {
       const refused = await httpRequest(attempt.url, { headers: attempt.headers });
-      assert.ok(refused.status === 401 || refused.status === 404, `${attempt.url} → ${refused.status}`);
+      assert.ok(refused.status === 401 || refused.status === 403, `${attempt.url} → ${refused.status}`);
       assert.ok(!refused.body.includes('sk-ant-oat01-real'), 'a refusal never quotes the key');
     }
     assert.equal(upstream.seen.length, 1, 'a refused call never reaches the provider');
@@ -1291,8 +1292,111 @@ test('the review proxy adds the key and refuses everything that is not this revi
   }
 });
 
-test('the sandbox is pointed at the proxy, and the proxy process serves it', async () => {
+// A raw socket, because a test has to be able to write a request line Node's own client would rewrite or never send: an
+// absolute-form URL, a CONNECT, a fragment, a dot segment, an encoded slash.
+const rawRequest = (port, requestLine, extraHeaders = '') => new Promise((resolve, reject) => {
+  const socket = net.connect(port, '127.0.0.1', () => {
+    socket.write(`${requestLine}\r\nHost: 127.0.0.1\r\n${extraHeaders}Connection: close\r\n\r\n`);
+  });
+  let data = '';
+  socket.setTimeout(5000, () => { socket.destroy(); resolve({ status: 0, body: data }); });
+  socket.on('data', (chunk) => { data += chunk; });
+  socket.on('end', () => {
+    const status = Number((data.match(/^HTTP\/1\.[01] (\d{3})/) || [])[1] || 0);
+    resolve({ status, body: data });
+  });
+  socket.on('error', reject);
+});
+
+// The route list is not a guess: it is what the pinned CLIs were seen to send, measured against a logging upstream.
+test('the proxy allows only the requests the pinned CLIs were measured to make', () => {
+  assert.deepEqual(proxyRoutes.claude, [{ method: 'POST', path: '/v1/messages', query: ['beta'] }]);
+  assert.deepEqual(proxyRoutes.codex, [{ method: 'POST', path: '/v1/responses', query: [] }]);
+  assert.equal(maxProxyBodyBytes, 10 * 1024 * 1024, 'a review body is capped at 10 MB');
+});
+
+// The reviewer's token is a way to make one inference call, not a way to use everything the provider's key can reach.
+// The loopback proxy forwards the real key to the routes above and refuses the rest with a 403, without forwarding.
+test('the review proxy forwards the injected key to inference routes and refuses every other request', async () => {
   const upstream = await fakeUpstream();
+  const proxy = await createReviewProxy({ provider: 'claude', key: 'sk-ant-oat01-real', token: 'this-review', upstream: upstream.url });
+  const port = Number(new URL(proxy.url).port);
+  const auth = { authorization: 'Bearer this-review' };
+  try {
+    // What the CLI sends is what gets through: the path and the one query key it was seen to send, with the real key.
+    const allowed = await httpRequest(`${proxy.url}/claude/v1/messages?beta=true`, {
+      method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: '{"model":"x"}',
+    });
+    assert.equal(allowed.status, 200);
+    assert.equal(upstream.seen.length, 1);
+    assert.equal(upstream.seen[0].url, '/v1/messages?beta=true', 'the path and its query reach the provider unchanged');
+    assert.equal(upstream.seen[0].headers.authorization, 'Bearer sk-ant-oat01-real', 'the real key is added here');
+
+    // Another method, and another path, are refused: the DELETE the reviewer reproduced, a read, a management route.
+    for (const attempt of [
+      { method: 'DELETE', url: `${proxy.url}/claude/v1/files/file-123` },
+      { method: 'DELETE', url: `${proxy.url}/claude/v1/messages` },
+      { method: 'GET', url: `${proxy.url}/claude/v1/messages` },
+      { method: 'GET', url: `${proxy.url}/claude/v1/models` },
+      { method: 'POST', url: `${proxy.url}/claude/v1/files` },
+      { method: 'POST', url: `${proxy.url}/claude/v1/messages/batches` },
+      { method: 'POST', url: `${proxy.url}/claude/v1/messages/count_tokens` },
+    ]) {
+      const answer = await httpRequest(attempt.url, { method: attempt.method, headers: auth, body: '{"a":1}' });
+      assert.equal(answer.status, 403, `${attempt.method} ${attempt.url} → ${answer.status}`);
+      assert.ok(!answer.body.includes('sk-ant-oat01-real'), 'a refusal never quotes the key');
+    }
+    assert.equal(upstream.seen.length, 1, 'no refused call reached the provider');
+
+    // Every way a request line can look like the allowed path without being it, written as raw bytes so the client
+    // cannot tidy it up first.
+    for (const line of [
+      'POST /claude/v1/messages/../files/file-123 HTTP/1.1',
+      'POST /claude/v1/../v1/files HTTP/1.1',
+      'POST /claude/v1/messages/..%2ffiles HTTP/1.1',
+      'POST /claude/v1/messages%2f..%2ffiles HTTP/1.1',
+      'POST /claude/v1/%2e%2e/v1/files HTTP/1.1',
+      'POST /claude//v1/messages HTTP/1.1',
+      'POST /claude/v1/messages%00 HTTP/1.1',
+      'POST /claude/v1/messages/ HTTP/1.1',
+      'POST /claude/v1/MESSAGES HTTP/1.1',
+      'POST /claude/v1/messages?beta=true&path=/v1/files HTTP/1.1',
+      'POST /claude/v1/messages?/v1/files HTTP/1.1',
+      'POST /claude/v1/messages#/v1/files HTTP/1.1',
+      'POST http://127.0.0.1:9/claude/v1/messages HTTP/1.1',
+      'CONNECT api.openai.com:443 HTTP/1.1',
+    ]) {
+      const answer = await rawRequest(port, line, 'Authorization: Bearer this-review\r\nContent-Length: 2\r\n\r\n');
+      assert.equal(answer.status, 403, `${line} → ${answer.status}`);
+    }
+    assert.equal(upstream.seen.length, 1, 'a path trick or a tunnel never reached the provider');
+
+    // A credential the request brings is dropped, and the host is the proxy's, never one from the request or its headers.
+    const smuggled = await httpRequest(`${proxy.url}/claude/v1/messages`, {
+      method: 'POST',
+      headers: { 'x-api-key': 'this-review', 'proxy-authorization': 'Bearer sk-attacker', host: 'api.openai.com' },
+      body: '{}',
+    });
+    assert.equal(smuggled.status, 200);
+    const seen = upstream.seen[upstream.seen.length - 1];
+    assert.equal(seen.headers.authorization, 'Bearer sk-ant-oat01-real', 'the real key replaces whatever was offered');
+    assert.equal(seen.headers['x-api-key'], undefined, 'a client-supplied key is dropped');
+    assert.equal(seen.headers['proxy-authorization'], undefined, 'a client-supplied proxy credential is dropped');
+    assert.notEqual(seen.headers.host, 'api.openai.com', 'the upstream host comes from the proxy, not the request');
+    assert.ok(!JSON.stringify(seen.headers).includes('sk-attacker'), 'nothing the client offered as a key travels');
+
+    // A body past the cap is refused before it is read.
+    const huge = await httpRequest(`${proxy.url}/claude/v1/messages`, {
+      method: 'POST', headers: { ...auth, 'content-length': String(maxProxyBodyBytes + 1) }, body: '{}',
+    });
+    assert.equal(huge.status, 413, 'an oversized request is refused');
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});
+
+test('the sandbox is pointed at the proxy, and the proxy process serves it', async () => {  const upstream = await fakeUpstream();
   const dir = temp();
   // The real child process the review starts, with the real ready file: this is the path a review takes on the runner.
   const config = { provider: 'codex', key: 'sk-codex-real-key', token: 'codex-review-token', upstream: upstream.url };

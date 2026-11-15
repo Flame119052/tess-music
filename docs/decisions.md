@@ -172,6 +172,21 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   call is forwarded with the key added, and a call with no token, another token, or a path outside the provider never
   reaches the upstream. No live provider call has been made from here, so the first review of each proxied provider is
   the live check. (#98)
+  *Amended 15 Nov 2026, after review:* the proxy was forwarding **whatever method and route it was given**, so the token
+  was a way to use everything the key can reach — a reproduced `DELETE /v1/files/file-123` arrived upstream with the real
+  key. It now forwards **one exact request per provider and refuses the rest with a 403**, before anything is forwarded:
+  `POST /v1/messages` (query limited to `beta`) for Claude Code 2.1.325, and `POST /v1/responses` for Codex 0.169.0.
+  Those are not guesses: both pinned CLIs were run against a local upstream that logged every method and path, Claude in
+  the review's own print mode (`--restricted --safe-mode --tools Read,Grep,Glob`, streamed and non-streamed, one tool
+  turn) and Codex with the review's `-c` overrides. Nothing else was seen, so nothing else is allowed — including
+  `count_tokens`, which the pinned Claude build has code for but never called here, and which is one line to add if a
+  real review ever asks for it. The route match refuses other methods, other paths, `.`/`..` segments, `//`, a backslash,
+  any percent-escape (so `%2f`, `%2e%2e` and `%5c` cannot hide), a fragment, a query key the CLI does not send, an
+  absolute-form request line that names its own host, and `CONNECT`/`Upgrade`. The upstream host is the one the proxy was
+  started with, never one from the request or its headers; every incoming `authorization`, `x-api-key` and
+  `proxy-authorization` is dropped before the real key is added; and a body over 10 MB is refused rather than buffered.
+  Both pinned CLIs were then run end to end through the real proxy: each completed a turn, and the only thing the
+  upstream saw was its one inference route. (#98)
 
 ## Releases and process
 

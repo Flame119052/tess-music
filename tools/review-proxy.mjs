@@ -8,8 +8,9 @@
 // sandbox cannot read: it holds no tool that can reach another process, and bubblewrap's `/proc` shows it only its own.
 //
 // What this does not cover, stated plainly: the token is still a credential the sandbox holds, so a diff can still get
-// the model to print it. It dies with the job and opens nothing, and any text that quotes a key the job holds is refused
-// by `containsHeldSecret` before it is posted.
+// the model to print it. It dies with the job, and what it can do is one inference call on one route: `proxyRoutes`
+// refuses every other method and path, so the token is not a way to reach the rest of what the key can do (delete a
+// file, list a batch). Any text that quotes a key the job holds is refused by `containsHeldSecret` before it is posted.
 //
 // Usage (a child process, because the reviewer itself is spawned with `spawnSync` and would otherwise block the proxy):
 //   node tools/review-proxy.mjs --config <file> --ready <file>
@@ -34,60 +35,149 @@ export const proxyProviders = {
 // so a request can never leave for a host the provider was not given.
 export const proxyPath = (provider) => `/${provider}`;
 
-const upstreamPath = (provider, url) => {
-  const stripped = String(url || '').startsWith(proxyPath(provider))
-    ? String(url).slice(proxyPath(provider).length)
-    : null;
-  return stripped && stripped.startsWith('/') ? stripped : null;
+// The exact requests a review's CLI makes, and nothing else. Confirmed by running both pinned CLIs against a local
+// upstream that logged every method and path: Claude Code 2.1.325 in the review's print mode (restricted, safe mode,
+// Read/Grep/Glob) sends only `POST /v1/messages?beta=true`, and Codex 0.169.0 with `wire_api = "responses"` sends only
+// `POST /v1/responses`. The key can also list, download and delete files and batches; none of that is on this list, so
+// the proxy never carries the key to it. A route is a method, a literal path, and the only query keys the CLI was seen
+// to send (an empty list means no query at all).
+export const proxyRoutes = {
+  claude: [{ method: 'POST', path: '/v1/messages', query: ['beta'] }],
+  codex: [{ method: 'POST', path: '/v1/responses', query: [] }],
+};
+
+// A review body is a diff and a prompt; 10 MB is far above the largest real one and below anything that could be used
+// to exhaust the runner.
+export const maxProxyBodyBytes = 10 * 1024 * 1024;
+
+const decodeSafe = (value) => {
+  try { return decodeURIComponent(value); } catch { return null; }
+};
+
+// What this asks: does the request line name one of the routes above, exactly? It answers with the canonical method,
+// path and query to forward, or null. Everything a request line could do to look like a route without being one is
+// refused here, before any byte or the key moves: another method, another path, `..` and `.` segments, `//`, a
+// backslash, any percent-escape (which is how `%2f`, `%2e%2e` and `%5c` hide), a fragment, a query key the CLI does
+// not send, and an absolute-form URL that names its own host.
+export function matchProxyRoute(provider, method, rawUrl) {
+  const routes = proxyRoutes[provider] || [];
+  const prefix = proxyPath(provider);
+  const url = String(rawUrl || '');
+  if (!url.startsWith(`${prefix}/`)) return null;
+  const rest = url.slice(prefix.length);
+  if (rest.includes('#')) return null;
+  const at = rest.indexOf('?');
+  const path = at === -1 ? rest : rest.slice(0, at);
+  const search = at === -1 ? '' : rest.slice(at + 1);
+  if (path.includes('\\') || path.includes('//')) return null;
+  if (path.split('/').some((segment) => segment === '.' || segment === '..')) return null;
+  if (decodeSafe(path) !== path) return null;
+  const route = routes.find((candidate) => candidate.method === String(method || '').toUpperCase()
+    && candidate.path === path);
+  if (!route) return null;
+  const pairs = [];
+  if (search) {
+    for (const part of search.split('&')) {
+      const eq = part.indexOf('=');
+      const key = eq === -1 ? part : part.slice(0, eq);
+      const value = eq === -1 ? '' : part.slice(eq + 1);
+      if (!route.query.includes(key)) return null;
+      if (decodeSafe(key) !== key || decodeSafe(value) !== value) return null;
+      pairs.push(`${key}=${value}`);
+    }
+  }
+  return { method: route.method, path: route.path, search: pairs.length ? `?${pairs.join('&')}` : '' };
+}
+
+// A refusal is the end of the conversation: the connection is closed with it, so a client never reuses a socket the
+// proxy has already said no on.
+const refusal = (res, status, message) => {
+  res.writeHead(status, { 'content-type': 'application/json', connection: 'close' });
+  res.end(JSON.stringify({ error: `tess review proxy: ${message}` }));
 };
 
 export function createReviewProxy({ provider, key, token, upstream }) {
   const target = new URL(upstream || proxyProviders[provider]?.upstream || '');
+  if (!/^https?:$/.test(target.protocol) || target.username || target.password) {
+    throw new Error('the review proxy needs a plain http(s) upstream with no credentials in it');
+  }
   const forward = target.protocol === 'http:' ? httpRequest : httpsRequest;
   const server = createServer((req, res) => {
+    // A refusal drains the body it will not read before answering, so the client reads the refusal instead of a reset.
+    const deny = (status, message) => { req.resume(); refusal(res, status, message); };
     const given = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '')
       || String(req.headers['x-api-key'] || '');
     // Anything that is not this job's own token is refused before a byte is forwarded: the proxy is on loopback, but the
     // sandbox is not the only process that could find the port.
     if (!token || given !== token) {
-      res.writeHead(401, { 'content-type': 'application/json' });
-      res.end('{"error":"tess review proxy: not this review"}');
+      deny(401, 'not this review');
       return;
     }
-    const path = upstreamPath(provider, req.url);
-    if (!path) {
-      res.writeHead(404, { 'content-type': 'application/json' });
-      res.end('{"error":"tess review proxy: unknown route"}');
+    const route = matchProxyRoute(provider, req.method, req.url);
+    if (!route) {
+      // The method, the path and the query are all part of the route: a DELETE, a GET, a management path, a path trick
+      // and an absolute-form request line all stop here, and none of them reaches the provider.
+      deny(403, 'not a route a review uses');
       return;
     }
     if (!key) {
-      res.writeHead(500, { 'content-type': 'application/json' });
-      res.end('{"error":"tess review proxy: no credential"}');
+      deny(500, 'no credential');
       return;
     }
+    const declared = Number(req.headers['content-length'] || 0);
+    if (declared > maxProxyBodyBytes) {
+      deny(413, 'request too large');
+      return;
+    }
+    // The real credential is added here and any credential the request brought is dropped, so a client cannot choose
+    // the key, and the host is the one this proxy was given, never one from the request line or its headers.
     const headers = { ...req.headers };
     delete headers.host;
     delete headers.authorization;
     delete headers['x-api-key'];
+    delete headers['proxy-authorization'];
     headers[proxyProviders[provider]?.header || 'authorization'] = `${proxyProviders[provider]?.scheme || 'Bearer '}${key}`;
     headers.host = target.host;
     const up = forward({
       hostname: target.hostname,
       port: target.port || (target.protocol === 'http:' ? 80 : 443),
-      method: req.method,
-      path: `${target.pathname.replace(/\/$/, '')}${path}`,
+      method: route.method,
+      path: `${target.pathname.replace(/\/$/, '')}${route.path}${route.search}`,
       headers,
     }, (upstreamRes) => {
       res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
       upstreamRes.pipe(res);
     });
-    // A failed forward is the proxy's own failure, never the reviewer's answer: say so, and keep the key out of it.
+    // A failed forward is the proxy's own failure, never the reviewer's answer: say so once, and keep the key out of it.
+    let failed = false;
     up.on('error', (error) => {
+      if (failed) return;
+      failed = true;
+      req.unpipe(up);
       if (res.headersSent) { res.end(); return; }
-      res.writeHead(502, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: `tess review proxy: ${error.code || 'upstream failed'}` }));
+      deny(502, error.code || 'upstream failed');
+    });
+    let size = 0;
+    let tooLarge = false;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      // A body with no honest content-length still cannot grow past the cap: the forward is cut, the rest is discarded,
+      // and the client is told why instead of the proxy buffering it.
+      if (size > maxProxyBodyBytes && !tooLarge) {
+        tooLarge = true;
+        req.unpipe(up);
+        up.destroy();
+        deny(413, 'request too large');
+      }
     });
     req.pipe(up);
+  });
+  // A tunnel is how a proxy is asked to reach another host; this one only ever speaks to the upstream it was given.
+  server.on('connect', (req, socket) => {
+    socket.end('HTTP/1.1 403 Forbidden\r\ncontent-type: application/json\r\n\r\n{"error":"tess review proxy: not a route a review uses"}');
+  });
+  server.on('upgrade', (req, socket) => {
+    socket.end('HTTP/1.1 403 Forbidden\r\ncontent-type: application/json\r\n\r\n{"error":"tess review proxy: not a route a review uses"}');
   });
   return new Promise((resolve, reject) => {
     server.once('error', reject);
