@@ -265,6 +265,23 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   T3's own mapping (Codex: OS read-only, no network; Claude: per-tool approval), and files outside the worktree stay
   readable by the owner's own account, so the Mac stays opt-in per tag and GitHub stays the default. (#71, #105)
 
+- **D-78 · 15 Nov 2026 · Owner** — A machine review runs in the **same stripped copy** the GitHub job reads, and reads
+  `idle` as the end of a turn. `t3 thread start` can only give a thread a project root or a new worktree, so the watcher
+  builds a commit in its own clone whose tree is the reviewed head with every agent setting, instruction file (any depth,
+  any letter case) and link removed, and starts the thread on a worktree of that ref; the commit has no parent, so the
+  change's own history cannot hand `AGENTS.md` back through `git show`. The copy is deleted with the review — worktree and
+  ref both. A turn is finished when T3 reports the run over (`idle`, `completed`, or one of the ended statuses) and the
+  newest run is the one `t3 thread send` started; the sidebar's `settled` is days of quiet and is never consulted, which
+  is what had left finished reviews unposted and both slots held. The mode is read before each send *and* before the
+  answer is accepted, and a thread found wider gets nothing further and loses its copy. Both paths now share the prompt's
+  context (`buildPrContext`: compacted diff, SENSITIVE notices, changed files read from the copy the thread has) and the
+  comment's footer (`formatReviewComment`), and the watcher applies the same key refusal (`looksSecret`, held secrets)
+  before posting. *Why:* #105's second review showed the boundary was a read-back rather than a folder — the thread
+  started on the pull request's own tree, and its answer was posted unchecked — and that a machine review was missing
+  #104's bounds entirely. *Trade-off:* `t3 thread start` takes no token limit, so the comment says `Cap: none on this
+  path` and the bound is the same `timeout_s` the GitHub job uses; and the worktree T3 makes still carries a `.git`
+  pointer into the watcher's clone. (#71, #105)
+
 ## Releases and process
 
 - **D-30 · 12 Nov 2026 · Owner** — Any change pushed to the repo ships automatically as a regular update.

@@ -36,13 +36,16 @@ GitHub-hosted jobs cannot reach Krish's machines, and the self-hosted runners th
 
 1. The workflow's gate reads the tag, checks it, and stops. Its notice job posts `Review queued for mac`.
 2. The watcher on the Mac polls GitHub every couple of minutes for comments that name `machine=mac`.
-3. It checks each one with the same code the GitHub job uses (`tools/agent-review.mjs`), then starts
-   `t3 thread start` — the machine's own CLI talking to its own local T3 server — with a fixed first message that
-   contains nothing from the pull request.
+3. It checks each one with the same code the GitHub job uses (`tools/agent-review.mjs`), then builds the reviewed commit
+   into the same stripped copy the GitHub job reads — agent settings, instruction files at any depth, and links removed
+   — as a commit in its own clone. It starts `t3 thread start` on a worktree of **that** commit, with a fixed first
+   message that contains nothing from the pull request.
 4. It reads the new thread's runtime mode back from T3. Only if that is `approval-required` does it send the review
-   (diff, issue, focus) to the same thread. A project left wider is refused, and the pull request is told why.
-5. The thread answers with the review as its last message. The watcher checks the shape and posts it with its own `gh`,
-   after confirming the pull request still points at the commit the review read.
+   (compacted diff, SENSITIVE notices, changed files, issue, focus) to the same thread. A project left wider is refused,
+   the thread's copy is deleted, and the pull request is told why.
+5. The thread answers with the review as its last message. The watcher waits for T3 to report the run over (`idle` or
+   `completed` — not the sidebar's `settled`, which is days of quiet), checks the shape and its keys, and posts it with
+   its own `gh`, after confirming the pull request still points at the commit the review read. Then it deletes the copy.
 
 Nothing is exposed inbound, and no T3 credential is stored on GitHub: the thread is started by the machine's own command,
 using the sign-ins it already has. The watcher holds no key of its own.
@@ -125,9 +128,9 @@ the last ticks. To stop it: `systemctl --user disable --now tess-review-watch.ti
 
 - **At most two reviews at once** per machine (`slots`). A tag that arrives while both are busy waits its turn; after
   `slotWaitMs` (30 minutes) the watcher answers `every review slot on this machine is busy` and stops waiting.
-- **A slot is held for as long as its thread exists**, settled or not. A slot is given back when its review is posted,
-  refused or gone — never on a timer while a thread is still there, because that would run more reviews at once than
-  the cap allows. A slot whose thread has disappeared is reclaimed after `slotStaleMs`.
+- **A slot is held for as long as its thread is running.** A slot is given back when its review is posted, refused or
+  gone — when T3 reports the run over (`idle`, `completed`, or an ended status such as `failed`), never on a timer while
+  a turn is still going. A slot whose thread has disappeared is reclaimed after `slotStaleMs`.
 - **One review per tag**, ever. A tag is remembered by comment id and by age, and a comment with the bot marker is
   ignored, so a review cannot start another review. Installing the watcher never replays old tags: the first run looks
   back ten minutes and no further.
@@ -139,8 +142,13 @@ the last ticks. To stop it: `systemctl --user disable --now tess-review-watch.ti
   already made instead of starting a second one.
 - **Nothing a pull request controls reaches a thread that is not read-only.** The first message is fixed words; the
   review (diff, issue, focus) is sent only after T3 reports the thread at `approval-required`. On macOS that means
-  Codex gets an OS-level read-only sandbox with no network, and Claude asks before it runs a command.
-- **Nothing posts from the thread.** The watcher holds the write; the thread is only read text and a worktree.
+  Codex gets an OS-level read-only sandbox with no network, and Claude asks before it runs a command. The thread is
+  started in a copy this watcher builds, never in the pull request's checkout, so an `AGENTS.md` or a `CLAUDE.md` in the
+  change is gone before the first turn exists. A thread found at a wider mode is sent nothing further and its copy is
+  deleted; T3's CLI has no command to delete a thread, so it stays in the list for you to delete.
+- **Nothing posts from the thread.** The watcher holds the write; the thread is only read text and a worktree. The text it
+  answers with goes through the same two refusals the GitHub job applies: `looksSecret` and any key this machine holds.
+  A review that quotes one is not posted, in the same words the job uses.
 
 ### What the boundary is, and what it is not
 
@@ -148,6 +156,8 @@ Enforced, and checked before anything from a pull request arrives:
 
 - the runtime mode T3 itself reported for the thread (wider than `approval-required` → refused, never reviewed);
 - the commit reviewed (CI green on it, this repository's own head, unchanged at launch and at posting);
+- the copy the thread reads: the reviewed commit with agent settings, instruction files at any depth, and every link
+  removed, as a commit with no parent, so the change's own history cannot hand the instructions back;
 - the allowlist, the author rule, the tier, plans-only, usage and reserve, read from `main`;
 - who posts. The thread cannot post, push, merge or release in your name, because it is never given a way to.
 
@@ -156,6 +166,12 @@ sandbox can still *read* a file the owner can read, and nothing here can change 
 sandbox has no network and no writes (Codex), or that a command waits for the owner's approval (Claude). Krish's signing
 keys are outside the worktree and outside the review, but they are not behind a second door. That is why this path is
 opt-in per tag, `machine=github` stays the default, and a Mac review is watched while it runs.
+
+- **No token cap on this path, and the comment says so.** `t3 thread start` takes a provider and a model, with nowhere to
+  put the per-model token limit the GitHub job passes to Codex, so a machine review runs under this machine's plan
+  instead. The watcher still bounds it: `timeout_s` from `.github/agents.json` is the longest a review may run, and a
+  thread that keeps going past it is refused and its copy deleted. Every machine comment carries a `Cap:` line saying
+  exactly that, so nobody reads a machine review as if it had the GitHub job's ceiling.
 
 - **Refusals stay short.** A refused tag gets the same fixed words the GitHub job uses, or the same rule comment, and
   nothing from the log: a public issue must never carry a path or a key.

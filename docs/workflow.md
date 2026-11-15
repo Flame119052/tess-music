@@ -95,13 +95,19 @@ The tag also says **where** the review runs, and may add **what to look at**:
 - **`machine=vps`** is refused, in fixed words: T3 on `paperclip-vps` runs as root beside Paperclip, so Tess agents do
   not run there through T3 (see "Which machine does what").
 
-What the machine path enforces, before any pull-request text reaches a thread (D-77):
+What the machine path enforces, before any pull-request text reaches a thread (D-77, D-78):
 
 - **The thread's runtime mode.** The watcher opens the thread with one fixed line that contains nothing from the pull
   request, reads the mode T3 reports back, and only sends the diff, the issue and the focus when it is
   `approval-required` — T3's strictest setting, which is a real read-only, no-network sandbox for Codex and a per-tool
   approval for Claude. A project left at any wider mode is refused with a comment naming the setting, never reviewed. The
   project's default runtime mode is set to `approval-required` once, when the watcher is installed.
+- **The copy the thread reads.** Not the pull request's checkout: the reviewed commit is unpacked into the same stripped
+  copy the GitHub job makes — agent settings, instruction files at any depth and every link removed — before the thread
+  exists, so an `AGENTS.md` in the change cannot brief the reviewer. The copy is deleted with the review.
+- **When a review is finished.** T3's own end of the run (`idle`, `completed`, or an ended status), checked against the
+  run `t3 thread send` started — not the sidebar's `settled`, which is days of quiet. The mode is read again on the way
+  out, and the answer is posted only if its shape is a review and it holds no key.
 - **Who posts.** The thread has no way to write: it is never told how to comment or merge, `gh` is not part of its job,
   and its answer is read, checked for the marker, the commit and one verdict line, and posted by the watcher. A hijacked
   thread can produce a bad review; it cannot comment, push, merge or release in Krish's name.
@@ -117,7 +123,8 @@ Two things the machine path still is not. It is not a second sandbox around the 
 Krish's user, the read-only sandbox has no network and no writes, and files outside the worktree stay readable — which is
 why `machine=github` stays the default and the Mac is named only when he wants to watch. And `effort=` cannot be passed
 to a thread, so a tag that names one is refused on those machines rather than run at an effort nobody chose (leave it
-out, or use `machine=github`).
+out, or use `machine=github`). `t3 thread start` takes no token limit either, so a machine review has none and its
+comment says `Cap: none on this path`; the bound is the same `timeout_s` the GitHub job runs a reviewer under.
 
 **Plans only.** Every model on the list runs on one of Krish's subscriptions — the Claude plan, the ChatGPT plan, the
 OpenCode Go plan, or the Z.ai coding plan. No per-token API key is used, ever: a review must never bill by the token.
