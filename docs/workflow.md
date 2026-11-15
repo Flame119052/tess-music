@@ -63,6 +63,7 @@ read it and when to change it; it does not repeat the values.
 | `strong` | the models sensitive work may use |
 | `efforts` | the effort words a tag may ask for |
 | `cost` | what one review costs: `light` (pennies), `medium` (worth a thought), `heavy` (a visible bite out of a weekly pool) |
+| `caps` | the hard limit on one review: wall clock, turns, dollars, steps, and the share of a 5-hour window each model is assumed to use |
 | `reserve` | quota kept back per provider, as the % left per window kind, with a plain `note` and an optional `until` date |
 | `notes` | dated, temporary facts, such as a model with its own pool; not rules |
 
@@ -71,8 +72,8 @@ the posted comment, when:
 - its CLI is not installed on that machine;
 - a usage window is already used up (a window that has reset no longer counts);
 - it is **on pace to run out before its reset**, even with usage left — Claude at 84% of a week with two days to go;
-- fewer than three reviews are left in its 5-hour window (a review is counted as 10% of that window, a cautious round
-  number: the hub reports what is left, not what a review spends);
+- fewer than three reviews are left in its 5-hour window (each model has its own per-review share in `caps`, so a cheap
+  model still runs when a heavy one would not);
 - it is inside a `reserve` amount that has not expired;
 - the machine has no working `bubblewrap` sandbox (see below).
 
@@ -87,8 +88,7 @@ worth.
    its week, with two days to run; Codex had 93% of its session and 89% of its week. Only one was safe to spend that
    morning, and the session numbers alone would have picked the wrong one.
 3. **Spend to the size of the change.** One review per stage, and a second only after a fix changed something a reviewer
-   would read differently. `cost` says what a review takes; a per-review cap is being measured in
-   [#71](https://github.com/Flame119052/tess-music/issues/71) until then.
+   would read differently. `caps` and `cost` say what a review takes, and every review now has a hard cap (below).
 4. **Then pick from the role's list**, skipping anything you just ruled out.
 
 Some pools are separate, and a provider's `notes` in the config say which: a model with its own weekly pool leaves the
@@ -122,8 +122,10 @@ own API and nothing else on the machine.
 
 On top of that, each CLI is told to stay read-only:
 - Claude: `--restricted --safe-mode` with only the Read, Grep and Glob tools.
-- Codex: `--sandbox read-only --ephemeral --ignore-rules`, with project document loading off (`project_doc_max_bytes=0`).
-  That flag limits the shell commands the model may ask for; the boundary above is what stops it reading the runner.
+- Codex: `--sandbox read-only --ephemeral --ignore-rules --skip-git-repo-check`, with project document loading off
+  (`project_doc_max_bytes=0`). That flag limits the shell commands the model may ask for; the boundary above is what
+  stops it reading the runner. The git check has to be skipped because the review copy is a `git archive`, with no
+  `.git` in it.
 - Cursor: `--mode ask --sandbox enabled`.
 - OpenCode: the `tess-reviewer` agent (`tools/opencode-reviewer.md`), which denies everything except reading, and denies
   `external_directory` so reads stop at the review copy. The runner's copy must match that file on `main` exactly, or the
@@ -136,6 +138,28 @@ as data, never as instructions. A file that is a link is removed too, because a 
 (the diff already shows where a link pointed). Before a review is posted, it is also refused if its text contains the
 value of any key the job holds, `GH_TOKEN` included.
 
+### Every review has a hard cap
+
+A review must never take a large share of an allowance, so each one is bounded before it starts. The numbers are in
+`.github/agents.json` under `caps`; one edit changes them everywhere, and the test checks the ones each CLI accepts.
+
+| Provider | What stops a review | Notes |
+| --- | --- | --- |
+| Claude | `--max-turns 12`, `--max-budget-usd` (60 cents for Opus, 30 for Sonnet), `--output-format json` | `--max-turns` is real but hidden from `--help` in 2.1.x. The dollar figure is a client-side estimate of API list prices, not the plan's own meter, so it is a guardrail beside the turn cap. The JSON result is what lets the comment say the turns, dollars and tokens a review used. |
+| Codex | `-c model_reasoning_effort=…`, `-c model_auto_compact_token_limit=180000`, `--json` | Codex has no turn or budget cap in `exec` mode. Compaction at 180k tokens keeps one review inside the context it started with, and `--json` reports the tokens used, which the comment then states. |
+| Cursor | the 480 s timeout, `--mode ask`, `--sandbox enabled` | Cursor offers no cap it can be told about, so time is the only limit. Only Cursor's own models (Composer) are allowed: a Claude or GPT model inside Cursor bills prepaid credit from the first request. |
+| OpenCode | `steps: 12` in the `tess-reviewer` agent file | On the last step OpenCode drops the tools and asks for a summary, which is the review. The agent file must match `tools/opencode-reviewer.md` exactly, and the test keeps its number equal to `caps.opencode.steps`. |
+| **All of them** | a 600 s wall clock (480 s for `gpt-6.1-terra` and Cursor) | The process is killed at the limit, bubblewrap takes its children with it, and the posted comment names it: `Skipped: codex/gpt-6.1-sol (timed out after 600s)`. |
+
+A review's wall clock and its share of a window are different things: the timeout stops a stuck or runaway run, while
+`caps.per_review_pct` decides whether there is enough left to start one (three reviews kept in hand). A CLI that stops
+because of one of these caps is a skip like any other: the next reviewer runs and the comment says `hit its cap`, because
+a review that ran out of turns says nothing about the change.
+Measured so far,
+as a share of a 5-hour window: `gpt-6.1-sol` 7, `gpt-6.1-terra` 3, `opencode-go/glm-5.3` 4,
+`opencode-go/glm-5.3-flash` 0.2, `opencode-go/deepseek-v4.1-flash` 0.1. Claude reports no numbers of its own, so it keeps
+the cautious 10% fallback. A model with no figure therefore behaves exactly as before.
+
 **Rules.**
 - Don't use the strongest model at both stages unless the work is sensitive.
 - The reviewer should come from a different provider than the agent that wrote the change, so it doesn't share the same blind spots.
@@ -147,20 +171,29 @@ value of any key the job holds, `GH_TOKEN` included.
 ### How to update this
 
 Everything below is one edit to `.github/agents.json`, then `node tools/test-agent-review.mjs`, then a PR. The test
-checks that every allowed model has a cost weight, that every default is an allowed model with a valid effort, and that
-every note stays dated.
+checks that every allowed model has a cost weight, that every default is an allowed model with a valid effort, that the
+caps name allowed models, that the OpenCode step cap matches the agent file, and that every note stays dated.
 
-- **A new model came out.** Add it to `allowed` for its provider, give it a `cost`, then put it where it should be
-  tried: a role list, or nowhere (allowed by tag only). Add it to `strong` only if sensitive work may use it.
-- **A provider changed its limits.** Nothing to edit: the usage hub reads the limits by itself. The three-review floor is
-  a number in code (`reviewCostPercent` and `reviewsToKeep` in `tools/agent-review.mjs`), changed only with a measured
-  cost per review to point at.
+- **A new model came out.** Add it to `allowed` for its provider, give it a `cost` and, once measured, a
+  `caps.per_review_pct`, then put it where it should be tried: a role list, or nowhere (allowed by tag only). Add it to
+  `strong` only if sensitive work may use it.
+- **A provider changed its limits.** Nothing to edit: the usage hub reads the limits by itself. The share of a 5-hour
+  window one review is assumed to take is `caps.per_review_pct`, per model, in `.github/agents.json`; a model with no
+  entry falls back to a cautious 10% in `tools/agent-review.mjs`, changed only with a measured cost per review to point
+  at.
+- **Change what one review may spend.** Edit `caps` in `.github/agents.json`: `timeout_s` and `timeout_s_by_model` (the
+  wall clock), `claude.max_turns` and `claude.max_budget_usd`, `codex.auto_compact_token_limit`, and `opencode.steps`.
+  `opencode.steps` must equal `steps:` in `tools/opencode-reviewer.md`, because that file is what the runner copies and
+  the test compares the two; copy the file again on any machine that runs OpenCode reviews. Then run
+  `node tools/test-agent-review.mjs` and say in the PR what MADE the old number wrong (a run that hit it, or a measured
+  cost), so the change is not just a preference.
 - **Reserve quota for something else.** Add an entry under `reserve`, for example
   `"claude": { "weekly": 30, "note": "Krish's own work", "until": "2026-11-20" }`. The provider counts as out of usage
   once its % left falls to that number, and the reservation lifts by itself after the `until` day. Delete the entry, or
   the whole block, to reserve nothing.
-- **Stop using a model.** Remove it from the role lists, from `allowed`, and its `cost`. Sensitive work must keep at
-  least the two strong models in `approach` and `pr_sensitive`.
+- **Stop using a model.** Remove it from the role lists and from `allowed`, and drop its `caps.per_review_pct` and its
+  `cost`, unless you are keeping both as the measured record of why it is out. Sensitive work must keep at least the two
+  strong models in `approach` and `pr_sensitive`.
 
 ## Reviewer agents on the reviewer machines
 

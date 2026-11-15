@@ -10,12 +10,16 @@ import { fileURLToPath } from 'node:url';
 import {
   agentConfig,
   assertReviewerAgent,
+  budgetUsd,
   claudeTools,
   cliArgs,
+  capsFor,
   containsHeldSecret,
   eligibleModels,
   headMismatchMessage,
   looksSecret,
+  parseClaudeOutput,
+  parseCodexOutput,
   parseRequest,
   providerHasUsage,
   reserveProblem,
@@ -23,6 +27,7 @@ import {
   resolveReviewers,
   reviewerEnv,
   reviewerCandidates,
+  reviewCost,
   reviewCostPercent,
   reviewsToKeep,
   runReviewer,
@@ -33,8 +38,10 @@ import {
   skippedLine,
   snapshot,
   stripAgentConfig,
+  timeoutSeconds,
   tierForPaths,
   usageProblem,
+  usedLine,
   verifyPrHead,
 } from './agent-review.mjs';
 
@@ -467,6 +474,151 @@ test('each CLI is told the effort and the folder in the way its own flags accept
   assert.throws(() => cliArgs('nobody', 'm'), /unsupported review provider/);
 });
 
+test('every review carries a hard cap, spelled the way its CLI takes it', () => {
+  const caps = capsFor(config);
+  const flag = (args, name) => args[args.indexOf(name) + 1];
+
+  // Claude 2.1.x: --max-turns is real but hidden from --help, and --max-budget-usd is an estimate of API list prices.
+  const opus = cliArgs('claude', 'claude-opus-5-5', 'high', '/w', caps);
+  assert.equal(flag(opus, '--max-turns'), '12', 'a review stops after 12 turns');
+  assert.equal(flag(opus, '--max-budget-usd'), '0.6', 'Opus gets a 60 cent guardrail');
+  assert.equal(flag(cliArgs('claude', 'claude-sonnet-5-5', 'medium', '/w', caps), '--max-budget-usd'), '0.3',
+    'Sonnet gets 30 cents');
+  assert.deepEqual(opus.slice(opus.indexOf('--output-format'), opus.indexOf('--output-format') + 2), ['--output-format', 'json'],
+    'the JSON result is what reports the turns and dollars a review used');
+
+  // Codex has no turn or budget cap, so effort and auto-compaction are its levers, and --json is what reports tokens.
+  const codex = cliArgs('codex', 'gpt-6.1-terra', 'medium', '/w', caps);
+  assert.ok(codex.includes('model_auto_compact_token_limit=180000'), 'Codex compacts instead of filling its window');
+  assert.ok(codex.includes('model_reasoning_effort=medium'));
+  assert.ok(codex.includes('--json'), 'Codex reports the tokens a review used');
+  assert.ok(codex.includes('--skip-git-repo-check'), 'the review copy has no .git, so Codex has to be told that');
+
+  // Cursor has no cap it can be told about, so the timeout is its only limit and only its own models are allowed.
+  assert.deepEqual(config.allowed.cursor, ['composer-2.5'], 'a GPT or Claude model inside Cursor bills prepaid credit');
+  assert.equal(flag(cliArgs('cursor', 'composer-2.5', undefined, '/w', caps), '--mode'), 'ask');
+
+  // OpenCode takes its step limit from its agent file, which the runner must copy exactly, so the two numbers must agree.
+  const agent = readFileSync(new URL('./opencode-reviewer.md', import.meta.url), 'utf8');
+  assert.equal(Number(agent.match(/^steps:\s*(\d+)$/m)?.[1]), caps.opencode.steps,
+    'the agent file and agents.json carry the same OpenCode step cap');
+
+  // The caps are in the config, so one edit changes them everywhere, and a config with no caps is still bounded.
+  assert.equal(capsFor({}).timeout_s, 600);
+  assert.equal(capsFor({}).claude.max_turns, 12);
+  assert.equal(capsFor({ caps: { timeout_s: 90 } }).timeout_s, 90);
+});
+
+test('a review that runs past its wall clock is killed, named, and the next reviewer runs', () => {
+  const caps = capsFor(config);
+  assert.equal(timeoutSeconds({ provider: 'codex', model: 'gpt-6.1-sol' }, caps), 600, 'the default is 10 minutes');
+  assert.equal(timeoutSeconds({ provider: 'codex', model: 'gpt-6.1-terra' }, caps), 480, 'terra answers in less');
+  assert.equal(timeoutSeconds({ provider: 'cursor', model: 'composer-2.5' }, caps), 480);
+  assert.equal(timeoutSeconds({ provider: 'claude', model: 'claude-opus-5-5' }, caps), 600);
+
+  const models = [{ provider: 'codex', model: 'gpt-6.1-sol' }, { provider: 'claude', model: 'claude-opus-5-5' }];
+  const called = [];
+  const result = runReviewer(models, 'prompt', '/w', {
+    usageFor: () => undefined,
+    commandAvailable: () => true,
+    sandbox: () => null,
+    caps,
+    invoke: (provider) => {
+      called.push(provider);
+      return provider === 'codex'
+        ? { status: null, stdout: '', stderr: '', timedOut: true }
+        : { status: 0, text: 'Looks right.\nVerdict: approve', usage: { turns: 4, costUsd: 0.0521, input: 20400, output: 1300 } };
+    },
+  });
+  assert.deepEqual(called, ['codex', 'claude'], 'the killed reviewer did not stop the review');
+  assert.equal(result.provider, 'claude');
+  assert.match(skippedLine(result), /codex\/gpt-6\.1-sol \(timed out after 600s\)/,
+    'the comment says the review hit its limit');
+  assert.match(usedLine(result, caps), /\$0\.0521 of its \$0\.6 cap/, 'and what the review that ran actually used');
+  assert.match(usedLine(result, caps), /4 turns/);
+  assert.match(usedLine(result, caps), /21,700 tokens \(20,400 in, 1,300 out\)/);
+
+  // Every reviewer out of time stops the review with the reason, instead of waiting forever.
+  assert.throws(() => runReviewer(models, 'prompt', '/w', {
+    usageFor: () => undefined,
+    commandAvailable: () => true,
+    sandbox: () => null,
+    caps,
+    invoke: () => ({ timedOut: true }),
+  }), /every configured reviewer was skipped: .*timed out after/);
+
+  // A reviewer that reports nothing about its usage adds no line rather than a guess.
+  assert.equal(usedLine({ provider: 'cursor', model: 'composer-2.5', usage: null }, caps), '');
+});
+
+test('a review is priced per model, so a cheap one can run on a nearly empty window', () => {
+  const caps = capsFor(config);
+  const cost = (provider, model) => reviewCost({ provider, model }, caps);
+  const session = (usedPercent) => ({ windows: [{ kind: 'session', usedPercent }] });
+
+  assert.equal(cost('codex', 'gpt-6.1-sol'), 7);
+  assert.equal(cost('codex', 'gpt-6.1-terra'), 3);
+  assert.equal(cost('opencode', 'opencode-go/deepseek-v4.1-flash'), 0.1);
+  assert.equal(cost('claude', 'claude-opus-5-5'), reviewCostPercent,
+    'Claude reports no quota, so it keeps the cautious 10% and the old three-review floor');
+
+  // 80% of the session used leaves 20%: enough for terra (3% a review) and not for sol (7% a review).
+  assert.match(usageProblem(session(80), Date.now(), cost('codex', 'gpt-6.1-sol')), /fewer than 3 reviews left/);
+  assert.equal(usageProblem(session(80), Date.now(), cost('codex', 'gpt-6.1-terra')), null);
+  // Near-empty: only the cheapest reviewer is left, and it is still allowed to run.
+  assert.match(usageProblem(session(99.5), Date.now(), cost('codex', 'gpt-6.1-sol')), /fewer than 3 reviews left/);
+  assert.equal(usageProblem(session(99.5), Date.now(), cost('opencode', 'opencode-go/deepseek-v4.1-flash')), null);
+
+  // And selection uses those numbers: on 20% left the heavy Codex model is skipped by name, deepseek is kept.
+  const models = [
+    { provider: 'codex', model: 'gpt-6.1-sol' },
+    { provider: 'codex', model: 'gpt-6.1-terra' },
+    { provider: 'opencode', model: 'opencode-go/deepseek-v4.1-flash' },
+  ];
+  const { candidates, skipped } = reviewerCandidates(models, {
+    usageByProvider: { codex: session(80), opencode: session(80) },
+    caps,
+  });
+  assert.deepEqual(candidates.map((m) => m.model), ['gpt-6.1-terra', 'opencode-go/deepseek-v4.1-flash']);
+  assert.match(skipped[0].reason, /fewer than 3 reviews left in its session window/);
+  // Without the config's numbers nothing changes: the old 10% floor still applies.
+  assert.match(usageProblem(session(80), Date.now(), reviewCost({ provider: 'codex', model: 'gpt-6.1-sol' })),
+    /fewer than 3 reviews left/);
+});
+
+test('what a review used is read from the output the CLI actually prints', () => {
+  // Captured from codex-cli 0.167.0 (`codex exec --json`) on 15 Nov 2026: one agent_message item and a turn.completed
+  // line carrying the tokens. Anything that is not JSON on stdout is noise and is skipped.
+  const codexStream = [
+    '2026-11-15T04:28:50.069465Z ERROR codex_models_manager::manager: failed to refresh available models',
+    '{"type":"thread.started","thread_id":"01a1dd76"}',
+    '{"type":"item.completed","item":{"id":"item_0","type":"error","message":"ignored config"}}',
+    'not json at all',
+    '{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Looks right.\\nVerdict: approve"}}',
+    '{"type":"turn.completed","usage":{"input_tokens":25351,"cached_input_tokens":0,"output_tokens":5}}',
+  ].join('\n');
+  const codex = parseCodexOutput(codexStream);
+  assert.equal(codex.text, 'Looks right.\nVerdict: approve', 'the review is the agent message, not the event stream');
+  assert.deepEqual(codex.usage, { input: 25351, output: 5, cached: 0 });
+
+  // Claude 2.1.x with --output-format json: one result object with the review, the turns and the estimated dollars.
+  const claude = parseClaudeOutput(JSON.stringify({
+    type: 'result',
+    result: 'Looks right.\nVerdict: approve',
+    num_turns: 6,
+    total_cost_usd: 0.0431,
+    usage: { input_tokens: 21400, output_tokens: 1200, cache_read_input_tokens: 9000 },
+  }));
+  assert.equal(claude.text, 'Looks right.\nVerdict: approve');
+  assert.deepEqual(claude.usage, { turns: 6, costUsd: 0.0431, input: 21400, output: 1200, cached: 9000 });
+
+  // An older CLI that answers in plain text is still a review, and claims no numbers rather than inventing them.
+  assert.deepEqual(parseClaudeOutput('Verdict: approve'), { text: 'Verdict: approve', usage: null });
+  assert.deepEqual(parseCodexOutput('Verdict: approve'), { text: 'Verdict: approve', usage: null });
+  // A stream with events but no agent message falls back to the raw text, so a review is never dropped.
+  assert.equal(parseCodexOutput('{"type":"turn.completed"}').text, '{"type":"turn.completed"}');
+});
+
 test('an unknown flag or variant tries the next reviewer instead of failing the review', () => {
   assert.ok(retries({ status: 1, stderr: 'error: unknown option --variant' }));
   assert.ok(retries({ status: 2, stderr: "unexpected argument '--variant' found" }));
@@ -489,6 +641,21 @@ test('a real failure is not mistaken for a bad flag, and a skip is never silent'
   assert.equal(skipReason({ status: 1, stderr: 'Error: Variant unavailable for opencode-go/glm-5.3: medium' }),
     'rejected a flag');
   assert.equal(skipReason({ status: 1, stderr: 'Rate limit reached for this model' }), 'usage limit');
+
+  // A cap we set is a skip, not a failure: the review moves to the next reviewer and the comment says why.
+  assert.equal(skipReason({ status: 1, stderr: 'Error: Exceeded USD budget (0.6)' }), 'hit its cap');
+  assert.equal(skipReason({ status: 1, stderr: 'Claude Code hit the maximum number of turns' }), 'hit its cap');
+  assert.equal(skipReason({ status: 1, stderr: 'error_max_turns: the review ran out of turns' }), 'hit its cap');
+  assert.equal(skipReason({ status: 1, stderr: 'model not found: gpt-9' }), null, 'a typo in the config stays loud');
+
+  // A Claude result that is really an error carries no review, so it is never posted as one.
+  const capped = parseClaudeOutput(JSON.stringify({
+    type: 'result', subtype: 'error_max_turns', is_error: true, num_turns: 12,
+    result: 'Claude Code hit the maximum number of turns', total_cost_usd: 0.21, usage: { input_tokens: 90000, output_tokens: 4000 },
+  }));
+  assert.equal(capped.text, '', 'the complaint is not the review');
+  assert.match(capped.errorText, /error_max_turns/);
+  assert.equal(capped.usage.turns, 12);
 
   // the comment says what was skipped, so a dropped flag cannot move every review to the second model unnoticed
   assert.equal(skippedLine({ skipped: [] }), '');
@@ -750,6 +917,25 @@ test('the config is the one place the changeable facts live', () => {
   assert.match(workflow, /How to update this/, 'there is a short guide for changing the choice');
   assert.match(workflow, /\.github\/agents\.json/, 'the guide points at the config');
   assert.match(workflow, /bubblewrap/, 'the docs say every reviewer runs inside bubblewrap');
+  // the caps are in the config and in one table, so a reader can see what bounds a review without opening the code
+  assert.match(workflow, /Every review has a hard cap/, 'the docs explain the caps');
+  assert.match(workflow, /600 s wall clock/, 'the docs name the wall clock');
+  assert.match(workflow, /Change what one review may spend/, 'and how to change a cap');
+  const caps = capsFor(config);
+  for (const [key, pct] of Object.entries(caps.per_review_pct)) {
+    assert.ok(config.cost?.[key], `${key} with a per-review cost is a model the config knows`);
+    assert.ok(typeof pct === 'number' && pct > 0, `${key} has a positive per-review cost`);
+  }
+  for (const [key, seconds] of Object.entries(caps.timeout_s_by_model)) {
+    const [provider, ...rest] = key.split('/');
+    assert.ok((config.allowed[provider] || []).includes(rest.join('/')), `${key} with its own timeout is allowed`);
+    assert.ok(seconds > 0 && seconds <= caps.timeout_s, `${key} times out no later than the default`);
+  }
+  for (const model of config.allowed.claude) {
+    assert.equal(typeof budgetUsd({ model }, caps), 'number', `${model} has a dollar cap`);
+  }
+  // a model nobody measured keeps the old cautious cost, so the cap can only tighten what already worked
+  assert.equal(reviewCost({ provider: 'claude', model: 'claude-opus-5-5' }, caps), 10);
   const setup = readFileSync(new URL('./runner-setup.md', import.meta.url), 'utf8');
   assert.match(setup, /bubblewrap/, 'the runner setup asks for bubblewrap');
   assert.match(setup, /user namespaces/i, 'and shows how to check user namespaces');

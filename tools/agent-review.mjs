@@ -50,11 +50,56 @@ export function tierForPaths(paths) {
   return 'normal';
 }
 
-// What one review is assumed to cost in a provider's 5-hour session window, as a share of it. It is a round, cautious
-// number rather than a measurement: the hub reports what is left, not what a review spends, and #71 tracks measuring it.
-// Automatic selection keeps three of these in hand, so one review cannot take the window down to nothing.
+// What one review is assumed to take from a provider's 5-hour session window, as a share of it. The measured numbers per
+// model live in `.github/agents.json` `caps.per_review_pct`; this is the cautious fallback for a model nobody has measured
+// (Claude, whose own quota its CLI does not report). Every review also has a hard wall-clock limit, and the cheap models
+// are what makes a review possible when a window is nearly empty. #71 tracks measuring these.
 export const reviewCostPercent = 10;
 export const reviewsToKeep = 3;
+
+// The cap defaults, used when `.github/agents.json` has no `caps` block at all, so an old copy of the config still runs a
+// bounded review instead of an unbounded one.
+export const defaultCaps = {
+  timeout_s: 600,
+  timeout_s_by_model: {},
+  per_review_pct: {},
+  claude: { max_turns: 12, max_budget_usd: 0.3 },
+  codex: { auto_compact_token_limit: 180000 },
+  opencode: { steps: 12 },
+};
+
+export const modelKey = ({ provider, model }) => `${provider}/${model}`;
+
+export function capsFor(config = {}) {
+  const caps = config.caps || {};
+  const nested = (key) => ({ ...defaultCaps[key], ...(caps[key] || {}) });
+  return {
+    timeout_s: Number(caps.timeout_s) || defaultCaps.timeout_s,
+    timeout_s_by_model: caps.timeout_s_by_model || {},
+    per_review_pct: caps.per_review_pct || {},
+    claude: nested('claude'),
+    codex: nested('codex'),
+    opencode: nested('opencode'),
+  };
+}
+
+// The share of its 5-hour window one review of this model is expected to use.
+export function reviewCost(model, caps = defaultCaps) {
+  const measured = caps.per_review_pct?.[modelKey(model)];
+  return typeof measured === 'number' && measured > 0 ? measured : reviewCostPercent;
+}
+
+// The wall-clock limit for one review, in seconds: 600 by default, 480 for the models that answer in less.
+export function timeoutSeconds(model, caps = defaultCaps) {
+  return Number(caps.timeout_s_by_model?.[modelKey(model)]) || Number(caps.timeout_s) || defaultCaps.timeout_s;
+}
+
+// Claude's dollar ceiling, which is an estimate of API list prices rather than the plan's own meter (see agents.json).
+export function budgetUsd(model, caps = defaultCaps) {
+  const own = caps.claude?.max_budget_usd;
+  if (own && typeof own === 'object' && typeof own[model.model] === 'number') return own[model.model];
+  return typeof own === 'number' ? own : defaultCaps.claude.max_budget_usd;
+}
 
 const windowKind = (window) => window.kind || window.id || 'usage';
 
@@ -62,10 +107,10 @@ const windowKind = (window) => window.kind || window.id || 'usage';
 //  - a window that already reads 100% used is out until it resets;
 //  - a provider on pace to use its window up before its reset is out, even with plenty left (Claude at 59% of the
 //    session but 16% of the week on 15 Nov);
-//  - the 5-hour session must keep about three reviews in hand, measured by reviewCostPercent.
+//  - the 5-hour session must keep about three reviews in hand, measured by this model's own per-review share.
 // A window with no numbers, and a provider with no usage file at all, count as usable: the CLI still refuses when it is
 // really out, and the posted comment names the skip when that happens.
-export function usageProblem(usage, now = Date.now()) {
+export function usageProblem(usage, now = Date.now(), cost = reviewCostPercent) {
   if (!usage || !Array.isArray(usage.windows)) return null;
   for (const window of usage.windows) {
     const resetsAt = window.resetsAt ? Date.parse(window.resetsAt) : null;
@@ -74,7 +119,7 @@ export function usageProblem(usage, now = Date.now()) {
     const kind = windowKind(window);
     if (window.usedPercent >= 100) return `no usage left in its ${kind} window`;
     const left = 100 - window.usedPercent;
-    if (kind === 'session' && left < reviewsToKeep * reviewCostPercent) {
+    if (kind === 'session' && left < reviewsToKeep * cost) {
       return `fewer than ${reviewsToKeep} reviews left in its ${kind} window`;
     }
     const durationMs = typeof window.windowDurationMins === 'number' ? window.windowDurationMins * 60000 : null;
@@ -123,6 +168,7 @@ export function reviewerCandidates(models, context = {}) {
     commandAvailable = () => true,
     sandboxProblem = () => null,
     reserve = {},
+    caps = defaultCaps,
     now = Date.now(),
   } = context;
   const candidates = [];
@@ -133,7 +179,7 @@ export function reviewerCandidates(models, context = {}) {
     const reason = !details ? 'unknown provider'
       : !commandAvailable(details.command) ? 'no local CLI'
         : reserveProblem(usage, reserve[model.provider], now)
-        || usageProblem(usage, now)
+        || usageProblem(usage, now, reviewCost(model, caps))
         || sandboxProblem(model.provider);
     if (reason) skipped.push({ ...model, reason });
     else candidates.push(model);
@@ -379,15 +425,22 @@ export function sandboxProblem(options = {}) {
   return probe === undefined ? probeSandbox() : probe;
 }
 
-// The flags each CLI needs to stay read-only, and the folder to stay in. Effort is spelled differently by each of them:
-// Claude has --effort, Codex a config key, OpenCode rides a #variant on the model id (`opencode run` has no --variant).
-export function cliArgs(provider, model, effort, work = root) {
+// The flags each CLI needs to stay read-only, to stay in the folder, and to stay inside the owner's cap. Effort is spelled
+// differently by each of them: Claude has --effort, Codex a config key, OpenCode rides a #variant on the model id
+// (`opencode run` has no --variant) and takes its step limit from the agent file. Claude's `--max-turns` is real but hidden
+// from `--help` in 2.1.x; `--max-budget-usd` is an estimate of API list prices, so it is a guardrail beside the turn cap.
+// Codex has no turn or budget cap at all, so its effort and auto-compaction limit are the only levers.
+export function cliArgs(provider, model, effort, work = root, caps = defaultCaps) {
   if (provider === 'claude') {
-    return ['-p', '--model', model, ...(effort ? ['--effort', effort] : []), '--restricted', '--safe-mode', '--tools', claudeTools];
+    return ['-p', '--model', model, ...(effort ? ['--effort', effort] : []),
+      '--max-turns', String(caps.claude.max_turns), '--max-budget-usd', String(budgetUsd({ model }, caps)),
+      '--output-format', 'json', '--restricted', '--safe-mode', '--tools', claudeTools];
   }
   if (provider === 'codex') {
-    return ['-c', 'project_doc_max_bytes=0', 'exec', '--model', model, ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []),
-      '--sandbox', 'read-only', '--ephemeral', '--ignore-rules', '-C', work, '-'];
+    // The review copy is a `git archive`, so it has no `.git`: without --skip-git-repo-check Codex refuses it outright.
+    return ['-c', 'project_doc_max_bytes=0', '-c', `model_auto_compact_token_limit=${caps.codex.auto_compact_token_limit}`,
+      'exec', '--model', model, ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []),
+      '--sandbox', 'read-only', '--ephemeral', '--ignore-rules', '--skip-git-repo-check', '--json', '-C', work, '-'];
   }
   if (provider === 'cursor') {
     return ['--print', '--mode', 'ask', '--sandbox', 'enabled', '--trust', '--model', model, '--workspace', work];
@@ -417,12 +470,77 @@ export function assertReviewerAgent(
   }
 }
 
+// Claude's `--output-format json` wraps the review in one object; an older CLI answers with plain text, which is fine too.
+// `total_cost_usd` is the client-side estimate the budget cap uses, and `num_turns` the turn cap, so both are worth
+// reporting. Anything that is not that shape is treated as the review itself, never dropped.
+export function parseClaudeOutput(stdout) {
+  const text = String(stdout || '').trim();
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed.result === 'string') {
+      const usage = parsed.usage || {};
+      const failed = parsed.is_error === true || /^error_/.test(String(parsed.subtype || ''));
+      return {
+        // A cap the CLI hit is not a review: its "result" is the complaint, so it is kept out of the posted text and named
+        // as a skip instead.
+        text: failed ? '' : parsed.result,
+        ...(failed ? { errorText: `${parsed.subtype || 'error'}: ${parsed.result}` } : {}),
+        usage: {
+          ...(typeof parsed.num_turns === 'number' ? { turns: parsed.num_turns } : {}),
+          ...(typeof parsed.total_cost_usd === 'number' ? { costUsd: parsed.total_cost_usd } : {}),
+          ...(typeof usage.input_tokens === 'number' ? { input: usage.input_tokens } : {}),
+          ...(typeof usage.output_tokens === 'number' ? { output: usage.output_tokens } : {}),
+          ...(typeof usage.cache_read_input_tokens === 'number' ? { cached: usage.cache_read_input_tokens } : {}),
+        },
+      };
+    }
+  } catch {
+    // not JSON: a plain-text answer
+  }
+  return { text, usage: null };
+}
+
+// Codex's `--json` prints one JSON event per line, so the review is the last `agent_message` item and the tokens used are
+// on `turn.completed`. A line that is not JSON is skipped; if no agent message is found the raw stream is used, so an older
+// CLI that ignores `--json` still produces a review instead of an empty one.
+export function parseCodexOutput(stdout) {
+  const messages = [];
+  let usage = null;
+  for (const line of String(stdout || '').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('{')) continue;
+    let event;
+    try { event = JSON.parse(trimmed); } catch { continue; }
+    const item = event.item || {};
+    const kind = item.item_type || item.type;
+    if (kind === 'agent_message') {
+      const text = typeof item.text === 'string' ? item.text
+        : Array.isArray(item.content) ? item.content.map((part) => part?.text || '').join('') : '';
+      if (text.trim()) messages.push(text);
+    }
+    const found = event.usage || item.usage || event.info?.total_token_usage || event.info?.last_token_usage;
+    if (found && typeof found === 'object') {
+      usage = {
+        ...(typeof found.input_tokens === 'number' ? { input: found.input_tokens } : {}),
+        ...(typeof found.output_tokens === 'number' ? { output: found.output_tokens } : {}),
+        ...(typeof found.cached_input_tokens === 'number' ? { cached: found.cached_input_tokens } : {}),
+        ...(typeof found.total_tokens === 'number' ? { total: found.total_tokens } : {}),
+      };
+    }
+  }
+  return { text: messages.length ? messages.at(-1) : String(stdout || '').trim(), usage };
+}
+
 function cliInvocation(provider, model, prompt, effort, work = root, options = {}) {
+  const caps = options.caps || defaultCaps;
   if (provider === 'opencode') assertReviewerAgent(options.agentInstalled, options.agentSource);
   // Cursor takes the prompt as an argument; the others read it on stdin, which has no length limit for a big diff.
-  const args = [...cliArgs(provider, model, effort, work), ...(provider === 'cursor' ? [prompt] : [])];
+  const args = [...cliArgs(provider, model, effort, work, caps), ...(provider === 'cursor' ? [prompt] : [])];
   const sandbox = sandboxArgv(provider, work, args, options);
-  return spawnSync(sandbox.command, sandbox.args, {
+  const timeout = timeoutSeconds({ provider, model }, caps) * 1000;
+  // A review that runs past its limit is killed, not waited on. bubblewrap's --die-with-parent takes the CLI with it, so
+  // nothing keeps spending after the job moves to the next reviewer.
+  const result = spawnSync(sandbox.command, sandbox.args, {
     cwd: work,
     env: {
       ...reviewerEnv(process.env, provider),
@@ -432,8 +550,22 @@ function cliInvocation(provider, model, prompt, effort, work = root, options = {
     },
     input: provider === 'cursor' ? undefined : prompt,
     encoding: 'utf8',
+    timeout,
+    killSignal: 'SIGKILL',
     maxBuffer: 30 * 1024 * 1024,
   });
+  const timedOut = result.error?.code === 'ETIMEDOUT' || result.signal === 'SIGKILL'
+    || result.signal === 'SIGTERM';
+  const parsed = provider === 'claude' ? parseClaudeOutput(result.stdout)
+    : provider === 'codex' ? parseCodexOutput(result.stdout)
+      : { text: String(result.stdout || '').trim(), usage: null };
+  return {
+    ...result,
+    timedOut,
+    text: parsed.text,
+    usage: parsed.usage,
+    stderr: parsed.errorText ? `${result.stderr || ''}\n${parsed.errorText}`.trim() : result.stderr,
+  };
 }
 
 function usageLimitError(result) {
@@ -453,8 +585,12 @@ function flagError(result) {
 // Why a candidate was skipped, or null when its failure is about the change and has to stop the review. OpenCode answers
 // `Variant unavailable for provider/model: medium` (checked on v2.2.6) when a tag asks for an effort the model lacks.
 // Usage limits are read from stdout too, because a CLI that ran out often says so there; a wrong guess is visible in the
-// posted comment as a skip, while a missed one would fail the review.
+// posted comment as a skip, while a missed one would fail the review. A cap we set ourselves is a skip as well: Claude
+// stopping at 12 turns or 60 cents says nothing about the change, so the next reviewer reads it and the comment names the
+// cap.
 export function skipReason(result) {
+  if (/max(?:imum)? (?:number of )?(?:turns|budget)|max(?:imum)?[ _-](?:turns|budget)|exceeded usd budget|budget exceeded|sessionbudgetexceeded|error_max_(?:turns|budget)/i
+    .test(`${result.stderr || ''}\n${result.stdout || ''}`)) return 'hit its cap';
   if (usageLimitError(result)) return 'usage limit';
   if (flagError(result)) return 'rejected a flag';
   return null;
@@ -463,9 +599,35 @@ export function skipReason(result) {
 // A skip is a config problem on the runner, not a fact about the change, so the posted comment has to say it happened.
 // Silence here would let a dropped flag move every sensitive review to the second model without anyone noticing. The list
 // covers both halves: a candidate removed before it was invoked (no CLI, no usage, reserved, no sandbox) and one that ran
-// and refused.
+// and stopped, whether it refused or ran out of wall clock.
 export function skippedLine(result) {
   return result.skipped?.length ? `\nSkipped: ${result.skipped.join(', ')}` : '';
+}
+
+const group = (value) => Number(value).toLocaleString('en-US');
+
+// What the review actually used, when its CLI reports it. Claude reports dollars, turns and tokens; Codex reports tokens;
+// Cursor and OpenCode report nothing. A missing number is left out rather than guessed.
+export function usedLine(result, caps = defaultCaps) {
+  const usage = result?.usage;
+  if (!usage) return '';
+  const parts = [];
+  if (typeof usage.turns === 'number') parts.push(`${usage.turns} turns`);
+  if (typeof usage.costUsd === 'number') {
+    const cap = result.provider === 'claude' ? budgetUsd(result, caps) : null;
+    parts.push(`$${usage.costUsd.toFixed(4)}${cap ? ` of its $${cap} cap` : ''}`);
+  }
+  const input = usage.input;
+  const output = usage.output;
+  if (typeof input === 'number' || typeof output === 'number') {
+    const total = typeof usage.total === 'number' ? usage.total : (input || 0) + (output || 0);
+    const split = [
+      typeof input === 'number' ? `${group(input)} in` : null,
+      typeof output === 'number' ? `${group(output)} out` : null,
+    ].filter(Boolean);
+    parts.push(`${group(total)} tokens${split.length ? ` (${split.join(', ')})` : ''}`);
+  }
+  return parts.length ? `\nUsed: ${parts.join(' · ')}` : '';
 }
 
 export function runReviewer(models, prompt, work, deps = {}) {
@@ -474,20 +636,27 @@ export function runReviewer(models, prompt, work, deps = {}) {
     commandAvailable = commandExists,
     sandbox = (provider) => sandboxProblem(),
     reserve = {},
+    caps = defaultCaps,
     now = Date.now(),
     invoke = cliInvocation,
   } = deps;
   const usageByProvider = Object.fromEntries(models.map(({ provider }) => [provider, usageFor(provider)]));
   const { candidates, skipped: filtered } = reviewerCandidates(models, {
-    usageByProvider, commandAvailable, sandboxProblem: sandbox, reserve, now,
+    usageByProvider, commandAvailable, sandboxProblem: sandbox, reserve, caps, now,
   });
 
   const skipped = filtered.map(({ provider, model, reason }) => `${provider}/${model} (${reason})`);
   if (!candidates.length) throw new Error(`no reviewer could run: ${skipped.join(', ')}`);
 
   for (const candidate of candidates) {
-    const result = invoke(candidate.provider, candidate.model, prompt, candidate.effort, work);
-    if (result.status === 0 && result.stdout?.trim()) return { ...candidate, text: result.stdout.trim(), skipped };
+    const result = invoke(candidate.provider, candidate.model, prompt, candidate.effort, work, { caps });
+    if (result.timedOut) {
+      skipped.push(`${candidate.provider}/${candidate.model} (timed out after ${timeoutSeconds(candidate, caps)}s)`);
+      continue;
+    }
+    if (result.status === 0 && `${result.text ?? result.stdout ?? ''}`.trim()) {
+      return { ...candidate, text: `${result.text ?? result.stdout}`.trim(), usage: result.usage || null, skipped };
+    }
     const reason = skipReason(result);
     if (reason) {
       skipped.push(`${candidate.provider}/${candidate.model} (${reason})`);
@@ -564,6 +733,7 @@ async function main() {
 
   const repo = process.env.GITHUB_REPOSITORY || 'Flame119052/tess-music';
   const config = JSON.parse(readFileSync(`${root}.github/agents.json`, 'utf8'));
+  const caps = capsFor(config);
   const issue = apiJson(`repos/${repo}/issues/${number}`);
 
   if (role === 'approach') {
@@ -574,13 +744,14 @@ async function main() {
     try {
       result = runReviewer(pick.models, reviewPrompt(role, { issue: issueText(issue), approach }), work, {
         reserve: config.reserve,
+        caps,
       });
     } finally {
       rmSync(work, { recursive: true, force: true });
     }
     const verdict = verdictFor(result.text);
     const review = result.text.replaceAll(marker, '').replace(/\n?Verdict:\s*(?:approve|changes needed)\s*$/i, '').trim();
-    postComment(repo, number, `${marker}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${skippedLine(result)}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
+    postComment(repo, number, `${marker}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${usedLine(result, caps)}${skippedLine(result)}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
     return;
   }
 
@@ -621,13 +792,13 @@ async function main() {
       issue: linked ? issueText(linked) : '(no linked issue found)',
       approach,
       diff,
-    }), work, { reserve: config.reserve });
+    }), work, { reserve: config.reserve, caps });
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
   const verdict = verdictFor(result.text);
   const review = result.text.replaceAll(marker, '').replace(/\n?Verdict:\s*(?:approve|changes needed)\s*$/i, '').trim();
-  postComment(repo, number, `${marker}\nTier: ${tier}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${skippedLine(result)}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
+  postComment(repo, number, `${marker}\nTier: ${tier}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${usedLine(result, caps)}${skippedLine(result)}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
 }
 
 if (resolve(process.argv[1] || '') === fileURLToPath(import.meta.url)) {

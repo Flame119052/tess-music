@@ -1,6 +1,10 @@
 ---
 description: Tess reviewer. Reads and searches the copy of the code it is given; never edits, runs commands or fetches.
 mode: primary
+# A review is capped at 12 model steps (OpenCode's own `steps`), so one tag cannot spend a long loop of tokens. On the final
+# step OpenCode removes the tools and asks for a summary, which is the review. Keep this equal to caps.opencode.steps in
+# .github/agents.json: the test reads both.
+steps: 12
 permissions:
   - action: "*"
     resource: "*"

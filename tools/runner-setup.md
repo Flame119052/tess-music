@@ -227,8 +227,9 @@ and nothing else). For OpenCode, also copy `tools/opencode-reviewer.md` to
 `~tess-runner/.config/opencode/agents/tess-reviewer.md`. Without it the `tess-reviewer` agent doesn't exist and `opencode
 run` would fall back to its default agent, which can run shell; with a copy that differs from `main` the runner would
 widen the reviewer's rights. So the review checks the file before it starts and stops with a clear message instead of
-running either way. Update the copy whenever that file changes on `main`. Then restart the runner service. A provider
-with no CLI on the machine is simply skipped.
+running either way. Update the copy whenever that file changes on `main`. That file also carries OpenCode's step cap
+(`steps: 12`), so copying it again is what applies a changed cap to that machine. Then restart the runner service. A
+provider with no CLI on the machine is simply skipped.
 
 GLM through the **Z.ai coding plan** is an OpenCode provider, not a separate CLI: sign the connector in as `tess-runner`
 (`opencode auth login`, choosing the Z.ai coding plan) and `zai-coding-plan/glm-5.3` works by tag. It bills the Z.ai
