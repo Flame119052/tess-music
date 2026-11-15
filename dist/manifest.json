@@ -1,10 +1,14 @@
 {
-  "version": "0.2.31",
-  "channel": "dev",
+  "version": "0.2.32",
   "js": "theme.js",
   "css": "user.css",
+  "jsSha": "7b2b06d66cd9ce3b469c1d9a38c07e0579c77764319da649081b05f5aa335f8a",
+  "cssSha": "d135e874b6b2ce1558e7bf31f2aee0c9285d0511a5dc8e7b9d205c08af682001",
+  "rev": 1,
+  "channel": "dev",
   "sig": {
-    "js": "bD/TyWNrqSCQVOcUvmPdGC5Rd9JAzCVMxXMh/vxkSAx0e4DfZIAg+Scx3cSOSg3TyNTdti5zYjw7sBBI1VeMAA==",
-    "css": "C2x71IJE9VhDZdShL5IsayFACWngIlbiWGkTGH2LvxtORFug7wodIj6Vg0zK8aq+pYgdTfv6FtckMFcrmsPjCg=="
+    "js": "KXfi+jWhSqWShyM8W0X9BUDr+9cZqpUGNFvSFJCs0zBTdu9IvmL1045g9zpzBofGef3pjElKH+1IZrlEzyGtCQ==",
+    "css": "C2x71IJE9VhDZdShL5IsayFACWngIlbiWGkTGH2LvxtORFug7wodIj6Vg0zK8aq+pYgdTfv6FtckMFcrmsPjCg==",
+    "envelope": "De96ngxgDr4jW0joMQuI/cfYQqzdDisjcs9pYZvJkpd0UrkUSKx4qHXO8NPMDhANhG/aCNE+DxoDQLFanQbeDQ=="
   }
 }
