@@ -150,6 +150,15 @@ try {
     assert.match(evaled.out, /was handed to a shell to run/, `${name} eval'd under zsh: says why`);
     untouched(`${name} eval'd under zsh`);
     noToolRan(`${name} eval'd under zsh`);
+
+    // The ordinary case: a zsh script outside any checkout that evals the text (context `toplevel:eval`, not `eval…`).
+    const evaler = join(checkoutDir, '..', `eval-${name}.zsh`);
+    writeFileSync(evaler, `eval "$(cat "${join(checkoutDir, 'installer', name)}")"\n`);
+    const fromFile = run('zsh', [evaler]);
+    assert.notEqual(fromFile.status, 0, `${name} eval'd from a zsh script: refused`);
+    assert.match(fromFile.out, /was handed to a shell to run/, `${name} eval'd from a zsh script: says why`);
+    untouched(`${name} eval'd from a zsh script`);
+    noToolRan(`${name} eval'd from a zsh script`);
   }
 
   // The escape still lets the text run, so a sandbox run of a script handed to a shell is not refused.

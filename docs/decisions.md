@@ -356,7 +356,7 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   copies (not checkout files), the published install line (`curl … | sh` names no file, so it is code from a pipe), the
   sandbox tests (`TESS_TEST=1`), and `installer/redact.sh`, which is a library and stays sourceable. The
   handed-to-a-shell refusal reads the shell's own state (`ZSH_EVAL_CONTEXT` on zsh, `$-` and `ps -o args=` on sh/bash),
-  never the script's text, so the piped install line (whose shell has no `-c` and no file) is untouched. Detection
+  never the script's text, so the piped install line (whose shell has no `-c` and no file) is untouched. zsh marks an eval at any depth (`eval`, `cmdarg:eval`, `toplevel:eval`), so every eval there is refused. *Known limit:* `/bin/sh` and bash set no flag for `eval`, so `eval "$(cat installer/…)"` from an sh or bash script outside a checkout is indistinguishable from the piped install line and is not refused; AGENTS.md rule 2 forbids it, and the gate's own tests run the scripts only through the sandbox. Detection
   walks up for a `.git` entry instead of asking `git`, because a user's Mac may have no developer tools, and stops at
   the home folder so a dotfiles repository in `~` is not mistaken for a checkout. *Trade-off:* a deliberate real run
   from a checkout needs one environment variable, and the block is copied into every script (the gate compares the

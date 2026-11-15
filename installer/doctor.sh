@@ -20,7 +20,7 @@ if [ -n "${ZSH_VERSION-}" ]; then
   # script run as its own command is exactly "toplevel".
   case ${ZSH_EVAL_CONTEXT-} in
     *:file) _tess_sourced=1 ;;
-    cmdarg|cmdarg:*|eval|eval:*) _tess_embedded=1 ;;
+    cmdarg|cmdarg:*|eval|eval:*|*:eval|*:eval:*) _tess_embedded=1 ;;
   esac
 else
   # sh/bash puts a `c` in $- only when the commands were given to the shell as an argument (`sh -c …`), and `return`
