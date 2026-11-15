@@ -187,6 +187,14 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   `proxy-authorization` is dropped before the real key is added; and a body over 10 MB is refused rather than buffered.
   Both pinned CLIs were then run end to end through the real proxy: each completed a turn, and the only thing the
   upstream saw was its one inference route. (#98)
+- **D-70 · 15 Nov 2026 · Agent** — When `node tools/agent-review.mjs pick` finds no reviewer with room, post a marker
+  comment (`<!-- tess-review-bot -->`) listing each skipped candidate, its reason, the earliest blocking window reset in
+  UTC plus a relative time, and asking to tag again after that time; then keep the `review` job failing (`exit 1`).
+  *Why:* GitHub Actions workflow jobs have no `neutral` conclusion (that only exists in the Checks API), and `skipped`
+  is only possible if `pick` lives in an earlier job (which would either give `gate` write permissions or spin up a
+  third VM and still leave the workflow run green when no review occurred). Staying failed inside `review` after posting
+  the PR comment leaves PR CI (`check.yml`) unaffected, keeps `gate` read-only, and honestly shows in Actions that the
+  review did not complete.
 
 ## Releases and process
 

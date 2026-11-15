@@ -18,10 +18,13 @@ import {
   cliArgs,
   capsFor,
   containsHeldSecret,
+  earliestReset,
   eligibleModels,
   extraSkipped,
   failureSummary,
   forkProblem,
+  formatRelativeTime,
+  formatUtcTime,
   freshestSnapshot,
   headAnswer,
   headFacts,
@@ -29,6 +32,7 @@ import {
   headReviewProblem,
   installedProviders,
   looksSecret,
+  noRoomComment,
   parseClaudeOutput,
   parseCodexOutput,
   parseRequest,
@@ -1763,6 +1767,234 @@ test('the pick step chooses one provider and names the ones it skipped', () => {
     assert.throws(() => run(['approach', 'sensitive'], '@tess-review approach', {
       USAGE_SNAPSHOT_MAC: exhausted(claude, 'codex'),
     }), /no reviewer could run/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('earliest reset time comes only from skipped windows and formats UTC plus relative time', () => {
+  const now = Date.parse('2026-11-15T06:30:00Z');
+  const models = config.approach; // claude-opus-5-5, gpt-6.1-sol
+  const caps = capsFor(config);
+
+  // Claude is blocked by its session window (resets 07:45 UTC) while its weekly window is healthy (resets Nov 20).
+  // Codex is blocked by its session window (resets 09:10 UTC). Earliest reset must be 07:45 UTC, never Nov 20 or 09:10.
+  const snap = {
+    source: 'mac',
+    takenAt: now - 3 * 60000,
+    ageMs: 3 * 60000,
+    providers: [
+      {
+        provider: 'claude',
+        instance: 'claudeAgent',
+        windows: [
+          { kind: 'session', leftPercent: 20, resetsAt: '2026-11-15T07:45:00Z' },
+          { kind: 'weekly', leftPercent: 80, resetsAt: '2026-11-20T18:00:00Z' },
+        ],
+      },
+      {
+        provider: 'codex',
+        instance: 'codex',
+        windows: [
+          { kind: 'session', leftPercent: 0, resetsAt: '2026-11-15T09:10:00Z' },
+          { kind: 'weekly', leftPercent: 60, resetsAt: '2026-11-17T06:30:00Z' },
+        ],
+      },
+    ],
+  };
+  const usageByModel = Object.fromEntries(models.map((m) => [
+    `${m.provider}/${m.model}`,
+    snapshotUsage(snap, m),
+  ]));
+  const { candidates, skipped } = reviewerCandidates(models, { usageByModel, caps, now });
+  assert.equal(candidates.length, 0);
+  assert.equal(skipped.length, 2);
+  assert.equal(earliestReset(skipped, now), Date.parse('2026-11-15T07:45:00Z'));
+
+  // Healthy session window (07:45) + exhausted weekly window (Nov 20) on Claude, plus exhausted session on Codex (09:10):
+  // Claude's healthy session reset must NOT be chosen; Codex's 09:10 UTC is the earliest skipped window that clears.
+  const weeklyBlockedSnap = {
+    ...snap,
+    providers: [
+      {
+        provider: 'claude',
+        instance: 'claudeAgent',
+        windows: [
+          { kind: 'session', leftPercent: 90, resetsAt: '2026-11-15T07:45:00Z' },
+          { kind: 'weekly', leftPercent: 0, resetsAt: '2026-11-20T18:00:00Z' },
+        ],
+      },
+      snap.providers[1],
+    ],
+  };
+  const weeklyBlockedUsage = Object.fromEntries(models.map((m) => [
+    `${m.provider}/${m.model}`,
+    snapshotUsage(weeklyBlockedSnap, m),
+  ]));
+  const second = reviewerCandidates(models, { usageByModel: weeklyBlockedUsage, caps, now });
+  assert.equal(earliestReset(second.skipped, now), Date.parse('2026-11-15T09:10:00Z'));
+
+  // Local window without resetsAt + snapshot window with resetsAt still captures the snapshot's resetsAt.
+  const mixed = reviewerCandidates([models[1]], {
+    usageByProvider: { codex: { windows: [{ kind: 'session', usedPercent: 100 }] } },
+    usageByModel: { [ `${models[1].provider}/${models[1].model}` ]: usageByModel[`${models[1].provider}/${models[1].model}`] },
+    caps,
+    now,
+  });
+  assert.equal(earliestReset(mixed.skipped, now), Date.parse('2026-11-15T09:10:00Z'));
+
+  assert.equal(formatUtcTime(Date.parse('2026-11-15T07:45:00Z')), '2026-11-15 07:45 UTC');
+  assert.equal(formatUtcTime(Date.parse('2026-11-15T07:45:30Z')), '2026-11-15 07:45:30 UTC');
+  assert.equal(formatRelativeTime(Date.parse('2026-11-15T07:45:00Z'), now), 'in 1h 15m');
+  assert.equal(formatRelativeTime(Date.parse('2026-11-15T06:30:30Z'), now), 'in under a minute');
+  assert.equal(formatRelativeTime(Date.parse('2026-11-17T09:30:00Z'), now), 'in 2d 3h');
+
+  const body = noRoomComment({
+    reasons: skipped.map(({ provider, model, reason }) => `${provider}/${model} (${reason})`),
+    earliestResetMs: earliestReset(skipped, now),
+    snapshot: snap,
+    now,
+  });
+  assert.match(body, /^<!-- tess-review-bot -->/);
+  assert.match(body, /no reviewer had room/i);
+  assert.match(body, /claude\/claude-opus-5-5 \(fewer than 3 reviews left in its session window\)/);
+  assert.match(body, /codex\/gpt-6\.1-sol \(no usage left in its session window\)/);
+  assert.match(body, /2026-11-15 07:45 UTC \(in 1h 15m\)/);
+  assert.match(body, /tag again after that time/i);
+
+  const withoutReset = noRoomComment({
+    reasons: ['claude/claude-opus-5-5 (no usage left in its session window)'],
+    earliestResetMs: null,
+    now,
+  });
+  assert.match(withoutReset, /^<!-- tess-review-bot -->/);
+  assert.match(withoutReset, /no reviewer had room/i);
+  assert.ok(!/NaN|Invalid Date/.test(withoutReset));
+  assert.match(withoutReset, /tag again/i);
+});
+
+test('when no reviewer has room, pick posts a marker comment with skipped reasons and earliest reset time', () => {
+  const review = jobBlock('review');
+  const pickStep = stepBlock(review, 'Pick the reviewer');
+  assert.match(pickStep, /REVIEW_NUMBER: \$\{\{ needs\.gate\.outputs\.number \}\}/);
+  assert.match(pickStep, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+  for (const names of Object.values(providerKeys)) {
+    for (const name of names) {
+      assert.ok(!pickStep.includes(`${name}:`), `Pick the reviewer never receives ${name}`);
+    }
+  }
+
+  const dir = temp();
+  const scriptPath = fileURLToPath(new URL('./agent-review.mjs', import.meta.url));
+  const commentOut = join(dir, 'comment');
+  const now = Date.now();
+  const claudeResetMs = Math.floor(now / 60000) * 60000 + 75 * 60000;
+  const codexResetMs = Math.floor(now / 60000) * 60000 + 180 * 60000;
+  const healthyWeeklyMs = Math.floor(now / 60000) * 60000 + 3 * 24 * 3600000;
+  const snap = JSON.stringify({
+    version: 1,
+    machine: 'mac',
+    takenAt: new Date(now - 2 * 60000).toISOString(),
+    providers: [
+      {
+        provider: 'claude',
+        instance: 'claudeAgent',
+        windows: [
+          { kind: 'session', leftPercent: 20, resetsAt: new Date(claudeResetMs).toISOString() },
+          { kind: 'weekly', leftPercent: 80, resetsAt: new Date(healthyWeeklyMs).toISOString() },
+        ],
+      },
+      {
+        provider: 'codex',
+        instance: 'codex',
+        windows: [
+          { kind: 'session', leftPercent: 0, resetsAt: new Date(codexResetMs).toISOString() },
+        ],
+      },
+    ],
+  });
+  const fakeToken = 'ghs_fake_test_token_1234567890123456';
+  try {
+    writeFileSync(join(dir, 'gh'), `#!/bin/sh
+if [ "$1" = "issue" ] && [ "$2" = "comment" ] && [ "$3" = "99" ]; then
+  cat > '${commentOut}'
+  exit 0
+fi
+exit 99
+`);
+    chmodSync(join(dir, 'gh'), 0o755);
+    let thrown;
+    try {
+      execFileSync(process.execPath, [scriptPath, 'pick', 'approach', 'sensitive'], {
+        input: '@tess-review approach',
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          HOME: dir,
+          PATH: `${dir}:${process.env.PATH}`,
+          GITHUB_OUTPUT: '',
+          REVIEW_NUMBER: '99',
+          GH_TOKEN: fakeToken,
+          USAGE_SNAPSHOT_MAC: snap,
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    assert.ok(thrown, 'pick still exits non-zero so installs and review do not run');
+    assert.equal(thrown.status, 1);
+    const logs = `${thrown.stdout || ''}\n${thrown.stderr || ''}`;
+    assert.match(logs, /no reviewer could run:/);
+    assert.ok(!logs.includes(fakeToken), 'pick never prints GH_TOKEN');
+
+    assert.ok(existsSync(commentOut), 'a comment was posted to the PR/issue');
+    const posted = readFileSync(commentOut, 'utf8');
+    assert.ok(posted.includes('<!-- tess-review-bot -->'), 'carries the reviewer marker');
+    assert.match(posted, /no reviewer had room/i);
+    assert.match(posted, /claude\/claude-opus-5-5 \(fewer than 3 reviews left in its session window\)/);
+    assert.match(posted, /codex\/gpt-6\.1-sol \(no usage left in its session window\)/);
+    assert.ok(posted.includes(formatUtcTime(claudeResetMs)), `shows earliest reset in UTC: ${posted}`);
+    assert.ok(!posted.includes(formatUtcTime(codexResetMs)), 'does not use the later reset time');
+    assert.match(posted, /\(in 1h 1[45]m\)/, 'shows relative time');
+    assert.match(posted, /tag again after that time/i);
+    assert.ok(!posted.includes(fakeToken), 'comment never leaks GH_TOKEN');
+
+    // Also verify `pr normal` when all three defaults (codex, claude, opencode) are out of room.
+    rmSync(commentOut, { force: true });
+    const normalSnap = JSON.stringify({
+      version: 1,
+      machine: 'mac',
+      takenAt: new Date(now - 2 * 60000).toISOString(),
+      providers: [
+        { provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: 0, resetsAt: new Date(codexResetMs).toISOString() }] },
+        { provider: 'claude', instance: 'claudeAgent', windows: [{ kind: 'session', leftPercent: 20, resetsAt: new Date(claudeResetMs).toISOString() }] },
+        { provider: 'opencode', instance: 'opencode-go', windows: [{ kind: 'weekly', leftPercent: 0, resetsAt: new Date(healthyWeeklyMs).toISOString() }] },
+      ],
+    });
+    let normalErr;
+    try {
+      execFileSync(process.execPath, [scriptPath, 'pick', 'pr', 'normal'], {
+        input: '@tess-review pr',
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          HOME: dir,
+          PATH: `${dir}:${process.env.PATH}`,
+          GITHUB_OUTPUT: '',
+          REVIEW_NUMBER: '99',
+          GH_TOKEN: fakeToken,
+          USAGE_SNAPSHOT_MAC: normalSnap,
+        },
+      });
+    } catch (error) {
+      normalErr = error;
+    }
+    assert.equal(normalErr?.status, 1);
+    const normalPosted = readFileSync(commentOut, 'utf8');
+    assert.match(normalPosted, /codex\/gpt-6\.1-terra \(no usage left in its session window\)/);
+    assert.match(normalPosted, /claude\/claude-sonnet-5-5 \(fewer than 3 reviews left in its session window\)/);
+    assert.match(normalPosted, /opencode\/opencode-go\/deepseek-v4\.1-flash \(no usage left in its weekly window\)/);
+    assert.ok(normalPosted.includes(formatUtcTime(claudeResetMs)));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

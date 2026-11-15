@@ -76,7 +76,10 @@ jobs:
         env:
           REVIEW_ROLE: ${{ needs.gate.outputs.role }}
           REVIEW_TIER: ${{ needs.gate.outputs.tier }}
+          REVIEW_NUMBER: ${{ needs.gate.outputs.number }}
           COMMENT_BODY: ${{ github.event.comment.body }}
+          # Needed only to post the no-room comment if every reviewer is out of usage; no provider key is given here.
+          GH_TOKEN: ${{ github.token }}
           # Quota-only snapshots from Krish's machines (#93, tools/usage-publish): % left per window, reset times,
           # pace, a timestamp and the machine's name. No keys and no account names. Empty until a machine first
           # publishes, and the review ignores any snapshot 30 minutes old or more.

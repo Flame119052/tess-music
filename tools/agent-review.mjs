@@ -125,27 +125,36 @@ const windowKind = (window) => window.kind || window.id || 'usage';
 //  - the 5-hour session must keep about three reviews in hand, measured by this model's own per-review share.
 // A window with no numbers, and a provider with no usage file at all, count as usable: the CLI still refuses when it is
 // really out, and the posted comment names the skip when that happens.
+function windowProblem(window, now = Date.now(), cost = reviewCostPercent) {
+  if (!window || typeof window !== 'object') return null;
+  const resetsAtMs = typeof window.resetsAt === 'string' ? Date.parse(window.resetsAt) : null;
+  if (resetsAtMs && Number.isFinite(resetsAtMs) && resetsAtMs <= now) return null;
+  if (typeof window.usedPercent !== 'number' || !Number.isFinite(window.usedPercent)) return null;
+  const kind = windowKind(window);
+  const resetsAt = resetsAtMs && Number.isFinite(resetsAtMs) ? new Date(resetsAtMs).toISOString() : null;
+  if (window.usedPercent >= 100) return { reason: `no usage left in its ${kind} window`, resetsAt };
+  const left = 100 - window.usedPercent;
+  if (kind === 'session' && left < reviewsToKeep * cost) {
+    return { reason: `fewer than ${reviewsToKeep} reviews left in its ${kind} window`, resetsAt };
+  }
+  const durationMs = typeof window.windowDurationMins === 'number' && Number.isFinite(window.windowDurationMins)
+    ? window.windowDurationMins * 60000
+    : null;
+  if (!durationMs || !resetsAtMs || !Number.isFinite(resetsAtMs)) return null;
+  const elapsedMs = durationMs - (resetsAtMs - now);
+  // Ignore the first few percent of a window: dividing by a tiny elapsed time would predict almost anything.
+  if (elapsedMs <= durationMs * 0.05) return null;
+  if ((window.usedPercent * durationMs) / elapsedMs >= 100) {
+    return { reason: `on pace to run out before its ${kind} reset`, resetsAt };
+  }
+  return null;
+}
+
 export function usageProblem(usage, now = Date.now(), cost = reviewCostPercent) {
   if (!usage || !Array.isArray(usage.windows)) return null;
   for (const window of usage.windows) {
-    if (!window || typeof window !== 'object') continue;
-    const resetsAt = typeof window.resetsAt === 'string' ? Date.parse(window.resetsAt) : null;
-    if (resetsAt && Number.isFinite(resetsAt) && resetsAt <= now) continue;
-    if (typeof window.usedPercent !== 'number' || !Number.isFinite(window.usedPercent)) continue;
-    const kind = windowKind(window);
-    if (window.usedPercent >= 100) return `no usage left in its ${kind} window`;
-    const left = 100 - window.usedPercent;
-    if (kind === 'session' && left < reviewsToKeep * cost) {
-      return `fewer than ${reviewsToKeep} reviews left in its ${kind} window`;
-    }
-    const durationMs = typeof window.windowDurationMins === 'number' && Number.isFinite(window.windowDurationMins)
-      ? window.windowDurationMins * 60000
-      : null;
-    if (!durationMs || !resetsAt || !Number.isFinite(resetsAt)) continue;
-    const elapsedMs = durationMs - (resetsAt - now);
-    // Ignore the first few percent of a window: dividing by a tiny elapsed time would predict almost anything.
-    if (elapsedMs <= durationMs * 0.05) continue;
-    if ((window.usedPercent * durationMs) / elapsedMs >= 100) return `on pace to run out before its ${kind} reset`;
+    const problem = windowProblem(window, now, cost);
+    if (problem) return problem.reason;
   }
   return null;
 }
@@ -234,20 +243,31 @@ export function reservationEnd(until) {
   return /T/.test(until) ? start : start + 24 * 60 * 60 * 1000 - 1;
 }
 
+function reserveWindowProblem(window, reserve, now = Date.now()) {
+  if (!window || typeof window !== 'object') return null;
+  const keep = reserve[windowKind(window)];
+  if (typeof keep !== 'number' || !Number.isFinite(keep)) return null;
+  if (typeof window.usedPercent !== 'number' || !Number.isFinite(window.usedPercent)) return null;
+  const resetsAtMs = typeof window.resetsAt === 'string' ? Date.parse(window.resetsAt) : null;
+  if (resetsAtMs && Number.isFinite(resetsAtMs) && resetsAtMs <= now) return null;
+  if (100 - window.usedPercent <= keep) {
+    const resetsAt = resetsAtMs && Number.isFinite(resetsAtMs) ? new Date(resetsAtMs).toISOString() : null;
+    return {
+      reason: `reserved${reserve.note ? ` for ${reserve.note}` : ''} (${keep}% of its ${windowKind(window)} window is held back)`,
+      resetsAt,
+    };
+  }
+  return null;
+}
+
 export function reserveProblem(usage, reserve, now = Date.now()) {
   if (!reserve) return null;
   const end = reservationEnd(reserve.until);
   if (end !== null && now > end) return null;
   const windows = Array.isArray(usage?.windows) ? usage.windows : [];
   for (const window of windows) {
-    if (!window || typeof window !== 'object') continue;
-    const keep = reserve[windowKind(window)];
-    if (typeof keep !== 'number' || !Number.isFinite(keep)) continue;
-    if (typeof window.usedPercent !== 'number' || !Number.isFinite(window.usedPercent)) continue;
-    if (window.resetsAt && Date.parse(window.resetsAt) <= now) continue;
-    if (100 - window.usedPercent <= keep) {
-      return `reserved${reserve.note ? ` for ${reserve.note}` : ''} (${keep}% of its ${windowKind(window)} window is held back)`;
-    }
+    const problem = reserveWindowProblem(window, reserve, now);
+    if (problem) return problem.reason;
   }
   return null;
 }
@@ -271,6 +291,75 @@ function combineUsage(local, snap) {
   return { windows: ranked.map((entry) => entry.window) };
 }
 
+// When a candidate is blocked by usage or a reservation, its own blocking windows decide when it next has room
+// (the latest reset among its blocking windows; healthy windows are ignored).
+function modelResetAt(usage, reserve, now, cost) {
+  const windows = Array.isArray(usage?.windows) ? usage.windows : [];
+  const end = reserve ? reservationEnd(reserve.until) : null;
+  const reserveActive = Boolean(reserve && (end === null || now <= end));
+  let latestMs = null;
+  for (const window of windows) {
+    const problem = (reserveActive && reserveWindowProblem(window, reserve, now))
+      || windowProblem(window, now, cost);
+    if (!problem?.resetsAt) continue;
+    const ms = Date.parse(problem.resetsAt);
+    if (!Number.isFinite(ms) || ms <= now) continue;
+    if (latestMs === null || ms > latestMs) latestMs = ms;
+  }
+  return latestMs === null ? null : new Date(latestMs).toISOString();
+}
+
+export function earliestReset(skipped, now = Date.now()) {
+  let earliest = null;
+  for (const entry of skipped || []) {
+    if (!entry?.resetsAt) continue;
+    const ms = typeof entry.resetsAt === 'number' ? entry.resetsAt : Date.parse(entry.resetsAt);
+    if (!Number.isFinite(ms) || ms <= now) continue;
+    if (earliest === null || ms < earliest) earliest = ms;
+  }
+  return earliest;
+}
+
+export function formatUtcTime(ms) {
+  const iso = new Date(ms).toISOString();
+  return iso.slice(17, 19) === '00'
+    ? `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`
+    : `${iso.slice(0, 10)} ${iso.slice(11, 19)} UTC`;
+}
+
+export function formatRelativeTime(ms, now = Date.now()) {
+  const diffMs = Math.max(0, ms - now);
+  if (diffMs < 60 * 1000) return 'in under a minute';
+  const totalMins = Math.ceil(diffMs / 60000);
+  const days = Math.floor(totalMins / (24 * 60));
+  const hours = Math.floor((totalMins % (24 * 60)) / 60);
+  const mins = totalMins % 60;
+  const parts = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (mins > 0) parts.push(`${mins}m`);
+  return `in ${parts.join(' ')}`;
+}
+
+export function noRoomComment({ reasons = [], earliestResetMs = null, note = '', snapshot = null, now = Date.now() }) {
+  const lines = [
+    marker,
+    '',
+    'No reviewer had room to run.',
+  ];
+  if (reasons.length) {
+    lines.push('', 'Skipped:', ...reasons.map((entry) => `- ${entry}`));
+  }
+  if (note) lines.push('', note);
+  if (snapshot) lines.push('', `Usage: ${snapshot.source}, ${snapshotAge(snapshot.ageMs)}`);
+  if (earliestResetMs !== null && Number.isFinite(earliestResetMs)) {
+    lines.push('', `Earliest window reset: ${formatUtcTime(earliestResetMs)} (${formatRelativeTime(earliestResetMs, now)}). Tag again after that time.`);
+  } else {
+    lines.push('', 'Tag again once a reviewer has usage available.');
+  }
+  return lines.join('\n');
+}
+
 // One place decides which reviewers can run, and why the rest cannot. The reasons travel with the models, so a
 // requested provider that was filtered out is still named in the posted comment instead of vanishing.
 export function reviewerCandidates(models, context = {}) {
@@ -288,13 +377,22 @@ export function reviewerCandidates(models, context = {}) {
   for (const model of models) {
     const details = providerDetails[model.provider];
     const usage = combineUsage(usageByProvider[model.provider], usageByModel[modelKey(model)]);
+    const cost = reviewCost(model, caps);
+    const reserveReason = details && commandAvailable(details.command)
+      ? reserveProblem(usage, reserve[model.provider], now)
+      : null;
+    const usageReason = details && commandAvailable(details.command) && !reserveReason
+      ? usageProblem(usage, now, cost)
+      : null;
     const reason = !details ? 'unknown provider'
       : !commandAvailable(details.command) ? 'no local CLI'
-        : reserveProblem(usage, reserve[model.provider], now)
-        || usageProblem(usage, now, reviewCost(model, caps))
-        || sandboxProblem(model.provider);
-    if (reason) skipped.push({ ...model, reason });
-    else candidates.push(model);
+        : reserveReason || usageReason || sandboxProblem(model.provider);
+    if (reason) {
+      const resetsAt = (reserveReason || usageReason)
+        ? modelResetAt(usage, reserve[model.provider], now, cost)
+        : null;
+      skipped.push({ ...model, reason, ...(resetsAt ? { resetsAt } : {}) });
+    } else candidates.push(model);
   }
   return { candidates, skipped };
 }
@@ -863,7 +961,10 @@ export function runReviewer(models, prompt, work, deps = {}) {
   });
 
   const skipped = [...alreadySkipped, ...filtered.map(({ provider, model, reason }) => `${provider}/${model} (${reason})`)];
-  if (!candidates.length) throw new Error(`no reviewer could run: ${skipped.join(', ')}`);
+  const noRoomError = (message) => Object.assign(new Error(message), {
+    noRoomDetails: { reasons: skipped, earliestResetMs: earliestReset(filtered, now), snapshot: activeSnapshot, now },
+  });
+  if (!candidates.length) throw noRoomError(`no reviewer could run: ${skipped.join(', ')}`);
 
   for (const candidate of candidates) {
     const result = invoke(candidate.provider, candidate.model, prompt, candidate.effort, work, { caps });
@@ -883,7 +984,7 @@ export function runReviewer(models, prompt, work, deps = {}) {
     // diff talked it into quoting its key there.
     throw new Error(`${candidate.provider} reviewer failed (exit ${result.status ?? 'no status'}): ${failureSummary(result, env)}`);
   }
-  throw new Error(`every configured reviewer was skipped: ${skipped.join(', ')}`);
+  throw noRoomError(`every configured reviewer was skipped: ${skipped.join(', ')}`);
 }
 
 function verdictFor(text) {
@@ -1084,6 +1185,15 @@ async function main() {
     process.stdout.write(headAnswer(facts));
     return;
   }
+  const postNoRoomSafely = (repo, number, details) => {
+    if (!Number.isInteger(number) || number < 1 || !process.env.GH_TOKEN) return;
+    const body = noRoomComment(details);
+    try {
+      postComment(repo, number, body);
+    } catch (error) {
+      console.error(`could not post no-room comment: ${failureSummary({ stderr: error?.message || String(error) })}`);
+    }
+  };
   if (role === 'pick') {
     const [reviewRole, tierText] = process.argv.slice(3);
     if (!['approach', 'pr'].includes(reviewRole)) {
@@ -1105,18 +1215,28 @@ async function main() {
       if (installedProviders.includes(model.provider)) offered.push(model);
       else notInstalled.push(`${model.provider}/${model.model} (its CLI is not installed in this job)`);
     }
-    const snapshot = freshestSnapshot();
+    const now = Date.now();
+    const snapshot = freshestSnapshot(process.env, now);
     const usageByProvider = Object.fromEntries([...new Set(offered.map((m) => m.provider))]
       .map((provider) => [provider, readUsage(provider)]));
     const usageByModel = Object.fromEntries(offered
       .map((model) => [modelKey(model), snapshot ? snapshotUsage(snapshot, model) : undefined])
       .filter(([, usage]) => usage));
     const { candidates, skipped } = reviewerCandidates(offered, {
-      usageByProvider, usageByModel, reserve: config.reserve, caps: capsFor(config), commandAvailable: () => true,
+      usageByProvider, usageByModel, reserve: config.reserve, caps: capsFor(config), commandAvailable: () => true, now,
     });
     const reasons = [...notInstalled, ...skipped.map(({ provider, model, reason }) => `${provider}/${model} (${reason})`)];
     const chosen = candidates[0];
     if (!chosen) {
+      const repo = process.env.GITHUB_REPOSITORY || 'Flame119052/tess-music';
+      const number = Number(process.env.REVIEW_NUMBER);
+      postNoRoomSafely(repo, number, {
+        reasons,
+        earliestResetMs: earliestReset(skipped, now),
+        note: pick.note,
+        snapshot,
+        now,
+      });
       console.error(`no reviewer could run: ${reasons.join(', ')}`);
       process.exit(1);
     }
@@ -1152,6 +1272,9 @@ async function main() {
         snapshot: usageSnapshot,
         skipped: pinned ? extraSkipped() : [],
       });
+    } catch (error) {
+      if (error?.noRoomDetails) postNoRoomSafely(repo, number, { ...error.noRoomDetails, note: pick.note });
+      throw error;
     } finally {
       rmSync(work, { recursive: true, force: true });
     }
@@ -1213,6 +1336,9 @@ async function main() {
       snapshot: usageSnapshot,
       skipped: pinned ? extraSkipped() : [],
     });
+  } catch (error) {
+    if (error?.noRoomDetails) postNoRoomSafely(repo, number, { ...error.noRoomDetails, note: pick.note });
+    throw error;
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
