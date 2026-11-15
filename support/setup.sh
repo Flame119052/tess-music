@@ -158,14 +158,14 @@ TESS_OWNER_ID="$OWNER" node "$INSTALLED" add "$OWNER" Krish --as "$OWNER" >/dev/
 # process. So: install the unit and start it through systemd when that is possible, and otherwise start the gateway
 # plainly and say out loud that nothing is capping it.
 UNIT="$BASE_DIR/tess-support.service"
-CAPPED=0
+UNIT_READY=0
 # The unit is installed BY THE ADMIN, by hand, with two commands this script prints. It never asks for sudo: a bot
 # account with passwordless sudo is a bot account with root, which is the thing the unit exists to avoid.
 if command -v systemctl >/dev/null 2>&1 && [ -f "$UNIT" ]; then
   REAL_HERMES=$(command -v hermes 2>/dev/null || echo "$HOME/.local/bin/hermes")
   FILLED="$HERMES_HOME/../tess-support.service.filled"
-  sed -e "s|__USER__|$(id -un)|g" -e "s|__HOME__|$HOME|g" -e "s|__HERMES__|$REAL_HERMES|g" "$UNIT" > "$FILLED" 2>/dev/null || true
-  if [ -f "$FILLED" ]; then
+  if sed -e "s|__USER__|$(id -un)|g" -e "s|__HOME__|$HOME|g" -e "s|__HERMES__|$REAL_HERMES|g" "$UNIT" > "$FILLED" 2>/dev/null; then
+    UNIT_READY=1
     say ""
     say "To run it under systemd, where the memory and CPU caps and the read-only allowlist actually apply, the"
     say "machine's admin runs these two lines once (they need root, which this script does not):"
@@ -175,15 +175,19 @@ if command -v systemctl >/dev/null 2>&1 && [ -f "$UNIT" ]; then
   fi
 fi
 
-if [ "$CAPPED" = 1 ]; then
-  say "Started under systemd: memory 1G, CPU 50%, its own unit."
+# Two gateways on one profile fight over the same session store, so exactly one of these happens.
+if systemctl is-active --quiet tess-support 2>/dev/null; then
+  say "Already running under systemd — leaving it there."
+elif [ "$UNIT_READY" = 1 ]; then
+  # Stop a standalone gateway from an earlier run before the unit can start its own.
+  "$HERMES" -p "$NAME" gateway stop >/dev/null 2>&1 || true
+  say "Not starting a second gateway: the admin's two lines above start it under systemd."
 else
   say "Starting the gateway for '$NAME'..."
   "$HERMES" -p "$NAME" gateway start >/dev/null 2>&1 \
     || die "couldn't start the gateway; start it by hand with: hermes -p $NAME gateway start"
   say ""
-  say "This process is NOT capped. To bound it, give this account passwordless sudo for systemctl and run this again,"
-  say "or install $UNIT by hand after replacing __USER__, __HOME__ and __HERMES__ — as this account, never root."
+  say "This process is NOT capped. Have the machine's admin install the generated unit using the commands above."
 fi
 
 say ""

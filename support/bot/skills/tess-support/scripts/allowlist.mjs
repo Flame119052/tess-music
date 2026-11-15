@@ -29,7 +29,19 @@ const PROFILE = process.env.TESS_PROFILE || PROFILE_DIR.split('/').pop();
 export const ENV_FILE = process.env.TESS_HERMES_ENV || join(PROFILE_DIR, '.env');
 const LIST = process.env.TESS_ALLOWLIST || join(PROFILE_DIR, 'allow.txt');
 const LOG = join(dirname(LIST), 'allow.log');
-const OWNER = (process.env.TESS_OWNER_ID || '').trim();
+// Run over SSH, the environment is a fresh shell: the owner id lives in the profile's .env, not in it. The documented
+// commands therefore failed with "TESS_OWNER_ID is not set". Read that file for anything the environment doesn't have.
+const profileEnv = () => {
+  if (!existsSync(ENV_FILE)) return {};
+  const out = {};
+  for (const line of readFileSync(ENV_FILE, 'utf8').split('\n')) {
+    const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)$/.exec(line);
+    if (m) out[m[1]] = m[2].replace(/^['"]|['"]$/g, '');
+  }
+  return out;
+};
+const fromProfile = profileEnv();
+const OWNER = (process.env.TESS_OWNER_ID || fromProfile.TESS_OWNER_ID || '').trim();
 const KEY = 'TELEGRAM_ALLOWED_USERS';
 
 const stop = (msg) => { console.error(msg); process.exit(1); };

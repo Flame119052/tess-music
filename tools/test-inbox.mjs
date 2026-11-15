@@ -160,6 +160,12 @@ try {
   assert.ok(bucket.has(`support/${id}.mov`), 'and it is in the bucket');
   assert.equal(await status(new Request(`https://inbox.test/v1/support/recording/${id}`, { method: 'GET' })), 404, 'there is no way to read a recording back');
 
+  // 7b. Another approved poster cannot touch this report's recording. Ids are sequential and labels are not unique.
+  const other = 'tok_' + 'c'.repeat(40);
+  execFileSync('sqlite3', [dbFile, `INSERT INTO support_tokens (label, sha, added) VALUES ('Krish bot', '${shaOf(other)}', ${Date.now()})`]);
+  assert.equal(await status(rec(bytes, { authorization: `Bearer ${other}` })), 403, 'a different token cannot replace someone else\'s recording');
+  assert.equal(query(`SELECT recording FROM support_reports WHERE id = ${id}`)[0].recording, `support/${id}.mov`, 'and the original is still the one recorded');
+
   // 8. The sweep deletes a recording once the report is filed — the person's screen is not kept.
   execFileSync('sqlite3', [dbFile, `UPDATE support_reports SET issue = 'https://github.com/Flame119052/tess-music/issues/91', filed_at = ${Date.now()} WHERE id = ${id}`]);
   await worker.scheduled({}, env());
@@ -203,6 +209,7 @@ try {
     '  · the open-issue title list is served, with no report data in it',
     '  · a recording is refused without an approved token, refused if it is not video or over 50 MB, and can never be read back',
     '  · a filed report\'s recording is deleted by the sweep',
+    '  · another approved token cannot replace a report\'s recording, even with the same label',
     '  · a Worker deployed before the schema still runs the health-report cleanup instead of throwing',
     '  · a title carrying shell syntax is refused at the door',
     '  · the public title list sits behind Cloudflare\'s limiter',

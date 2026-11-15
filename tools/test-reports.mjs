@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
 
-const { issueCommand, shellQuote, LABEL } = await import(new URL('../tools/reports.mjs', import.meta.url).href);
+const { issueCommand, shellQuote, LABEL, parseSupport } = await import(new URL('../tools/reports.mjs', import.meta.url).href);
 
 const box = mkdtempSync(join(tmpdir(), 'tess-reports-test-'));
 // What the shell sees when it runs the printed line. `gh` is replaced by an echo, so the only thing exercised is the
@@ -27,6 +27,13 @@ try {
   assert.match(plain, /--label 'P2: medium' --label 'area: theme' --label 'bug'/, 'the labels are the real GitHub labels');
   assert.match(plain, /^node tools\/reports\.mjs support body 7 \| gh issue create /, 'the body is piped in, not passed as an argument');
   assert.match(plain, /--body-file -$/, 'the body still arrives on stdin');
+
+  // 1b. `support show 12` must hand 12 to the number, not the subcommand. This is the argument every reading and filing
+  // subcommand depends on.
+  assert.deepEqual(parseSupport(['show', '12']), { sub: 'show', arg: '12' }, 'show takes the report number');
+  assert.deepEqual(parseSupport(['body', '7']), { sub: 'body', arg: '7' }, 'body takes the report number');
+  assert.deepEqual(parseSupport(['token', 'add']), { sub: 'token', arg: 'add' }, 'token takes its verb');
+  assert.deepEqual(parseSupport(['list']), { sub: 'list', arg: undefined }, 'list takes nothing');
 
   // 2. A title written by someone hostile does nothing at all when the line is pasted.
   const marker = join(box, 'PWNED');

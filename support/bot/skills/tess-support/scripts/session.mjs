@@ -148,7 +148,9 @@ const addChecked = (dir, file) => {
     }
     // Duration is only checkable when ffprobe is there; the size cap still applies either way.
     if (have('ffprobe')) {
-      const secs = Number(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', target], { encoding: 'utf8' }).trim());
+      // Only a shrunk file exists at `target` yet; anything else is still at the source until the copy below.
+      const probe = shrunk ? target : file;
+      const secs = Number(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', probe], { encoding: 'utf8' }).trim());
       if (Number.isFinite(secs) && secs > MAX_MINUTES * 60 + 5) {
         if (shrunk) rmSync(target, { force: true });
         throw new Error(`that recording is ${Math.round(secs)}s; ask for ${MAX_MINUTES} minutes or less`);

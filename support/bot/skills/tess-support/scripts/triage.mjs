@@ -145,9 +145,11 @@ export const decide = ({ report, words, tess = 'unknown', macos = 'unknown', pri
     tess,
     spotify: p.spotify,
     macos,
-    problems: p.problems,
-    fixed: p.fixed,
-    log: p.log,
+    // These three are read straight out of the person's paste and printed on their own, so they get the same scrub as
+    // their words. A path or an email inside the helper's log was reaching the public issue otherwise.
+    problems: p.problems.map(scrub),
+    fixed: p.fixed.map(scrub),
+    log: p.log.map(scrub),
     installId: p.installId,
     reportsMayBeOff: p.reportsMayBeOff,
     words: scrub(words || '').trim(),
@@ -252,19 +254,21 @@ const main = () => {
     die(`--mode must be one of issue, krish, json, inbox (got "${mode}"). This tool never files a GitHub issue.`);
   }
   if (mode === 'json') {
-    console.log(JSON.stringify({ ...d, labels: labels(d), body: body(d), krish: krish(d) }, null, 2));
+    console.log(JSON.stringify({ ...d, labels: labels(d), body: scrub(body(d)), krish: scrub(krish(d)) }, null, 2));
   } else if (mode === 'inbox') {
     // Exactly what POST /v1/support takes, and nothing else: no name, no Telegram id, no token. The Worker checks the
     // priority, the areas and the kind again on its side, because these values become GitHub labels.
     console.log(JSON.stringify({
       priority: d.priority, kind: d.kind, areas: d.areas, title: d.title,
-      words: d.words, diagnosis: d.summary, body: body(d),
+      words: d.words, diagnosis: d.summary, body: scrub(body(d)),
       tess: d.tess, spotify: d.spotify, macos: d.macos, install: d.installId || undefined,
     }));
   } else if (mode === 'krish') {
-    console.log(krish(d));
+    console.log(scrub(krish(d)));
   } else {
-    console.log(`TITLE: ${d.title}\n\nLABELS: ${labels(d).join(', ')}\n\n${body(d)}`);
+    // The whole rendered issue goes through the scrubber one last time: every field it is built from has been scrubbed
+    // already, and this catches the one that is added later without anyone noticing.
+    console.log(`TITLE: ${d.title}\n\nLABELS: ${labels(d).join(', ')}\n\n${scrub(body(d))}`);
   }
 };
 

@@ -23,6 +23,8 @@ const { ROOT, RECORDS, MAX_SESSION, MAX_TOTAL, newSession, addFile, handoff, swe
 const record = () => (existsSync(RECORDS) ? readFileSync(RECORDS, 'utf8') : '');
 const file = (name, bytes) => { const p = join(box, name); writeFileSync(p, Buffer.alloc(bytes, 1)); return p; };
 
+const savedPathForSession = process.env.PATH;
+
 try {
   // 1. A session is one folder, and nothing outside it.
   const dir = newSession();
@@ -93,6 +95,22 @@ exit 0
   assert.ok(!existsSync(refusedSrc), 'a refused attachment is deleted, not left where Hermes put it');
   handoff(refuseDir, '42');
 
+  // 3d. A recording under the size cap is probed at the source, not at a destination that does not exist yet.
+  const probeDir = newSession();
+  const realClip = join(box, 'real-clip.mov');
+  writeFileSync(realClip, Buffer.alloc(2 * MB, 3));
+  const ff2 = join(box, 'ff2');
+  mkdirSync(ff2, { recursive: true });
+  // A probe that fails on a path that isn't there, like the real one: this is what destroyed a working file.
+  writeFileSync(join(ff2, 'ffprobe'), '#!/bin/sh\nfor a in "$@"; do f="$a"; done\n[ -f "$f" ] || exit 1\nprintf "12.5\\n"\n');
+  chmodSync(join(ff2, 'ffprobe'), 0o755);
+  process.env.PATH = `${ff2}:${savedPathForSession}`;
+  let kept;
+  try { kept = addFile(probeDir, realClip); } finally { process.env.PATH = savedPathForSession; }
+  assert.ok(existsSync(kept.path), 'a recording under the cap is kept, not thrown away by a probe of the wrong path');
+  assert.equal(kept.size, 2 * MB, 'and it is the whole file');
+  handoff(probeDir, '45');
+
   // 4. A crash leaves a folder behind; the next visit sweeps it, and only past 24 hours.
   const stale = newSession();
   addFile(stale, file('old.png', 1024));
@@ -156,6 +174,7 @@ exit 0
     '  · that line has the report id, the time, the count and the size — no file names, no paths',
     '  · a shrunk recording is kept small: the original is not written back over it',
     '  · the person\'s original download is deleted, whether the file was accepted or refused',
+    '  · a recording under the cap is probed at the source, so a probe cannot destroy it',
     '  · a folder older than 24 hours is swept on the next visit, and the sweep leaves its own line',
     '  · a refused file leaves nothing behind, so the folder is exactly as it was',
     '  · handoff and add refuse a path outside the session root, and the file outside it survives',

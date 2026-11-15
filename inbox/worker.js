@@ -92,7 +92,7 @@ async function support(request, env) {
   const sha = await shaFull(token);
   let who;
   try {
-    who = await env.DB.prepare('SELECT label FROM support_tokens WHERE sha = ? AND revoked IS NULL').bind(sha).first();
+    who = await env.DB.prepare('SELECT id, label FROM support_tokens WHERE sha = ? AND revoked IS NULL').bind(sha).first();
   } catch { return reply(503); }
   if (!who) return reply(401);
   if (request.headers.get('content-type') !== 'application/json') return reply(415);
@@ -117,12 +117,12 @@ async function support(request, env) {
   let row;
   try {
     row = await env.DB.prepare(
-      'INSERT INTO support_reports (at, person, install, tess, spotify, macos, priority, areas, kind, title, words, diagnosis, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO support_reports (at, person, install, tess, spotify, macos, priority, areas, kind, title, words, diagnosis, body, token_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).bind(
     Date.now(), short(who.label, 60), install,
     short(r.tess, 40), short(r.spotify, 40), short(r.macos, 40),
     r.priority, areas.join(', '), r.kind, short(r.title, 120),
-      short(r.words, 4000), short(r.diagnosis, 2000), short(r.body, 24 * 1024),
+      short(r.words, 4000), short(r.diagnosis, 2000), short(r.body, 24 * 1024), who.id,
     ).run();
   } catch {
     // Most likely the schema hasn't been applied on this database yet. Say so, rather than leaking a D1 error.
@@ -158,12 +158,15 @@ async function recording(request, env, id) {
   const sha = await shaFull(token);
   let who, row;
   try {
-    who = await env.DB.prepare('SELECT label FROM support_tokens WHERE sha = ? AND revoked IS NULL').bind(sha).first();
+    who = await env.DB.prepare('SELECT id, label FROM support_tokens WHERE sha = ? AND revoked IS NULL').bind(sha).first();
     if (!/^\d+$/.test(id)) return reply(400);
-    row = await env.DB.prepare('SELECT id, recording, issue FROM support_reports WHERE id = ?').bind(Number(id)).first();
+    row = await env.DB.prepare('SELECT id, recording, issue, token_id FROM support_reports WHERE id = ?').bind(Number(id)).first();
   } catch { return reply(503); }
   if (!who) return reply(401);
   if (!row) return reply(404);
+  // Only the token that created this report may attach its recording. Sequential ids are guessable, and a label is not
+  // a unique key, so neither is enough on its own.
+  if (row.token_id !== who.id) return reply(403);
   // Once the report is an issue, the recording's only job is to be deleted: accepting an upload then would keep a
   // person's screen past the point anyone would look at it.
   if (row.issue) return reply(409);

@@ -146,6 +146,16 @@ try {
   catch (e) { assert.match(String(e.stderr), /without shell characters/, 'a title with shell syntax is refused before it is sent'); }
   assert.ok(!/--title "/.test(readFileSync(join(root, 'support/bot/skills/tess-support/SKILL.md'), 'utf8')), 'the skill never tells the model to put a title in a shell argument');
 
+  // 10c. A path or an email inside the doctor's own log block must not reach the issue.
+  const dirty = join(box, 'dirty.txt');
+  writeFileSync(dirty, readFileSync(fix('report-blank-spotify.txt'), 'utf8')
+    .replace('  1 problem(s), 0 fixed.', '2026-11-14 09:12:44 tess could not read /Users/alice/Spotify.app for alice@example.com\n  1 problem(s), 0 fixed.'));
+  const dirtyIssue = out(process.execPath, [TRIAGE, '--report', dirty, '--words', fix('words-blank-spotify.txt'), '--title', 'Spotify opens as a black window and nothing loads', '--mode', 'issue']);
+  assert.ok(!/alice/.test(dirtyIssue), 'a home path and an email in the helper log are scrubbed like everything else');
+  assert.match(dirtyIssue, /could not read ~/, 'the line is kept, with the path replaced');
+  const dirtyPayload = JSON.parse(out(process.execPath, [TRIAGE, '--report', dirty, '--words', fix('words-blank-spotify.txt'), '--title', 'Spotify opens as a black window and nothing loads', '--mode', 'inbox']));
+  assert.ok(!/alice/.test(JSON.stringify(dirtyPayload)), 'and the inbox payload does not carry it either');
+
   // --- the allowlist -------------------------------------------------------------------------------------------------
   const prof = join(box, 'hermes', 'profiles', 'tess-support');
   mkdirSync(prof, { recursive: true });
@@ -197,6 +207,8 @@ try {
   cpSync(join(SKILL, 'SKILL.md'), join(archDir, 'skills', 'tess-support', 'SKILL.md'));
   mkdirSync(join(archDir, 'skills', 'tess-support', 'scripts'), { recursive: true });
   for (const sc of ['allowlist.mjs', 'triage.mjs']) cpSync(join(SKILL, 'scripts', sc), join(archDir, 'skills', 'tess-support', 'scripts', sc));
+  // The download carries support/ as a whole, so the unit template sits beside the bot.
+  cpSync(join(root, 'support/tess-support.service'), join(stage, 'tess-music-main', 'support', 'tess-support.service'));
   const archive = join(box, 'tess-music-main.tar.gz');
   out('/usr/bin/tar', ['-czf', archive, '-C', stage, 'tess-music-main']);
 
@@ -279,6 +291,18 @@ exit 0
   assert.match(asRoot, /don't run this as root/, 'setup.sh refuses to run as root');
   assert.ok(!/profile install/.test(asRoot), 'and installs nothing when it does');
 
+  // 7b. No advice to grant the bot passwordless sudo, and never two gateways: when a unit was generated, setup does not
+  // start one of its own.
+  assert.ok(!/passwordless sudo for systemctl|give this account passwordless sudo/i.test(setupText), 'setup never suggests granting the bot sudo');
+  const sysDir = join(box, 'sysonly');
+  mkdirSync(sysDir, { recursive: true });
+  writeFileSync(join(sysDir, 'systemctl'), '#!/bin/sh\n[ "$1" = "is-active" ] && exit 3\nexit 0\n');
+  chmodSync(join(sysDir, 'systemctl'), 0o755);
+  rmSync(join(state, 'calls'), { force: true });
+  const unitRun = out('/bin/sh', [SETUP], { ...senv, PATH: `${sysDir}:${senv.PATH}` });
+  assert.match(unitRun, /Not starting a second gateway/, 'with a unit generated, it does not start a second gateway');
+  assert.ok(!/gateway start/.test(calls().join('\n')), 'and never calls gateway start in that case');
+
   // Paperclip's machine is refused outright, before anything is installed.
   const pc = join(box, 'paperclip-host');
   mkdirSync(join(pc, 'paperclip'), { recursive: true });
@@ -310,7 +334,9 @@ exit 0
     '  · it borrows the connected model, falls back to OpenCode\'s free tier, and stores the token, owner and inbox',
     '  · the payload it posts carries only fields the inbox accepts, and no token or personal data',
     '  · a title the inbox would refuse with a 400 is refused here first, before anything is posted',
+    '  · a home path or an email inside the helper log is scrubbed out of the issue and the payload',
     '  · it refuses to run as root, so the bot\'s shell is never root\'s',
+    '  · it never suggests passwordless sudo, and never starts a second gateway beside the systemd unit',
     '  · it never changes the default profile, refuses Paperclip\'s machine, and starts nothing after a failed install',
     '',
   ].join('\n'));

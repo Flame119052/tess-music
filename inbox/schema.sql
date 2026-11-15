@@ -30,7 +30,10 @@ CREATE TABLE IF NOT EXISTS support_reports (
   body TEXT,
   issue TEXT,
   filed_at INTEGER,
-  recording TEXT
+  recording TEXT,
+  -- The token that created the report. A recording may only be uploaded by the same token: labels are not unique, and
+  -- a sequential id alone would let any valid poster overwrite someone else's screen.
+  token_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS support_reports_at ON support_reports(at);
 -- One row per approved poster. Only the SHA-256 of a token is stored, so this table cannot leak one; revoking is a

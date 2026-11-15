@@ -50,8 +50,12 @@ export const issueCommand = (r) => {
   return `node tools/reports.mjs support body ${id} | gh issue create -R Flame119052/tess-music --title ${shellQuote(r.title)} ${labels.map((l) => `--label ${shellQuote(l)}`).join(' ')} --body-file -`;
 };
 
+// `support show 12`: the subcommand is argv[1], so the number is argv[2]. Reading the module-level `arg` here handed
+// "show" to num() and broke show, body, filed and token alike — so the split lives in one tested place.
+export const parseSupport = (args) => ({ sub: args[0], arg: args[1] });
+
 function support() {
-  const sub = argv[1];
+  const { sub, arg } = parseSupport(argv.slice(1));
   const num = (v) => { const n = Number(v); if (!Number.isInteger(n) || n < 1) { console.error('a support report number is a positive integer'); process.exit(1); } return n; };
 
   if (sub === 'list') {
