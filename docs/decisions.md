@@ -226,3 +226,17 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   the path its CLI looks in: the earlier mounts sat at the runner's real home, which `HOME` had already moved away from,
   so OpenCode could not find its agent file and Codex could not find its login. Applying the drop-in to a machine is a
   root action the owner approves; the repository only carries the file and the check. (#71)
+- **15 Nov 2026 · Review caps (#71)** — One review is now bounded before it starts, not just advised in docs. Each
+  provider gets the hardest limit it actually accepts: Claude 12 turns and a dollar ceiling (60 cents Opus, 30 Sonnet,
+  explicitly a client-side estimate of API list prices rather than the plan's meter), Codex an effort plus compaction at
+  180k tokens because it has no turn or budget cap at all, Cursor only a wall clock because it has no cap it can be told
+  about — and only Cursor's own Composer, since Claude or GPT inside Cursor bills prepaid credit from the first
+  request — and OpenCode 12 steps in its agent file. Every provider is killed at 600 s (480 s for terra and Cursor) and
+  the next reviewer runs, with the timeout named in the comment. What a review used is now stated from the CLI's own
+  report: Claude's `--output-format json` gives turns, dollars and tokens, Codex's `--json` gives tokens. The share of a
+  5-hour window a review is assumed to take stopped being one number for everyone: it is `caps.per_review_pct` per model
+  (sol 7, terra 3, GLM-5.3 4, GLM-5.3 Flash 0.2, DeepSeek 0.1), so a cheap reviewer can still run on a window that is
+  nearly empty, while a model nobody has measured keeps the old cautious 10%. A review that stops because of one of those
+  caps is skipped by name and the next reviewer runs, so a cap can never turn a review into a "changes needed" verdict
+  about the change. Codex also needed `--skip-git-repo-check`, because the review copy is a `git archive` with no `.git`
+  and every Codex review had been refused before any cap applied. (#71)
