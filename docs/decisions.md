@@ -243,10 +243,11 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
 - **15 Nov 2026 · Usage snapshots (#93)** — A review picks its model from the freshest snapshot any of Krish's machines
   published in the last 30 minutes, not only from the runner's own hub. Each machine's `tess-usage` is read every few
   minutes by `tools/usage-publish` and written to one repository variable per machine (`USAGE_SNAPSHOT_MAC`, `_VPS`,
-  `_OMARCHY`), which the review workflow passes to the job. The snapshot is quota only: what is left per window, when it
-  renews, the pace sentence, a timestamp and the machine's name; providers a reviewer cannot be are dropped, so no
-  balance or plan text is ever published, and the publisher refuses a snapshot that looks like it holds a key. A stale
-  or missing variable falls back to today's behaviour, and the comment names the source and age (`Usage: vps, 5 min old`)
+  `_OMARCHY`), which the review workflow passes to the job. The snapshot uses a strict allowlist schema rebuilt from
+  scratch: a fixed provider/instance id, window kind, `%` left (0–100), ISO reset time, numeric pace fields, a
+  timestamp and a machine name (`mac`, `vps`, `omarchy`) — no labels, plan names or free text. Providers a reviewer cannot
+  be are dropped, and both publisher and reader validate the same schema so malformed or stale data falls back to
+  today's behaviour, and the comment names the source and age (`Usage: vps, 5 min old`)
   so nobody has to guess. OpenCode is matched per connector (`opencode-go`, `zai-coding-plan`), because those are separate
   allowances. Scheduling is a LaunchAgent on the Mac and a user systemd timer on Linux, at the lowest priority the
   machine offers, with nothing system-wide; installing it on a machine is the owner's step, not a merge. (#93)

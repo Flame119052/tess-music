@@ -18,10 +18,10 @@ Only numbers a quota is made of, and nothing else:
 | `providers[].provider`, `.instance` | `claude`, `codex`, `cursor`, `opencode`; for OpenCode the connector (`opencode-go`, `zai-coding-plan`) because each has its own allowance |
 | `windows[].kind` | `session` (5-hour), `weekly`, `monthly`, `other` |
 | `windows[].leftPercent` | the share **left**, the way the hub prints it |
-| `windows[].resetsAt` | when that window renews |
-| `windows[].pace` | the hub's own sentence, e.g. `22.8pp ahead of even burn, runs out in ~7h 22m` |
+| `windows[].resetsAt` | when that window renews (strict ISO-8601 UTC timestamp) |
+| `windows[].pace` | optional numeric pace (`deltaPp`, `runsOutInMins`) — no free text |
 
-No keys, no account names, no balances, and no plan names. Providers a reviewer cannot be (Devin, DeepSeek,
+No keys, no account names, no balances, no labels, and no plan names. Providers a reviewer cannot be (Devin, DeepSeek,
 Antigravity, …) are left out entirely, and the publisher refuses to publish anything that looks like a credential or
 holds no windows.
 
@@ -99,10 +99,11 @@ To stop it: `systemctl --user disable --now tess-usage-publish.timer`.
 
 ## Why it is safe to publish
 
-- The snapshot is derived only from what `tess-usage` prints, and the parser keeps numbers, reset times and pace text.
-  Anything else in a line is dropped.
-- A second guard refuses to publish a snapshot whose text matches a key or token shape, an empty snapshot, or one over
-  40 KB (a repository variable's practical limit).
+- The snapshot is derived only from what `tess-usage` prints and rebuilt from scratch against a strict allowlist
+  schema (known provider/instance id, window kind enum, `%` left 0–100, ISO reset time, numeric pace, ISO timestamp,
+  and machine name). Any unrecognized field, free text, or unexpected connector is dropped.
+- A second guard refuses to publish a snapshot that fails the allowlist schema, matches a key or token shape, has no
+  valid windows, or exceeds 40 KB (a repository variable's practical limit).
 - The token can write repository variables for this repository only. It cannot read the repo, run a workflow, or reach
   a provider. Nothing on a reviewer machine holds it: the runners read the variables GitHub already passes them.
 - The reviewer never hands these values to a model CLI: `reviewerEnv` in `tools/agent-review.mjs` allows only HOME,

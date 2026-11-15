@@ -8,6 +8,7 @@ import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { machines, normalizeProviders, parseIsoTimestamp, snapshotVersion } from './usage-publish/publish.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const marker = '<!-- tess-review-bot -->';
@@ -113,17 +114,20 @@ const windowKind = (window) => window.kind || window.id || 'usage';
 export function usageProblem(usage, now = Date.now(), cost = reviewCostPercent) {
   if (!usage || !Array.isArray(usage.windows)) return null;
   for (const window of usage.windows) {
-    const resetsAt = window.resetsAt ? Date.parse(window.resetsAt) : null;
-    if (resetsAt && resetsAt <= now) continue;
-    if (typeof window.usedPercent !== 'number') continue;
+    if (!window || typeof window !== 'object') continue;
+    const resetsAt = typeof window.resetsAt === 'string' ? Date.parse(window.resetsAt) : null;
+    if (resetsAt && Number.isFinite(resetsAt) && resetsAt <= now) continue;
+    if (typeof window.usedPercent !== 'number' || !Number.isFinite(window.usedPercent)) continue;
     const kind = windowKind(window);
     if (window.usedPercent >= 100) return `no usage left in its ${kind} window`;
     const left = 100 - window.usedPercent;
     if (kind === 'session' && left < reviewsToKeep * cost) {
       return `fewer than ${reviewsToKeep} reviews left in its ${kind} window`;
     }
-    const durationMs = typeof window.windowDurationMins === 'number' ? window.windowDurationMins * 60000 : null;
-    if (!durationMs || !resetsAt) continue;
+    const durationMs = typeof window.windowDurationMins === 'number' && Number.isFinite(window.windowDurationMins)
+      ? window.windowDurationMins * 60000
+      : null;
+    if (!durationMs || !resetsAt || !Number.isFinite(resetsAt)) continue;
     const elapsedMs = durationMs - (resetsAt - now);
     // Ignore the first few percent of a window: dividing by a tiny elapsed time would predict almost anything.
     if (elapsedMs <= durationMs * 0.05) continue;
@@ -137,9 +141,9 @@ export function providerHasUsage(usage, now = Date.now()) {
 }
 
 // A usage snapshot from one of Krish's machines, published every few minutes as a repository variable (tools/usage-publish).
-// It is quota only: the share left per window, when each resets, and a pace sentence. The reviewer uses the freshest one no
-// older than half an hour and names it in the comment; anything older is ignored, so a sleeping Mac falls back to the local
-// hub instead of deciding from a window that has since been spent.
+// It is quota only (strict allowlist schema): the share left per window, when each resets, and numeric pace fields. The
+// reviewer uses the freshest valid one no older than half an hour and names it in the comment; anything malformed, empty,
+// or older is ignored, so a broken variable or sleeping Mac falls back to the local hub.
 export const snapshotVariables = ['USAGE_SNAPSHOT_MAC', 'USAGE_SNAPSHOT_VPS', 'USAGE_SNAPSHOT_OMARCHY'];
 export const snapshotMaxAgeMs = 30 * 60 * 1000;
 // The hub prints a window's length only in its own detail view, and the pace rule needs one. A kind is a length: the
@@ -147,14 +151,19 @@ export const snapshotMaxAgeMs = 30 * 60 * 1000;
 export const windowMinsByKind = { session: 300, weekly: 10080, monthly: 43200 };
 
 export function parseSnapshot(name, raw, now = Date.now()) {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
   let data;
   try { data = JSON.parse(raw); } catch { return null; }
-  if (!data || !Array.isArray(data.providers)) return null;
-  const takenAt = Date.parse(data.takenAt);
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  if (data.version !== snapshotVersion) return null;
+  if (typeof data.machine !== 'string' || !machines.includes(data.machine)) return null;
+  const takenAtIso = parseIsoTimestamp(data.takenAt);
+  if (!takenAtIso) return null;
+  const takenAt = Date.parse(takenAtIso);
   if (!Number.isFinite(takenAt)) return null;
-  const machine = typeof data.machine === 'string' && data.machine ? data.machine
-    : String(name).replace(/^USAGE_SNAPSHOT_/, '').toLowerCase();
-  return { source: machine, takenAt, ageMs: now - takenAt, providers: data.providers };
+  const providers = normalizeProviders(data.providers);
+  if (!providers.length) return null;
+  return { source: data.machine, takenAt, ageMs: now - takenAt, providers };
 }
 
 export function readSnapshots(env = process.env, now = Date.now()) {
@@ -175,17 +184,20 @@ export function freshestSnapshot(env = process.env, now = Date.now()) {
 // A snapshot entry in the shape the hub produces, so one set of rules judges both. A model names its own pool where the
 // providers differ: `opencode-go/deepseek-v4.1-flash` is the `opencode-go` connector, not OpenCode as a whole.
 export function snapshotUsage(snapshot, model) {
-  const entries = snapshot?.providers || [];
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return undefined;
+  if (!model || typeof model !== 'object' || typeof model.provider !== 'string') return undefined;
+  const entries = normalizeProviders(snapshot.providers);
+  if (!entries.length) return undefined;
   // OpenCode has one pool per connector, so its instance is the part of the model name before the slash and never the
   // provider as a whole: the Z.ai plan and OpenCode Go are separate allowances.
-  const instance = model.provider === 'opencode' ? String(model.model).split('/')[0] : model.provider;
+  const instance = model.provider === 'opencode' ? String(model.model || '').split('/')[0] : model.provider;
   const entry = entries.find((item) => item.instance === instance)
     || (model.provider === 'opencode' ? undefined : entries.find((item) => item.provider === instance));
-  if (!entry || !Array.isArray(entry.windows)) return undefined;
+  if (!entry || !entry.windows.length) return undefined;
   return {
     windows: entry.windows.map((window) => ({
       kind: window.kind,
-      ...(typeof window.leftPercent === 'number' ? { usedPercent: 100 - window.leftPercent } : {}),
+      usedPercent: 100 - window.leftPercent,
       ...(window.resetsAt ? { resetsAt: window.resetsAt } : {}),
       ...(typeof windowMinsByKind[window.kind] === 'number' ? { windowDurationMins: windowMinsByKind[window.kind] } : {}),
     })),
@@ -212,9 +224,12 @@ export function reserveProblem(usage, reserve, now = Date.now()) {
   if (!reserve) return null;
   const end = reservationEnd(reserve.until);
   if (end !== null && now > end) return null;
-  for (const window of usage?.windows || []) {
+  const windows = Array.isArray(usage?.windows) ? usage.windows : [];
+  for (const window of windows) {
+    if (!window || typeof window !== 'object') continue;
     const keep = reserve[windowKind(window)];
-    if (typeof keep !== 'number' || typeof window.usedPercent !== 'number') continue;
+    if (typeof keep !== 'number' || !Number.isFinite(keep)) continue;
+    if (typeof window.usedPercent !== 'number' || !Number.isFinite(window.usedPercent)) continue;
     if (window.resetsAt && Date.parse(window.resetsAt) <= now) continue;
     if (100 - window.usedPercent <= keep) {
       return `reserved${reserve.note ? ` for ${reserve.note}` : ''} (${keep}% of its ${windowKind(window)} window is held back)`;
@@ -706,10 +721,19 @@ export function runReviewer(models, prompt, work, deps = {}) {
     now = Date.now(),
     invoke = cliInvocation,
   } = deps;
+  const validProviders = snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)
+    ? normalizeProviders(snapshot.providers)
+    : [];
+  const activeSnapshot = validProviders.length
+    && typeof snapshot.source === 'string' && machines.includes(snapshot.source)
+    && typeof snapshot.ageMs === 'number' && Number.isFinite(snapshot.ageMs)
+    && snapshot.ageMs >= 0 && snapshot.ageMs <= snapshotMaxAgeMs
+    ? { source: snapshot.source, takenAt: snapshot.takenAt, ageMs: snapshot.ageMs, providers: validProviders }
+    : null;
   const usageByProvider = Object.fromEntries(models.map(({ provider }) => [provider, usageFor(provider)]));
   // A fresh snapshot replaces the hub for the models it covers, and the comment names which machine it came from.
   const usageByModel = Object.fromEntries(models
-    .map((model) => [modelKey(model), snapshot ? snapshotUsage(snapshot, model) : undefined])
+    .map((model) => [modelKey(model), activeSnapshot ? snapshotUsage(activeSnapshot, model) : undefined])
     .filter(([, usage]) => usage));
   const { candidates, skipped: filtered } = reviewerCandidates(models, {
     usageByProvider, usageByModel, commandAvailable, sandboxProblem: sandbox, reserve, caps, now,
@@ -725,7 +749,7 @@ export function runReviewer(models, prompt, work, deps = {}) {
       continue;
     }
     if (result.status === 0 && `${result.text ?? result.stdout ?? ''}`.trim()) {
-      return { ...candidate, text: `${result.text ?? result.stdout}`.trim(), usage: result.usage || null, skipped, snapshot };
+      return { ...candidate, text: `${result.text ?? result.stdout}`.trim(), usage: result.usage || null, skipped, snapshot: activeSnapshot };
     }
     const reason = skipReason(result);
     if (reason) {

@@ -22,6 +22,7 @@ import {
   parseClaudeOutput,
   parseCodexOutput,
   parseRequest,
+  parseSnapshot,
   providerHasUsage,
   reserveProblem,
   reservationEnd,
@@ -711,6 +712,144 @@ test('a snapshot names the pool an OpenCode model really spends, and the hub fil
   assert.match(skipped[0].reason, /no usage left in its session window/);
   assert.equal(skipped[0].model, 'zai-coding-plan/glm-5.3',
     'and the connector the snapshot does not name is judged by the hub, not by its sibling');
+});
+
+test('reader validates the allowlist schema and drops anything outside it', () => {
+  const now = Date.parse('2026-11-15T04:40:00Z');
+  const takenAt = new Date(now - 60000).toISOString();
+
+  // Unknown top-level, provider, window, and pace fields are stripped; invalid entries are dropped.
+  const mixed = JSON.stringify({
+    version: 1,
+    machine: 'mac',
+    takenAt,
+    extraTop: 'alice@example.com',
+    providers: [
+      null,
+      'not-an-object',
+      { provider: 'devin', instance: 'devin', windows: [{ kind: 'session', leftPercent: 90 }] },
+      { provider: 'opencode', instance: 'alice@example.com', windows: [{ kind: 'session', leftPercent: 90 }] },
+      {
+        provider: 'codex',
+        instance: 'codex',
+        label: 'acct-alice',
+        windows: [
+          null,
+          { kind: 'custom', leftPercent: 50 },
+          { kind: 'session', leftPercent: 105 },
+          { kind: 'session', leftPercent: -5 },
+          { kind: 'session', leftPercent: '80' },
+          { kind: 'session', leftPercent: 40, resetsAt: 'alice@example.com' },
+          {
+            kind: 'session',
+            leftPercent: 70,
+            resetsAt: '2026-11-15T07:48:00Z',
+            label: 'Plan Pro',
+            pace: { deltaPp: 12.5, runsOutInMins: 60, note: 'secret' },
+          },
+        ],
+      },
+    ],
+  });
+  const parsed = parseSnapshot('USAGE_SNAPSHOT_MAC', mixed, now);
+  assert.ok(parsed);
+  assert.equal(parsed.source, 'mac');
+  assert.equal(parsed.providers.length, 1);
+  assert.deepEqual(parsed.providers[0], {
+    provider: 'codex',
+    instance: 'codex',
+    windows: [
+      {
+        kind: 'session',
+        leftPercent: 70,
+        resetsAt: '2026-11-15T07:48:00.000Z',
+        pace: { deltaPp: 12.5, runsOutInMins: 60 },
+      },
+    ],
+  });
+  assert.ok(!JSON.stringify(parsed).includes('alice'), 'free text never survives into parsed snapshot');
+  assert.ok(!JSON.stringify(parsed).includes('Plan Pro'), 'labels never survive');
+  assert.ok(!JSON.stringify(parsed).includes('secret'), 'extra pace fields never survive');
+
+  // Invalid machine, version, or takenAt causes the whole snapshot to be rejected.
+  const validProviders = [{ provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: 80 }] }];
+  assert.equal(parseSnapshot('USAGE_SNAPSHOT_MAC', JSON.stringify({ version: 1, machine: 'laptop', takenAt, providers: validProviders }), now), null);
+  assert.equal(parseSnapshot('USAGE_SNAPSHOT_MAC', JSON.stringify({ version: 1, takenAt, providers: validProviders }), now), null, 'missing machine is not guessed from variable name');
+  assert.equal(parseSnapshot('USAGE_SNAPSHOT_MAC', JSON.stringify({ version: 2, machine: 'mac', takenAt, providers: validProviders }), now), null);
+  assert.equal(parseSnapshot('USAGE_SNAPSHOT_MAC', JSON.stringify({ version: 1, machine: 'mac', takenAt: '2026-02-30T00:00:00Z', providers: validProviders }), now), null);
+});
+
+test('malformed or empty snapshot data never crashes selection and falls back to the local hub', () => {
+  const now = Date.parse('2026-11-15T04:40:00Z');
+  const takenAt = new Date(now - 60000).toISOString();
+  const codexModel = { provider: 'codex', model: 'gpt-6.1-sol' };
+
+  // Empty, malformed JSON, wrong top-level types, missing windows, and empty providers all yield null.
+  for (const raw of [
+    '',
+    '   ',
+    '{not json',
+    'null',
+    '[]',
+    '"hello"',
+    '123',
+    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: 'nope' }),
+    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: [] }),
+    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: [null] }),
+    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: [{ provider: 'codex', instance: 'codex' }] }),
+    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: [{ provider: 'codex', instance: 'codex', windows: 'bad' }] }),
+    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: [{ provider: 'codex', instance: 'codex', windows: [] }] }),
+    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: [{ provider: 'codex', instance: 'codex', windows: [null, { kind: 'session', leftPercent: '100' }] }] }),
+  ]) {
+    assert.equal(parseSnapshot('USAGE_SNAPSHOT_MAC', raw, now), null, `rejected: ${raw}`);
+    assert.equal(freshestSnapshot({ USAGE_SNAPSHOT_MAC: raw }, now), null);
+  }
+
+  // Exported snapshotUsage must also reject malformed/empty entries without crashing or bypassing the local hub.
+  for (const bad of [
+    null,
+    {},
+    { providers: 'bad' },
+    { providers: [null] },
+    { providers: [{ provider: 'codex', instance: 'codex' }] },
+    { providers: [{ provider: 'codex', instance: 'codex', windows: 'bad' }] },
+    { providers: [{ provider: 'codex', instance: 'codex', windows: [] }] },
+    { providers: [{ provider: 'codex', instance: 'codex', windows: [null] }] },
+    { providers: [{ provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: '100' }] }] },
+    { providers: [{ provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: Number.NaN }] }] },
+    { providers: [{ provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: 50, resetsAt: 'not-a-date' }] }] },
+  ]) {
+    assert.equal(snapshotUsage(bad, codexModel), undefined);
+  }
+
+  // Regression: a fresh snapshot with providers: [null] or empty windows must NOT bypass an exhausted local hub.
+  const models = [codexModel, { provider: 'claude', model: 'claude-sonnet-5-5' }];
+  for (const badProviders of [
+    [null],
+    [{ provider: 'codex', instance: 'codex', windows: [] }],
+    [{ provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: 'bad' }] }],
+  ]) {
+    const called = [];
+    const result = runReviewer(models, 'prompt', '/w', {
+      usageFor: (provider) => (provider === 'codex' ? { windows: [{ kind: 'session', usedPercent: 100 }] } : undefined),
+      commandAvailable: () => true,
+      sandbox: () => null,
+      caps: capsFor(config),
+      snapshot: { source: 'mac', takenAt: now - 60000, ageMs: 60000, providers: badProviders },
+      now,
+      invoke: (provider) => {
+        called.push(provider);
+        return { status: 0, text: 'Looks right.\nVerdict: approve' };
+      },
+    });
+    assert.deepEqual(called, ['claude'], 'exhausted local codex is still skipped');
+    assert.match(skippedLine(result), /codex\/gpt-6\.1-sol \(no usage left in its session window\)/);
+    assert.equal(usageNote(result), '', 'invalid snapshot is not cited in the comment');
+  }
+
+  // Direct usageProblem / reserveProblem also tolerate malformed window arrays without crashing.
+  assert.equal(usageProblem({ windows: [null, { usedPercent: Number.NaN }] }, now), null);
+  assert.equal(reserveProblem({ windows: [null] }, { session: 10 }, now), null);
 });
 
 test('an unknown flag or variant tries the next reviewer instead of failing the review', () => {

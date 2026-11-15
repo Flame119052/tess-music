@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // Publish this machine's usage snapshot as one repository Actions variable, so a reviewer on another machine can see what
-// is left without holding any account key. Quota only: a window's share left, when it resets, and the pace sentence the
-// hub prints. No keys, no account names, no balances.
+// is left without holding any account key. Quota only (strict allowlist schema): a fixed provider/instance id, a window
+// kind from a known enum, % left (0-100), an ISO reset time, numeric pace fields, a timestamp, and a machine name from
+// a fixed list. No labels, plan names, account names, keys, or free text.
 //
 // Usage: tess-usage-publish [--machine mac|vps|omarchy] [--repo owner/name] [--usage /path/to/tess-usage] [--dry-run]
 // Called by a launchd job on the Mac and a user systemd timer on Linux; see README.md in this folder.
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,19 +18,147 @@ export const snapshotVersion = 1;
 // each variable to the review job. Adding a machine means a variable, one line there, and one line in the workflow.
 export const machines = ['mac', 'vps', 'omarchy'];
 
+export const allowedWindowKinds = ['session', 'weekly', 'monthly', 'other'];
+
+// Exact provider/instance pairs a reviewer can be. OpenCode connectors are allowlisted by name so an unknown or custom
+// connector suffix can never smuggle an account name or token into the snapshot.
+export const allowedProviderInstances = {
+  claude: ['claudeAgent'],
+  codex: ['codex'],
+  cursor: ['cursor'],
+  opencode: ['opencode-go', 'zai-coding-plan'],
+};
+
+const hubProviderMap = {
+  claudeAgent: { provider: 'claude', instance: 'claudeAgent' },
+  claude: { provider: 'claude', instance: 'claudeAgent' },
+  codex: { provider: 'codex', instance: 'codex' },
+  cursor: { provider: 'cursor', instance: 'cursor' },
+  'opencode:opencode-go': { provider: 'opencode', instance: 'opencode-go' },
+  'opencode:zai-coding-plan': { provider: 'opencode', instance: 'zai-coding-plan' },
+};
+
+const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const hasOnlyKeys = (obj, allowed) => Object.keys(obj).every((key) => allowed.includes(key));
+const isoTimestampRe = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+
+export function parseIsoTimestamp(value) {
+  if (typeof value !== 'string') return null;
+  const match = value.match(isoTimestampRe);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) return null;
+  // Reject calendar rollovers like Feb 30 that Date.parse/Date.UTC would otherwise wrap into the next month.
+  const check = new Date(Date.UTC(year, month - 1, day));
+  if (check.getUTCFullYear() !== year || check.getUTCMonth() !== month - 1 || check.getUTCDate() !== day) return null;
+  if (match[7] !== 'Z') {
+    const [oh, om] = match[7].slice(1).split(':').map(Number);
+    if (oh > 23 || om > 59) return null;
+  }
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms).toISOString();
+}
+
 export const variableName = (machine) => `USAGE_SNAPSHOT_${String(machine).toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`;
 
-// The hub names each provider by its instance. Only the providers a reviewer can be are published, so the snapshot is about
-// what a review could spend and nothing else (no Devin or DeepSeek balances, no plans). The reviewer's config names
-// OpenCode models as `<connector>/<model>`, so an OpenCode connector keeps its own name:
-// `opencode:opencode-go` becomes instance `opencode-go` under provider `opencode`.
 export function providerFor(instanceId) {
-  const id = String(instanceId || '').trim();
-  if (id.startsWith('opencode:')) return { provider: 'opencode', instance: id.slice('opencode:'.length) };
-  if (id.startsWith('claude')) return { provider: 'claude', instance: 'claudeAgent' };
-  if (id === 'codex') return { provider: 'codex', instance: 'codex' };
-  if (id === 'cursor') return { provider: 'cursor', instance: 'cursor' };
-  return null;
+  const id = typeof instanceId === 'string' ? instanceId.trim() : '';
+  const found = Object.hasOwn(hubProviderMap, id) ? hubProviderMap[id] : null;
+  return found ? { provider: found.provider, instance: found.instance } : null;
+}
+
+export function parsePace(paceText) {
+  const text = String(paceText || '');
+  let deltaPp;
+  const deltaMatch = text.match(/(\d+(?:\.\d+)?)pp\s+(ahead of|behind)\s+even burn/);
+  if (deltaMatch) {
+    const magnitude = Number(deltaMatch[1]);
+    if (Number.isFinite(magnitude) && magnitude >= 0 && magnitude <= 100) {
+      deltaPp = deltaMatch[2] === 'behind' ? -magnitude : magnitude;
+    }
+  }
+  let runsOutInMins;
+  const runsOutMatch = text.match(/runs out in ~?(?=\d)(?:(\d+)d\s*)?(?:(\d+)h\s*)?(?:(\d+)m)?/);
+  if (runsOutMatch && (runsOutMatch[1] !== undefined || runsOutMatch[2] !== undefined || runsOutMatch[3] !== undefined)) {
+    const mins = (Number(runsOutMatch[1] || 0) * 24 * 60)
+      + (Number(runsOutMatch[2] || 0) * 60)
+      + Number(runsOutMatch[3] || 0);
+    if (Number.isFinite(mins) && mins >= 0) runsOutInMins = mins;
+  } else if (/\b0% left now\b/.test(text)) {
+    runsOutInMins = 0;
+  }
+  const pace = {
+    ...(deltaPp !== undefined ? { deltaPp } : {}),
+    ...(runsOutInMins !== undefined ? { runsOutInMins } : {}),
+  };
+  return Object.keys(pace).length ? pace : undefined;
+}
+
+export function normalizePace(pace) {
+  if (!isPlainObject(pace)) return null;
+  const out = {};
+  if (pace.deltaPp !== undefined) {
+    if (typeof pace.deltaPp !== 'number' || !Number.isFinite(pace.deltaPp) || pace.deltaPp < -100 || pace.deltaPp > 100) {
+      return null;
+    }
+    out.deltaPp = pace.deltaPp;
+  }
+  if (pace.runsOutInMins !== undefined) {
+    if (typeof pace.runsOutInMins !== 'number' || !Number.isFinite(pace.runsOutInMins) || pace.runsOutInMins < 0) {
+      return null;
+    }
+    out.runsOutInMins = pace.runsOutInMins;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+export function normalizeWindow(window) {
+  if (!isPlainObject(window)) return null;
+  if (typeof window.kind !== 'string' || !allowedWindowKinds.includes(window.kind)) return null;
+  if (typeof window.leftPercent !== 'number' || !Number.isFinite(window.leftPercent) || window.leftPercent < 0 || window.leftPercent > 100) {
+    return null;
+  }
+  let resetsAt;
+  if (window.resetsAt !== undefined) {
+    resetsAt = parseIsoTimestamp(window.resetsAt);
+    if (!resetsAt) return null;
+  }
+  let pace;
+  if (window.pace !== undefined) {
+    pace = normalizePace(window.pace);
+    if (!pace) return null;
+  }
+  return {
+    kind: window.kind,
+    leftPercent: window.leftPercent,
+    ...(resetsAt ? { resetsAt } : {}),
+    ...(pace ? { pace } : {}),
+  };
+}
+
+export function normalizeProvider(entry) {
+  if (!isPlainObject(entry)) return null;
+  if (typeof entry.provider !== 'string' || !Object.hasOwn(allowedProviderInstances, entry.provider)) return null;
+  if (typeof entry.instance !== 'string' || !allowedProviderInstances[entry.provider].includes(entry.instance)) return null;
+  if (!Array.isArray(entry.windows)) return null;
+  const windows = entry.windows.map(normalizeWindow).filter(Boolean);
+  if (!windows.length) return null;
+  return {
+    provider: entry.provider,
+    instance: entry.instance,
+    windows,
+  };
+}
+
+export function normalizeProviders(entries) {
+  if (!Array.isArray(entries)) return [];
+  return entries.map(normalizeProvider).filter(Boolean);
 }
 
 // One line per provider, from `tess-usage` with no argument:
@@ -50,21 +179,26 @@ export function parseTessUsage(text) {
     // semicolon of its own ("no burn observed; run-out unknown"), so a split on "; " is only a split when what follows
     // really is a new window.
     for (const match of rest.matchAll(/(^|; )([^;]*?) \[([a-z]+)\]: (\d+(?:\.\d+)?)% left/g)) {
+      const kind = match[3];
+      const leftPercent = Number(match[4]);
       const start = match.index + match[1].length;
       const after = rest.slice(start);
       const next = after.slice(1).search(/; [^;]* \[[a-z]+\]: \d+(?:\.\d+)?% left/);
       const body = next < 0 ? after : after.slice(0, next + 1);
-      const resets = body.match(/resets in [^(]*\(([^)]+)\)/);
-      const pace = body.match(/pace:\s*([^;]*(?:;(?! [^;]* \[[a-z]+\]: )\s*[^;]*)*)/);
-      windows.push({
-        kind: match[3],
-        leftPercent: Number(match[4]),
-        ...(resets ? { resetsAt: resets[1] } : {}),
-        ...(pace ? { pace: pace[1].trim() } : {}),
+      const resetsMatch = body.match(/resets in [^(]*\(([^)]+)\)/);
+      const resetsAt = resetsMatch ? parseIsoTimestamp(resetsMatch[1].trim()) : undefined;
+      const paceMatch = body.match(/pace:\s*([^;]*(?:;(?! [^;]* \[[a-z]+\]: )\s*[^;]*)*)/);
+      const pace = paceMatch ? parsePace(paceMatch[1]) : undefined;
+      const normalized = normalizeWindow({
+        kind,
+        leftPercent,
+        ...(resetsAt ? { resetsAt } : {}),
+        ...(pace ? { pace } : {}),
       });
+      if (normalized) windows.push(normalized);
     }
-    if (!windows.length) continue;
-    providers.push({ provider, instance, windows });
+    const entry = normalizeProvider({ provider, instance, windows });
+    if (entry) providers.push(entry);
   }
   return providers;
 }
@@ -72,21 +206,46 @@ export function parseTessUsage(text) {
 export function buildSnapshot({ machine, takenAt = new Date().toISOString(), text }) {
   return {
     version: snapshotVersion,
-    machine,
-    takenAt,
-    providers: parseTessUsage(text),
+    machine: typeof machine === 'string' && machines.includes(machine) ? machine : null,
+    takenAt: parseIsoTimestamp(takenAt),
+    providers: normalizeProviders(parseTessUsage(text)),
   };
 }
 
-// A snapshot is read by a public workflow and sits in a repository variable, so anything that could be a credential or an
-// account name stops the publish instead of being stored. The parser above only keeps numbers, reset times and a pace
-// sentence; this is the second guard, so a hub that one day prints more cannot leak it.
+// A snapshot is read by a public workflow and sits in a repository variable, so anything outside the strict allowlist
+// schema (unrecognized keys, free text, invalid types, unknown providers/machines) or any secret shape stops the publish.
 export function snapshotProblem(snapshot) {
+  if (!isPlainObject(snapshot)) return 'the snapshot is not an object';
+  if (!hasOnlyKeys(snapshot, ['version', 'machine', 'takenAt', 'providers'])) {
+    return 'the snapshot holds an unrecognized top-level field';
+  }
+  if (snapshot.version !== snapshotVersion) return 'unsupported snapshot version';
+  if (typeof snapshot.machine !== 'string' || !machines.includes(snapshot.machine)) {
+    return `machine must be one of ${machines.join(', ')}`;
+  }
+  if (!parseIsoTimestamp(snapshot.takenAt)) return 'takenAt must be an ISO-8601 timestamp';
+  if (!Array.isArray(snapshot.providers) || !snapshot.providers.length) {
+    return 'the hub printed no provider windows to publish';
+  }
+  for (const entry of snapshot.providers) {
+    if (!isPlainObject(entry) || !hasOnlyKeys(entry, ['provider', 'instance', 'windows'])) {
+      return 'a provider entry holds an unrecognized field';
+    }
+    if (!normalizeProvider(entry)) return 'a provider entry fails the allowlist schema';
+    for (const w of entry.windows) {
+      if (!isPlainObject(w) || !hasOnlyKeys(w, ['kind', 'leftPercent', 'resetsAt', 'pace'])) {
+        return 'a window holds an unrecognized field';
+      }
+      if (w.pace !== undefined && (!isPlainObject(w.pace) || !hasOnlyKeys(w.pace, ['deltaPp', 'runsOutInMins']))) {
+        return 'a pace object holds an unrecognized field';
+      }
+      if (!normalizeWindow(w)) return 'a window fails the allowlist schema';
+    }
+  }
   const json = JSON.stringify(snapshot);
   if (/-----BEGIN|\b(?:gh[pousr]_|github_pat_|sk-|AKIA)[A-Za-z0-9_-]{10,}|[A-Za-z0-9+/]{120,}={0,2}/.test(json)) {
     return 'the snapshot looks like it holds a key or token';
   }
-  if (!snapshot.providers.length) return 'the hub printed no provider windows to publish';
   if (json.length > 40 * 1024) return `the snapshot is too big for a repository variable (${json.length} bytes)`;
   return null;
 }
@@ -107,7 +266,7 @@ function parseArgs(argv) {
 function defaultMachine() {
   if (process.platform === 'darwin') return 'mac';
   const short = hostname().split('.')[0].toLowerCase();
-  return machines.find((name) => short.includes(name)) || short.replace(/[^a-z0-9]+/g, '-');
+  return machines.find((name) => short.includes(name)) || '';
 }
 
 function main() {
