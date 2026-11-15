@@ -48,7 +48,7 @@ Inside Spotify (`Spotify.app/Contents/Resources/Apps/xpui`): Spicetify's wrapper
 order names one of five actions (`check`, `update`, `repair`, `restore-spotify`, `uninstall`), each of which calls Tess's
 own installed, signed tool (doctor, updater, the installed installer copy, the patcher's safe restore, the installed
 uninstaller). Rescue lines installed from this release on download nothing from `main`; `repair` runs the installer
-the Mac last installed with, which until the first promote can be the temporary `main` fallback (#77). Older installed rescue
+the Mac last installed with. Older installed rescue
 scripts remain unchanged and may still fetch repair and uninstall scripts from `main`. A current rescue script's
 order can't carry a script or a command, so the rescue key can only press those buttons; `tools/test-rescue.mjs` proves scripts, unknown
 actions and smuggled text are refused. Rescue lines installed before 13 Nov 2026 keep an older format whose signed orders can run any script, and updates never replace that script.
@@ -96,9 +96,8 @@ Both public-channel jobs use the protected GitHub `release` environment and supp
 Install line: `installer/install.sh` (forwarder on `main`) pins the committed verifier's SHA-256, downloads
 `main/installer/verify/<sha>`, checks it, then downloads `$CH/dist/install.sh` and `dist/install.sig` and verifies the
 installer before running it with that verifier → the installer checks `components.txt` before unpacking the patcher.
-A channel published before the first promote has no signed installer; it gets the frozen installer pinned in
-`installer/install.sh` (temporary, #77). `ALLOW_LEGACY_FALLBACK=0` switches to refusal, and the safety gate requires
-that once stable carries a signed installer.
+A channel with no signed installer refuses to install: the forwarder checks the verifier's pin and then stops with a
+clear message. There is no fallback to `main`; after the first promote stable carries its own signed installer.
 
 ## Secrets
 

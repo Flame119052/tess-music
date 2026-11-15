@@ -11,7 +11,7 @@ if grep -nE 'rm -rf "?\$(APPS|A0)"?( |;|$)' installer/*.sh; then fail "a script 
 if grep -rn 'RemoveAll(appDestPath)' patcher/src; then fail "the patcher deletes Spotify's interface folder directly; use swapApps"; fi
 
 # 2. every script parses
-for f in installer/install.sh installer/legacy/tess-install-pre-signed.sh installer/tess-install.sh installer/uninstall.sh installer/tess-command.sh; do sh -n "$f" || fail "$f does not parse"; done
+for f in installer/install.sh installer/tess-install.sh installer/uninstall.sh installer/tess-command.sh; do sh -n "$f" || fail "$f does not parse"; done
 for f in installer/updater.sh installer/doctor.sh installer/rescue.sh installer/wake.sh; do zsh -n "$f" || fail "$f does not parse"; done
 node --check theme/loader/loader.js || fail "theme/loader/loader.js does not parse"
 
@@ -40,13 +40,10 @@ if grep -nE 'curl[^|]*\|[[:space:]]*([^[:space:]]+[[:space:]]+)*(sh|zsh)([[:spac
   fail "an installed script pipes a download into a shell"
 fi
 # The public forwarder's main fallback is allowed only while stable lacks dist/install.sh (temporary, #77).
-if grep -q '^ALLOW_LEGACY_FALLBACK=1' installer/install.sh && git cat-file -e origin/stable:dist/install.sig 2>/dev/null; then
-  fail "stable has a signed installer but installer/install.sh still allows the legacy fallback; set ALLOW_LEGACY_FALLBACK=0 and delete the copy (#77)"
+# A channel without a signed installer refuses; the public line never runs an installer from main.
+if grep -nE 'main/installer/(tess-install|legacy)' installer/install.sh; then
+  fail "installer/install.sh has a fallback installer; a channel must publish a signed installer"
 fi
-# The legacy fallback is authorized by its pin, not by the unverified channel list.
-legacy=$(sed -n "s/^LEGACY_SHA='\([0-9a-f]\{64\}\)'$/\1/p" installer/install.sh)
-[ -n "$legacy" ] || fail "installer/install.sh has no LEGACY_SHA pin"
-[ "$(shasum -a 256 installer/legacy/tess-install-pre-signed.sh | cut -d' ' -f1)" = "$legacy" ] || fail "the legacy installer does not match LEGACY_SHA in installer/install.sh"
 
 # The three shell swaps protect the same precious folder and must not drift.
 swap_hashes=$(
