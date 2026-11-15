@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { buildSnapshot, parseTessUsage, providerFor, snapshotProblem, variableName } from './usage-publish/publish.mjs';
+import { buildSnapshot, normalizeProvider, normalizeProviders, parseTessUsage, providerFor, snapshotProblem, variableName } from './usage-publish/publish.mjs';
 
 // Captured from `tess-usage` (no argument) on 15 Nov 2026, with the lines cut to the parts the publisher reads.
 const hubText = [
@@ -240,4 +240,35 @@ test('emails, keys, unprefixed tokens, and account names in any input field neve
     ...valid,
     providers: [{ provider: 'claude', instance: 'claudeAgent', windows: [{ kind: 'session', leftPercent: 105 }] }],
   }), 'out-of-range leftPercent rejected');
+  assert.equal(normalizeProvider({
+    provider: 'codex',
+    instance: 'codex',
+    windows: [{ kind: 'session', leftPercent: 100 }, { kind: 'weekly', leftPercent: 'broken' }],
+  }), null, 'mixed valid and invalid windows reject the whole provider');
+  assert.deepEqual(normalizeProviders([
+    {
+      provider: 'codex',
+      instance: 'codex',
+      windows: [{ kind: 'session', leftPercent: 100 }, { kind: 'weekly', leftPercent: 'broken' }],
+    },
+    {
+      provider: 'claude',
+      instance: 'claudeAgent',
+      windows: [{ kind: 'session', leftPercent: 80 }],
+    },
+  ]), [
+    {
+      provider: 'claude',
+      instance: 'claudeAgent',
+      windows: [{ kind: 'session', leftPercent: 80 }],
+    },
+  ], 'other valid providers stay intact when one provider fails closed');
+  assert.ok(snapshotProblem({
+    ...valid,
+    providers: [{
+      provider: 'codex',
+      instance: 'codex',
+      windows: [{ kind: 'session', leftPercent: 100 }, { kind: 'weekly', leftPercent: 'broken' }],
+    }],
+  }), 'snapshotProblem rejects a provider with a broken window');
 });

@@ -146,9 +146,13 @@ export function normalizeProvider(entry) {
   if (!isPlainObject(entry)) return null;
   if (typeof entry.provider !== 'string' || !Object.hasOwn(allowedProviderInstances, entry.provider)) return null;
   if (typeof entry.instance !== 'string' || !allowedProviderInstances[entry.provider].includes(entry.instance)) return null;
-  if (!Array.isArray(entry.windows)) return null;
-  const windows = entry.windows.map(normalizeWindow).filter(Boolean);
-  if (!windows.length) return null;
+  if (!Array.isArray(entry.windows) || !entry.windows.length) return null;
+  const windows = [];
+  for (const window of entry.windows) {
+    const normalized = normalizeWindow(window);
+    if (!normalized) return null;
+    windows.push(normalized);
+  }
   return {
     provider: entry.provider,
     instance: entry.instance,
@@ -158,7 +162,21 @@ export function normalizeProvider(entry) {
 
 export function normalizeProviders(entries) {
   if (!Array.isArray(entries)) return [];
-  return entries.map(normalizeProvider).filter(Boolean);
+  const rejected = new Set();
+  const valid = [];
+  for (const entry of entries) {
+    const normalized = normalizeProvider(entry);
+    if (!normalized) {
+      if (isPlainObject(entry)
+        && typeof entry.provider === 'string' && Object.hasOwn(allowedProviderInstances, entry.provider)
+        && typeof entry.instance === 'string' && allowedProviderInstances[entry.provider].includes(entry.instance)) {
+        rejected.add(`${entry.provider}:${entry.instance}`);
+      }
+      continue;
+    }
+    valid.push(normalized);
+  }
+  return valid.filter((entry) => !rejected.has(`${entry.provider}:${entry.instance}`));
 }
 
 // One line per provider, from `tess-usage` with no argument:

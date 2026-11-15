@@ -238,6 +238,25 @@ export function reserveProblem(usage, reserve, now = Date.now()) {
   return null;
 }
 
+// A snapshot can never loosen a limit: combine local and snapshot windows so the lower % left (higher usedPercent)
+// is evaluated first and an exhausted local reading always wins.
+function combineUsage(local, snap) {
+  if (!snap) return local;
+  if (!local) return snap;
+  const localWindows = Array.isArray(local.windows) ? local.windows : [];
+  const snapWindows = Array.isArray(snap.windows) ? snap.windows : [];
+  const ranked = [
+    ...localWindows.map((window) => ({ window, source: 0 })),
+    ...snapWindows.map((window) => ({ window, source: 1 })),
+  ].sort((a, b) => {
+    const usedA = typeof a.window?.usedPercent === 'number' && Number.isFinite(a.window.usedPercent) ? a.window.usedPercent : -1;
+    const usedB = typeof b.window?.usedPercent === 'number' && Number.isFinite(b.window.usedPercent) ? b.window.usedPercent : -1;
+    if (usedB !== usedA) return usedB - usedA;
+    return a.source - b.source;
+  });
+  return { windows: ranked.map((entry) => entry.window) };
+}
+
 // One place decides which reviewers can run, and why the rest cannot. The reasons travel with the models, so a
 // requested provider that was filtered out is still named in the posted comment instead of vanishing.
 export function reviewerCandidates(models, context = {}) {
@@ -254,8 +273,7 @@ export function reviewerCandidates(models, context = {}) {
   const skipped = [];
   for (const model of models) {
     const details = providerDetails[model.provider];
-    // A model-specific reading (from a snapshot) wins over the provider-wide one the hub gives.
-    const usage = usageByModel[modelKey(model)] ?? usageByProvider[model.provider];
+    const usage = combineUsage(usageByProvider[model.provider], usageByModel[modelKey(model)]);
     const reason = !details ? 'unknown provider'
       : !commandAvailable(details.command) ? 'no local CLI'
         : reserveProblem(usage, reserve[model.provider], now)
@@ -731,7 +749,7 @@ export function runReviewer(models, prompt, work, deps = {}) {
     ? { source: snapshot.source, takenAt: snapshot.takenAt, ageMs: snapshot.ageMs, providers: validProviders }
     : null;
   const usageByProvider = Object.fromEntries(models.map(({ provider }) => [provider, usageFor(provider)]));
-  // A fresh snapshot replaces the hub for the models it covers, and the comment names which machine it came from.
+  // A fresh snapshot never loosens the hub: both are combined per model so the tighter limit always wins.
   const usageByModel = Object.fromEntries(models
     .map((model) => [modelKey(model), activeSnapshot ? snapshotUsage(activeSnapshot, model) : undefined])
     .filter(([, usage]) => usage));
