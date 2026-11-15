@@ -393,16 +393,39 @@ test('every reviewer runs inside bubblewrap with only the copy and its own confi
     assert.ok(!sandbox.args.some((arg) => String(arg).includes('tess-signing')), `${provider}: the signing keys are not visible`);
   }
 
-  // one provider's own config only, never another provider's
+  // One provider's own config only, never another provider's. It is mounted *inside* the throwaway HOME, at the path
+  // the CLI looks in, because HOME is what each CLI reads: a mount at the runner's real home is invisible to it.
+  const inside = (bind) => bind.from.startsWith(`${home}/`) && bind.to === `${sandboxHome}/${bind.from.slice(home.length + 1)}`;
   const codex = sandboxArgv('codex', work, [], options);
-  assert.ok(codex.args.includes(`${home}/.codex`), 'codex sees its own sign-in state');
+  assert.ok(binds(codex.args).some((bind) => bind.from === `${home}/.codex` && inside(bind)),
+    'codex finds its own sign-in state where it looks for it');
   assert.ok(!codex.args.some((arg) => arg.includes('.config/opencode')), 'codex does not see OpenCode files');
   const opencode = sandboxArgv('opencode', work, [], options);
-  assert.ok(opencode.args.includes(`${home}/.config/opencode`), 'opencode sees its agent file');
+  assert.ok(binds(opencode.args).some((bind) => bind.from === `${home}/.config/opencode` && inside(bind)),
+    'opencode finds its agent file where it looks for it');
+  assert.ok(binds(opencode.args).some((bind) => bind.from === `${home}/.local/share/opencode/auth.json` && inside(bind)),
+    'and its sign-in, which sits in its data folder');
   assert.ok(!opencode.args.includes(`${home}/.codex`), 'opencode does not see Codex files');
   const claude = sandboxArgv('claude', work, [], options);
   assert.ok(!claude.args.some((arg) => arg.includes('.codex') || arg.includes('.config/opencode')),
     'Claude sees neither other provider');
+
+  // Nothing of a provider's is mounted at its real path: every bind from the runner's home lands inside the throwaway
+  // HOME, so the only paths a review can read are the copy and its own config. The CLI itself is the one exception.
+  for (const provider of ['claude', 'codex', 'cursor', 'opencode']) {
+    const argv = sandboxArgv(provider, work, [], options).args;
+    const homeTmpfs = argv.findIndex((arg, index) => arg === '--tmpfs' && argv[index + 1] === sandboxHome);
+    assert.ok(homeTmpfs >= 0, `${provider}: the throwaway home is a tmpfs`);
+    for (const bind of binds(argv)) {
+      // bwrap applies its arguments in order, so the tmpfs has to come first or it hides what was mounted into it
+      if (bind.to.startsWith(`${sandboxHome}/`)) {
+        assert.ok(argv.indexOf(bind.from) > homeTmpfs, `${provider}: ${bind.to} is mounted after the home it lives in`);
+      }
+      if (!bind.from.startsWith(`${home}/`) || bind.from === `${home}/.local/bin`) continue;
+      assert.ok(bind.to.startsWith(`${sandboxHome}/`),
+        `${provider}: ${bind.from} is mounted inside the throwaway home, not at ${bind.to}`);
+    }
+  }
 
   // nothing is started outside the sandbox: the old code called the provider's command directly
   const source = readFileSync(new URL('./agent-review.mjs', import.meta.url), 'utf8');
@@ -558,6 +581,79 @@ test('the config is the one place the changeable facts live', () => {
   const setup = readFileSync(new URL('./runner-setup.md', import.meta.url), 'utf8');
   assert.match(setup, /bubblewrap/, 'the runner setup asks for bubblewrap');
   assert.match(setup, /user namespaces/i, 'and shows how to check user namespaces');
+});
+
+// Address arithmetic for the drop-in below, kept here rather than in tools/ because nothing else needs it.
+function addressBits(text) {
+  if (!text.includes(':')) {
+    const parts = text.split('.').map(Number);
+    assert.equal(parts.length, 4, `bad IPv4 address ${text}`);
+    return { family: 4, width: 32, value: parts.reduce((acc, part) => (acc << 8n) | BigInt(part), 0n) };
+  }
+  const [head, tail] = text.split('::');
+  const left = head ? head.split(':') : [];
+  const right = tail ? tail.split(':') : [];
+  const groups = text.includes('::')
+    ? [...left, ...Array(8 - left.length - right.length).fill('0'), ...right]
+    : left;
+  assert.equal(groups.length, 8, `bad IPv6 address ${text}`);
+  return { family: 6, width: 128, value: groups.reduce((acc, group) => (acc << 16n) | BigInt(parseInt(group || '0', 16)), 0n) };
+}
+
+function networkOf(text) {
+  const [address, bits] = text.split('/');
+  const parsed = addressBits(address);
+  const width = bits === undefined ? parsed.width : Number(bits);
+  return { family: parsed.family, width, text, value: parsed.value >> BigInt(parsed.width - width) };
+}
+
+// `outer` holds all of `range`: same family, at least as wide, and the same leading bits.
+const covers = (outer, range) => outer.family === range.family && outer.width <= range.width
+  && (range.value >> BigInt(range.width - outer.width)) === outer.value;
+
+// The network boundary is the runner service, not a CLI flag, so it covers Claude and every other provider at once.
+// bubblewrap keeps the host network namespace on purpose, because the review's API call needs it: an untrusted diff
+// that talks a model into running a shell command must still reach only its provider. On paperclip-vps the rest of the
+// namespace is Paperclip's PostgreSQL, its services and the Tincan relay.
+test('the runner network drop-in refuses the machine and its local networks', () => {
+  const conf = readFileSync(new URL('./runner/network.conf', import.meta.url), 'utf8');
+  const lines = conf.split('\n').map((line) => line.trim()).filter((line) => line && !line.startsWith('#'));
+  assert.equal(lines.shift(), '[Service]', 'it is a drop-in for the runner service, not a whole unit');
+  for (const line of lines) {
+    assert.match(line, /^IPAddress(Allow|Deny)=/, `a drop-in sets these two keys and nothing else: ${line}`);
+  }
+  const values = (key) => lines.filter((line) => line.startsWith(`${key}=`))
+    .flatMap((line) => line.slice(key.length + 1).split(/\s+/).filter(Boolean));
+
+  const deny = values('IPAddressDeny').map(networkOf);
+  for (const required of ['127.0.0.0/8', '::1/128', '169.254.0.0/16', 'fe80::/10', '224.0.0.0/4', 'ff00::/8',
+    '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10', 'fc00::/7']) {
+    const range = networkOf(required);
+    assert.ok(deny.some((entry) => covers(entry, range)), `${required} is refused`);
+  }
+
+  // The allow list is the only hole, so it holds single addresses and only a local resolver: never a range, never a
+  // LAN address, never something that could carry a service.
+  const allow = values('IPAddressAllow').map(networkOf);
+  assert.ok(allow.length, 'DNS itself must still resolve, or no provider can be reached');
+  for (const entry of allow) {
+    assert.equal(entry.width, entry.family === 4 ? 32 : 128, `${entry.text} is one address, not a range`);
+    assert.ok(covers(networkOf('127.0.0.0/8'), entry) || covers(networkOf('::1/128'), entry),
+      `${entry.text} is a loopback address`);
+  }
+  // Ubuntu's systemd-resolved answers on this stub, so the shipped file has to let it through.
+  assert.ok(allow.some((entry) => entry.family === 4 && entry.value === addressBits('127.0.0.53').value),
+    'the systemd-resolved stub is allowed');
+
+  // The setup page says where the file goes, how to tell what is really in force, and both ways DNS is set up.
+  const setup = readFileSync(new URL('./runner-setup.md', import.meta.url), 'utf8');
+  assert.match(setup, /tools\/runner\/network\.conf/, 'the setup page names the file');
+  assert.match(setup, /actions\.runner\.[^\s`]*\.service\.d/, 'and the unit folder it goes in');
+  assert.match(setup, /127\.0\.0\.1:5432/, 'the doc checks a local service stays unreachable');
+  assert.match(setup, /169\.254\.169\.254/, 'and the cloud metadata address');
+  assert.match(setup, /systemd-resolved/, 'the doc handles the resolved stub');
+  assert.match(setup, /Arch|omarchy/, 'and the Arch case, where the resolver is usually the router');
+  assert.match(setup, /approves|approve/, 'and says applying it to a machine is the owner\'s decision');
 });
 
 test("an npm-installed CLI starts: its package folder and its own Node are bound", () => {

@@ -11,13 +11,15 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const marker = '<!-- tess-review-bot -->';
-// `sandboxDirs` is the only part of the runner's own home a provider's CLI may read: its sign-in state, and for OpenCode
-// the reviewer agent file, which is what limits its reads. Every other provider's directory stays out of the sandbox.
+// `home` is the only part of the runner's own home a provider's CLI may read: its sign-in state, and for OpenCode the
+// reviewer agent file, which is what limits its reads. Each entry is relative to HOME and is mounted at the same place
+// inside the throwaway HOME, because that is where the CLI looks: a mount at the runner's real path is invisible once
+// HOME changes. Every other provider's directory stays out of the sandbox.
 const providerDetails = {
-  claude: { command: 'claude', cache: 'claudeAgent.json', sandboxDirs: [] },
-  codex: { command: 'codex', cache: 'codex.json', sandboxDirs: ['.codex'] },
-  cursor: { command: 'cursor-agent', cache: 'cursor.json', sandboxDirs: [] },
-  opencode: { command: 'opencode', cache: 'opencode.json', sandboxDirs: ['.config/opencode', '.local/share/opencode/auth.json'] },
+  claude: { command: 'claude', cache: 'claudeAgent.json', home: [] },
+  codex: { command: 'codex', cache: 'codex.json', home: ['.codex'] },
+  cursor: { command: 'cursor-agent', cache: 'cursor.json', home: [] },
+  opencode: { command: 'opencode', cache: 'opencode.json', home: ['.config/opencode', '.local/share/opencode/auth.json'] },
 };
 
 // The key each provider signs in with on a headless runner. A review gets its own provider's key and nothing else.
@@ -270,7 +272,9 @@ export function stripAgentConfig(dir) {
 // Every reviewer runs inside bubblewrap: an unprivileged OS boundary, not a promise in the prompt. The sandbox starts
 // empty, so a diff that talks the model into running a shell command finds no runner files at all: not `~/actions-runner`,
 // not the job's environment, not another provider's directory. Bound read-only: the copy under review, the CLI, its
-// runtime, what it needs for TLS and DNS, and its own sign-in state. Network stays on, because the API call needs it.
+// runtime, what it needs for TLS and DNS, and its own sign-in state. Network stays on, because the API call needs it;
+// what that network may reach is decided by the runner service (`tools/runner/network.conf`), so the same limit covers
+// every provider and an induced command reaches its own API and nothing else on the machine.
 export const sandboxRuntime = ['/usr', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/libx32', '/etc/ssl',
   '/etc/ca-certificates', '/etc/ca-certificates.conf', '/etc/resolv.conf', '/etc/hosts', '/etc/nsswitch.conf',
   '/etc/passwd', '/etc/group', '/etc/localtime', '/etc/alternatives', '/etc/ld.so.cache', '/etc/ld.so.conf',
@@ -316,12 +320,15 @@ export function sandboxArgv(provider, work, cli, options = {}) {
     commandPath = commandLocation(providerDetails[provider]?.command || ''),
     nodePath = commandLocation('node'),
   } = options;
+  // The throwaway HOME comes before anything bound into it: bwrap applies its arguments in order, so a tmpfs over the
+  // folder afterwards would hide the provider's own config again.
   const args = ['--die-with-parent', '--unshare-all', '--share-net', '--new-session', '--proc', '/proc', '--dev', '/dev',
-    '--tmpfs', '/tmp', '--tmpfs', '/home'];
+    '--tmpfs', '/tmp', '--tmpfs', '/home', '--tmpfs', sandboxHome];
   for (const path of sandboxRuntime) if (exists(path)) args.push('--ro-bind', path, path);
-  for (const dir of providerDetails[provider]?.sandboxDirs || []) {
-    const path = join(home, dir);
-    if (exists(path)) args.push('--ro-bind', path, path);
+  // Its own sign-in state and agent file only, read-only, at the path its own CLI looks for them under HOME.
+  for (const relative of providerDetails[provider]?.home || []) {
+    const source = join(home, relative);
+    if (exists(source)) args.push('--ro-bind', source, join(sandboxHome, relative));
   }
   const bound = new Set();
   const bindDir = (path) => {
@@ -340,7 +347,7 @@ export function sandboxArgv(provider, work, cli, options = {}) {
       bindDir(nodeDir);
     }
   }
-  args.push('--ro-bind', work, work, '--chdir', work, '--tmpfs', sandboxHome, '--',
+  args.push('--ro-bind', work, work, '--chdir', work, '--',
     commandPath || providerDetails[provider].command, ...cli);
   return {
     command: 'bwrap',

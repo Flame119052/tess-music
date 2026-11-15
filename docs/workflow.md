@@ -109,10 +109,18 @@ Hacker News and Reddit in Sep–Nov 2026. Sources are in [`docs/research/reviewe
 Every reviewer runs inside a real boundary, whichever provider it is. Each CLI starts inside **bubblewrap** (`bwrap`,
 unprivileged, with `--unshare-all --share-net --die-with-parent`) in an empty filesystem where only these are bound,
 read-only: the review copy, the CLI and its runtime (`/usr`, `/lib*`, `/etc/ssl`, `/etc/resolv.conf`), and that
-provider's own config folder. It gets a throwaway `HOME` and only its own key in the environment. It cannot see
+provider's own config and sign-in files, mounted **inside** the throwaway `HOME` at the paths its CLI looks in
+(`~/.codex` for Codex, `~/.config/opencode` and `~/.local/share/opencode/auth.json` for OpenCode) — a mount at the
+runner's real home is invisible once `HOME` changes. It gets only its own key in the environment. It cannot see
 `~/actions-runner`, the job's other keys, or another provider's folder. A machine without `bubblewrap`, or with user
-namespaces switched off, refuses that provider with a skip reason and tries the next one: no reviewer is run bare. On
-top of that, each CLI is told to stay read-only:
+namespaces switched off, refuses that provider with a skip reason and tries the next one: no reviewer is run bare.
+`--share-net` is deliberate, because the API call needs it, so the **network** is limited one level up: the
+`actions.runner.*` service carries [`tools/runner/network.conf`](../tools/runner/network.conf), which refuses loopback,
+link-local, multicast, every private range, Tailscale and the cloud metadata address, and allows only the local DNS stub.
+One file therefore covers Claude and every other provider, and a command a diff talks a model into running reaches its
+own API and nothing else on the machine.
+
+On top of that, each CLI is told to stay read-only:
 - Claude: `--restricted --safe-mode` with only the Read, Grep and Glob tools.
 - Codex: `--sandbox read-only --ephemeral --ignore-rules`, with project document loading off (`project_doc_max_bytes=0`).
   That flag limits the shell commands the model may ask for; the boundary above is what stops it reading the runner.
@@ -212,7 +220,7 @@ These rules come from mistakes made while setting this up: agents started from t
 
 **`paperclip-vps` runs Paperclip first. Tess work there must never slow it down or touch it.**
 - **The reviewer runner** runs as `tess-runner`, with no admin rights and a hard cap: 1 CPU core and 1.5 GB of memory, at the lowest priority for CPU and disk. If it runs out, the review fails; Paperclip doesn't. `omarchy` has the same setup with a 2 GB cap.
-- **No Tess agent edits, restarts or reads Paperclip.** That covers `/srv/paperclip`, its PostgreSQL database, its services, and the Tincan relay. Nothing for Tess is installed system-wide there. Everything lives in `~tess-runner`.
+- **No Tess agent edits, restarts or reads Paperclip.** That covers `/srv/paperclip`, its PostgreSQL database, its services, and the Tincan relay. Nothing for Tess is installed system-wide there. Everything lives in `~tess-runner`. The runner's network drop-in is the guard: a review cannot open a connection to any local address, so a diff cannot talk a model into reaching Paperclip even if it gets a shell command run.
 - **No builds or tests run on the VPS,** only reviews, which read code. Heavy work goes to GitHub's machines or `omarchy`.
 - **Tess agents don't run on the VPS through T3 Code.** T3 runs as root there, so any agent it starts has root power next to Paperclip. Claude refuses full access as root, and we leave that check on. Tess agent work goes to Krish's Mac or `omarchy`. Moving T3 on the VPS to a normal account is a separate decision for Krish.
 

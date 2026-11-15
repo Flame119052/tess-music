@@ -202,3 +202,14 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   Everything likely to change about reviewers — the order per role, the allowed models, the cost weight, dated pool
   notes, and quota reserved for the owner with an `until` date — lives in `.github/agents.json`, with one short
   "How to update this" guide in `docs/workflow.md`. (#71)
+- **15 Nov 2026 · PR #87 fourth review (#71)** — The reviewer's network boundary is the **runner service**, not the
+  sandbox: bubblewrap keeps the host network namespace because the API call needs it, so `tools/runner/network.conf` is a
+  systemd drop-in for `actions.runner.*` that refuses loopback, link-local, multicast, `10/8`, `172.16/12`, `192.168/16`,
+  Tailscale's `100.64/10`, the cloud metadata address and `fc00::/7`, and allows a single local address, the
+  `systemd-resolved` stub `127.0.0.53`. A review therefore reaches its provider's API and nothing else on the machine —
+  on `paperclip-vps`, not Paperclip's PostgreSQL, its services or the Tincan relay — and the one file covers Claude and
+  every other provider. A machine whose resolver is the router (plain Arch) either turns on `systemd-resolved` or names
+  that one address in the drop-in. A provider's config and sign-in files are mounted **inside** the throwaway `HOME`, at
+  the path its CLI looks in: the earlier mounts sat at the runner's real home, which `HOME` had already moved away from,
+  so OpenCode could not find its agent file and Codex could not find its login. Applying the drop-in to a machine is a
+  root action the owner approves; the repository only carries the file and the check. (#71)

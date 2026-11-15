@@ -55,7 +55,12 @@ Save it as `~/Library/LaunchAgents/music.tess.agent-runner.plist`, then load it 
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/music.tess.agent-runner.plist
 ```
 
-## Linux user service
+## Linux user service (a machine without the network filter)
+
+The runners on `omarchy` and `paperclip-vps` are the **system** service GitHub's own setup made (`config.sh`, then
+`./svc.sh install tess-runner`), named `actions.runner.Flame119052-tess-music.<name>.service`. A system service is what
+lets the network filter in [`tools/runner/network.conf`](runner/network.conf) apply to the whole job; a user unit cannot
+attach it, so a machine set up the way below reviews without that boundary.
 
 Create `~/.config/systemd/user/tess-agent-runner.service`, replacing the two absolute paths:
 
@@ -116,6 +121,69 @@ setup.
 - Krish's Mac makes the registration token and sends it over SSH standard input, so the token never sits in a file or in
   an agent's instructions.
 
+## Network: the provider's API and nothing else
+
+A review reads an untrusted diff, and text in a diff can talk a model into running a shell command. bubblewrap keeps the
+host network namespace on purpose, because the API call needs it, so the network boundary lives one level up: on the
+runner service. Every process a job starts inherits it, which is why one file covers Claude and every other provider.
+
+On `paperclip-vps` the rest of that namespace is Paperclip's PostgreSQL, its services and the Tincan relay. The drop-in
+in [`tools/runner/network.conf`](runner/network.conf) refuses loopback, link-local, multicast, the three private IPv4
+ranges, Tailscale's `100.64.0.0/10`, the cloud metadata address (`169.254.169.254`, inside `169.254.0.0/16`) and IPv6
+unique-local. It allows one local address: the DNS stub. Public addresses stay reachable, because that is the API call.
+
+**Installing it is a root action on that machine, so it is a separate step the owner approves.** This repository only
+carries the file. It applies to the system service GitHub's `config.sh`/`svc.sh` created, not to a `systemctl --user`
+unit: a user unit cannot attach the filter.
+
+```sh
+systemctl cat 'actions.runner.*'                 # the exact unit name, one per runner
+sudo mkdir -p /etc/systemd/system/actions.runner.Flame119052-tess-music.<name>.service.d
+sudo install -m 644 tools/runner/network.conf \
+  /etc/systemd/system/actions.runner.Flame119052-tess-music.<name>.service.d/network.conf
+sudo systemctl daemon-reload
+sudo systemctl restart 'actions.runner.Flame119052-tess-music.<name>.service'
+```
+
+`IPAddressDeny` needs cgroup v2 and a systemd that can attach the filter (both current). Check once:
+`stat -fc %T /sys/fs/cgroup` prints `cgroup2fs`.
+
+**DNS, which is the one thing that breaks.** The filter applies to the resolver address the machine really uses:
+
+- **Ubuntu** (22.04 and later, Desktop and Server): `systemd-resolved` is on and `/etc/resolv.conf` points at the stub.
+  `grep nameserver /etc/resolv.conf` prints `127.0.0.53`, which the file already allows. Nothing to do.
+- **Arch / `omarchy`:** `systemd-resolved` is not enabled by default; NetworkManager writes the router's address there
+  instead, and that address is inside a refused range. Two ways: turn it on (`sudo systemctl enable --now
+  systemd-resolved`, then point `/etc/resolv.conf` at `/run/systemd/resolve/stub-resolv.conf`), which keeps this file
+  unchanged; or add that one address as `IPAddressAllow=` with a comment saying why. Prefer the first: the second opens
+  the router on every port, where the resolver needs only port 53. Check with `grep nameserver /etc/resolv.conf` and
+  `resolvectl status`.
+
+**Checking it**, inside the runner's own cgroup (a plain shell on the machine proves nothing, the filter is per cgroup):
+
+```sh
+# what the unit actually has
+systemctl show 'actions.runner.Flame119052-tess-music.<name>.service' -p IPAddressDeny -p IPAddressAllow
+
+# the same policy in a throwaway unit, so the checks below are honest without waiting for a review. The lists are read
+# out of the file itself, so this cannot drift from what the runner will get.
+DENY=$(sed -n 's/^IPAddressDeny=//p' tools/runner/network.conf | xargs)
+ALLOW=$(sed -n 's/^IPAddressAllow=//p' tools/runner/network.conf | xargs)
+run() { sudo systemd-run --quiet --collect --wait --pipe --unit="tess-net-check-$$" \
+  --property="IPAddressDeny=$DENY" --property="IPAddressAllow=$ALLOW" "$@"; }
+
+# a public provider API works (any answer, even a 4xx, means the connection was made)
+run curl -sS --max-time 10 -o /dev/null https://api.anthropic.com/ && echo "provider API: reachable"
+# and the machine's own services are not, on paperclip-vps and on omarchy alike
+run curl -sS --max-time 5 http://127.0.0.1:5432/ && echo "BAD: a local service answered"
+run curl -sS --max-time 5 http://169.254.169.254/ && echo "BAD: the metadata address answered"
+```
+
+The two `BAD` lines must print nothing: the exit status is non-zero because the connect was refused, which is the
+result being checked. Do the same for each provider the machine reviews with (`api.openai.com`, `opencode.ai`, the
+Cursor endpoint). After the restart, `journalctl -u actions.runner.Flame119052-tess-music.<name> -n 50` shows whether
+jobs still start; if one does not, the journal says why — check it before allowing anything back.
+
 ## bubblewrap: the read-only boundary (required)
 
 Every reviewer CLI runs inside `bubblewrap`, so a diff cannot talk a model into running a shell command that reads the
@@ -137,10 +205,12 @@ bwrap --unshare-all --share-net --die-with-parent --ro-bind / / -- true && echo 
 
 If the last line fails with a namespace error, the kernel setting is off or the install cannot unshare for that account.
 Fixing it needs root, so the machine's owner does it; until then that machine only reviews with a provider that can run.
-Each sandbox gets the review copy, the CLI and its runtime, and that provider's own config folder, all read-only, plus a
-throwaway `HOME`, the network for the API call, and only its own key in the environment. `~/actions-runner`, the job's
-environment, and other providers' folders are not in it. A Node-based CLI also gets its own `node` folder when Node was
-installed per user (nvm, for example), so an npm install works without exposing the rest of the home folder.
+Each sandbox gets the review copy, the CLI and its runtime, all read-only, plus a throwaway `HOME` holding only that
+provider's own config and sign-in files mounted at the paths the CLI looks in (`~/.codex` for Codex,
+`~/.config/opencode` and `~/.local/share/opencode/auth.json` for OpenCode), the network for the API call, and only its
+own key in the environment. `~/actions-runner`, the job's environment, and other providers' folders are not in it. A
+Node-based CLI also gets its own `node` folder when Node was installed per user (nvm, for example), so an npm install
+works without exposing the rest of the home folder.
 
 ## Adding another reviewer provider to a runner
 
