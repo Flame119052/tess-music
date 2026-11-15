@@ -85,14 +85,14 @@ jobs:
             # Text nobody here wrote must never reach a machine that holds keys or runs Paperclip. A fork PR is
             # refused for every task, review included: plan mode is not a filesystem sandbox.
             if [[ "$pr_head_repo" != "$REPOSITORY" ]]; then
-              echo "refusal=fork-pr"
+              echo "refusal=fork-pr" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             pr_head_sha="$(jq -r '.head.sha' <<< "$pr")"
             conclusion="$(gh api "repos/$REPOSITORY/actions/workflows/check.yml/runs?head_sha=$pr_head_sha&event=pull_request&per_page=100" \
               --jq '.workflow_runs | sort_by(.created_at) | reverse | .[0].conclusion // ""')"
             if [[ "$conclusion" != "success" ]]; then
-              echo "refusal=ci-not-passed"
+              echo "refusal=ci-not-passed" >> "$GITHUB_OUTPUT"
               exit 0
             fi
           fi

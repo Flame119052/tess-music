@@ -4,7 +4,7 @@
 //        node tools/agent-dispatch.mjs reason   print the refusal code a failed dispatch recorded, for the job output
 //        node tools/agent-dispatch.mjs refuse   post the fixed refusal text for that code on the issue or pull request
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 
@@ -20,6 +20,13 @@ const terminalStatuses = new Set(['completed', 'failed', 'cancelled', 'interrupt
 const waitTimeoutMs = 4 * 60 * 1000;
 const maxSessionReconnects = 3;
 const defaultSlots = 2;
+// A tag waits its turn, but not forever: GitHub kills the dispatch job at 360 minutes and a cancelled step writes no
+// output, so an unbounded wait would tie up one of two runner instances and never post the `slots-busy` refusal.
+const slotPollMs = 30_000;
+const slotWaitBudgetMs = 60 * 60 * 1000;
+// No job can still be holding a slot claimed this long ago: the workflow's own limit is 360 minutes. Reclaiming
+// later than that keeps the lane from stopping for good after a job is killed while it holds a slot.
+const slotStaleAfterMs = 7 * 60 * 60 * 1000;
 
 export class McpToolError extends Error {}
 
@@ -121,6 +128,18 @@ function slotCount(env) {
   return value;
 }
 
+// The queue's patience, in minutes. It ends well inside the job's 360-minute limit, so a busy lane answers the tag
+// with `slots-busy` instead of being killed with no reply.
+function slotWait(env) {
+  const raw = env.TESS_AGENT_SLOT_WAIT_MINUTES?.trim();
+  if (!raw) return slotWaitBudgetMs;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > 120) {
+    throw new Error('TESS_AGENT_SLOT_WAIT_MINUTES must be a whole number from 1 to 120');
+  }
+  return value * 60 * 1000;
+}
+
 export function readConfig(env = process.env) {
   const projects = {};
   const environments = {};
@@ -140,6 +159,7 @@ export function readConfig(env = process.env) {
     token: credential(env),
     slotDir: slotDirectory(env),
     slots: slotCount(env),
+    slotWaitMs: slotWait(env),
     projects,
     environments,
   };
@@ -328,9 +348,9 @@ export class McpClient {
     }
     if (result?.structuredContent !== undefined) {
       const value = result.structuredContent;
-      if (value?._tag || value?.error?._tag) {
-        throw new McpToolError(value.message || value.error?.message || `${name} failed`);
-      }
+      // T3 tags failures only, as `error._tag` beside `isError: true`; its success schemas (thread launch included)
+      // carry no tag. Reading any tag as a refusal would free a slot for a thread that is still running.
+      if (value?.error?._tag) throw new McpToolError(value.error.message || `${name} failed`);
       return value;
     }
     const text = (result?.content || []).find((part) => part.type === 'text')?.text;
@@ -354,23 +374,68 @@ export class McpClient {
 
 export async function claimSlot(directory, owner, options = {}) {
   const wait = options.wait || delay;
-  const attempts = options.attempts ?? Infinity;
+  const pollMs = options.waitMs ?? slotPollMs;
+  const attempts = options.attempts ?? Math.ceil((options.waitBudgetMs ?? slotWaitBudgetMs) / pollMs);
   const slots = options.slots ?? defaultSlots;
+  const write = options.writeOwner || writeOwner;
+  const staleAfterMs = options.staleAfterMs ?? slotStaleAfterMs;
+  const now = options.now || Date.now;
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     for (let index = 1; index <= slots; index += 1) {
       const path = `${directory}/slot-${index}`;
+      // A slot whose job is gone (killed at the timeout, or a machine that died) would block this lane for good.
+      if (!occupy(path) && !(expireStaleSlot(path, staleAfterMs, now) && occupy(path))) continue;
       try {
-        mkdirSync(path, { mode: 0o700 });
-        writeOwner(path, owner);
-        return path;
+        write(path, owner);
       } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
+        // A directory with no owner record cannot be reconciled or followed, so it never stays behind.
+        rmSync(path, { recursive: true, force: true });
+        throw error;
       }
+      return path;
     }
-    if (attempt + 1 < attempts) await wait(options.waitMs ?? 30_000);
+    if (attempt + 1 < attempts) await wait(pollMs);
   }
   throw refused('slots-busy', `all ${slots} Tess agent slots are occupied`);
+}
+
+function occupy(path) {
+  try {
+    mkdirSync(path, { mode: 0o700 });
+    return true;
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    return false;
+  }
+}
+
+// The age comes from `owner.json`, or from the directory when that record is missing or unreadable. The directory is
+// created before the record, so a claim in progress looks like a slot a few milliseconds old, never an expired one.
+function slotClaimedAt(path) {
+  try {
+    const claimedAt = Date.parse(JSON.parse(readFileSync(`${path}/owner.json`, 'utf8')).claimedAt);
+    if (Number.isFinite(claimedAt)) return claimedAt;
+  } catch {
+    // Fall through to the directory's own timestamp.
+  }
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
+function expireStaleSlot(path, staleAfterMs, now) {
+  const claimedAt = slotClaimedAt(path);
+  if (claimedAt === undefined || now() - claimedAt < staleAfterMs) return false;
+  try {
+    rmSync(path, { recursive: true });
+  } catch {
+    return false;
+  }
+  console.error(`Reclaimed ${path}: no dispatch job can still hold a slot claimed that long ago.`);
+  return true;
 }
 
 function writeOwner(path, owner) {
@@ -464,7 +529,7 @@ export async function run(env = process.env, fetchImplementation = fetch, option
       commentId: context.commentId,
       requestedMachine: request.machine || 'auto',
       clientRequestId,
-    }, { slots: config.slots, ...options });
+    }, { slots: config.slots, waitBudgetMs: config.slotWaitMs, ...options });
     // Read reachability only after the slot is held: waiting for a free slot can take minutes, and a machine that
     // answered then may be gone now.
     const links = await client.callTool('t3_environment_links', {});
@@ -485,6 +550,9 @@ export async function run(env = process.env, fetchImplementation = fetch, option
     attempted = true;
     const result = await client.callTool('t3_thread_launch', launchRequest);
     launched = true;
+    // Only a result that names its thread can be followed. Anything else leaves the slot held, because the thread
+    // may exist even though this job cannot find it.
+    if (!result?.threadId) throw new Error('t3_thread_launch returned no threadId; slot retained');
     const final = await waitForSettledThread(client, {
       ...result,
       environmentId: target.environmentId,

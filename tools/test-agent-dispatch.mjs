@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +18,7 @@ import {
 import * as dispatch from './agent-dispatch.mjs';
 
 const hook = fileURLToPath(new URL('runner-hook.sh', import.meta.url));
+const workflowFile = fileURLToPath(new URL('../.github/workflows/agent-dispatch.yml', import.meta.url));
 
 function context(overrides = {}) {
   return {
@@ -115,6 +116,19 @@ async function mockMcp(options = {}) {
       request.socket.destroy();
       return;
     }
+    if (name === 't3_thread_launch' && options.launchFailure) {
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({
+        jsonrpc: '2.0',
+        id: body.id,
+        result: {
+          isError: true,
+          structuredContent: { error: { _tag: 'ThreadLaunchError' } },
+          content: [{ type: 'text', text: 'Thread launch failed.' }],
+        },
+      }));
+      return;
+    }
     if (name === 't3_thread_wait') {
       waitCalls += 1;
       // Each expiry ends one session; the reconnected call answers normally, as a real server would.
@@ -126,7 +140,7 @@ async function mockMcp(options = {}) {
     }
     let structuredContent;
     if (name === 't3_thread_launch') {
-      structuredContent = {
+      structuredContent = options.launchStructured ?? {
         threadId: 'thread-1',
         runId: 'run-1',
         link: 'https://t3.example/thread-1',
@@ -162,6 +176,98 @@ async function mockMcp(options = {}) {
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }
+
+// The refusal codes are set inside the workflow's own gate step, so the test runs that exact script with a fake `gh`
+// and the real `jq`, and reads `$GITHUB_OUTPUT` the way GitHub reads it: the last value of a key wins.
+function gateRun(scenario) {
+  const lines = readFileSync(workflowFile, 'utf8').split('\n');
+  const step = lines.findIndex((line) => line.trim() === '- name: Check caller, request, and CI');
+  assert.notEqual(step, -1, 'the gate step is missing from .github/workflows/agent-dispatch.yml');
+  const runAt = lines.findIndex((line, index) => index > step && line.trim() === 'run: |');
+  assert.notEqual(runAt, -1, 'the gate step has no shell script');
+  const indent = lines[runAt].search(/\S/);
+  const body = [];
+  for (let index = runAt + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.trim() !== '' && line.search(/\S/) <= indent) break;
+    body.push(line.slice(Math.min(line.length, indent + 2)));
+  }
+  const directory = mkdtempSync(join(tmpdir(), 'tess-gate-'));
+  const gh = join(directory, 'gh');
+  const output = join(directory, 'github-output');
+  writeFileSync(gh, [
+    '#!/bin/sh',
+    'case "$2" in',
+    `  */actions/workflows/*) printf '%s' "$RUN_CONCLUSION" ;;`,
+    `  */pulls/*) printf '%s' "$PULL_JSON" ;;`,
+    `  */issues/*) printf '%s' "$ISSUE_JSON" ;;`,
+    '  *) exit 1 ;;',
+    'esac',
+    '',
+  ].join('\n'));
+  chmodSync(gh, 0o755);
+  const result = spawnSync('bash', ['-c', body.join('\n')], {
+    env: {
+      PATH: `${directory}:${process.env.PATH}`,
+      GITHUB_OUTPUT: output,
+      AGENT_ALLOWLIST: 'Flame119052',
+      COMMENTER: 'Flame119052',
+      ISSUE_NUMBER: '90',
+      REPOSITORY: 'Flame119052/tess-music',
+      COMMENT_BODY: '@tess-agent review',
+      RUN_CONCLUSION: 'success',
+      ...scenario,
+    },
+    encoding: 'utf8',
+  });
+  const written = {};
+  for (const line of readFileSync(output, 'utf8').split('\n')) {
+    const at = line.indexOf('=');
+    if (at > 0) written[line.slice(0, at)] = line.slice(at + 1);
+  }
+  rmSync(directory, { recursive: true, force: true });
+  return { status: result.status, stderr: result.stderr, outputs: written };
+}
+
+test('the gate refuses a fork pull request and CI that has not passed, and the tag is answered', () => {
+  const issue = JSON.stringify({
+    html_url: 'https://github.com/Flame119052/tess-music/pull/90',
+    pull_request: { url: 'https://api.github.com/repos/Flame119052/tess-music/pulls/90' },
+  });
+  const own = JSON.stringify({
+    head: { ref: 'tess-agent-dispatch', repo: { full_name: 'Flame119052/tess-music' }, sha: 'a1b2c3d4e5' },
+  });
+  const fork = JSON.stringify({
+    head: { ref: 'patch-1', repo: { full_name: 'someone-else/tess-music' }, sha: 'a1b2c3d4e5' },
+  });
+  const base = { ISSUE_JSON: issue, PULL_JSON: own };
+
+  const forked = gateRun({ ...base, PULL_JSON: fork });
+  assert.equal(forked.status, 0, forked.stderr);
+  assert.equal(forked.outputs.refusal, 'fork-pr');
+  assert.equal(forked.outputs.allowed, 'false');
+
+  const failed = gateRun({ ...base, RUN_CONCLUSION: 'failure' });
+  assert.equal(failed.outputs.refusal, 'ci-not-passed');
+  assert.equal(failed.outputs.allowed, 'false');
+
+  // No check run at all on the head commit has not passed either.
+  const missing = gateRun({ ...base, RUN_CONCLUSION: '' });
+  assert.equal(missing.outputs.refusal, 'ci-not-passed');
+
+  const ok = gateRun(base);
+  assert.equal(ok.outputs.allowed, 'true');
+  assert.equal(ok.outputs.refusal, '');
+  assert.equal(ok.outputs.pr_head_sha, 'a1b2c3d4e5');
+
+  // A stranger and a marked bot comment stay silent on purpose: no thread and no reply.
+  const stranger = gateRun({ ...base, COMMENTER: 'someone-else' });
+  assert.equal(stranger.outputs.allowed, 'false');
+  assert.equal(stranger.outputs.refusal, '');
+  const bot = gateRun({ ...base, COMMENT_BODY: '<!-- tess-review-bot -->\n@tess-agent review' });
+  assert.equal(bot.outputs.allowed, 'false');
+  assert.equal(bot.outputs.refusal, '');
+});
 
 test('parses the tag and rejects incomplete or unknown choices', () => {
   assert.deepEqual(
@@ -208,6 +314,14 @@ test('the slot directory and cap are read from the runner, never guessed', () =>
   assert.throws(() => readConfig(base), /HOME/);
   assert.equal(readConfig({ ...base, HOME: '/home/x', TESS_AGENT_SLOT_DIR: '  ' }).slotDir,
     '/home/x/.local/state/tess-agent-dispatch');
+  // The queue's patience has a default and a ceiling, so a wait can never outlast the job's own six-hour limit.
+  assert.equal(readConfig({ ...base, HOME: '/home/x' }).slotWaitMs, 60 * 60 * 1000);
+  assert.equal(readConfig({ ...base, HOME: '/home/x', TESS_AGENT_SLOT_WAIT_MINUTES: '15' }).slotWaitMs,
+    15 * 60 * 1000);
+  assert.throws(() => readConfig({ ...base, HOME: '/home/x', TESS_AGENT_SLOT_WAIT_MINUTES: '0' }),
+    /TESS_AGENT_SLOT_WAIT_MINUTES/);
+  assert.throws(() => readConfig({ ...base, HOME: '/home/x', TESS_AGENT_SLOT_WAIT_MINUTES: '600' }),
+    /TESS_AGENT_SLOT_WAIT_MINUTES/);
 });
 
 test('the credential can come from a private file instead of the job environment', () => {
@@ -335,6 +449,107 @@ test('the slot cap is durable, configurable, and a freed slot admits the queue',
   }
 });
 
+test('a slot whose job can no longer be running is reclaimed, a live one is kept', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'tess-agent-stale-'));
+  try {
+    const dead = join(directory, 'slot-1');
+    const live = join(directory, 'slot-2');
+    mkdirSync(dead, { recursive: true, mode: 0o700 });
+    mkdirSync(live, { recursive: true, mode: 0o700 });
+    const eightHoursAgo = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
+    writeFileSync(join(dead, 'owner.json'), JSON.stringify({ claimedAt: eightHoursAgo, commentId: '1' }));
+    writeFileSync(join(live, 'owner.json'), JSON.stringify({ claimedAt: new Date().toISOString(), commentId: '2' }));
+    // The job that claimed slot-1 was killed at its 360-minute limit, so nothing can still be holding it.
+    const claimed = await claimSlot(directory, { claimedAt: new Date().toISOString(), commentId: '3' },
+      { slots: 2, attempts: 1 });
+    assert.equal(claimed, dead);
+    assert.equal(JSON.parse(readFileSync(join(claimed, 'owner.json'), 'utf8')).commentId, '3');
+    await assert.rejects(claimSlot(directory, { commentId: '4' }, { slots: 2, attempts: 1 }), /occupied/);
+    assert.equal(JSON.parse(readFileSync(join(live, 'owner.json'), 'utf8')).commentId, '2');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a slot with no owner record expires only after the same age, so a claim in progress is never taken', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'tess-agent-orphan-'));
+  try {
+    const orphan = join(directory, 'slot-1');
+    mkdirSync(orphan, { recursive: true, mode: 0o700 });
+    // Fresh: the directory exists before its owner record is written, so this may simply be mid-claim.
+    await assert.rejects(claimSlot(directory, { commentId: '1' }, { attempts: 1, slots: 1 }), /occupied/);
+    const eightHoursAgo = new Date(Date.now() - 8 * 60 * 60 * 1000);
+    utimesSync(orphan, eightHoursAgo, eightHoursAgo);
+    const claimed = await claimSlot(directory, { claimedAt: new Date().toISOString(), commentId: '2' },
+      { attempts: 1, slots: 1 });
+    assert.equal(claimed, orphan);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a busy lane waits a bounded time, then records the slots-busy reason for the person who tagged', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'tess-agent-busy-'));
+  const slotDir = join(directory, 'slots');
+  const refusalFile = join(directory, 'refusal.json');
+  mkdirSync(join(slotDir, 'slot-1'), { recursive: true });
+  mkdirSync(join(slotDir, 'slot-2'), { recursive: true });
+  const mock = await mockMcp();
+  let polls = 0;
+  const wait = async () => {
+    polls += 1;
+    // An unbounded wait ties up one of two runner instances until GitHub cancels the job, and a cancelled job
+    // posts nothing. A hundred and fifty polls is far more than the one-hour budget needs.
+    if (polls > 150) throw new Error('claimSlot waited without a limit');
+  };
+  try {
+    await assert.rejects(
+      run(runnerEnv(mock.endpoint, slotDir, { REFUSAL_FILE: refusalFile }), fetch, { wait }),
+      /occupied/,
+    );
+    assert.equal(polls, 119);
+    assert.deepEqual(JSON.parse(readFileSync(refusalFile, 'utf8')), { reason: 'slots-busy' });
+    assert.equal(mock.call('t3_thread_launch').length, 0);
+  } finally {
+    await mock.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a slot claimed moments ago is never reclaimed, even by a queue that waits', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'tess-agent-fresh-'));
+  try {
+    const fresh = join(directory, 'slot-1');
+    mkdirSync(fresh, { recursive: true, mode: 0o700 });
+    writeFileSync(join(fresh, 'owner.json'), JSON.stringify({ claimedAt: new Date().toISOString(), commentId: '1' }));
+    await assert.rejects(claimSlot(directory, { commentId: '2' }, { attempts: 1, slots: 1 }), /occupied/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a slot is not left behind when its owner record cannot be written', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'tess-agent-owner-'));
+  try {
+    const failure = Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+    await assert.rejects(
+      claimSlot(directory, { commentId: '1' }, {
+        attempts: 1,
+        writeOwner: () => { throw failure; },
+      }),
+      /no space left/,
+    );
+    // A directory with no owner record can be reconciled by nobody, so it must not survive a failed claim.
+    assert.deepEqual(readdirSync(directory), []);
+    const claimed = await claimSlot(directory, { claimedAt: new Date().toISOString(), commentId: '2' },
+      { attempts: 1 });
+    assert.equal(claimed, join(directory, 'slot-1'));
+    releaseSlot(claimed);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('mock MCP handshake launches on the first default machine and releases its slot', async () => {
   const mock = await mockMcp();
   const slotDir = mkdtempSync(join(tmpdir(), 'tess-agent-run-'));
@@ -434,6 +649,54 @@ test('the machine is chosen after the slot is claimed, so the answer is never st
   try {
     await run(runnerEnv(mock.endpoint, slotDir));
     assert.deepEqual(slotsAtLinks, ['slot-1']);
+  } finally {
+    await mock.close();
+    rmSync(slotDir, { recursive: true, force: true });
+  }
+});
+
+test('a launch result that carries a tag is a success, not a refusal, so its thread keeps the slot', async () => {
+  // T3 tags failures only. If a success value ever carried a tag, reading it as a refusal would free a slot for a
+  // thread that is still running and break the two-thread cap.
+  const mock = await mockMcp({
+    launchStructured: {
+      _tag: 'LaunchResult',
+      threadId: 'thread-1',
+      runId: 'run-1',
+      link: 'https://t3.example/thread-1',
+      projectId: 'project-omarchy',
+      status: 'running',
+    },
+  });
+  const slotDir = mkdtempSync(join(tmpdir(), 'tess-agent-tagged-'));
+  try {
+    await run(runnerEnv(mock.endpoint, slotDir));
+    assert.equal(mock.call('t3_thread_wait').length, 1);
+    assert.deepEqual(readdirSync(slotDir), []);
+  } finally {
+    await mock.close();
+    rmSync(slotDir, { recursive: true, force: true });
+  }
+});
+
+test('a launch result with no thread id keeps its slot, because the thread may exist', async () => {
+  const mock = await mockMcp({ launchStructured: { status: 'running' } });
+  const slotDir = mkdtempSync(join(tmpdir(), 'tess-agent-noid-'));
+  try {
+    await assert.rejects(run(runnerEnv(mock.endpoint, slotDir)), /no threadId/);
+    assert.deepEqual(readdirSync(slotDir), ['slot-1']);
+  } finally {
+    await mock.close();
+    rmSync(slotDir, { recursive: true, force: true });
+  }
+});
+
+test('a launch T3 itself refused frees its slot, because no thread exists', async () => {
+  const mock = await mockMcp({ launchFailure: true });
+  const slotDir = mkdtempSync(join(tmpdir(), 'tess-agent-refused-'));
+  try {
+    await assert.rejects(run(runnerEnv(mock.endpoint, slotDir)), /Thread launch failed/);
+    assert.deepEqual(readdirSync(slotDir), []);
   } finally {
     await mock.close();
     rmSync(slotDir, { recursive: true, force: true });
