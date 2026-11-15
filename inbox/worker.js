@@ -19,7 +19,11 @@ const MIN_SALT = 16;
 const utf8 = (s) => new TextEncoder().encode(s);
 // Cut by bytes, not by characters: 24K characters of 4-byte characters is 96 KB in the database.
 const cut = (s, n) => { const b = utf8(s); return b.length <= n ? s : new TextDecoder().decode(b.slice(0, n)); };
-const short = (v, n) => (typeof v === 'string' ? cut(v.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ''), n) : null);
+// Nothing every terminal would hide from the person reading a report is stored: C0 and C1 controls, the bidi overrides
+// and marks (they can reorder a line so an honest path reads as something else), zero-width joiners and the byte-order
+// mark, and the invisible operators. Anyone can post here, and tools/reports.mjs prints these values to a terminal.
+const INVISIBLE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
+const short = (v, n) => (typeof v === 'string' ? cut(v.replace(INVISIBLE, ''), n) : null);
 
 async function hit(env, key, max, seconds) {
   const now = Math.floor(Date.now() / 1000);

@@ -139,6 +139,21 @@ try {
     assert.ok(stored > 20 * 1024, `the stored body is not cut short unnecessarily (got ${stored})`);
   }
 
+  // 3c. nothing that hides itself from the person reading a report is stored: a bidi override could reorder a line so
+  // an honest path reads as a different one, and zero-width characters and C1 controls are invisible in a terminal
+  {
+    const db = database();
+    const hidden = 'chr\u202eesruo\u2066c\u200b\u2069\u0007\u009b\u200d\ufeff\u2060!';
+    const res = await post(report(undefined, undefined, { status: 'ok\u202e', body: hidden, tess: '\u200b0.2.22' }), { env: makeEnv(db) });
+    assert.equal(res.status, 204, 'the report is still accepted');
+    const row = db.reports[0];
+    const left = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/;
+    for (const what of ['body', 'status', 'tess']) assert.ok(!left.test(row[what]), `the stored ${what} keeps nothing invisible`);
+    assert.equal(row.body, 'chresruoc!', 'the visible text is kept, in order');
+    assert.equal(row.status, 'ok', 'the status line has no override left');
+    assert.equal(row.tess, '0.2.22', 'a zero-width character does not survive in a version string');
+  }
+
   // 4. concurrent reports cannot slip past the per-IP limit: 40 at once against a cap of 30
   {
     const db = database();
@@ -212,7 +227,7 @@ try {
     assert.ok(db.limits.has('live'), 'a live window is kept');
   }
 
-  console.log('inbox tests passed (health report stores; no salt 503; bytes counted; 30 of 40 concurrent; shape checks; rescue and wake)');
+  console.log('inbox tests passed (health report stores; no salt 503; bytes counted; bidi and zero-width stripped; 30 of 40 concurrent; shape checks; rescue and wake)');
 } finally {
   rmSync(box, { recursive: true, force: true });
 }
