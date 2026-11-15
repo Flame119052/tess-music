@@ -107,7 +107,9 @@ jobs:
             exit 0
           fi
           for i in $(seq 1 12); do
-            if [ "$(curl -fsS --max-time 5 "${WAKE_URL%/}/ready" 2>/dev/null)" = "tess-ready" ]; then
+            # The status code is appended after the body, so trailing newlines can't be trimmed away, and the `&&`
+            # requires curl itself to succeed: only a clean 200 with exactly "tess-ready" counts.
+            if resp=$(curl -fsS --max-time 5 -w '|%{http_code}' "${WAKE_URL%/}/ready" 2>/dev/null) && [ "$resp" = "tess-ready|200" ]; then
               echo 'runs_on=["self-hosted","tess-agent","tess-primary"]' >> "$GITHUB_OUTPUT"
               echo "Instabox is ready."
               exit 0

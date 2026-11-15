@@ -48,7 +48,7 @@ const temp = () => mkdtempSync(join(tmpdir(), 'tess-test-'));
 
 // Run the workflow's machine-picking step for real, with fake `curl` and `sleep` in front of PATH, using the same shell
 // options GitHub Actions uses for `run:` blocks (`bash --noprofile --norc -eo pipefail`).
-function pickMachine({ wakeUrl, readyBody = '', curlFails = false, readyOnTry = 1, countCalls = false, expectUrl }) {
+function pickMachine({ wakeUrl, readyBody = '', curlFails = false, curlExit = 0, readyOnTry = 1, countCalls = false, expectUrl }) {
   const workflow = readFileSync(new URL('../.github/workflows/agent-review.yml', import.meta.url), 'utf8').split('\n');
   const stepLines = workflow.filter((line) => line.trim() === '- name: Pick the reviewer machine (Instabox first, then the VPS or omarchy)');
   assert.equal(stepLines.length, 1, 'the workflow has exactly one machine-picking step');
@@ -73,7 +73,7 @@ function pickMachine({ wakeUrl, readyBody = '', curlFails = false, readyOnTry = 
     const calls = join(dir, 'calls');
     writeFileSync(join(dir, 'curl'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n` + (curlFails
       ? 'exit 7\n'
-      : `[ "$(wc -l < '${calls}')" -ge ${readyOnTry} ] && printf '%s' '${readyBody}'\nexit 0\n`));
+      : `[ "$(wc -l < '${calls}')" -ge ${readyOnTry} ] && printf '%s' '${readyBody}'\nprintf '|200'\nexit ${curlExit}\n`));
     writeFileSync(join(dir, 'sleep'), '#!/bin/sh\nexit 0\n');
     chmodSync(join(dir, 'curl'), 0o755);
     chmodSync(join(dir, 'sleep'), 0o755);
@@ -107,6 +107,9 @@ test('only the exact ready answer pins the job to Instabox', () => {
   const backup = 'runs_on=["self-hosted","tess-agent","tess-backup"]';
   assert.equal(pickMachine({ wakeUrl: 'https://box.example', readyBody: 'starting…', expectUrl: 'https://box.example/ready' }), backup);
   assert.equal(pickMachine({ wakeUrl: 'https://box.example', curlFails: true, expectUrl: 'https://box.example/ready' }), backup);
+  // Trailing newlines are not trimmed into a match, and a curl that fails after printing the ready text doesn't count.
+  assert.equal(pickMachine({ wakeUrl: 'https://box.example', readyBody: 'tess-ready\n\n' }), backup);
+  assert.equal(pickMachine({ wakeUrl: 'https://box.example', readyBody: 'tess-ready', curlExit: 7 }), backup);
 });
 
 test('a box that wakes on a later try still gets the job, and the check gives up after 12 tries', () => {
