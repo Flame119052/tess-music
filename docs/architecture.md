@@ -49,7 +49,9 @@ order names one of five actions (`check`, `update`, `repair`, `restore-spotify`,
 own installed, signed tool (doctor, updater, the installed installer copy, the patcher's safe restore, the installed
 uninstaller). An order's header is `tess-rescue 2`, a serial, an expiry, an optional `only <id>...`, an optional
 `timeout <seconds>` (60-3600, half an hour by default) and the action; nothing in it is executed as a script. The order
-is stopped at its limit, and the stop and the limit go in the log. The report sent afterwards covers only the lines that
+is stopped at its limit, and the stop and the limit go in the log. An action runs in a process group of its own, so the
+limit stops the action and every process it started (the patcher, `ditto`, `curl`), not just the shell that started them;
+nothing of the order is still running when the line is logged. The report sent afterwards covers only the lines that
 order wrote (the log's size is noted before it starts) and passes through the same privacy filter as every other report.
 Rescue lines installed from this release on download nothing from `main`; `repair` runs the installer
 the Mac last installed with. Older installed rescue
@@ -83,8 +85,9 @@ Its files go back to stock (`Apps/xpui.spa`). The updater notices (LaunchAgent W
 | Rescue line | `installer/rescue.sh`, offline rescue key | updates stuck on a Mac |
 | Health reports | `doctor.sh` → inbox | problems nobody reports |
 | One privacy filter | `installer/redact.sh`, copied into the installer, doctor and rescue line, gated by `tools/check-safety.sh` | a report path leaking names, paths or emails because it was written separately |
-| Verified ownership | `codesign`/`spctl` before any `sudo chown` | a password prompt and a root `chown -R` on a folder that is not Spotify |
+| Verified ownership | `codesign`/`spctl` before any `sudo chown`, and Spotify's team id `2FNC3A47ZF` read from the signature | a password prompt and a root `chown -R` on a folder that is not Spotify |
 | Single-statement inbox limits | `inbox/worker.js` | two requests at once slipping past a capped counter |
+| Invisible characters dropped | `inbox/worker.js`, and again in `tools/reports.mjs` | a bidi override or zero-width character reordering a report line in a terminal |
 
 ## Release pipeline
 
@@ -130,4 +133,7 @@ returns the newest rescue serial from D1 (KV fallback). No endpoint returns repo
 
 It fails closed: without the `SALT` secret (or with one shorter than 16 characters) `POST /v1/report` answers 503 and
 stores nothing, because the stored per-IP keys would otherwise be a plain hash of an IP address. Every counter is one
-`INSERT ... ON CONFLICT ... DO UPDATE`, so requests that arrive together cannot both read the same number and pass.
+`INSERT ... ON CONFLICT ... DO UPDATE`, so requests that arrive together cannot both read the same number and pass. Every
+text field is stored with its C0 and C1 controls, bidi overrides and marks, zero-width characters and byte-order mark
+removed: a report is read in a terminal, and those characters can reorder a line so an honest path reads as another one.
+`tools/reports.mjs` drops them again on the way out, because rows stored before this rule are still in the database.

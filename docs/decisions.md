@@ -307,22 +307,34 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   separately. *Revisit* if the filter ever needs to change between report paths, which it must not.
 - **D-81 · 15 Nov 2026 · Agent** — Tess takes ownership of a Spotify bundle only after macOS confirms it is Spotify's own
   app: `CFBundleIdentifier` is `com.spotify.client`, `codesign --verify --strict` passes, `spctl` accepts it, and the
-  signing authority names Spotify; the path is canonicalised first. Otherwise the install stops and says to reinstall
-  Spotify from Spotify.
+  signature satisfies a code requirement naming Spotify's team and its Developer ID anchor — never a line read out of
+  `codesign -dvvv` output — with the path canonicalised first. Otherwise the install stops and says to reinstall Spotify
+  from Spotify.
   *Why:* `sudo chown -R` on a path chosen from a running process's name, with no signature check, was a root-owned
-  recursive write on an attacker-influencable folder (SEC-09). *Trade-off:* a Spotify copied out of a DMG by hand now
-  stops here rather than being silently taken over — which matches the app-management and DMG warnings elsewhere.
+  recursive write on an attacker-influencable folder (SEC-09). `codesign -dvvv` also prints `Executable=<path>`, so a
+  bundle whose folder name carries a newline put a forged `TeamIdentifier=` line into that output: a text search accepted
+  a team that is not Spotify's, and `spctl` accepts any notarized app. *Trade-off:* a Spotify copied out of a DMG by hand
+  now stops here rather than being silently taken over — which matches the app-management and DMG warnings elsewhere.
 - **D-82 · 15 Nov 2026 · Agent** — A rescue order may carry `timeout <seconds>` (60-3600, 1800 by default), is stopped at
-  its limit with the limit in the log, and reports only the lines it wrote through the shared filter.
+  its limit with the limit in the log, and reports only the lines it wrote through the shared filter. The action runs in
+  a process group of its own, and the limit stops the whole group — TERM, a ten-second grace period, then KILL — so
+  nothing the order started outlives it, and the stop is logged only after the group is gone.
   *Why:* a fixed 15-minute kill could interrupt a real repair silently, and the old upload sent the whole log tail with
-  only the home folder removed (SEC-16). *Trade-off:* an order that genuinely needs longer than an hour cannot ask for it;
-  the next order can.
+  only the home folder removed (SEC-16). Killing the one pid that was started stopped the action's shell and left its
+  children — the patcher, `ditto`, `curl` — running and reparented, while the log said the order had stopped and the
+  rescue plist's `AbandonProcessGroup` meant launchd would not reap them either. `/bin/sh` turns job control on for the
+  action because zsh refuses `set -m` in a script and the rescue script's own group must not be the one that is killed.
+  *Trade-off:* an order that genuinely needs longer than an hour cannot ask for it; the next order can, and an order whose
+  child ignores TERM takes the grace period before it is killed.
 - **D-83 · 15 Nov 2026 · Agent** — The inbox refuses health reports when `SALT` is missing or shorter than 16 characters,
-  measures the body in bytes, and counts every limit with one statement.
+  measures the body in bytes, counts every limit with one statement, and stores no character a terminal would hide: C0
+  and C1 controls, bidi overrides and marks, zero-width characters and the byte-order mark are removed on write, and
+  again when `tools/reports.mjs` prints them.
   *Why:* an unset salt made the stored per-IP keys a plain hash of an IPv4 address (SEC-11), the character-counted body
   limit allowed a four-times-larger stored report (SEC-14), and check-then-act counters could be overshot by concurrent
-  requests. *Trade-off:* a deployment without the secret loses reports instead of storing weak data, which is the way a
-  privacy control should fail.
+  requests. Anyone can post a report, and a bidi override in one can reorder the line so a path reads as a different
+  path in the owner's terminal. *Trade-off:* a deployment without the secret loses reports instead of storing weak data,
+  which is the way a privacy control should fail.
 - **D-84 · 15 Nov 2026 · Agent** — `tess-patcher can-write` moved into `src/cmd` as `CanWrite`, and probes with
   `os.CreateTemp` (exclusive, random name) instead of a predictable `.tess-can-write` opened with `O_TRUNC`.
   *Why:* a planted link at the known name was followed and truncated inside Spotify's bundle (SEC-20), and a Go test for
