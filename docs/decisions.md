@@ -306,15 +306,19 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   problem: the installer leaked the account name while the doctor removed it (SEC-10), because the two were written
   separately. *Revisit* if the filter ever needs to change between report paths, which it must not.
 - **D-81 · 15 Nov 2026 · Agent** — Tess takes ownership of a Spotify bundle only after macOS confirms it is Spotify's own
-  app: `CFBundleIdentifier` is `com.spotify.client`, `codesign --verify --strict` passes, `spctl` accepts it, and the
-  signature satisfies a code requirement naming Spotify's team and its Developer ID anchor — never a line read out of
-  `codesign -dvvv` output — with the path canonicalised first. Otherwise the install stops and says to reinstall Spotify
-  from Spotify.
+  app: `CFBundleIdentifier` is `com.spotify.client`, `codesign --verify --strict` passes, `spctl` accepts it, and
+  `codesign --verify --strict --ignore-resources -R=…` tests a code requirement — `anchor apple generic and certificate
+  leaf[subject.OU] = "2FNC3A47ZF"` — against the signature itself, never a line read out of `codesign -dvvv` output. The
+  path is canonicalised first, and a canonical path holding a control character (a newline, a CR, a tab) is refused
+  before any of those checks. Otherwise the install stops and says to reinstall Spotify from Spotify.
   *Why:* `sudo chown -R` on a path chosen from a running process's name, with no signature check, was a root-owned
   recursive write on an attacker-influencable folder (SEC-09). `codesign -dvvv` also prints `Executable=<path>`, so a
-  bundle whose folder name carries a newline put a forged `TeamIdentifier=` line into that output: a text search accepted
-  a team that is not Spotify's, and `spctl` accepts any notarized app. *Trade-off:* a Spotify copied out of a DMG by hand
-  now stops here rather than being silently taken over — which matches the app-management and DMG warnings elsewhere.
+  bundle whose folder name carries a newline — reached through a clean-looking symlink that `pwd -P` resolves — put a
+  forged `TeamIdentifier=` line into that output: a text search accepted a team that is not Spotify's, and `spctl`
+  accepts any notarized app. A requirement is evaluated by codesign against the certificate, so no text in a path can
+  stand in for it. Resources are skipped in the requirement call only because the seal is checked on the line before and
+  Tess itself rewrites Spotify's interface files. *Trade-off:* a Spotify copied out of a DMG by hand now stops here
+  rather than being silently taken over — which matches the app-management and DMG warnings elsewhere.
 - **D-82 · 15 Nov 2026 · Agent** — A rescue order may carry `timeout <seconds>` (60-3600, 1800 by default), is stopped at
   its limit with the limit in the log, and reports only the lines it wrote through the shared filter. The action runs in
   a process group of its own, and the limit stops the whole group — TERM, a ten-second grace period, then KILL — so

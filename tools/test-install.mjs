@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, chmodSync } from 'node:fs';
+import { copyFileSync, createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -180,19 +180,29 @@ try {
   const bin = join(box, 'bin');
   mkdirSync(bin, { recursive: true });
   const chownLog = join(box, 'chown.log');
-  // A stand-in that prints what codesign prints, in its order, including the Executable line a loose grep could be
-  // fooled by. FAKE_TEAM is the team in the signature; the bundle's own path is never asked.
+  const codesignLog = join(box, 'codesign.log');
+  // A stand-in for codesign: `--verify` succeeds, `-dvvv` still prints the Executable line a text search could be fooled
+  // by, and the requirement form succeeds only when the team it names is the one in the fake signature (FAKE_TEAM).
+  // CODESIGN_LOG records every call, so a test can show codesign was never asked anything.
   writeFileSync(join(bin, 'codesign'), `#!/bin/sh
+[ -n "$CODESIGN_LOG" ] && echo "$*" >> "$CODESIGN_LOG"
+req=""
+for a in "$@"; do case "$a" in -R=*) req="\${a#-R=}" ;; esac; done
+team="\${FAKE_TEAM:-2FNC3A47ZF}"
 case "$1" in
-  --verify) [ "$FAKE_CODESIGN_BAD" = 1 ] && exit 1; exit 0 ;;
   -dvvv) {
     echo "Executable=$2/Contents/MacOS/Spotify" >&2
     echo "Identifier=com.spotify.client" >&2
-    echo "Authority=Developer ID Application: ${'$'}{FAKE_AUTHORITY:-Spotify (2FNC3A47ZF)}" >&2
+    echo "Authority=Developer ID Application: \${FAKE_AUTHORITY:-Spotify (2FNC3A47ZF)}" >&2
     echo "Authority=Developer ID Certification Authority" >&2
     echo "Authority=Apple Root CA" >&2
-    echo "TeamIdentifier=${'$'}{FAKE_TEAM:-2FNC3A47ZF}" >&2
+    echo "TeamIdentifier=\${team}" >&2
     exit 0; } ;;
+esac
+[ "$FAKE_CODESIGN_BAD" = 1 ] && exit 1
+case "$req" in
+  *'certificate leaf[subject.OU] = "'"$team"'"'*) exit 0 ;;
+  *'certificate leaf[subject.OU]'*) echo "test-requirement: code failed to satisfy specified code requirement(s)" >&2; exit 3 ;;
 esac
 exit 0
 `);
@@ -229,6 +239,54 @@ exit 0
   assert.equal(statSync(join(impostor, 'Contents/Resources')).mode & 0o777, 0o555, 'ownership was not changed');
   assert.equal(installedAt(impostor), false, 'Spotify was not touched');
 
+  // 4c. the name Tess is given can be clean while the folder it resolves to is not. `pwd -P` follows a link, so the
+  // canonical path can hold a newline; codesign prints `Executable=<path>`, which would make that newline forge a
+  // TeamIdentifier line. The canonical path is refused for its control characters before codesign is asked anything.
+  const forgedDir = join(box, 'Evil\nTeamIdentifier=2FNC3A47ZF\nBundle.app');
+  makeSpotify(forgedDir);
+  chmodSync(join(forgedDir, 'Contents/Resources'), 0o555);
+  const cleanLink = join(box, 'clean-link.app');
+  symlinkSync(forgedDir, cleanLink);
+  const forged = await install({ TESS_SPOTIFY: cleanLink, TESS_HOME: join(box, 'tess-forged'), PATH: `${bin}:${process.env.PATH}`, FAKE_TEAM: '5N7G3VZ6Q4', CODESIGN_LOG: codesignLog });
+  assert.notEqual(forged.status, 0, 'a canonical path with a line break is refused');
+  assert.match(forged.stdout, /line break or another control character/, 'the refusal says what is wrong');
+  assert.equal(existsSync(codesignLog), false, 'codesign was never asked to judge that bundle');
+  assert.equal(existsSync(chownLog), false, 'no password was asked for');
+  assert.equal(installedAt(forgedDir), false, 'Spotify was not touched');
+
+  // 4d. the same check with the real codesign, on this Mac only: a bundle signed by someone else (ad-hoc) passes
+  // `--verify` but fails the team requirement, and the real Spotify's signature passes it, read-only.
+  const realCodesign = existsSync('/usr/bin/codesign');
+  const requirement = 'anchor apple generic and certificate leaf[subject.OU] = "2FNC3A47ZF"';
+  const codesignAccepts = (args) => {
+    try { execFileSync('/usr/bin/codesign', args, { stdio: 'pipe' }); return true; } catch { return false; }
+  };
+  if (process.platform === 'darwin' && realCodesign) {
+    const adhoc = join(box, 'Ad Hoc.app');
+    makeSpotify(adhoc);
+    writeFileSync(join(adhoc, 'Contents/Info.plist'), infoPlist.replace('</dict>', '<key>CFBundleExecutable</key><string>Spotify</string></dict>'));
+    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', adhoc], { stdio: 'pipe' });
+    assert.equal(codesignAccepts(['--verify', '--strict', adhoc]), true, 'the ad-hoc bundle is validly signed');
+    assert.equal(codesignAccepts(['--verify', '--strict', '--ignore-resources', `-R=${requirement}`, adhoc]), false,
+      'an ad-hoc signature does not satisfy the team requirement');
+    // and through the installer, with the real codesign and spctl and only sudo stubbed out
+    const sudoOnly = join(box, 'bin-sudo');
+    mkdirSync(sudoOnly, { recursive: true });
+    copyFileSync(join(bin, 'sudo'), join(sudoOnly, 'sudo'));
+    chmodSync(join(sudoOnly, 'sudo'), 0o755);
+    chmodSync(join(adhoc, 'Contents/Resources'), 0o555);
+    const otherTeam = await install({ TESS_SPOTIFY: adhoc, TESS_HOME: join(box, 'tess-adhoc'), PATH: `${sudoOnly}:${process.env.PATH}`, CODESIGN_LOG: join(box, 'codesign-real.log') });
+    assert.notEqual(otherTeam.status, 0, 'a bundle signed by another team is refused by the installer');
+    assert.match(otherTeam.stdout, /isn't Spotify's own signed app/, 'the refusal says what is wrong');
+    assert.equal(existsSync(chownLog), false, 'no password was asked for');
+    assert.equal(statSync(join(adhoc, 'Contents/Resources')).mode & 0o777, 0o555, 'ownership was not changed');
+    // the real Spotify, read only: the exact requirement Tess uses accepts Spotify's own signature
+    if (existsSync('/Applications/Spotify.app')) {
+      assert.equal(codesignAccepts(['--verify', '--strict', '--ignore-resources', `-R=${requirement}`, '/Applications/Spotify.app']), true,
+        "the real Spotify satisfies the team requirement");
+    }
+  }
+
   const okOwn = await install({ TESS_SPOTIFY: locked, TESS_HOME: join(box, 'tess-locked'), PATH: `${bin}:${process.env.PATH}` });
   assert.equal(okOwn.status, 0, okOwn.stdout + okOwn.stderr);
   // the path is canonicalised first, so a link or a ".." chain cannot point the chown somewhere else
@@ -255,7 +313,7 @@ exit 0
   assert.equal(await readBack2('SPOTIFY'), moved, 'the doctor stores a folder name with a quote and an & exactly');
   assert.equal(await readBack2('TESS_PARTS_CHANNEL'), 'beta', 'and does not disturb the rest of the file');
 
-  console.log('install tests passed (signed list first; lower and pre-rev refusal; fresh pre-rev; bad verifier stops before the patcher; quoted path; line break refused; verified ownership only, by team id and not by folder name; doctor adoption)');
+  console.log('install tests passed (signed list first; lower and pre-rev refusal; fresh pre-rev; bad verifier stops before the patcher; quoted path; line break refused; verified ownership only, by team requirement and not by text in a path; a control character in the canonical path refused before codesign; real codesign refuses another team and accepts the real Spotify; doctor adoption)');
 } finally {
   await new Promise((r) => server.close(r));
   // a refused bundle keeps the read-only settings it was given, and a sandbox that cannot be removed would hide the

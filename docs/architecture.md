@@ -85,7 +85,7 @@ Its files go back to stock (`Apps/xpui.spa`). The updater notices (LaunchAgent W
 | Rescue line | `installer/rescue.sh`, offline rescue key | updates stuck on a Mac |
 | Health reports | `doctor.sh` → inbox | problems nobody reports |
 | One privacy filter | `installer/redact.sh`, copied into the installer, doctor and rescue line, gated by `tools/check-safety.sh` | a report path leaking names, paths or emails because it was written separately |
-| Verified ownership | `codesign`/`spctl` before any `sudo chown`, and Spotify's team id `2FNC3A47ZF` read from the signature | a password prompt and a root `chown -R` on a folder that is not Spotify |
+| Verified ownership | `codesign`/`spctl` before any `sudo chown`: `codesign --verify --strict -R=…` tests Spotify's team id `2FNC3A47ZF` against the signature itself, and the canonical path is refused if it holds a control character | a password prompt and a root `chown -R` on a folder that is not Spotify |
 | Single-statement inbox limits | `inbox/worker.js` | two requests at once slipping past a capped counter |
 | Invisible characters dropped | `inbox/worker.js`, and again in `tools/reports.mjs` | a bidi override or zero-width character reordering a report line in a terminal |
 

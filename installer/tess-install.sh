@@ -178,15 +178,26 @@ fi
 spotify_is_spotifys_own() {
   [ "$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$1/Contents/Info.plist" 2>/dev/null)" = "com.spotify.client" ] || return 1
   codesign --verify --strict "$1" >/dev/null 2>&1 || return 1
-  # The team is read from the signature, as an exact line, not from any text a folder name could supply: codesign -dvvv
-  # also prints `Executable=<path>`, so a bundle in a folder called "...Authority=Spotify" used to satisfy a loose grep.
-  # 2FNC3A47ZF is Spotify AB's team; spctl accepts any notarized app, so this is the check that names Spotify.
-  codesign -dvvv "$1" 2>&1 | grep -qx 'TeamIdentifier=2FNC3A47ZF' || return 1
+  # The team is tested against the signature itself, by asking codesign to check a requirement, never by searching text
+  # it prints: `codesign -dvvv` echoes `Executable=<path>`, so a folder name with a newline in it could add a line of its
+  # own that reads `TeamIdentifier=...`. Resources are skipped here because the seal was checked on the line above and
+  # Tess itself rewrites Spotify's interface files. 2FNC3A47ZF is Spotify AB's team; spctl accepts any notarized app, so
+  # this requirement is the check that names Spotify.
+  codesign --verify --strict --ignore-resources -R='anchor apple generic and certificate leaf[subject.OU] = "2FNC3A47ZF"' "$1" >/dev/null 2>&1 || return 1
   spctl --assess --type execute "$1" >/dev/null 2>&1
+}
+# A path is saved one value per line and printed in errors, so a control character in it (a line break, a CR, a tab) is
+# refused before anything reads it. LC_ALL=C so a byte class, not a locale's idea of printing.
+has_control_chars() {
+  ( LC_ALL=C; case "$1" in *[[:cntrl:]]*) exit 0 ;; esac; exit 1 )
 }
 if [ ! -w "$SPOTIFY/Contents/Resources" ]; then
   # canonicalise first, so a link or a ".." chain cannot point the chown somewhere else
   SPOTIFY=$(cd "$SPOTIFY" && pwd -P) || fail "Spotify's folder can't be read, so nothing was changed."
+  # The name Tess was given can be clean while the one it resolves to is not: `pwd -P` follows a link whose target's
+  # name carries the line break. Refused here, before the bundle id, the signature or spctl is read.
+  has_control_chars "$SPOTIFY" \
+    && fail "Spotify's folder has a line break or another control character in its path, which Tess can't save. Move Spotify somewhere else and run this again."
   spotify_is_spotifys_own "$SPOTIFY" \
     || fail "The Spotify at $SPOTIFY isn't Spotify's own signed app, so Tess left it alone. Install Spotify from https://www.spotify.com/download/mac/ and run this again."
   step "Spotify belongs to another user; asking for your password to let Tess update it"
