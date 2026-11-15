@@ -4,7 +4,7 @@
 // expired orders, replays and orders for other Macs do nothing.
 import { execFileSync } from 'node:child_process';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -84,6 +84,48 @@ try {
   assert.ok(!log().slice(beforeMissing).includes('would run'), 'repair did not run without a verifier');
   writeFileSync(join(T, 'bin/patcher/tess-verify'), '#!/bin/sh\nexit 0\n');
   chmodSync(join(T, 'bin/patcher/tess-verify'), 0o755);
+  // 11. an order says how long its action may run: read, defaulted and clamped, never unbounded
+  const limit = () => (log().match(/up to (\d+)s/g) || []).pop();
+  publish(order(++s, 'check', ['timeout 900'])); run();
+  assert.equal(limit(), 'up to 900s', 'the order sets its own limit');
+  publish(order(++s, 'check', ['timeout abc'])); run();
+  assert.equal(limit(), 'up to 1800s', 'a value that is not a number falls back to half an hour');
+  publish(order(++s, 'check', ['timeout 10'])); run();
+  assert.equal(limit(), 'up to 60s', 'a too-short limit is raised to a minute');
+  publish(order(++s, 'check', ['timeout 99999'])); run();
+  assert.equal(limit(), 'up to 3600s', 'a too-long limit is lowered to an hour');
+  // 12. a real run reports only this order's lines, through the shared privacy filter
+  const me = execFileSync('id', ['-un'], { encoding: 'utf8' }).trim();
+  writeFileSync(join(T, 'doctor.sh'), `#!/bin/zsh
+echo "doctor report: Tess is fine"
+echo "home $HOME account ${me} mac $(scutil --get ComputerName) mail ${me}@example.com"
+exit 0
+`);
+  chmodSync(join(T, 'doctor.sh'), 0o755);
+  appendFileSync(join(R, 'rescue.log'), '2026-01-01 00:00:00 an earlier order said: /Users/someone.else/private\n');
+  publish(order(++s, 'check'));
+  execFileSync('/bin/zsh', [join(R, 'rescue.sh')], { env: { ...env, TESS_TEST_RUN: '1' }, encoding: 'utf8' });
+  const sent = JSON.parse(readFileSync(join(R, 'order-report.json'), 'utf8'));
+  assert.equal(sent.kind, 'rescue', 'the report is a rescue report');
+  assert.equal(sent.status, `order ${s} check exit 0`, 'the status names this order and its exit');
+  assert.match(sent.body, /doctor report: Tess is fine/, 'the action output is included');
+  assert.match(sent.body, /~/, 'a home folder is folded');
+  assert.match(sent.body, /\(email\)/, 'an email address is removed');
+  assert.ok(!sent.body.includes(me), 'the account name is removed');
+  assert.ok(!sent.body.includes('someone.else'), 'an earlier order is not uploaded again');
+  assert.ok(!sent.body.includes('an earlier order said'), 'the report starts where this order started');
+  if (process.argv.includes('--slow')) {
+    // 13. an action that outlives its limit is stopped, and the log says which limit it passed (60 s of real waiting)
+    writeFileSync(join(T, 'doctor.sh'), '#!/bin/zsh\nsleep 600\n');
+    chmodSync(join(T, 'doctor.sh'), 0o755);
+    const started = Date.now();
+    publish(order(++s, 'check', ['timeout 60']));
+    execFileSync('/bin/zsh', [join(R, 'rescue.sh')], { env: { ...env, TESS_TEST_RUN: '1' }, encoding: 'utf8' });
+    const took = (Date.now() - started) / 1000;
+    assert.ok(took >= 60 && took < 120, `the action was stopped at the limit (took ${Math.round(took)}s)`);
+    assert.match(log(), new RegExp(`order ${s} ran past 60s; stopped it`), 'the stop names the limit');
+    assert.equal(serial(), s, 'a stopped order is still marked done');
+  }
   writeFileSync(join(T, 'rescue-off'), '');
   publish(order(++s, 'uninstall'));
   const beforeAdopt = log();
