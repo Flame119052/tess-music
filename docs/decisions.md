@@ -194,7 +194,48 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   is only possible if `pick` lives in an earlier job (which would either give `gate` write permissions or spin up a
   third VM and still leave the workflow run green when no review occurred). Staying failed inside `review` after posting
   the PR comment leaves PR CI (`check.yml`) unaffected, keeps `gate` read-only, and honestly shows in Actions that the
-  review did not complete.
+  review did not complete. *Narrowed by D-72: the job no longer looks for a reviewer with room, so this comment is what
+  a tag gets when the model it named has no room.*
+- **D-71 · 15 Nov 2026 · Owner** — Every reviewer runs on one of Krish's subscription plans and never on a pay-per-use API
+  key. The allowed list is Claude's plan, the ChatGPT plan (Codex), the OpenCode Go plan and the Z.ai coding plan; a model
+  reached only by an API key is not on it, a tag naming one is refused, and `CODEX_API_KEY`/`CURSOR_API_KEY` are gone.
+  *Why:* a review should spend quota Krish has already paid for, not bill per token, and a key is a worse thing to keep
+  on a runner than a plan login. Trade-off: the plans are finite, so usage decides when a review can happen.
+- **D-72 · 15 Nov 2026 · Owner** — The agent that tags the review chooses the reviewer, and the job only checks and runs
+  that choice. It weighs usage left in the 5-hour and weekly windows, pace, time to reset, `caps.per_review_pct`, the
+  `reserve` block, the `strong` list for a sensitive tier, and a different provider from the PR's `Made by:` line, then
+  names the model in the tag with a line saying why. The job refuses a choice that breaks a hard rule — not on the
+  plans-only list, not `strong` for a sensitive tier, the author's own provider, a used-up window, a reserve, a missing
+  or expiring Codex login — with a marker comment naming the reason and, for usage, the reset time, and then stops.
+  **No silent fallback**, and a tag with no model is refused too.
+  *Why:* the agent knows what the change is worth and has the usage in front of it; a job that re-ranks models quietly
+  produced reviews nobody chose, and the earlier "try the next one" design hid a refused model inside a verdict.
+  Trade-off: a refusal costs a re-tag, which is cheaper than a review by the wrong model.
+- **D-73 · 15 Nov 2026 · Agent** — Codex reviews on the ChatGPT plan, not the OpenAI API: the CI login lives in
+  `CODEX_AUTH_JSON` (a dedicated `codex login` in its own `CODEX_HOME`, `tools/codex-ci-login.mjs`), and the proxy
+  forwards it to `POST https://chatgpt.com/backend-api/codex/responses`, adding `authorization` and `chatgpt-account-id`
+  with `originator: codex_cli_rs`. Verified by pointing a real `codex exec` at a local proxy that logged the request and
+  forwarded it: the plan backend answered it as a plan request, not a 401 or 404. The token never enters the sandbox, and
+  the proxy's config (holding it) is written to `RUNNER_TEMP` at 0600. Because a refresh rotates the refresh token and a
+  disposable runner cannot persist the rotated file (the vendor's own guidance is to persist it between runs), a review
+  refuses to start inside the last 12 hours of the token and the secret is renewed by hand. *Why:* the plan is the only
+  Codex access that is not billed per token, and the vendor's "do not use this on public repositories" caution is about a
+  login reaching fork-authored code, which this gate already refuses. Trade-off: an honest recurring human step, about
+  every nine days, instead of a key that never expires.
+- **D-74 · 15 Nov 2026 · Agent** — Antigravity (`agy`, 1.5.3) is not a reviewer. It runs on Krish's Mac and lists its
+  models, but it keeps its account token in the OS keyring (`keyringAuth`, "secret not found in keyring") and has no login
+  subcommand or headless credential file for that account, so a GitHub Linux VM cannot sign in on the plan. *Why:* a
+  reviewer that cannot authenticate on the runner is worse than one that is honestly absent, and storing a keyring dump
+  as a secret would be a worse credential than the plan login it replaces. Revisit if it grows a credential-file login.
+- **D-75 · 15 Nov 2026 · Agent** — Authorship is attested by the tag, not read from the pull request. The tag carries
+  `author=<provider>` (`claude`, `codex`, `opencode`, `antigravity`, or `none` for a person), written by the one allowlisted
+  account allowed to tag; a review is refused when that field is missing, unknown, the reviewer's own provider, or
+  contradicted by the PR's `Made by` line. The parser reads both shapes the repo really writes — `Made by: …` on one line
+  and the template's `## Made by` heading — and prose can only ever add a refusal. *Why:* the earlier rule read the
+  `Made by` line out of the PR body, which its own author can edit, delete, or point at a different provider; it also
+  missed this repository's own `## Made by` format, so an OpenCode review of a DeepSeek change was allowed. *Trade-off:*
+  a tag now carries one more field, and the tagging agent has to state something the job cannot verify by itself.
+  *Guard, not permission:* no wording anywhere can make a review run that a rule would refuse.
 
 ## Releases and process
 

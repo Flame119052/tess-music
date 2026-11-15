@@ -1,8 +1,9 @@
 // Run a read-only issue approach or pull-request review and post the verdict.
 // Usage: node tools/agent-review.mjs <approach|pr> <number>
-// The tag may name the reviewer: `@tess-review pr provider=codex model=gpt-6.1-sol effort=high`. Only models listed in
-// .github/agents.json `allowed` are accepted; sensitive work must use a `strong` model. Anything else falls back to
-// the role's defaults, and the comment says why.
+// The tag names the reviewer and attests the author:
+// `@tess-review pr provider=codex model=gpt-6.1-sol effort=high author=opencode`. Only models listed in
+// .github/agents.json `allowed` are accepted, sensitive work must use a `strong` model, and a tag that breaks a rule is
+// refused with a comment instead of falling back to some other model.
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { appendFileSync, closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -25,24 +26,71 @@ const providerDetails = {
   opencode: { command: 'opencode', cache: 'opencode.json', home: ['.config/opencode', '.local/share/opencode/auth.json'] },
 };
 
-// The keys each provider signs in with, as GitHub Actions secrets on a hosted job. A review gets only its own
-// provider's keys and nothing else. OpenCode has two signed-in connectors on the owner's account (OpenCode Go and the
-// Z.ai coding plan), and models.dev gives them separate variables, so both belong to the OpenCode reviewer.
+// The plan logins each provider signs in with, as GitHub Actions secrets on a hosted job. A review gets only its own
+// provider's login and nothing else. Every one of them is a subscription: Claude's plan (`claude setup-token`), the
+// ChatGPT plan (`CODEX_AUTH_JSON`, a `codex login` on a throwaway CODEX_HOME), OpenCode Go and the Z.ai coding plan. No
+// per-token API key is on this list, because a review must never bill Krish per use.
 export const providerKeys = {
   claude: ['CLAUDE_CODE_OAUTH_TOKEN'],
-  codex: ['CODEX_API_KEY'],
-  cursor: ['CURSOR_API_KEY'],
+  codex: ['CODEX_AUTH_JSON'],
   opencode: ['OPENCODE_API_KEY', 'ZHIPU_API_KEY'],
 };
+
+// The secrets that were a pay-per-use API key in an earlier design. They are named only so a test can assert that
+// neither the workflow nor this file still uses them.
+export const retiredKeyNames = ['CODEX_API_KEY', 'OPENAI_API_KEY', 'CURSOR_API_KEY'];
+
+// A ChatGPT-plan login is an `auth.json`, not a key: the access token it holds is what the CLI would send, and the
+// account id rides beside it. The token is good for about 10 days, and a refresh rotates the refresh token, so the
+// rotated copy would die with the disposable runner. A review therefore never starts on a login that is at or near its
+// expiry: it refuses with a named reason and the tagging agent re-tags after `node tools/codex-ci-login.mjs` renews the
+// secret. `codexAuthMinHours` keeps a margin for a review that queues behind other jobs.
+export const codexAuthMinHours = 12;
+
+export function codexAuth(raw, now = Date.now()) {
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return { problem: 'no Codex plan login is stored (CODEX_AUTH_JSON is empty)' };
+  }
+  let data;
+  try { data = JSON.parse(raw); } catch {
+    return { problem: 'the stored Codex login is not readable JSON' };
+  }
+  const tokens = data?.tokens || {};
+  const accessToken = typeof tokens.access_token === 'string' ? tokens.access_token : '';
+  const accountId = typeof tokens.account_id === 'string' ? tokens.account_id : '';
+  if (!accessToken) return { problem: 'the stored Codex login holds no access token' };
+  const payload = accessToken.split('.')[1];
+  let expiresAt = null;
+  try {
+    const claims = JSON.parse(Buffer.from(String(payload), 'base64url').toString('utf8'));
+    if (typeof claims.exp === 'number' && Number.isFinite(claims.exp)) expiresAt = claims.exp * 1000;
+  } catch {
+    expiresAt = null;
+  }
+  // A token whose expiry cannot be read is not trusted to last a review: an opaque token would fail mid-run instead.
+  if (expiresAt === null) return { problem: 'the stored Codex login has no readable expiry' };
+  if (expiresAt <= now) {
+    return { problem: `the stored Codex login expired at ${new Date(expiresAt).toISOString()}; run node tools/codex-ci-login.mjs` };
+  }
+  if (expiresAt - now < codexAuthMinHours * 60 * 60 * 1000) {
+    const hours = Math.max(1, Math.round((expiresAt - now) / (60 * 60 * 1000)));
+    return {
+      problem: `the stored Codex login expires in about ${hours}h; run node tools/codex-ci-login.mjs before tagging Codex`,
+    };
+  }
+  if (!accountId) return { problem: 'the stored Codex login holds no account id' };
+  return { accessToken, accountId, expiresAt };
+}
 
 // The providers whose CLI the review workflow installs. Cursor is optional (#71) and is not installed there, so the
 // pick step never sends a review to it; a tag that names it falls back to the role's defaults and says so.
 export const installedProviders = ['claude', 'codex', 'opencode'];
 
-// The providers whose key never enters the sandbox, because their CLI takes a gateway endpoint: the review process holds
-// a per-review token, a proxy in this process holds the key, and the proxy adds it to the request it forwards. A
-// provider absent here keeps its own key in the sandbox, which is safe only while its tool list cannot read an
-// environment (`claudeTools`, and `tools/opencode-reviewer.md` denies every read outside the copy).
+// The providers whose login never enters the sandbox, because their CLI takes a gateway endpoint: the review process
+// holds a per-review token, a proxy in this process holds the real credential, and the proxy adds it to the request it
+// forwards. Claude's plan token and Codex's ChatGPT-plan access token both work this way. A provider absent here keeps
+// its own key in the sandbox, which is safe only while its tool list cannot read an environment (`claudeTools`, and
+// `tools/opencode-reviewer.md` denies every read outside the copy).
 export const proxiedProviders = ['claude', 'codex'];
 
 // The OpenCode agent file decides what the OpenCode reviewer may read, so loosening it is a security change even though
@@ -291,6 +339,97 @@ function combineUsage(local, snap) {
   return { windows: ranked.map((entry) => entry.window) };
 }
 
+// One place decides which reviewers can run, and why the rest cannot. The reasons travel with the models, so a
+// requested provider that was filtered out is still named in the posted comment instead of vanishing.
+export function reviewerCandidates(models, context = {}) {
+  const {
+    usageByProvider = {},
+    usageByModel = {},
+    commandAvailable = () => true,
+    sandboxProblem = () => null,
+    reserve = {},
+    caps = defaultCaps,
+    now = Date.now(),
+  } = context;
+  const candidates = [];
+  const skipped = [];
+  for (const model of models) {
+    const details = providerDetails[model.provider];
+    const usage = combineUsage(usageByProvider[model.provider], usageByModel[modelKey(model)]);
+    const reason = !details ? 'unknown provider'
+      : !commandAvailable(details.command) ? 'no local CLI'
+        : reserveProblem(usage, reserve[model.provider], now)
+        || usageProblem(usage, now, reviewCost(model, caps))
+        || sandboxProblem(model.provider);
+    if (reason) skipped.push({ ...model, reason });
+    else candidates.push(model);
+  }
+  return { candidates, skipped };
+}
+
+export function eligibleModels(models, usageByProvider, commandAvailable = () => true) {
+  return reviewerCandidates(models, { usageByProvider, commandAvailable }).candidates;
+}
+
+export function parseRequest(body) {
+  const line = String(body || '').split('\n').find((l) => /^@tess-review (approach|pr)(\s|$)/.test(l));
+  if (!line) return {};
+  const out = {};
+  for (const [, k, v] of line.matchAll(/\b(provider|model|effort|author)=([A-Za-z0-9._\/-]{1,80})/g)) out[k] = v;
+  return out;
+}
+
+// Which provider wrote the change. It decides only one rule (a reviewer from the same provider shares the author's blind
+// spots), and it comes from two places on purpose: the tag's `author=`, written by the one account allowed to tag, is the
+// attestation the job acts on, and the pull request's own authorship line is read only to catch a contradiction. Prose in
+// a pull request is written by the same agent whose work is under review, so it can never allow anything; the rules below
+// read it in one direction only, where it can add a refusal and nothing else.
+export const authorProviders = [
+  [/claude|opus|sonnet|haiku|fable/i, 'claude'],
+  [/codex|gpt|chatgpt/i, 'codex'],
+  [/deepseek|glm|kimi|opencode|z\.ai|zai/i, 'opencode'],
+  [/gemini|antigravity|\bagy\b/i, 'antigravity'],
+];
+
+// The values `author=` may take: the provider that wrote the change, or `none` when a person wrote it. Anything else is
+// refused, because a typo (`author=claud`) would otherwise quietly allow the provider it was meant to exclude.
+export const authorChoices = ['claude', 'codex', 'opencode', 'antigravity', 'none'];
+
+// The templates and agents here write the author two ways: `Made by: DeepSeek V4.1 Flash in OpenCode` on one line, and a
+// `## Made by` heading with the sentence under it (which is what this repository's own PRs use). Both are read, in any
+// heading level and with any bold or bullet decoration, and a heading's section stops at the next heading so a later
+// mention of another agent is not mistaken for the author.
+const authorLine = /^[ \t]*(?:[-*+][ \t]+)?[*_]{0,2}[ \t]*made by[ \t]*[*_]{0,2}[ \t]*:[ \t]*[*_]{0,2}(.*)$/im;
+const authorHeading = /^[ \t]*#{1,6}[ \t]*[*_]{0,2}[ \t]*made by[ \t]*[*_]{0,2}[ \t]*:?[ \t]*$/im;
+
+export function authorText(body) {
+  // HTML comments are instructions to the person filling the template, not content: the template's own `## Made by`
+  // section carries an example in one, and reading it would name an author nobody wrote.
+  const text = String(body || '').replace(/<!--[\s\S]*?-->/g, '');
+  const line = text.match(authorLine);
+  if (line) {
+    const value = line[1].replace(/^[*_\s]+|[*_\s]+$/g, '');
+    if (value) return value;
+  }
+  const heading = authorHeading.exec(text);
+  if (!heading) return '';
+  const section = text.slice(heading.index + heading[0].length).split(/^[ \t]*#{1,6}[ \t]/m)[0];
+  const first = section.split('\n').map((entry) => entry.trim()).find(Boolean) || '';
+  return first.replace(/^[*_\s]+|[*_\s]+$/g, '');
+}
+
+// The providers a sentence names. Two of them ("Claude Opus in OpenCode") is not an answer, so it reads as none: the tag
+// still decides the rule, and this only ever adds a refusal.
+export function providersInText(text) {
+  const found = new Set();
+  for (const [pattern, provider] of authorProviders) if (pattern.test(String(text || ''))) found.add(provider);
+  return found.size === 1 ? [...found][0] : '';
+}
+
+export function authorProvider(body) {
+  return providersInText(authorText(body));
+}
+
 // When a candidate is blocked by usage or a reservation, its own blocking windows decide when it next has room
 // (the latest reset among its blocking windows; healthy windows are ignored).
 function modelResetAt(usage, reserve, now, cost) {
@@ -360,70 +499,104 @@ export function noRoomComment({ reasons = [], earliestResetMs = null, note = '',
   return lines.join('\n');
 }
 
-// One place decides which reviewers can run, and why the rest cannot. The reasons travel with the models, so a
-// requested provider that was filtered out is still named in the posted comment instead of vanishing.
-export function reviewerCandidates(models, context = {}) {
-  const {
-    usageByProvider = {},
-    usageByModel = {},
-    commandAvailable = () => true,
-    sandboxProblem = () => null,
-    reserve = {},
-    caps = defaultCaps,
-    now = Date.now(),
-  } = context;
-  const candidates = [];
-  const skipped = [];
-  for (const model of models) {
-    const details = providerDetails[model.provider];
-    const usage = combineUsage(usageByProvider[model.provider], usageByModel[modelKey(model)]);
-    const cost = reviewCost(model, caps);
-    const reserveReason = details && commandAvailable(details.command)
-      ? reserveProblem(usage, reserve[model.provider], now)
-      : null;
-    const usageReason = details && commandAvailable(details.command) && !reserveReason
-      ? usageProblem(usage, now, cost)
-      : null;
-    const reason = !details ? 'unknown provider'
-      : !commandAvailable(details.command) ? 'no local CLI'
-        : reserveReason || usageReason || sandboxProblem(model.provider);
-    if (reason) {
-      const resetsAt = (reserveReason || usageReason)
-        ? modelResetAt(usage, reserve[model.provider], now, cost)
-        : null;
-      skipped.push({ ...model, reason, ...(resetsAt ? { resetsAt } : {}) });
-    } else candidates.push(model);
+// The comment a refused tag gets when the reason is a rule rather than a window: it names the choice that was refused,
+// why, and that nothing will be substituted. A usage refusal uses `noRoomComment` above instead, which adds the reset.
+export function refusalComment({ reason, provider = '', model = '', resetsAt = null, now = Date.now() }) {
+  const lines = [
+    marker,
+    '',
+    provider && model ? `Review not run: ${provider} / ${model} was refused.` : 'Review not run.',
+    '',
+    `Why: ${reason}.`,
+  ];
+  if (resetsAt !== null && Number.isFinite(resetsAt)) {
+    lines.push('', `That window resets at ${formatUtcTime(resetsAt)} (${formatRelativeTime(resetsAt, now)}).`);
   }
-  return { candidates, skipped };
+  lines.push('', 'The job does not substitute another model. Tag again with a reviewer it may use — see docs/workflow.md → Choosing a reviewer.');
+  return lines.join('\n');
 }
 
-export function eligibleModels(models, usageByProvider, commandAvailable = () => true) {
-  return reviewerCandidates(models, { usageByProvider, commandAvailable }).candidates;
+// The comment a run that stopped short owes the pull request. It names what failed in one redacted line and never guesses
+// at a reviewer or a verdict: an unexpected failure says nothing about the change under review.
+export function failureComment({ reason }) {
+  return [
+    marker,
+    '',
+    'The review stopped before it posted a verdict.',
+    '',
+    `Why: ${reason}.`,
+    '',
+    'Nothing was substituted and no verdict was posted. Tag again once the cause is fixed — see docs/workflow.md → Choosing a reviewer.',
+  ].join('\n');
 }
 
-export function parseRequest(body) {
-  const line = String(body || '').split('\n').find((l) => /^@tess-review (approach|pr)(\s|$)/.test(l));
-  if (!line) return {};
-  const out = {};
-  for (const [, k, v] of line.matchAll(/\b(provider|model|effort)=([A-Za-z0-9._\/-]{1,80})/g)) out[k] = v;
-  return out;
-}
-
-// Returns { models, note }: the requested reviewer first (if it passes the rules), then the role's defaults.
-export function resolveReviewers(config, defaults, request, tier) {
+// A tag names the reviewer. This decides only whether that choice may run; it never picks one. Every rule here is a
+// hard one, because the alternative is a review by a model nobody chose: a model outside the plans-only list, a model
+// too weak for a sensitive change, the author's own provider, or one whose usage is out.
+//
+// `author` is the tag's attestation and `authorBody` the pull request's own authorship line, which anyone who can edit
+// the PR can change. They are read in one direction only: a missing or garbled attestation refuses, a body that
+// contradicts it refuses, and no wording anywhere can allow a review the rules would otherwise refuse.
+export function requestProblem(config, request, context = {}) {
+  const {
+    tier = 'normal', author = '', authorBody = '', usage, now = Date.now(), installed = installedProviders,
+    caps = defaultCaps, credential = null, reserve = (config.reserve || {})[request?.provider],
+  } = context;
   const { provider, model, effort } = request || {};
-  if (!provider && !model) return { models: defaults, note: '' };
-  const why = (reason) => ({ models: defaults, note: `Requested reviewer not used: ${reason}. Used the defaults.` });
-  if (!provider || !model) return why('give both provider= and model=');
-  if (!(config.allowed?.[provider] || []).includes(model)) return why(`${provider}/${model} is not in .github/agents.json allowed`);
-  if (tier === 'sensitive' && !(config.strong || []).includes(model)) return why(`sensitive work needs one of ${config.strong.join(', ')}`);
-  if (effort && !(config.efforts || []).includes(effort)) return why(`effort must be one of ${config.efforts.join(', ')}`);
-  const chosen = { provider, model, ...(effort ? { effort } : {}) };
-  return { models: [chosen, ...defaults.filter((d) => d.provider !== provider || d.model !== model)], note: '' };
+  if (!provider || !model) {
+    return { reason: 'the tag names no reviewer. Write `@tess-review pr provider=<provider> model=<model> effort=<effort> author=<the author\'s provider>` and a line saying why' };
+  }
+  if (!(config.allowed?.[provider] || []).includes(model)) {
+    return { reason: `${provider}/${model} is not on the plans-only list in .github/agents.json` };
+  }
+  if (!installed.includes(provider)) return { reason: `the review job does not install the ${provider} CLI` };
+  if (credential) return { reason: credential };
+  if (tier === 'sensitive' && !(config.strong || []).includes(model)) {
+    return { reason: `sensitive work needs a strong model (${(config.strong || []).join(', ')})` };
+  }
+  if (effort && !(config.efforts || []).includes(effort)) {
+    return { reason: `effort must be one of ${(config.efforts || []).join(', ')}` };
+  }
+  if (!author) {
+    return {
+      reason: 'the tag does not name the author\'s provider. Add `author=<provider>` (`none` when a person wrote it); the'
+        + ' job reads authorship from the tag, because the pull request text is written by the author it would be checking',
+    };
+  }
+  if (!authorChoices.includes(author)) {
+    return { reason: `author=${author} is not one of ${authorChoices.join(', ')}` };
+  }
+  // A disagreement is not resolved in anyone's favour: one of the two statements is wrong, so the review does not run.
+  if (authorBody && authorBody !== author) {
+    return { reason: `the pull request's "Made by" line names ${authorBody}, but the tag attests ${author}; the two disagree, so the review does not run` };
+  }
+  if (author !== 'none' && author === provider) {
+    return { reason: `the change was written by ${author}, and a reviewer from the same provider shares its blind spots` };
+  }
+  // A usage or reserve refusal is the "no room" case, so its comment is the one #100 shipped: it lists the reason and
+  // the exact moment there is room again. The reset is a millisecond stamp here, which is what the comment formats.
+  const cost = reviewCost({ provider, model }, caps);
+  const resetsAt = () => {
+    const iso = modelResetAt(usage, reserve, now, cost);
+    return iso === null ? null : Date.parse(iso);
+  };
+  const reserveReason = reserveProblem(usage, reserve, now);
+  if (reserveReason) return { reason: `${provider} is ${reserveReason}`, resetsAt: resetsAt(), noRoom: true };
+  const usageReason = usageProblem(usage, now, cost);
+  if (usageReason) return { reason: `${provider}/${model} has ${usageReason}`, resetsAt: resetsAt(), noRoom: true };
+  return { model: { provider, model, ...(effort ? { effort } : {}) } };
 }
 
 function commandExists(command) {
   return spawnSync('which', [command], { stdio: 'ignore' }).status === 0;
+}
+
+// The login a provider needs, as a reason a review cannot run, or null. Only Codex keeps one that can expire quietly:
+// its ChatGPT-plan `auth.json` carries an access token good for about 10 days, and a refresh on a disposable runner
+// would rotate the token into a file that dies with the machine.
+export function credentialProblem(provider, env = process.env) {
+  if (provider !== 'codex') return null;
+  return codexAuth(env.CODEX_AUTH_JSON).problem || null;
 }
 
 function readUsage(provider) {
@@ -447,16 +620,6 @@ export function pinnedReviewer(config, env = process.env) {
     throw new Error(`REVIEW_PROVIDER=${provider} with model ${model || '(none)'} is not in .github/agents.json allowed`);
   }
   return { provider, model, ...(env.REVIEW_EFFORT ? { effort: env.REVIEW_EFFORT } : {}) };
-}
-
-// The reasons the pick step gave for the candidates it did not choose, carried into the comment.
-export function extraSkipped(env = process.env) {
-  try {
-    const list = JSON.parse(env.REVIEW_SKIPPED || '[]');
-    return Array.isArray(list) ? list.filter((entry) => typeof entry === 'string') : [];
-  } catch {
-    return [];
-  }
 }
 
 function gh(args, options = {}) {
@@ -794,13 +957,25 @@ export function startReviewProxy(provider, options = {}) {
   } = options;
   const keys = (providerKeys[provider] || []).map((name) => env[name]).filter(Boolean);
   if (!proxiedProviders.includes(provider) || !keys.length) return null;
+  // Codex's stored login is an `auth.json`, not a key: the proxy forwards its access token and account id, and the
+  // sandbox never sees either. A login that cannot last one review is refused before any of this starts.
+  let key = keys[0];
+  let accountId;
+  if (provider === 'codex') {
+    const auth = codexAuth(keys[0]);
+    if (auth.problem) throw new Error(auth.problem);
+    key = auth.accessToken;
+    accountId = auth.accountId;
+  }
   const token = randomBytes(32).toString('hex');
   const base = join(dir, `tess-review-proxy-${process.pid}-${now()}`);
   const configPath = `${base}.json`;
   const readyPath = `${base}.url`;
   const discard = () => { for (const path of [configPath, readyPath]) { try { unlinkSync(path); } catch { /* already gone */ } } };
   // 0600, and outside the sandbox: bubblewrap gives the reviewer an empty `/tmp` and binds nothing from RUNNER_TEMP.
-  writeFileSync(configPath, JSON.stringify({ provider, key: keys[0], token, upstream: proxyProviders[provider].upstream }), { mode: 0o600 });
+  writeFileSync(configPath, JSON.stringify({
+    provider, key, token, accountId, upstream: proxyProviders[provider].upstream,
+  }), { mode: 0o600 });
   const child = spawnChild(execPath, [scriptPath, '--config', configPath, '--ready', readyPath], { stdio: 'ignore' });
   const started = now();
   while (!existsSync(readyPath)) {
@@ -895,18 +1070,10 @@ export function skipReason(result) {
   return null;
 }
 
-// A skip is a config problem on the runner, not a fact about the change, so the posted comment has to say it happened.
-// Silence here would let a dropped flag move every sensitive review to the second model without anyone noticing. The list
-// covers both halves: a candidate removed before it was invoked (no CLI, no usage, reserved, no sandbox) and one that ran
-// and stopped, whether it refused or ran out of wall clock.
-export function skippedLine(result) {
-  return result.skipped?.length ? `\nSkipped: ${result.skipped.join(', ')}` : '';
-}
-
 const group = (value) => Number(value).toLocaleString('en-US');
 
 // What the review actually used, when its CLI reports it. Claude reports dollars, turns and tokens; Codex reports tokens;
-// Cursor and OpenCode report nothing. A missing number is left out rather than guessed.
+// OpenCode reports nothing. A missing number is left out rather than guessed.
 export function usedLine(result, caps = defaultCaps) {
   const usage = result?.usage;
   if (!usage) return '';
@@ -929,6 +1096,9 @@ export function usedLine(result, caps = defaultCaps) {
   return parts.length ? `\nUsed: ${parts.join(' · ')}` : '';
 }
 
+// A reviewer that could not run is a refusal, not a reason to try another model: the agent that tagged chose this one
+// after weighing usage, pace, cost, strength and authorship, and the job does not get to overrule it. `skipped` travels
+// inside the error so the caller can post the reason and any reset time on the pull request.
 export function runReviewer(models, prompt, work, deps = {}) {
   const {
     usageFor = readUsage,
@@ -939,7 +1109,6 @@ export function runReviewer(models, prompt, work, deps = {}) {
     snapshot = null,
     now = Date.now(),
     invoke = cliInvocation,
-    skipped: alreadySkipped = [],
     env = process.env,
   } = deps;
   const validProviders = snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)
@@ -960,31 +1129,47 @@ export function runReviewer(models, prompt, work, deps = {}) {
     usageByProvider, usageByModel, commandAvailable, sandboxProblem: sandbox, reserve, caps, now,
   });
 
-  const skipped = [...alreadySkipped, ...filtered.map(({ provider, model, reason }) => `${provider}/${model} (${reason})`)];
-  const noRoomError = (message) => Object.assign(new Error(message), {
-    noRoomDetails: { reasons: skipped, earliestResetMs: earliestReset(filtered, now), snapshot: activeSnapshot, now },
+  const skipped = filtered.map(({ provider, model, reason }) => `${provider}/${model} (${reason})`);
+  // The refusal a comment can carry: the model the tag named, the first reason it cannot run, and when its blocking
+  // window resets. It never becomes a second attempt with another model. `failure` marks a run that stopped for a reason
+  // that is not a rule, so the comment says what broke instead of pretending a rule refused it.
+  const refusal = (candidate, reason, extra = {}) => Object.assign(new Error(reason), {
+    refusal: {
+      reason,
+      provider: candidate?.provider || models[0]?.provider || '',
+      model: candidate?.model || models[0]?.model || '',
+      ...extra,
+    },
   });
-  if (!candidates.length) throw noRoomError(`no reviewer could run: ${skipped.join(', ')}`);
+  if (!candidates.length) throw refusal(null, `no ${models[0]?.provider || ''}/${models[0]?.model || ''} review could run: ${skipped.join(', ') || 'the reviewer is not usable here'}`);
 
   for (const candidate of candidates) {
-    const result = invoke(candidate.provider, candidate.model, prompt, candidate.effort, work, { caps });
+    // A CLI that throws, or a proxy that cannot start, leaves this function the same way a nonzero exit does: as a
+    // refusal. Anything else would stop the job without the comment the tagging agent is waiting for.
+    let result;
+    try {
+      result = invoke(candidate.provider, candidate.model, prompt, candidate.effort, work, { caps }) || {};
+    } catch (error) {
+      throw refusal(candidate, `${candidate.provider}/${candidate.model} could not start: ${failureSummary({ stderr: error?.message ?? error }, env)}`, { failure: true });
+    }
     if (result.timedOut) {
-      skipped.push(`${candidate.provider}/${candidate.model} (timed out after ${timeoutSeconds(candidate, caps)}s)`);
-      continue;
+      const reason = `${candidate.provider}/${candidate.model} timed out after ${timeoutSeconds(candidate, caps)}s`;
+      skipped.push(reason);
+      throw refusal(candidate, reason);
     }
     if (result.status === 0 && `${result.text ?? result.stdout ?? ''}`.trim()) {
-      return { ...candidate, text: `${result.text ?? result.stdout}`.trim(), usage: result.usage || null, skipped, snapshot: activeSnapshot };
+      return { ...candidate, text: `${result.text ?? result.stdout}`.trim(), usage: result.usage || null, snapshot: activeSnapshot };
     }
     const reason = skipReason(result);
     if (reason) {
       skipped.push(`${candidate.provider}/${candidate.model} (${reason})`);
-      continue;
+      throw refusal(candidate, `${candidate.provider}/${candidate.model} could not review: ${reason}`);
     }
     // Its own output is untrusted: the log gets one redacted line of stderr and never the stream it printed, in case a
     // diff talked it into quoting its key there.
-    throw new Error(`${candidate.provider} reviewer failed (exit ${result.status ?? 'no status'}): ${failureSummary(result, env)}`);
+    throw refusal(candidate, `${candidate.provider} reviewer failed (exit ${result.status ?? 'no status'}): ${failureSummary(result, env)}`, { failure: true });
   }
-  throw noRoomError(`every configured reviewer was skipped: ${skipped.join(', ')}`);
+  throw refusal(null, `the ${models[0]?.provider || ''}/${models[0]?.model || ''} review was skipped: ${skipped.join(', ')}`);
 }
 
 function verdictFor(text) {
@@ -1071,6 +1256,10 @@ export function failureSummary(result, env = process.env) {
   return line.length > 200 ? `${line.slice(0, 200)}…` : line;
 }
 
+// The workflow's last step and this script would otherwise both comment on the same failure. A successful post leaves
+// this file, in the job's own scratch space that is thrown away with the machine, so the second one stays quiet.
+const commentedPath = () => join(process.env.RUNNER_TEMP || tmpdir(), 'tess-review-commented');
+
 function postComment(repo, number, body) {
   if (looksSecret(body) || containsHeldSecret(body)) {
     body = `${marker}\n\nThe review was not posted: its text contained a key or token, so nothing from it is safe to show here. Krish, tag again once the diff no longer asks the reviewer to quote one.`;
@@ -1079,6 +1268,7 @@ function postComment(repo, number, body) {
     input: body,
     stdio: ['pipe', 'inherit', 'inherit'],
   });
+  try { writeFileSync(commentedPath(), '1'); } catch { /* the comment itself was posted */ }
 }
 
 // The gate checks CI against head_sha before waiting up to 2 minutes for Instabox (and potentially longer in queue).
@@ -1154,13 +1344,53 @@ export function postVerdict({ gated, repo, facts, post, body }) {
 
 // The review job cannot know which CLI to install until a reviewer has been chosen, and only that reviewer's key may
 // reach the job. So the workflow asks here first: `pick <approach|pr> <docs|normal|sensitive>`, with the tag text on
-// stdin, prints provider/model/effort, and installs just that CLI. The same rules as the review apply (the requested
-// reviewer, the role's order, usage, reserve), and only a provider the job installs is offered.
+// stdin. It prints the reviewer the tag named, and installs just that CLI. It never chooses: a tag that breaks a rule, or
+// names nothing, is refused with a comment on the pull request and the job stops, so the agent that tagged picks again.
 const pickOutput = (values) => {
   const text = Object.entries(values).map(([key, value]) => `${key}=${value ?? ''}`).join('\n');
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${text}\n`);
   else console.log(text);
 };
+
+// The pull request body carries the "Made by:" line, and a review needs it to refuse the author's own provider.
+function pullRequestAuthor(repo, number) {
+  try {
+    return authorProvider(apiJson(`repos/${repo}/pulls/${number}`)?.body || '');
+  } catch {
+    return '';
+  }
+}
+
+// Posting is best-effort here: a refusal that could not be posted is still printed, and still stops the job, because a
+// review with a reviewer nobody may use must never run.
+function postRefusal(repo, number, details) {
+  if (!Number.isInteger(number) || number < 1 || !process.env.GH_TOKEN) return false;
+  try {
+    postComment(repo, number, details.noRoom
+      ? noRoomComment({ reasons: [details.reason], earliestResetMs: details.resetsAt ?? null, now: details.now })
+      : details.failure ? failureComment(details) : refusalComment(details));
+    return true;
+  } catch (error) {
+    console.error(`could not post the comment: ${failureSummary({ stderr: error?.message || String(error) })}`);
+    return false;
+  }
+}
+
+// The pull request a stopped run belongs to: the number the review was asked for, or the one the gate found. Both are
+// read here rather than passed in, because this runs from the outermost guard, where nothing else is still in scope.
+function stopTarget(argv = process.argv.slice(2)) {
+  const [role, numberText] = argv;
+  const number = Number(role === 'pick' || role === 'stop' ? process.env.REVIEW_NUMBER : numberText);
+  return { repo: process.env.GITHUB_REPOSITORY || 'Flame119052/tess-music', number };
+}
+
+// Every failure after the gate posts a marker comment, because the agent that tagged is waiting for a review and a job
+// that stops without a word looks like the request was dropped. The reason is one redacted line: a CLI's stderr can hold
+// a key, and both the log and the pull request are public.
+function postStop(reason) {
+  const { repo, number } = stopTarget();
+  return postRefusal(repo, number, { reason: failureSummary({ stderr: reason }), failure: true, now: Date.now() });
+}
 
 async function main() {
   const [role, numberText] = process.argv.slice(2);
@@ -1185,15 +1415,22 @@ async function main() {
     process.stdout.write(headAnswer(facts));
     return;
   }
-  const postNoRoomSafely = (repo, number, details) => {
-    if (!Number.isInteger(number) || number < 1 || !process.env.GH_TOKEN) return;
-    const body = noRoomComment(details);
-    try {
-      postComment(repo, number, body);
-    } catch (error) {
-      console.error(`could not post no-room comment: ${failureSummary({ stderr: error?.message || String(error) })}`);
+  if (role === 'stop') {
+    // The workflow's last step, run only when the job has already failed: it covers what this script cannot see, such as
+    // installing the CLI. The reason is a step description the workflow writes, never a log line, and this step holds
+    // only the job's own token. It exits non-zero so the job's failure stays visible in Actions.
+    const why = process.argv[3] || 'the job failed';
+    // The step that failed may have posted its own comment before it stopped; one failure gets one comment.
+    if (existsSync(commentedPath())) {
+      console.error('a comment was already posted for this failure; nothing to add');
+      process.exitCode = 1;
+      return;
     }
-  };
+    const printed = postStop(why);
+    console.error(`review stopped: ${failureSummary({ stderr: why })}${printed ? '' : ' (the comment could not be posted)'}`);
+    process.exitCode = 1;
+    return;
+  }
   if (role === 'pick') {
     const [reviewRole, tierText] = process.argv.slice(3);
     if (!['approach', 'pr'].includes(reviewRole)) {
@@ -1207,40 +1444,43 @@ async function main() {
       return;
     }
     const config = JSON.parse(readFileSync(`${root}.github/agents.json`, 'utf8'));
-    const key = reviewRole === 'approach' ? 'approach' : tier === 'sensitive' ? 'pr_sensitive' : 'pr_normal';
-    const pick = resolveReviewers(config, config[key], parseRequest(readFileSync(0, 'utf8')), tier);
-    const offered = [];
-    const notInstalled = [];
-    for (const model of pick.models) {
-      if (installedProviders.includes(model.provider)) offered.push(model);
-      else notInstalled.push(`${model.provider}/${model.model} (its CLI is not installed in this job)`);
-    }
+    const request = parseRequest(readFileSync(0, 'utf8'));
+    const repo = process.env.GITHUB_REPOSITORY || 'Flame119052/tess-music';
+    const number = Number(process.env.REVIEW_NUMBER);
     const now = Date.now();
     const snapshot = freshestSnapshot(process.env, now);
-    const usageByProvider = Object.fromEntries([...new Set(offered.map((m) => m.provider))]
-      .map((provider) => [provider, readUsage(provider)]));
-    const usageByModel = Object.fromEntries(offered
-      .map((model) => [modelKey(model), snapshot ? snapshotUsage(snapshot, model) : undefined])
-      .filter(([, usage]) => usage));
-    const { candidates, skipped } = reviewerCandidates(offered, {
-      usageByProvider, usageByModel, reserve: config.reserve, caps: capsFor(config), commandAvailable: () => true, now,
+    const model = { provider: request.provider || '', model: request.model || '' };
+    // The same two readings the review uses: the hub on this machine, and the freshest quota-only snapshot from one of
+    // Krish's machines. Neither can loosen the other, so a stale or missing number never turns a refusal into a run.
+    const usage = request.provider
+      ? combineUsage(request.provider === 'opencode' ? undefined : readUsage(request.provider),
+        snapshot ? snapshotUsage(snapshot, model) : undefined)
+      : undefined;
+    const verdict = requestProblem(config, request, {
+      tier,
+      author: request.author,
+      // Read only to catch a contradiction: this text is written by the author of the change under review, so it can
+      // add a refusal and never grant a review.
+      authorBody: pullRequestAuthor(repo, number),
+      usage,
+      // The login itself is not visible here: a step that holds no secret cannot read CODEX_AUTH_JSON. It is checked in
+      // the review step, which does hold it, and a dead login is refused there with a comment (D-73).
+      caps: capsFor(config),
+      now,
     });
-    const reasons = [...notInstalled, ...skipped.map(({ provider, model, reason }) => `${provider}/${model} (${reason})`)];
-    const chosen = candidates[0];
-    if (!chosen) {
-      const repo = process.env.GITHUB_REPOSITORY || 'Flame119052/tess-music';
-      const number = Number(process.env.REVIEW_NUMBER);
-      postNoRoomSafely(repo, number, {
-        reasons,
-        earliestResetMs: earliestReset(skipped, now),
-        note: pick.note,
-        snapshot,
+    if (!verdict.model) {
+      const posted = postRefusal(repo, number, {
+        reason: verdict.reason,
+        provider: request.provider || '',
+        model: request.model || '',
+        resetsAt: verdict.resetsAt ?? null,
+        noRoom: Boolean(verdict.noRoom),
         now,
       });
-      console.error(`no reviewer could run: ${reasons.join(', ')}`);
+      console.error(`refused: ${verdict.reason}${posted ? '' : ' (the refusal comment could not be posted)'}`);
       process.exit(1);
     }
-    pickOutput({ provider: chosen.provider, model: chosen.model, effort: chosen.effort || '', skipped: JSON.stringify(reasons) });
+    pickOutput({ provider: model.provider, model: model.model, effort: request.effort || '', skipped: '[]' });
     return;
   }
   const number = Number(numberText);
@@ -1256,31 +1496,53 @@ async function main() {
   // Named `usageSnapshot` so it never hides the `snapshot(ref)` function that makes the review's copy of the code.
   const usageSnapshot = freshestSnapshot();
   const issue = apiJson(`repos/${repo}/issues/${number}`);
-  const pinned = pinnedReviewer(config);
-  const modelList = (pick) => (pinned ? [pinned] : pick.models);
-  const notes = (pick, result) => [pick.note, usageNote(result).trim()].filter(Boolean).map((line) => `\n${line}`).join('');
+  // The pin is the reviewer the tag named. It is checked against `allowed` again here: the environment is not a reason
+  // to skip a rule, and a pin that breaks one is refused in the same comment as any other refusal.
+  let pinned;
+  try {
+    pinned = pinnedReviewer(config);
+  } catch (error) {
+    postRefusal(repo, number, { reason: error.message, provider: process.env.REVIEW_PROVIDER || '', model: process.env.REVIEW_MODEL || '', now: Date.now() });
+    throw error;
+  }
+  const notes = (result) => usageNote(result).trim();
+  // A review runs the model the tag named, or it does not run. `pinned` is that model, checked against `allowed`; a tag
+  // with no model never reaches here (the pick step refuses it), and this is the second door for the same rule.
+  const requirePinned = (what) => {
+    if (pinned) return true;
+    const reason = `the ${what} tag names no reviewer`;
+    postRefusal(repo, number, { reason, now: Date.now() });
+    // Never a quiet exit: the workflow's pick step should have refused this already, so reaching here means a rule was
+    // bypassed, and the run has to look like the failure it is.
+    throw new Error(`${reason}; the job does not choose one (docs/workflow.md -> Choosing a reviewer)`);
+  };
+  const refuseOnFailure = (error) => {
+    const details = error?.refusal;
+    if (!details) return error;
+    // Marked so the outer guard does not post the same failure twice.
+    if (postRefusal(repo, number, { ...details, now: Date.now() })) error.refusalPosted = true;
+    return error;
+  };
 
   if (role === 'approach') {
+    if (!requirePinned('approach')) return;
     const approach = eventComment();
-    const pick = resolveReviewers(config, config.approach, parseRequest(approach), 'sensitive');
     const work = snapshot('HEAD');
     let result;
     try {
-      result = runReviewer(modelList(pick), reviewPrompt(role, { issue: issueText(issue), approach }), work, {
+      result = runReviewer([pinned], reviewPrompt(role, { issue: issueText(issue), approach }), work, {
         reserve: config.reserve,
         caps,
         snapshot: usageSnapshot,
-        skipped: pinned ? extraSkipped() : [],
       });
     } catch (error) {
-      if (error?.noRoomDetails) postNoRoomSafely(repo, number, { ...error.noRoomDetails, note: pick.note });
-      throw error;
+      throw refuseOnFailure(error);
     } finally {
       rmSync(work, { recursive: true, force: true });
     }
     const verdict = verdictFor(result.text);
     const review = result.text.replaceAll(marker, '').replace(/\n?Verdict:\s*(?:approve|changes needed)\s*$/i, '').trim();
-    postComment(repo, number, `${marker}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${usedLine(result, caps)}${skippedLine(result)}${notes(pick, result)}\n\n${review}\n\nVerdict: ${verdict}`);
+    postComment(repo, number, `${marker}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${usedLine(result, caps)}${notes(result)}\n\n${review}\n\nVerdict: ${verdict}`);
     return;
   }
 
@@ -1319,14 +1581,38 @@ async function main() {
     if (approved.length) approach = approved.at(-1).body;
   }
   const key = tier === 'sensitive' ? 'pr_sensitive' : 'pr_normal';
-  const pick = resolveReviewers(config, config[key], parseRequest(eventComment()), tier);
+  if (!requirePinned(`${tier} review`)) return;
+  // The same hard rules the pick step applied, checked again against this run's own reading of authorship: the
+  // environment is not a reason to skip a rule. A CLI that cannot install is caught by the workflow before this runs.
+  // Authorship comes from the tag the gate accepted, never from the pull request text, which the author of the change
+  // writes; that text is read only so a contradiction can refuse.
+  const author = parseRequest(eventComment()).author;
+  const requestVerdict = requestProblem(config, pinned, {
+    tier,
+    author,
+    authorBody: authorProvider(facts()?.body || ''),
+    caps,
+    credential: credentialProblem(pinned.provider),
+    now: Date.now(),
+  });
+  if (!requestVerdict.model) {
+    postRefusal(repo, number, {
+      reason: requestVerdict.reason,
+      provider: pinned.provider,
+      model: pinned.model,
+      resetsAt: requestVerdict.resetsAt ?? null,
+      noRoom: Boolean(requestVerdict.noRoom),
+      now: Date.now(),
+    });
+    return;
+  }
   const diff = gh(['pr', 'diff', String(number), '-R', repo]);
   // Confirm the PR head did not move while reading `gh pr diff`, so the diff and the snapshot are the same commit.
   if (!verifyReviewHead({ gated, repo, facts: facts(), post })) return;
   const work = snapshot('FETCH_HEAD');
   let result;
   try {
-    result = runReviewer(modelList(pick), reviewPrompt(role, {
+    result = runReviewer([pinned], reviewPrompt(role, {
       issue: linked ? issueText(linked) : '(no linked issue found)',
       approach,
       diff,
@@ -1334,11 +1620,9 @@ async function main() {
       reserve: config.reserve,
       caps,
       snapshot: usageSnapshot,
-      skipped: pinned ? extraSkipped() : [],
     });
   } catch (error) {
-    if (error?.noRoomDetails) postNoRoomSafely(repo, number, { ...error.noRoomDetails, note: pick.note });
-    throw error;
+    throw refuseOnFailure(error);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -1351,10 +1635,19 @@ async function main() {
     repo,
     facts: facts(),
     post,
-    body: (sha) => `${marker}\nReviewed: ${sha}\nTier: ${tier}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${usedLine(result, caps)}${skippedLine(result)}${notes(pick, result)}\n\n${review}\n\nVerdict: ${verdict}`,
+    body: (sha) => `${marker}\nReviewed: ${sha}\nTier: ${tier}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${usedLine(result, caps)}${notes(result)}\n\n${review}\n\nVerdict: ${verdict}`,
   });
 }
 
 if (resolve(process.argv[1] || '') === fileURLToPath(import.meta.url)) {
-  await main();
+  try {
+    await main();
+  } catch (error) {
+    // Anything after the gate that stops the run — a GitHub read, the git fetch, a review CLI, the proxy — owes the pull
+    // request a comment. A refusal already posted is marked, and any comment at all leaves a marker, so one run never
+    // leaves two comments saying the same thing.
+    if (!error?.refusalPosted && !existsSync(commentedPath())) postStop(error?.message || String(error));
+    console.error(`review stopped: ${failureSummary({ stderr: error?.message || String(error) })}`);
+    process.exitCode = 1;
+  }
 }

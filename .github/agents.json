@@ -1,19 +1,39 @@
 {
-  "_note": "One place for everything likely to change about reviewers: which models are tried per role, what a tag may name, what one review costs, the hard caps on a single review, quota kept back, and dated notes. How it is read, and how to change it, is docs/workflow.md -> Choosing a reviewer. Defaults are tried in order, first to last: the first that the hosted review job can install, with enough usage, no reservation against it, and a working bubblewrap sandbox wins. Models here are the cheap end of what is allowed; the expensive ones are kept for sensitive work. Why each is here: docs/workflow.md and docs/research/reviewer-models-2026-11.md.",
-  "_note_zai": "zai-coding-plan/glm-5.3 is the same GLM on the Z.ai coding-plan connector, which does not touch OpenCode Go quota. Its key is ZHIPU_API_KEY, one of the secrets the hosted review job uses (tools/runner-setup.md), and it is not a default.",
+  "_note": "One place for everything likely to change about reviewers: which models the plans allow, which of them are strong enough for sensitive work, what a review costs, the hard caps on one review, quota kept back, and dated notes. How it is read, and how to change it, is docs/workflow.md -> Choosing a reviewer. THE ORDER OF A ROLE'S LIST MEANS NOTHING: the agent that writes the change, or tags the review, chooses the reviewer and names it in the tag. This job only checks that choice against the rules and runs it, refusing loudly instead of substituting another model. Every model here runs on one of Krish's subscription plans; no pay-per-use API key is on the list.",
+  "_note_plans": "Plans only. claude/* is the Claude plan (CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`). codex/* is the ChatGPT plan (CODEX_AUTH_JSON from `node tools/codex-ci-login.mjs`; never an OpenAI API key). opencode/zai-coding-plan/* is the Z.ai coding plan (ZHIPU_API_KEY, a plan key). opencode/opencode-go/* is the OpenCode Go plan (OPENCODE_API_KEY). If a model can only be reached with a key billed per token, it does not belong in this file.",
+  "plans": {
+    "claude": "Claude plan",
+    "codex": "ChatGPT plan",
+    "opencode": "OpenCode Go and the Z.ai coding plan (one allowance per connector)"
+  },
   "approach": [
     {
-      "provider": "claude",
-      "model": "claude-opus-5-5",
+      "provider": "opencode",
+      "model": "zai-coding-plan/glm-5.3",
       "effort": "high"
     },
     {
       "provider": "codex",
       "model": "gpt-6.1-sol",
       "effort": "high"
+    },
+    {
+      "provider": "claude",
+      "model": "claude-opus-5-5",
+      "effort": "high"
     }
   ],
   "pr_normal": [
+    {
+      "provider": "opencode",
+      "model": "opencode-go/deepseek-v4.1-flash",
+      "effort": "high"
+    },
+    {
+      "provider": "opencode",
+      "model": "zai-coding-plan/glm-5.3-flash",
+      "effort": "high"
+    },
     {
       "provider": "codex",
       "model": "gpt-6.1-terra",
@@ -23,22 +43,22 @@
       "provider": "claude",
       "model": "claude-sonnet-5-5",
       "effort": "medium"
-    },
-    {
-      "provider": "opencode",
-      "model": "opencode-go/deepseek-v4.1-flash",
-      "effort": "high"
     }
   ],
   "pr_sensitive": [
     {
-      "provider": "claude",
-      "model": "claude-opus-5-5",
+      "provider": "opencode",
+      "model": "zai-coding-plan/glm-5.3",
       "effort": "high"
     },
     {
       "provider": "codex",
       "model": "gpt-6.1-sol",
+      "effort": "high"
+    },
+    {
+      "provider": "claude",
+      "model": "claude-opus-5-5",
       "effort": "high"
     }
   ],
@@ -53,19 +73,18 @@
       "gpt-6.1-sol",
       "gpt-6.1-terra"
     ],
-    "cursor": [
-      "composer-2.5"
-    ],
     "opencode": [
       "opencode-go/deepseek-v4.1-flash",
       "opencode-go/glm-5.3-flash",
+      "opencode-go/kimi-k3",
       "zai-coding-plan/glm-5.3",
-      "opencode-go/kimi-k3"
+      "zai-coding-plan/glm-5.3-flash"
     ]
   },
   "strong": [
-    "claude-opus-5-5",
-    "gpt-6.1-sol"
+    "zai-coding-plan/glm-5.3",
+    "gpt-6.1-sol",
+    "claude-opus-5-5"
   ],
   "efforts": [
     "low",
@@ -81,26 +100,27 @@
     "claude/claude-haiku-5-5": "light",
     "codex/gpt-6.1-sol": "heavy",
     "codex/gpt-6.1-terra": "medium",
-    "cursor/composer-2.5": "medium",
     "opencode/opencode-go/deepseek-v4.1-flash": "light",
     "opencode/opencode-go/glm-5.3-flash": "light",
-    "opencode/opencode-go/glm-5.3": "heavy",
+    "opencode/opencode-go/kimi-k3": "light",
     "opencode/zai-coding-plan/glm-5.3": "medium",
-    "opencode/opencode-go/kimi-k3": "light"
+    "opencode/zai-coding-plan/glm-5.3-flash": "light"
   },
   "caps": {
     "_note": "Hard limits on one review, so a review can never take a large share of an allowance. Read by tools/agent-review.mjs; the table in docs/workflow.md explains each one.",
     "timeout_s": 600,
     "timeout_s_by_model": {
       "codex/gpt-6.1-terra": 480,
-      "cursor/composer-2.5": 480
+      "opencode/zai-coding-plan/glm-5.3-flash": 480
     },
     "per_review_pct": {
       "codex/gpt-6.1-sol": 7,
       "codex/gpt-6.1-terra": 3,
       "opencode/opencode-go/glm-5.3": 4,
       "opencode/opencode-go/glm-5.3-flash": 0.2,
-      "opencode/opencode-go/deepseek-v4.1-flash": 0.1
+      "opencode/opencode-go/deepseek-v4.1-flash": 0.1,
+      "opencode/zai-coding-plan/glm-5.3": 1,
+      "opencode/zai-coding-plan/glm-5.3-flash": 0.2
     },
     "claude": {
       "max_turns": 12,
@@ -122,19 +142,19 @@
   "notes": [
     {
       "date": "2026-11-15",
-      "note": "Pools differ inside one provider: Opus and Sonnet share Claude's weekly pool, Fable 5.2 has its own. Recheck when Claude's plans change."
+      "note": "Plans only. Claude, Codex, OpenCode Go and the Z.ai coding plan all bill a subscription. Nothing here is reached with a per-token API key, and a tag naming a model that is not on `allowed` is refused rather than quietly rerouted."
     },
     {
       "date": "2026-11-15",
-      "note": "On OpenCode Go, GLM-5.3 empties that allowance several times faster per review than DeepSeek V4.1 Flash, so DeepSeek is the default and GLM goes through the Z.ai coding plan."
+      "note": "Pool sizes differ inside one provider: Opus and Sonnet share Claude's weekly pool, Fable 5.2 has its own. On OpenCode, `opencode-go/*` and `zai-coding-plan/*` are separate allowances, so one running out leaves the other usable. Recheck when a plan changes."
     },
     {
       "date": "2026-11-15",
-      "note": "On Cursor, only its own models (Composer, Grok) come out of the weekly pool; Claude or GPT through Cursor bills prepaid credit at API list price from the first request. So only Composer 2.5 is allowed, and it has no token cap: its 480 s timeout is the whole limit."
+      "note": "On OpenCode Go, GLM-5.3 empties that allowance several times faster per review than DeepSeek V4.1 Flash, so a GLM review there is not offered; the worked number is kept as the measured record of why. GLM-5.3 is reviewed on the Z.ai coding plan instead, where its own allowance pays for it."
     },
     {
       "date": "2026-11-15",
-      "note": "opencode-go/glm-5.3 keeps a cost weight and a per-review share as the measured record, but it is not in allowed: a review must not be routed to it while a review there empties that allowance, so a tag naming it is refused and falls back to the role's default."
+      "note": "The per-review share for `zai-coding-plan/glm-5.3` (1%) and `zai-coding-plan/glm-5.3-flash` (0.2%) are carried over from the OpenCode Go measurements as a cautious estimate, not a Z.ai measurement. Replace them once a Z.ai window has been watched across a review."
     },
     {
       "date": "2026-11-15",
@@ -142,7 +162,15 @@
     },
     {
       "date": "2026-11-15",
-      "note": "Codex has no turn or budget cap in exec mode; model_reasoning_effort and model_auto_compact_token_limit are the only levers, and turn.completed in --json reports the tokens used."
+      "note": "Codex has no turn or budget cap in exec mode; model_reasoning_effort and model_auto_compact_token_limit are the only levers, and turn.completed in --json reports the tokens used. A ChatGPT-plan access token lasts about 10 days; `node tools/codex-ci-login.mjs` renews the CI login, and a review refuses with a named reason instead of running on an expired one."
+    },
+    {
+      "date": "2026-11-15",
+      "note": "Cursor is not on the list. Its own models come out of a weekly pool, but a Claude or GPT model inside Cursor bills prepaid credit at API list price from the first request, and the review job installs no Cursor CLI. Leaving it out keeps the plans-only rule true without a footnote."
+    },
+    {
+      "date": "2026-11-15",
+      "note": "Antigravity (`agy`) is not a reviewer yet: it keeps its account token in the OS keyring and has no login subcommand or headless credential file, so a GitHub Linux VM cannot sign in on the plan. See docs/workflow.md -> Left out on purpose."
     }
   ]
 }

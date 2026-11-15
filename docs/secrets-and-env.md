@@ -12,6 +12,7 @@ How Tess Music stores, loads, and backs up secrets across **local development**,
 | Rescue key (Ed25519) | `~/.config/tess-signing/rescue.pem` (**Mac only**) | **Never in GitHub / CI** | Signs emergency rescue orders via [`tools/rescue.mjs`](../tools/rescue.mjs) |
 | Inbox IP hash salt | `inbox/.dev.vars` (if running locally) | Cloudflare Worker secret `SALT` | Salts hashed IPs in [`inbox/worker.js`](../inbox/worker.js) |
 | Cloudflare auth | `npx wrangler@4 login` session | Cloudflare dashboard / API | Deploys `inbox/` and reads D1/KV reports |
+| Reviewer plan logins | `~/.config/tess-codex-ci/auth.json` (Codex only) | Actions secrets `CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_AUTH_JSON`, `OPENCODE_API_KEY`, `ZHIPU_API_KEY` | The hosted AI reviewer. Every one is a subscription login; no pay-per-use API key is used (D-71, D-73). Setup and the Codex renewal step: [`tools/runner-setup.md`](../tools/runner-setup.md) |
 
 ## 2. Repo safeguards (`.gitignore`)
 

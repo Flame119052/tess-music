@@ -11,23 +11,63 @@ request, and the reviewer reads the change as data.
 
 ## Secrets Krish adds (Settings → Secrets and variables → Actions → Secrets)
 
+**Plans only.** Every secret below is a subscription login. The reviewer never uses a pay-per-use API key: a review must
+not bill by the token, so `CODEX_API_KEY` and `CURSOR_API_KEY` are gone and must not come back.
+
 | Secret | Which reviewer | Where the value comes from |
 | --- | --- | --- |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Claude | Run `claude setup-token` on a machine signed in to the Claude account and paste the token it prints. It is a long-lived headless sign-in (about a year); run it again when it expires. <https://code.claude.com/docs/en/authentication> |
-| `CODEX_API_KEY` | Codex | An OpenAI API key from <https://platform.openai.com/api-keys>. Codex's docs say the ChatGPT-managed `auth.json` path must **not** be used on a public or open-source repository, so this repo uses the API-key path. It bills the OpenAI API, not the ChatGPT plan. <https://developers.openai.com/codex/non-interactive-mode> |
-| `OPENCODE_API_KEY` | OpenCode | Subscribe to OpenCode Go (or Go Plus) in the OpenCode console, then copy the key. Both the `opencode` and `opencode-go` providers read this one variable. <https://opencode.ai/docs/console/go> |
-| `ZHIPU_API_KEY` | OpenCode, Z.ai connector only | The GLM Coding Plan key from the Z.ai console. The `zai-coding-plan` provider reads `ZHIPU_API_KEY` (models.dev). Optional: without it that connector is skipped and OpenCode Go still reviews. |
-| `CURSOR_API_KEY` | Cursor (optional) | Not wired. No default uses Cursor, and the review job installs no Cursor CLI, so a tag naming it falls back to the role's defaults and says so. To add it, follow "Adding a provider" below. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Claude (plan) | Run `claude setup-token` on a machine signed in to the Claude account and paste the token it prints. It is a long-lived headless sign-in (about a year); run it again when it expires. <https://code.claude.com/docs/en/authentication> |
+| `CODEX_AUTH_JSON` | Codex (ChatGPT plan) | `node tools/codex-ci-login.mjs` — see below. Never an OpenAI API key. |
+| `OPENCODE_API_KEY` | OpenCode Go (plan) | Subscribe to OpenCode Go (or Go Plus) in the OpenCode console, then copy the key. Both the `opencode` and `opencode-go` providers read this one variable. <https://opencode.ai/docs/console/go> |
+| `ZHIPU_API_KEY` | OpenCode, Z.ai coding plan only (plan) | The GLM Coding Plan key from the Z.ai console. The `zai-coding-plan` provider reads `ZHIPU_API_KEY` (models.dev). Optional: without it the Z.ai connector is refused by name and OpenCode Go still reviews. |
 
 Each secret is a repository secret, never an environment or a job-level variable: the review step is the only place it
-is used, and the workflow gives it a value only when that provider is the one chosen. `tools/agent-review.mjs` builds
-the reviewer's environment from scratch and never passes `GH_TOKEN` or another provider's key to it.
+is used, and the workflow gives it a value only when that provider is the one the tag named. `tools/agent-review.mjs`
+builds the reviewer's environment from scratch and never passes `GH_TOKEN` or another provider's login to it.
+
+### The Codex plan login (`CODEX_AUTH_JSON`)
+
+Codex's own docs, under "Use ChatGPT-managed auth in CI/CD (advanced)", say exactly this
+(<https://developers.openai.com/codex/non-interactive-mode>):
+
+> Treat `~/.codex/auth.json` like a password: it contains access tokens. Don't commit it, paste it into tickets, or share
+> it in chat.
+>
+> Do not use this workflow for public or open-source repositories. If `codex login` is not an option on the runner, seed
+> `auth.json` through secure storage, run Codex on the runner so Codex refreshes it in place, and persist the updated file
+> between runs.
+
+The caution is about a login reaching code written by someone else. Here the gate refuses a fork's head before any job
+holding a secret exists, only an allowlisted account can tag a review, and the login never enters the sandbox at all:
+the review process reads it and the proxy adds the access token to the one inference route (D-73). So the plan path is
+safe in this repository, and it is what keeps Codex off the OpenAI API bill.
+
+The second half of that caution is why this setup needs a recurring step. The vendor's advice is to persist the refreshed
+`auth.json` between runs; a GitHub-hosted workflow cannot write a repository secret, so nothing can persist the rotated
+file. Instead the review never starts inside the last 12 hours of the token, and Krish renews it by hand.
+
+A dedicated login, so his own Codex session is never touched:
+
+```sh
+node tools/codex-ci-login.mjs          # sign in (device auth) in ~/.config/tess-codex-ci, then upload the secret
+node tools/codex-ci-login.mjs --check  # say how long the stored login has left, change nothing
+```
+
+The script uses its own `CODEX_HOME` (`~/.config/tess-codex-ci`), so `~/.codex` is never read or written. It refuses a
+login that is not `auth_mode: chatgpt`, checks that `codex login status` reports ChatGPT, and uploads the `auth.json` to
+the secret with `gh secret set`, on stdin, without printing it.
+
+**Renew it every ~9 days.** The access token inside the login lasts about 10 days. A refresh rotates the refresh token,
+and a rotation on the disposable runner would be written to a file that is deleted minutes later, so the review does not
+refresh: it refuses to start inside the last 12 hours of the token and says so in the PR comment. Run the command again
+before then; `--check` tells you how many days are left. This is the one part of the reviewer setup that needs a
+recurring human step.
 
 Set one with the CLI if you prefer:
 
 ```sh
 gh secret set CLAUDE_CODE_OAUTH_TOKEN -R Flame119052/tess-music
-gh secret set CODEX_API_KEY -R Flame119052/tess-music
+gh secret set CODEX_AUTH_JSON -R Flame119052/tess-music   # prefer node tools/codex-ci-login.mjs
 gh secret set OPENCODE_API_KEY -R Flame119052/tess-music
 gh secret set ZHIPU_API_KEY -R Flame119052/tess-music
 ```
@@ -78,13 +118,18 @@ gh secret set ZHIPU_API_KEY -R Flame119052/tess-music
 
 1. Checks out `main` (no credentials kept) and installs Node 22.
 2. Lets bubblewrap start, then proves it works (below).
-3. `node tools/agent-review.mjs pick <role> <tier>` chooses one reviewer from `.github/agents.json`, applying the tag's
-   request, usage and any reservation. It prints the provider, model and effort, and names every candidate it skipped.
+3. `node tools/agent-review.mjs pick <role> <tier>` reads the reviewer the tag named and checks it against the hard rules
+   — plans-only list, installed CLI, `strong` for a sensitive change, an `author=` that is known and is not the reviewer's
+   own provider, usage, any reserve, and the Codex login's expiry. It prints that provider, model and effort. A tag that
+   breaks a rule gets a comment on the pull request and the job stops; it never picks a substitute.
 4. Installs only that provider's CLI, at a pinned version.
-5. Runs `node tools/agent-review.mjs <role> <number>` with only that provider's key in its environment. The script
+5. Runs `node tools/agent-review.mjs <role> <number>` with only that provider's login in its environment. The script
    snapshots the change, runs the CLI inside bubblewrap, and posts the review with the `gh` token it keeps away from
    the reviewer. The posted verdict names the commit it read, and the head is checked once more immediately before
    posting, so a push during the review gets a re-tag instead of a verdict about a commit nobody read.
+6. A step that runs only when the job has already failed (`if: failure()`) posts one marker comment naming what broke,
+   using the same command with `stop` and only the job's own token, so a review that stops without a verdict is never
+   silent.
 
 The review job has `timeout-minutes: 30`, and the VM is thrown away afterwards.
 
