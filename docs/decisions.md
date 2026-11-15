@@ -368,12 +368,13 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   failure or after an interrupted run — but relative to a folder held open, not to a path: the check resolves
   `Contents/Resources` once and validates it (separator-bounded, still `Contents/Resources` after its symlinks are
   resolved, so `/var` may stand for `/private/var` but a symlinked `Resources` is refused, and the bundle's
-  `CFBundleIdentifier` must be `com.spotify.client`), then opens that one folder a component at a time from `/` with
-  `O_NOFOLLOW`, and every create, rename and delete of `Apps`, `.tess-new` and `.tess-old`, the copy itself and the
-  recovery of an interrupted run are `…at` calls on that descriptor (`swapAppsAt`). Before each rename the
-  descriptor's device and inode are compared with what the path names now, and a folder that no longer matches stops
-  the swap with the original left in place. It takes no config (so it never rewrites `config-xpui.ini`) and reports
-  macOS's block as exit 3 as `can-write` does.
+  `CFBundleIdentifier` must be `com.spotify.client`), and it opens as it validates — the bundle from `/` with
+  `O_NOFOLLOW`, `Contents` and then `Resources` relative to it, with `Info.plist` read through that same `Contents`
+  descriptor and the folder's device and inode recorded before the plist is parsed. Every create, rename and delete of
+  `Apps`, `.tess-new` and `.tess-old`, the copy itself and the recovery of an interrupted run are `…at` calls on that
+  descriptor (`swapAppsAt`). The folder is compared with what the path names before the first write and again before
+  each rename, and a folder that no longer matches stops the swap with the original left in place. It takes no config
+  (so it never rewrites `config-xpui.ini`) and reports macOS's block as exit 3 as `can-write` does.
   *Why:* macOS App Management denied `/usr/bin/ditto`, attributed to `/bin/zsh` because launchd starts the helper that
   way, so every background theme update failed while Spotify was left intact (16:36 on 15 Nov, #108). The signed
   patcher has its own approval, so the same copy is allowed there. A shell fallback was removed rather than kept: it
@@ -382,10 +383,17 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   rename another folder aside and then delete it (#110 review). A path that is checked and then used again is not the
   same folder either: with `Resources` moved aside and a symlink left in its place during the copy, the path version
   finished writing through the link, renamed that folder's `Apps` aside, deleted it, and exited 0 (measured). A
-  descriptor cannot be redirected, so the swap keeps writing where it started and the re-check notices. The same
-  review found `tools/check-safety.sh` blind to `rm -rf "$APPS/xpui"` and `ditto "$1" "${APPS}"`; it now fails any
-  statement whose write verb names the folder, in any quoting and with any path after it, and allows only a copy whose
-  source is the folder.
+  descriptor cannot be redirected, so the swap keeps writing where it started and the re-check notices. Opening the
+  descriptor after the check was still a check-then-use: with the plist read blocked and a *real* directory — not a
+  symlink, so `O_NOFOLLOW` sees nothing — moved into the `Resources` name, the swap took that folder's inode as its
+  own, replaced its `Apps`, deleted its `keep-me` and exited 0 while the folder that was validated was untouched
+  (measured). So `Resources` is opened and recorded before the plist read, and the path is compared with it again when
+  the read returns; a swap of `Resources` or of `Contents` in that window now aborts before the first write, which
+  `TestSwapAppsAbortsWhenFolderReplacedDuringPlistRead` proves for both. The same review found
+  `tools/check-safety.sh` blind to `rm -rf "$APPS/xpui"` and `ditto "$1" "${APPS}"`; it now fails any statement whose
+  write verb names the folder, in any quoting and with any path after it, and allows only a copy whose source is the
+  folder and whose later arguments do not name it — `ditto "$APPS" "$APPS/xpui"` writes the live interface in place
+  and fails the gate.
   *Trade-off:* the updater can no longer restore a theme if the patcher itself is missing; Spotify then stays exactly
   as it was, which is the required failure. The test bundles must now carry an `Info.plist` that names Spotify, so a
   sandbox has to be shaped like a real app bundle. The swap is macOS-shaped (`golang.org/x/sys/unix`), so the swap-apps
