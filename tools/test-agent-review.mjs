@@ -1,7 +1,7 @@
 // Test reviewer tier, model selection, sandbox prep and the deny-everything agent without GitHub or provider calls.
 // Usage: node tools/test-agent-review.mjs
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -16,8 +16,9 @@ import {
   parseRequest,
   providerHasUsage,
   resolveReviewers,
-  retryableFailure,
   reviewerEnv,
+  skipReason,
+  skippedLine,
   snapshot,
   stripAgentConfig,
   tierForPaths,
@@ -27,6 +28,8 @@ const config = JSON.parse(readFileSync(new URL('../.github/agents.json', import.
 const agentFile = new URL('../tools/opencode-reviewer.md', import.meta.url);
 const agentText = readFileSync(agentFile, 'utf8');
 const available = (usedPercent) => ({ windows: [{ usedPercent }] });
+// stays true when the failure is about the runner (a flag, a usage limit) rather than about the change
+const retries = (result) => skipReason(result) !== null;
 const temp = () => mkdtempSync(join(tmpdir(), 'tess-test-'));
 
 test('review roles keep the requested model order', () => {
@@ -34,7 +37,12 @@ test('review roles keep the requested model order', () => {
     { provider: 'claude', model: 'claude-opus-5-5', effort: 'high' },
     { provider: 'codex', model: 'gpt-6.1-sol', effort: 'high' },
   ]);
-  assert.deepEqual(config.pr_normal.map((m) => m.provider), ['codex', 'claude', 'opencode']);
+  assert.deepEqual(config.pr_normal.map((m) => `${m.provider}/${m.model}`), [
+    'codex/gpt-6.1-terra',
+    'claude/claude-sonnet-5-5',
+    'opencode/opencode-go/deepseek-v4.1-flash',
+  ], 'normal PRs default to the cheap OpenCode model; GLM-5.3 on OpenCode Go uses that quota up fast');
+  assert.ok(config.allowed.opencode.includes('zai-coding-plan/glm-5.3'), 'GLM on the Z.ai coding plan is allowed by tag');
   assert.deepEqual(config.pr_sensitive, config.approach);
   for (const role of ['approach', 'pr_normal', 'pr_sensitive']) {
     for (const m of config[role]) {
@@ -213,6 +221,52 @@ test('agent settings and instructions are stripped at any depth', () => {
   }
 });
 
+test('a link out of the copy is removed, and its target is left alone', () => {
+  const dir = temp();
+  const outside = temp();
+  try {
+    writeFileSync(join(outside, '.env'), 'CODEX_API_KEY=held');
+    mkdirSync(join(dir, 'sub'), { recursive: true });
+    symlinkSync(join(outside, '.env'), join(dir, 'notes.txt'));
+    symlinkSync('/etc/hosts', join(dir, 'sub/hosts'));
+
+    stripAgentConfig(dir);
+
+    // readdir, not existsSync: a dangling link reports as missing either way
+    const top = readdirSync(dir);
+    const sub = readdirSync(join(dir, 'sub'));
+    assert.ok(!top.includes('notes.txt'), 'a link to the runner .env is removed');
+    assert.ok(!sub.includes('hosts'), 'a link to any outside file is removed');
+    assert.equal(readFileSync(join(outside, '.env'), 'utf8'), 'CODEX_API_KEY=held', 'the target is never touched');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test('agent files in any letter case are removed at any depth', () => {
+  const dir = temp();
+  try {
+    for (const path of ['sub/Agents.md', 'sub/claude.md', 'sub/opencode.json', 'deep/.github/copilot-instructions.md',
+      'deep/copilot-instructions.md', 'docs/workflow.md', 'theme/Tess/src/core.js']) {
+      mkdirSync(join(dir, path, '..'), { recursive: true });
+      writeFileSync(join(dir, path), 'x');
+    }
+
+    stripAgentConfig(dir);
+
+    for (const gone of ['sub/Agents.md', 'sub/claude.md', 'sub/opencode.json', 'deep/.github/copilot-instructions.md',
+      'deep/copilot-instructions.md']) {
+      assert.ok(!readdirSync(join(dir, gone, '..')).includes(gone.split('/').at(-1)), `${gone} is removed`);
+    }
+    assert.ok(existsSync(join(dir, 'docs/workflow.md')), 'ordinary docs stay');
+    assert.ok(existsSync(join(dir, 'theme/Tess/src/core.js')), 'code stays');
+    assert.ok(agentConfig.includes('copilot-instructions.md'), 'the copilot file is matched by name, not by path');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('each CLI is told the effort and the folder in the way its own flags accept', () => {
   const opencode = cliArgs('opencode', 'opencode-go/glm-5.3', 'high');
   assert.deepEqual(opencode.slice(0, 3), ['run', '--agent', 'tess-reviewer']);
@@ -232,12 +286,45 @@ test('each CLI is told the effort and the folder in the way its own flags accept
 });
 
 test('an unknown flag or variant tries the next reviewer instead of failing the review', () => {
-  assert.ok(retryableFailure({ status: 1, stderr: 'error: unknown option --variant' }));
-  assert.ok(retryableFailure({ status: 2, stderr: "unexpected argument '--variant' found" }));
-  assert.ok(retryableFailure({ status: 1, stderr: 'invalid variant: high' }));
-  assert.ok(retryableFailure({ status: 1, stderr: 'Rate limit reached for this model' }));
-  assert.ok(!retryableFailure({ status: 1, stderr: 'model not found: gpt-9' }));
-  assert.ok(!retryableFailure({ status: 0, stdout: 'Verdict: approve' }));
+  assert.ok(retries({ status: 1, stderr: 'error: unknown option --variant' }));
+  assert.ok(retries({ status: 2, stderr: "unexpected argument '--variant' found" }));
+  assert.ok(retries({ status: 1, stderr: 'invalid variant: high' }));
+  assert.ok(retries({ status: 1, stderr: 'Rate limit reached for this model' }));
+  assert.ok(!retries({ status: 1, stderr: 'model not found: gpt-9' }));
+  assert.ok(!retries({ status: 0, stdout: 'Verdict: approve' }));
+});
+
+test('a real failure is not mistaken for a bad flag, and a skip is never silent', () => {
+  // stdout carries the review text: a crash message quoted there is not the CLI complaining about our flags
+  assert.ok(!retries({ status: 1, stdout: 'the author writes: invalid variant: high', stderr: '' }));
+  // a Node spawn error (EINVAL) used to match "invalid argument" and quietly skip a reviewer
+  assert.ok(!retries({ status: 1, stderr: 'Error: spawn EINVAL: invalid argument' }));
+  assert.equal(skipReason({ status: 1, stderr: 'model not found: gpt-9' }), null, 'a typo in the config stays loud');
+  assert.equal(skipReason({ status: 1, stderr: '' }), null, 'an empty failure is a real failure');
+
+  // checked on OpenCode 2.2.6: an effort the model does not have is refused with this wording
+  assert.ok(retries({ status: 1, stderr: 'Error: Variant unavailable for opencode-go/glm-5.3: medium' }));
+  assert.equal(skipReason({ status: 1, stderr: 'Error: Variant unavailable for opencode-go/glm-5.3: medium' }),
+    'rejected a flag');
+  assert.equal(skipReason({ status: 1, stderr: 'Rate limit reached for this model' }), 'usage limit');
+
+  // the comment says what was skipped, so a dropped flag cannot move every review to the second model unnoticed
+  assert.equal(skippedLine({ skipped: [] }), '');
+  assert.equal(skippedLine({}), '');
+  assert.equal(skippedLine({ skipped: ['opencode/opencode-go/glm-5.3 (rejected a flag)'] }),
+    '\nSkipped: opencode/opencode-go/glm-5.3 (rejected a flag)');
+  const source = readFileSync(new URL('./agent-review.mjs', import.meta.url), 'utf8');
+  assert.equal((source.match(/\$\{skippedLine\(result\)\}/g) || []).length, 2, 'both comment paths report a skip');
+});
+
+test('the effort a tag asks for rides the way the provider accepts it', () => {
+  // OpenCode 2.2.6: `--model provider/model#variant`, and the variant list comes from the model (glm-5.3 and
+  // deepseek-v4.1-flash take low, high and max; kimi-k3 takes only max), so an untested variant is refused, not ignored.
+  assert.deepEqual(cliArgs('opencode', 'opencode-go/deepseek-v4.1-flash', 'high').slice(3),
+    ['--model', 'opencode-go/deepseek-v4.1-flash#high', '--archived']);
+  assert.deepEqual(cliArgs('opencode', 'opencode-go/deepseek-v4.1-flash'),
+    ['run', '--agent', 'tess-reviewer', '--model', 'opencode-go/deepseek-v4.1-flash', '--archived'],
+    'no effort means no variant, rather than a #undefined');
 });
 
 test('OpenCode refuses to run unless the installed agent matches the repo copy', () => {

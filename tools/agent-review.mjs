@@ -165,16 +165,22 @@ export const claudeTools = 'Read,Grep,Glob';
 
 // A PR could ship its own agent settings (an OpenCode agent named like ours, Cursor rules, Claude hooks) or its own
 // AGENTS.md/CLAUDE.md telling the reviewer what to say. They are removed from the copy at any depth; the reviewer only
-// ever uses the settings on the runner and the instructions in its prompt.
+// ever uses the settings on the runner and the instructions in its prompt. Names are compared ignoring case, because a
+// runner on a macOS disk would otherwise keep a PR's `Agents.md`, which a CLI opens as `AGENTS.md`.
 export const agentConfig = ['.opencode', 'opencode.json', 'opencode.jsonc', '.cursor', '.cursorrules', '.claude', '.codex',
-  '.mcp.json', '.github/copilot-instructions.md', 'AGENTS.md', 'CLAUDE.md'];
+  '.mcp.json', 'copilot-instructions.md', 'AGENTS.md', 'CLAUDE.md'];
+const agentConfigNames = new Set(agentConfig.map((name) => name.toLowerCase()));
 
+// Links go too. `git archive` keeps them, and a PR's `notes.txt -> ../../../.env` would let the reviewer read the runner's
+// keys by asking for a path that looks like it is inside the copy. The diff already shows a link's target as text, so
+// nothing is lost by removing it; the target itself is never touched.
 export function stripAgentConfig(dir) {
   const walk = (current) => {
     for (const entry of readdirSync(current, { withFileTypes: true })) {
       const path = join(current, entry.name);
-      if (agentConfig.includes(entry.name)) rmSync(path, { recursive: true, force: true });
-      else if (entry.isDirectory()) walk(path);
+      if (entry.isSymbolicLink() || agentConfigNames.has(entry.name.toLowerCase())) {
+        rmSync(path, { recursive: true, force: true });
+      } else if (entry.isDirectory()) walk(path);
     }
   };
   walk(dir);
@@ -235,15 +241,29 @@ function usageLimitError(result) {
     .test(`${result.stdout || ''}\n${result.stderr || ''}`);
 }
 
-// A CLI that rejects a flag, a variant or a config key tells us nothing about the change under review. Move on to the
-// next reviewer rather than failing the review, so an untested flag on one provider cannot block a PR.
+// Only a CLI complaining about the command line we built is worth moving on from: a flag, a variant or a config key that
+// this version of the CLI no longer takes tells us nothing about the change under review. Everything else ("model not
+// found", a crash, an empty answer) is a real failure and stays loud. stderr only, because stdout is the review text, and
+// a crash message quoted there must not be mistaken for a bad flag.
 function flagError(result) {
-  return /unknown (?:option|flag|argument|command|variant)|unrecognized (?:option|flag|argument)|unexpected argument|invalid (?:option|flag|variant|value|argument)|no such option/i
-    .test(`${result.stdout || ''}\n${result.stderr || ''}`);
+  return /unknown (?:option|flag|argument|command|variant)|unrecognized (?:option|flag|argument)|unexpected argument|invalid (?:option|flag|variant)|no such option|variant unavailable/i
+    .test(result.stderr || '');
 }
 
-export function retryableFailure(result) {
-  return usageLimitError(result) || flagError(result);
+// Why a candidate was skipped, or null when its failure is about the change and has to stop the review. OpenCode answers
+// `Variant unavailable for provider/model: medium` (checked on v2.2.6) when a tag asks for an effort the model lacks.
+// Usage limits are read from stdout too, because a CLI that ran out often says so there; a wrong guess is visible in the
+// posted comment as a skip, while a missed one would fail the review.
+export function skipReason(result) {
+  if (usageLimitError(result)) return 'usage limit';
+  if (flagError(result)) return 'rejected a flag';
+  return null;
+}
+
+// A skip is a config problem on the runner, not a fact about the change, so the posted comment has to say it happened.
+// Silence here would let a dropped flag move every sensitive review to the second model without anyone noticing.
+export function skippedLine(result) {
+  return result.skipped?.length ? `\nSkipped: ${result.skipped.join(', ')}` : '';
 }
 
 function runReviewer(models, prompt, work) {
@@ -251,13 +271,18 @@ function runReviewer(models, prompt, work) {
   const candidates = eligibleModels(models, usage, commandExists);
   if (!candidates.length) throw new Error('no configured reviewer provider has both usage and a local CLI');
 
+  const skipped = [];
   for (const candidate of candidates) {
     const result = cliInvocation(candidate.provider, candidate.model, prompt, candidate.effort, work);
-    if (result.status === 0 && result.stdout?.trim()) return { ...candidate, text: result.stdout.trim() };
-    if (retryableFailure(result)) continue;
+    if (result.status === 0 && result.stdout?.trim()) return { ...candidate, text: result.stdout.trim(), skipped };
+    const reason = skipReason(result);
+    if (reason) {
+      skipped.push(`${candidate.provider}/${candidate.model} (${reason})`);
+      continue;
+    }
     throw new Error(`${candidate.provider} reviewer failed: ${(result.stderr || result.stdout || 'unknown error').trim()}`);
   }
-  throw new Error('all configured reviewer providers reported a usage limit or rejected their flags');
+  throw new Error(`every configured reviewer was skipped: ${skipped.join(', ')}`);
 }
 
 function verdictFor(text) {
@@ -322,7 +347,7 @@ async function main() {
     }
     const verdict = verdictFor(result.text);
     const review = result.text.replaceAll(marker, '').replace(/\n?Verdict:\s*(?:approve|changes needed)\s*$/i, '').trim();
-    postComment(repo, number, `${marker}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
+    postComment(repo, number, `${marker}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${skippedLine(result)}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
     return;
   }
 
@@ -358,7 +383,7 @@ async function main() {
   }
   const verdict = verdictFor(result.text);
   const review = result.text.replaceAll(marker, '').replace(/\n?Verdict:\s*(?:approve|changes needed)\s*$/i, '').trim();
-  postComment(repo, number, `${marker}\nTier: ${tier}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
+  postComment(repo, number, `${marker}\nTier: ${tier}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${skippedLine(result)}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
 }
 
 if (resolve(process.argv[1] || '') === fileURLToPath(import.meta.url)) {
