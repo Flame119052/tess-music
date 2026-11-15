@@ -1,5 +1,5 @@
 {
-  "_note": "One place for everything likely to change about reviewers: which models are tried per role, what a tag may name, what one review costs, quota kept back, and dated notes. How it is read, and how to change it, is docs/workflow.md -> Choosing a reviewer. Defaults are tried in order, first to last: the first that has a local CLI, enough usage, no reservation against it, and a working bubblewrap sandbox wins. Models here are the cheap end of what is allowed; the expensive ones are kept for sensitive work. Why each is here: docs/workflow.md and docs/research/reviewer-models-2026-11.md.",
+  "_note": "One place for everything likely to change about reviewers: which models are tried per role, what a tag may name, what one review costs, the hard caps on a single review, quota kept back, and dated notes. How it is read, and how to change it, is docs/workflow.md -> Choosing a reviewer. Defaults are tried in order, first to last: the first that has a local CLI, enough usage, no reservation against it, and a working bubblewrap sandbox wins. Models here are the cheap end of what is allowed; the expensive ones are kept for sensitive work. Why each is here: docs/workflow.md and docs/research/reviewer-models-2026-11.md.",
   "_note_zai": "zai-coding-plan/glm-5.3 is the same GLM on the Z.ai coding-plan connector, which does not touch OpenCode Go quota. It needs that connector signed in on the runner (tools/runner-setup.md) and is not a default.",
   "approach": [
     {
@@ -54,12 +54,12 @@
       "gpt-6.1-terra"
     ],
     "cursor": [
-      "gpt-5.6-sol"
+      "composer-2.5"
     ],
     "opencode": [
       "opencode-go/deepseek-v4.1-flash",
+      "opencode-go/glm-5.3-flash",
       "zai-coding-plan/glm-5.3",
-      "opencode-go/glm-5.3",
       "opencode-go/kimi-k3"
     ]
   },
@@ -81,11 +81,42 @@
     "claude/claude-haiku-5-5": "light",
     "codex/gpt-6.1-sol": "heavy",
     "codex/gpt-6.1-terra": "medium",
-    "cursor/gpt-5.6-sol": "heavy",
+    "cursor/composer-2.5": "medium",
     "opencode/opencode-go/deepseek-v4.1-flash": "light",
-    "opencode/zai-coding-plan/glm-5.3": "medium",
+    "opencode/opencode-go/glm-5.3-flash": "light",
     "opencode/opencode-go/glm-5.3": "heavy",
+    "opencode/zai-coding-plan/glm-5.3": "medium",
     "opencode/opencode-go/kimi-k3": "light"
+  },
+  "caps": {
+    "_note": "Hard limits on one review, so a review can never take a large share of an allowance. Read by tools/agent-review.mjs; the table in docs/workflow.md explains each one.",
+    "timeout_s": 600,
+    "timeout_s_by_model": {
+      "codex/gpt-6.1-terra": 480,
+      "cursor/composer-2.5": 480
+    },
+    "per_review_pct": {
+      "codex/gpt-6.1-sol": 7,
+      "codex/gpt-6.1-terra": 3,
+      "opencode/opencode-go/glm-5.3": 4,
+      "opencode/opencode-go/glm-5.3-flash": 0.2,
+      "opencode/opencode-go/deepseek-v4.1-flash": 0.1
+    },
+    "claude": {
+      "max_turns": 12,
+      "max_budget_usd": {
+        "claude-opus-5-5": 0.6,
+        "claude-sonnet-5-5": 0.3,
+        "claude-fable-5-2": 0.3,
+        "claude-haiku-5-5": 0.15
+      }
+    },
+    "codex": {
+      "auto_compact_token_limit": 180000
+    },
+    "opencode": {
+      "steps": 12
+    }
   },
   "reserve": {},
   "notes": [
@@ -99,7 +130,19 @@
     },
     {
       "date": "2026-11-15",
-      "note": "On Cursor, only its own models (Composer, Grok) come out of the weekly pool; Claude or GPT through Cursor bills prepaid credit at API list price from the first request."
+      "note": "On Cursor, only its own models (Composer, Grok) come out of the weekly pool; Claude or GPT through Cursor bills prepaid credit at API list price from the first request. So only Composer 2.5 is allowed, and it has no token cap: its 480 s timeout is the whole limit."
+    },
+    {
+      "date": "2026-11-15",
+      "note": "opencode-go/glm-5.3 keeps a cost weight and a per-review share as the measured record, but it is not in allowed: a review must not be routed to it while a review there empties that allowance, so a tag naming it is refused and falls back to the role's default."
+    },
+    {
+      "date": "2026-11-15",
+      "note": "Claude's --max-budget-usd is a client-side estimate of API list prices, not the plan's own meter, so it is a guardrail beside the turn cap, not a promise about the subscription. --max-turns is real but hidden from --help in 2.1.x."
+    },
+    {
+      "date": "2026-11-15",
+      "note": "Codex has no turn or budget cap in exec mode; model_reasoning_effort and model_auto_compact_token_limit are the only levers, and turn.completed in --json reports the tokens used."
     }
   ]
 }
