@@ -87,13 +87,7 @@
     "opencode/opencode-go/glm-5.3": "heavy",
     "opencode/opencode-go/kimi-k3": "light"
   },
-  "reserve": {
-    "claude": {
-      "weekly": 30,
-      "note": "Krish's own work",
-      "until": "2026-11-20"
-    }
-  },
+  "reserve": {},
   "notes": [
     {
       "date": "2026-11-15",
@@ -105,7 +99,7 @@
     },
     {
       "date": "2026-11-15",
-      "note": "Cursor bills API list price on top of its subscription, so one Cursor review costs more than one review anywhere else."
+      "note": "On Cursor, only its own models (Composer, Grok) come out of the weekly pool; Claude or GPT through Cursor bills prepaid credit at API list price from the first request."
     }
   ]
 }
