@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Publishes this Mac's usage snapshot every 5 minutes. Install as ~/Library/LaunchAgents/music.tess.usage-publish.plist;
+     see README.md in this folder. A login shell is used on purpose: node and gh are often installed per user, and a
+     LaunchAgent starts with a bare PATH. It prints nothing but one summary line, and holds no quota in the log. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>music.tess.usage-publish</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-lc</string>
+    <string>exec "$HOME/.local/bin/tess-usage-publish" --machine mac</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>Nice</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE_ME/Library/Logs/tess-usage-publish.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE_ME/Library/Logs/tess-usage-publish.log</string>
+</dict>
+</plist>

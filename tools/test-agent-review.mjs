@@ -16,6 +16,7 @@ import {
   capsFor,
   containsHeldSecret,
   eligibleModels,
+  freshestSnapshot,
   headMismatchMessage,
   looksSecret,
   parseClaudeOutput,
@@ -26,6 +27,7 @@ import {
   reservationEnd,
   resolveReviewers,
   reviewerEnv,
+  readSnapshots,
   reviewerCandidates,
   reviewCost,
   reviewCostPercent,
@@ -37,9 +39,11 @@ import {
   skipReason,
   skippedLine,
   snapshot,
+  snapshotUsage,
   stripAgentConfig,
   timeoutSeconds,
   tierForPaths,
+  usageNote,
   usageProblem,
   usedLine,
   verifyPrHead,
@@ -617,6 +621,96 @@ test('what a review used is read from the output the CLI actually prints', () =>
   assert.deepEqual(parseCodexOutput('Verdict: approve'), { text: 'Verdict: approve', usage: null });
   // A stream with events but no agent message falls back to the raw text, so a review is never dropped.
   assert.equal(parseCodexOutput('{"type":"turn.completed"}').text, '{"type":"turn.completed"}');
+});
+
+test('the freshest snapshot from any machine decides, and one older than half an hour is ignored', () => {
+  const now = Date.parse('2026-11-15T04:40:00Z');
+  const snapshot = (machine, minutesAgo, sessionLeft) => JSON.stringify({
+    version: 1,
+    machine,
+    takenAt: new Date(now - minutesAgo * 60000).toISOString(),
+    providers: [
+      { provider: 'codex', instance: 'codex', windows: [
+        { kind: 'session', leftPercent: sessionLeft, resetsAt: '2026-11-15T07:48:00Z' },
+      ] },
+    ],
+  });
+  const env = {
+    USAGE_SNAPSHOT_MAC: snapshot('mac', 45, 90),
+    USAGE_SNAPSHOT_VPS: snapshot('vps', 5, 5),
+    USAGE_SNAPSHOT_OMARCHY: '{not json',
+  };
+  const fresh = freshestSnapshot(env, now);
+  assert.equal(fresh.source, 'vps', 'the Mac has published, but its copy is too old to trust');
+  assert.equal(fresh.ageMs, 5 * 60000);
+  assert.equal(readSnapshots(env, now).length, 2, 'a broken snapshot is skipped, not fatal');
+
+  // 5% left in a 5-hour window is fewer than three reviews for a 7%-a-review model, so it is skipped by name and the
+  // fallback reviewer runs. The comment names the machine and the age, so nobody has to guess where the numbers came from.
+  const models = [{ provider: 'codex', model: 'gpt-6.1-sol' }, { provider: 'claude', model: 'claude-sonnet-5-5' }];
+  const called = [];
+  const result = runReviewer(models, 'prompt', '/w', {
+    usageFor: () => undefined,
+    commandAvailable: () => true,
+    sandbox: () => null,
+    caps: capsFor(config),
+    snapshot: fresh,
+    now,
+    invoke: (provider) => {
+      called.push(provider);
+      return { status: 0, text: 'Looks right.\nVerdict: approve' };
+    },
+  });
+  assert.deepEqual(called, ['claude']);
+  assert.match(skippedLine(result), /codex\/gpt-6\.1-sol \(fewer than 3 reviews left in its session window\)/);
+  assert.equal(usageNote(result), '\nUsage: vps, 5 min old');
+
+  // Nothing fresh: no snapshot at all, so the local hub decides exactly as before.
+  assert.equal(freshestSnapshot({ USAGE_SNAPSHOT_MAC: snapshot('mac', 31, 90) }, now), null);
+  assert.equal(freshestSnapshot({}, now), null);
+  assert.equal(usageNote({}), '', 'a review with no snapshot carries no line');
+
+  // The freshest wins whatever order the variables come in.
+  const both = { USAGE_SNAPSHOT_MAC: snapshot('mac', 29, 90), USAGE_SNAPSHOT_OMARCHY: snapshot('omarchy', 1, 90) };
+  assert.equal(freshestSnapshot(both, now).source, 'omarchy');
+  // A snapshot whose timestamp cannot be read is ignored rather than trusted.
+  assert.equal(freshestSnapshot({ USAGE_SNAPSHOT_MAC: JSON.stringify({ machine: 'mac', providers: [] }) }, now), null);
+});
+
+test('a snapshot names the pool an OpenCode model really spends, and the hub fills in anything it lacks', () => {
+  const now = Date.parse('2026-11-15T04:40:00Z');
+  const snapshot = {
+    source: 'mac',
+    takenAt: now - 60000,
+    ageMs: 60000,
+    providers: [
+      { provider: 'opencode', instance: 'opencode-go', windows: [
+        { kind: 'weekly', leftPercent: 50, resetsAt: '2099-01-01T00:00:00Z' },
+      ] },
+    ],
+  };
+  const go = snapshotUsage(snapshot, { provider: 'opencode', model: 'opencode-go/deepseek-v4.1-flash' });
+  assert.equal(go.windows[0].usedPercent, 50, 'what is left becomes what was used, the way the hub reports it');
+  assert.equal(go.windows[0].windowDurationMins, 10080, 'a kind has a length, so the pace rule still works');
+  // The Z.ai connector is a different pool: a snapshot with no entry for it leaves that model to the local hub.
+  assert.equal(snapshotUsage(snapshot, { provider: 'opencode', model: 'zai-coding-plan/glm-5.3' }), undefined);
+
+  // So a model the snapshot does not cover still runs, while one it says is empty is skipped.
+  const models = [
+    { provider: 'opencode', model: 'opencode-go/deepseek-v4.1-flash' },
+    { provider: 'opencode', model: 'zai-coding-plan/glm-5.3' },
+  ];
+  const { candidates, skipped } = reviewerCandidates(models, {
+    usageByModel: { 'opencode/opencode-go/deepseek-v4.1-flash': snapshotUsage(snapshot, models[0]) },
+    usageByProvider: { opencode: { windows: [{ kind: 'session', usedPercent: 100 }] } },
+    caps: capsFor(config),
+    now,
+  });
+  assert.deepEqual(candidates.map((model) => model.model), ['opencode-go/deepseek-v4.1-flash'],
+    'the snapshot says this connector has 50% left, so it runs even though the hub says OpenCode is empty');
+  assert.match(skipped[0].reason, /no usage left in its session window/);
+  assert.equal(skipped[0].model, 'zai-coding-plan/glm-5.3',
+    'and the connector the snapshot does not name is judged by the hub, not by its sibling');
 });
 
 test('an unknown flag or variant tries the next reviewer instead of failing the review', () => {

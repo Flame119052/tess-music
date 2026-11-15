@@ -136,6 +136,69 @@ export function providerHasUsage(usage, now = Date.now()) {
   return usageProblem(usage, now) === null;
 }
 
+// A usage snapshot from one of Krish's machines, published every few minutes as a repository variable (tools/usage-publish).
+// It is quota only: the share left per window, when each resets, and a pace sentence. The reviewer uses the freshest one no
+// older than half an hour and names it in the comment; anything older is ignored, so a sleeping Mac falls back to the local
+// hub instead of deciding from a window that has since been spent.
+export const snapshotVariables = ['USAGE_SNAPSHOT_MAC', 'USAGE_SNAPSHOT_VPS', 'USAGE_SNAPSHOT_OMARCHY'];
+export const snapshotMaxAgeMs = 30 * 60 * 1000;
+// The hub prints a window's length only in its own detail view, and the pace rule needs one. A kind is a length: the
+// provider renews these windows on a fixed clock, so this is a fact about the provider rather than a guess about the data.
+export const windowMinsByKind = { session: 300, weekly: 10080, monthly: 43200 };
+
+export function parseSnapshot(name, raw, now = Date.now()) {
+  let data;
+  try { data = JSON.parse(raw); } catch { return null; }
+  if (!data || !Array.isArray(data.providers)) return null;
+  const takenAt = Date.parse(data.takenAt);
+  if (!Number.isFinite(takenAt)) return null;
+  const machine = typeof data.machine === 'string' && data.machine ? data.machine
+    : String(name).replace(/^USAGE_SNAPSHOT_/, '').toLowerCase();
+  return { source: machine, takenAt, ageMs: now - takenAt, providers: data.providers };
+}
+
+export function readSnapshots(env = process.env, now = Date.now()) {
+  return snapshotVariables.flatMap((name) => {
+    const raw = env[name];
+    if (!raw) return [];
+    const parsed = parseSnapshot(name, raw, now);
+    return parsed ? [parsed] : [];
+  });
+}
+
+export function freshestSnapshot(env = process.env, now = Date.now()) {
+  return readSnapshots(env, now)
+    .filter((snapshot) => snapshot.ageMs >= 0 && snapshot.ageMs <= snapshotMaxAgeMs)
+    .sort((a, b) => a.ageMs - b.ageMs)[0] || null;
+}
+
+// A snapshot entry in the shape the hub produces, so one set of rules judges both. A model names its own pool where the
+// providers differ: `opencode-go/deepseek-v4.1-flash` is the `opencode-go` connector, not OpenCode as a whole.
+export function snapshotUsage(snapshot, model) {
+  const entries = snapshot?.providers || [];
+  // OpenCode has one pool per connector, so its instance is the part of the model name before the slash and never the
+  // provider as a whole: the Z.ai plan and OpenCode Go are separate allowances.
+  const instance = model.provider === 'opencode' ? String(model.model).split('/')[0] : model.provider;
+  const entry = entries.find((item) => item.instance === instance)
+    || (model.provider === 'opencode' ? undefined : entries.find((item) => item.provider === instance));
+  if (!entry || !Array.isArray(entry.windows)) return undefined;
+  return {
+    windows: entry.windows.map((window) => ({
+      kind: window.kind,
+      ...(typeof window.leftPercent === 'number' ? { usedPercent: 100 - window.leftPercent } : {}),
+      ...(window.resetsAt ? { resetsAt: window.resetsAt } : {}),
+      ...(typeof windowMinsByKind[window.kind] === 'number' ? { windowDurationMins: windowMinsByKind[window.kind] } : {}),
+    })),
+  };
+}
+
+export const snapshotAge = (ageMs) => (ageMs < 60 * 1000 ? 'under a minute old' : `${Math.round(ageMs / 60000)} min old`);
+
+// The line the posted comment carries, so a reader knows which machine's numbers decided the review and how old they were.
+export function usageNote(result) {
+  return result?.snapshot ? `\nUsage: ${result.snapshot.source}, ${snapshotAge(result.snapshot.ageMs)}` : '';
+}
+
 // Quota the owner keeps back, from `.github/agents.json` `reserve`: a number of % left per window kind, an optional
 // plain-English note, and an optional `until` date (a date keeps the reservation through the end of that day, UTC).
 export function reservationEnd(until) {
@@ -165,6 +228,7 @@ export function reserveProblem(usage, reserve, now = Date.now()) {
 export function reviewerCandidates(models, context = {}) {
   const {
     usageByProvider = {},
+    usageByModel = {},
     commandAvailable = () => true,
     sandboxProblem = () => null,
     reserve = {},
@@ -175,7 +239,8 @@ export function reviewerCandidates(models, context = {}) {
   const skipped = [];
   for (const model of models) {
     const details = providerDetails[model.provider];
-    const usage = usageByProvider[model.provider];
+    // A model-specific reading (from a snapshot) wins over the provider-wide one the hub gives.
+    const usage = usageByModel[modelKey(model)] ?? usageByProvider[model.provider];
     const reason = !details ? 'unknown provider'
       : !commandAvailable(details.command) ? 'no local CLI'
         : reserveProblem(usage, reserve[model.provider], now)
@@ -637,12 +702,17 @@ export function runReviewer(models, prompt, work, deps = {}) {
     sandbox = (provider) => sandboxProblem(),
     reserve = {},
     caps = defaultCaps,
+    snapshot = null,
     now = Date.now(),
     invoke = cliInvocation,
   } = deps;
   const usageByProvider = Object.fromEntries(models.map(({ provider }) => [provider, usageFor(provider)]));
+  // A fresh snapshot replaces the hub for the models it covers, and the comment names which machine it came from.
+  const usageByModel = Object.fromEntries(models
+    .map((model) => [modelKey(model), snapshot ? snapshotUsage(snapshot, model) : undefined])
+    .filter(([, usage]) => usage));
   const { candidates, skipped: filtered } = reviewerCandidates(models, {
-    usageByProvider, commandAvailable, sandboxProblem: sandbox, reserve, caps, now,
+    usageByProvider, usageByModel, commandAvailable, sandboxProblem: sandbox, reserve, caps, now,
   });
 
   const skipped = filtered.map(({ provider, model, reason }) => `${provider}/${model} (${reason})`);
@@ -655,7 +725,7 @@ export function runReviewer(models, prompt, work, deps = {}) {
       continue;
     }
     if (result.status === 0 && `${result.text ?? result.stdout ?? ''}`.trim()) {
-      return { ...candidate, text: `${result.text ?? result.stdout}`.trim(), usage: result.usage || null, skipped };
+      return { ...candidate, text: `${result.text ?? result.stdout}`.trim(), usage: result.usage || null, skipped, snapshot };
     }
     const reason = skipReason(result);
     if (reason) {
@@ -734,6 +804,8 @@ async function main() {
   const repo = process.env.GITHUB_REPOSITORY || 'Flame119052/tess-music';
   const config = JSON.parse(readFileSync(`${root}.github/agents.json`, 'utf8'));
   const caps = capsFor(config);
+  // The freshest snapshot from any of Krish's machines, or none: with none, selection reads the local hub as before.
+  const snapshot = freshestSnapshot();
   const issue = apiJson(`repos/${repo}/issues/${number}`);
 
   if (role === 'approach') {
@@ -745,13 +817,14 @@ async function main() {
       result = runReviewer(pick.models, reviewPrompt(role, { issue: issueText(issue), approach }), work, {
         reserve: config.reserve,
         caps,
+        snapshot,
       });
     } finally {
       rmSync(work, { recursive: true, force: true });
     }
     const verdict = verdictFor(result.text);
     const review = result.text.replaceAll(marker, '').replace(/\n?Verdict:\s*(?:approve|changes needed)\s*$/i, '').trim();
-    postComment(repo, number, `${marker}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${usedLine(result, caps)}${skippedLine(result)}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
+    postComment(repo, number, `${marker}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${usedLine(result, caps)}${usageNote(result)}${skippedLine(result)}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
     return;
   }
 
@@ -792,13 +865,13 @@ async function main() {
       issue: linked ? issueText(linked) : '(no linked issue found)',
       approach,
       diff,
-    }), work, { reserve: config.reserve, caps });
+    }), work, { reserve: config.reserve, caps, snapshot });
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
   const verdict = verdictFor(result.text);
   const review = result.text.replaceAll(marker, '').replace(/\n?Verdict:\s*(?:approve|changes needed)\s*$/i, '').trim();
-  postComment(repo, number, `${marker}\nTier: ${tier}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${usedLine(result, caps)}${skippedLine(result)}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
+  postComment(repo, number, `${marker}\nTier: ${tier}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${usedLine(result, caps)}${usageNote(result)}${skippedLine(result)}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
 }
 
 if (resolve(process.argv[1] || '') === fileURLToPath(import.meta.url)) {

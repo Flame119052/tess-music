@@ -141,5 +141,11 @@ jobs:
           REVIEW_NUMBER: ${{ needs.gate.outputs.number }}
           REVIEW_TIER: ${{ needs.gate.outputs.tier }}
           REVIEW_HEAD_SHA: ${{ needs.gate.outputs.head_sha }}
+          # Quota-only snapshots from Krish's machines (tools/usage-publish): % left per window, reset times, pace, a
+          # timestamp and the machine's name. No keys and no account names. Empty until a machine first publishes, and the
+          # reviewer ignores any snapshot older than 30 minutes.
+          USAGE_SNAPSHOT_MAC: ${{ vars.USAGE_SNAPSHOT_MAC }}
+          USAGE_SNAPSHOT_VPS: ${{ vars.USAGE_SNAPSHOT_VPS }}
+          USAGE_SNAPSHOT_OMARCHY: ${{ vars.USAGE_SNAPSHOT_OMARCHY }}
           GH_TOKEN: ${{ github.token }}
         run: node tools/agent-review.mjs "$REVIEW_ROLE" "$REVIEW_NUMBER"
