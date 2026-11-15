@@ -79,7 +79,8 @@ fi
 # Any use of the folder counts, not just the bare quoted name: `rm -rf "$APPS/xpui"` and `ditto "$1" "${APPS}"` write
 # the live interface in place exactly as `ditto "$1" "$APPS"` does, and a kill halfway leaves Spotify half-updated.
 # So each statement is split out and a write verb in it that names the folder fails the gate. The one allowed write
-# shape is a copy whose *source* is the folder (a read out); ditto is the only verb that may do that.
+# shape is a copy whose *source* is the folder and whose later words do not name it (a read out); ditto is the only
+# verb that may do that.
 apps_write() {
   awk '
     BEGIN {
@@ -106,7 +107,23 @@ apps_write() {
       parts[++n] = cur
       return n
     }
-    function statement_writes(stmt,   i, c, q, k, v, args, a, n, verbs) {
+    # The words after a verb, quotes removed and flags kept: `ditto "$APPS/" "$TMP/a"` is two words, the first naming
+    # the folder. Positions matter here — a source is a read and a destination is a write.
+    function argv(s,   i, c, q, cur, n) {
+      delete WARGS
+      n = 0; cur = ""; q = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (q != "") { if (c == q) q = ""; else cur = cur c; continue }
+        if (c == "\"" || c == QUOTE) { q = c; continue }
+        if (c == " " || c == "\t") { if (cur != "") { WARGS[++n] = cur; cur = "" }; continue }
+        cur = cur c
+      }
+      if (cur != "") WARGS[++n] = cur
+      return n
+    }
+    function is_folder_word(w) { return w ~ /^[$][{]?(APPS|A0)([^A-Za-z0-9_]|$)/ }
+    function statement_writes(stmt,   i, c, q, k, v, args, a, n, verbs, nw, x, src, ok) {
       n = split(VERBS, verbs, " ")
       q = ""
       for (i = 1; i <= length(stmt); i++) {
@@ -126,11 +143,16 @@ apps_write() {
           if (isword(substr(stmt, i - 1, 1)) || isword(substr(stmt, i + length(v), 1))) continue
           args = substr(stmt, i + length(v))
           if (!has_folder(args)) continue
-          if (v == "ditto") {                 # ditto "$APPS" "$DEST" copies the folder out; any other place writes it
-            a = args
-            sub(/^[[:space:]]+/, "", a)
-            if (substr(a, 1, 1) == "\"" || substr(a, 1, 1) == QUOTE) a = substr(a, 2)
-            if (a ~ /^[$][{]?(APPS|A0)([^A-Za-z0-9_]|$)/) continue
+          # ditto is the one verb allowed to name the folder, and only as a source with nothing after it that names the
+          # folder too: `ditto "$APPS" "$TMP/a"` reads it out, while `ditto "$APPS" "$APPS/xpui"` and
+          # `ditto "$APPS/xpui" "$APPS"` write the live interface in place, which a kill halfway leaves half-updated.
+          if (v == "ditto") {
+            nw = argv(args)
+            src = 0
+            for (x = 1; x <= nw; x++) if (WARGS[x] !~ /^-/) { src = x; break }
+            ok = src > 0 && is_folder_word(WARGS[src])
+            for (x = src + 1; ok && x <= nw; x++) if (is_folder_word(WARGS[x])) ok = 0
+            if (ok) continue
           }
           return 1
         }
@@ -166,8 +188,17 @@ apps_write_fixture caught 'ditto "$1" $APPS'
 apps_write_fixture caught 'cp -R "$1" "$APPS/"'
 apps_write_fixture caught 'mv "$APPS" "$TMP/a"'
 apps_write_fixture caught 'touch "$A0/xpui.spa"'
+# A copy is only a read out when the folder is the source and nothing after it names the folder: these four write the
+# live interface in place, so a run killed halfway leaves Spotify half-updated.
+apps_write_fixture caught 'ditto "$APPS" "$APPS"'
+apps_write_fixture caught 'ditto "$APPS" "$APPS/xpui"'
+apps_write_fixture caught 'ditto "$APPS/xpui" "$APPS"'
+apps_write_fixture caught 'ditto "$APPS/xpui" "$APPS/other"'
 apps_write_fixture allowed 'ditto "$APPS" "$TMP/a"'
 apps_write_fixture allowed 'ditto "$APPS/" "$TMP/a"'
+apps_write_fixture allowed 'ditto "$APPS" "$bak/Apps"'
+apps_write_fixture allowed 'ditto "$APPS" "$ORIG.new"'
+apps_write_fixture allowed 'ditto -x -k "$APPS/x.zip" "$TMP/mini"'
 apps_write_fixture allowed '"$PATCHER" swap-apps "$APPS" "$1"'
 apps_write_fixture allowed '"$PATCHER" can-write "$APPS"'
 apps_write_fixture allowed '[ -f "$APPS/xpui.spa" ] || fail "Spotify is incomplete"'
