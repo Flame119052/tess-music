@@ -259,17 +259,20 @@ To allow it once: in System Settings › Privacy & Security › App Management, 
 }
 # Spotify's interface folder is only ever replaced by switching in a complete copy: the copy is made next to it and
 # checked, then two renames swap them, and if anything fails the original stays. Never delete-then-copy: a block
-# halfway through that left Spotify with no interface at all (black window). tools/check-safety.sh enforces this.
+# halfway through that left Spotify with no interface at all (black window). The copy and the swap run inside
+# tess-patcher, not in this script: macOS's App Management protection denies /usr/bin/ditto when launchd starts a
+# script under /bin/zsh, so a shell copy in the background could never update Spotify. tools/check-safety.sh enforces it.
 swap_apps() {
-  _new="$APPS.tess-new"; _old="$APPS.tess-old"
-  if [ ! -d "$APPS" ] && [ -d "$_old" ]; then mv "$_old" "$APPS" || return 1; fi
-  rm -rf "$_new"
-  ditto "$1" "$_new" || { rm -rf "$_new"; return 1; }
-  [ -s "$_new/xpui.spa" ] || [ -s "$_new/xpui/index.html" ] || { rm -rf "$_new"; return 1; }
-  rm -rf "$_old"
-  if [ -d "$APPS" ]; then mv "$APPS" "$_old" || { rm -rf "$_new"; return 1; }; fi
-  mv "$_new" "$APPS" || { [ -d "$_old" ] && mv "$_old" "$APPS"; rm -rf "$_new"; return 1; }
-  rm -rf "$_old"
+  [ -x "$PATCHER" ] || { log "Spotify swap: tess-patcher is missing; Spotify left as it was"; return 1; }
+  "$PATCHER" swap-apps "$APPS" "$1" >> "$LOG" 2>&1
+  local rc=$?
+  case $rc in
+    0) return 0 ;;
+    3) log "Spotify swap: macOS App Management is blocking tess-patcher; Spotify left as it was" ;;
+    4) log "Spotify swap: Spotify's files belong to another user; Spotify left as it was" ;;
+    *) log "Spotify swap: tess-patcher couldn't switch the folder (code $rc); Spotify left as it was" ;;
+  esac
+  return 1
 }
 reapply() {
   [ -f "$APPS/xpui.spa" ] && [ ! -d "$APPS/xpui" ] || return 0

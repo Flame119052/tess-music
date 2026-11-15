@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 fail() { echo "SAFETY CHECK FAILED: $1"; exit 1; }
 
 # 1. no delete-then-copy of Spotify's folder anywhere
-if grep -nE 'rm -rf "?\$(APPS|A0)"?( |;|$)' installer/*.sh; then fail "a script deletes Spotify's interface folder directly; use swap_apps"; fi
+if grep -nE 'rm -rf "?\$(APPS|A0)"?( |;|$)' installer/*.sh; then fail "a script deletes Spotify's interface folder directly; use tess-patcher swap-apps"; fi
 if grep -rn 'RemoveAll(appDestPath)' patcher/src; then fail "the patcher deletes Spotify's interface folder directly; use swapApps"; fi
 
 # 2. every script parses
@@ -61,16 +61,17 @@ if grep -nE 'main/installer/(tess-install|legacy)' installer/install.sh; then
   fail "installer/install.sh has a fallback installer; a channel must publish a signed installer"
 fi
 
-# The three shell swaps protect the same precious folder and must not drift.
-swap_hashes=$(
-  for f in installer/tess-install.sh installer/updater.sh installer/doctor.sh; do
-    awk '/^swap_apps\(\) \{/{copy=1} copy{print} copy && /^\}/{exit}' "$f" | shasum -a 256 | cut -d' ' -f1
-  done | sort -u | wc -l | tr -d ' '
-)
-[ "$swap_hashes" = 1 ] || fail "the three swap_apps bodies differ"
-recovery_count=$(grep -lF 'if [ ! -d "$APPS" ] && [ -d "$_old" ]; then mv "$_old" "$APPS" || return 1; fi' \
-  installer/tess-install.sh installer/updater.sh installer/doctor.sh | wc -l | tr -d ' ')
-[ "$recovery_count" = 3 ] || fail "every swap_apps must restore an interrupted .tess-old swap first"
+# The folder swap runs inside tess-patcher, never in a shell: macOS's App Management protection denies /usr/bin/ditto
+# when launchd starts a script under /bin/zsh, so a background theme update could never reach Spotify that way. Each
+# script that swaps must call the patcher's swap-apps, and no script may build or move Spotify's folder itself.
+grep -q 'case "swap-apps":' patcher/spicetify.go || fail "the patcher has no swap-apps command"
+for f in installer/tess-install.sh installer/updater.sh installer/doctor.sh; do
+  awk '/^swap_apps\(\) \{/{copy=1} copy{print} copy && /^\}/{exit}' "$f" | grep -q 'swap-apps "\$APPS"' \
+    || fail "$f's swap_apps does not run the swap inside tess-patcher"
+done
+if grep -nE '\$(APPS|A0)\.tess-(new|old)' installer/*.sh; then
+  fail "a shell script swaps Spotify's interface folder itself; use tess-patcher swap-apps"
+fi
 # 8. the install line pins the committed verifier, and the verifier is stored under its own hash
 pin=$(sed -n "s/^VERIFY_SHA='\([0-9a-f]\{64\}\)'$/\1/p" installer/install.sh)
 [ -n "$pin" ] || fail "installer/install.sh has no VERIFY_SHA pin"
