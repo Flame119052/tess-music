@@ -18,7 +18,9 @@ const www = join(box, 'www');
 const main = join(www, 'main', 'installer');
 const dist = join(www, 'stable', 'dist');
 const verifyDir = join(main, 'verify');
+const legacyDir = join(main, 'legacy');
 mkdirSync(verifyDir, { recursive: true });
+mkdirSync(legacyDir, { recursive: true });
 mkdirSync(dist, { recursive: true });
 
 // A stand-in for the committed tess-verify: accepts only the exact signature text "good". It is stored under its
@@ -31,7 +33,9 @@ const installer = '#!/bin/sh\necho installer-ran > "$TESS_TEST_MARKER"\n[ -x "$T
 writeFileSync(join(dist, 'components.txt'), 'version 0.2.22\n');
 writeFileSync(join(dist, 'install.sh'), installer);
 writeFileSync(join(dist, 'install.sig'), 'good\n');
-writeFileSync(join(main, 'tess-install.sh'), installer);
+const legacy = join(legacyDir, 'tess-install-pre-signed.sh');
+writeFileSync(legacy, installer);
+const legacySha = createHash('sha256').update(installer).digest('hex');
 
 let serverStatus = 0;
 const server = createServer((req, res) => {
@@ -43,12 +47,12 @@ const server = createServer((req, res) => {
 });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}`;
-const env = { ...process.env, TESS_TEST: '1', TESS_TEST_BASE: base, TESS_VERIFY_SHA: sha, TESS_CHANNEL: 'stable' };
+const env = { ...process.env, TESS_TEST: '1', TESS_TEST_BASE: base, TESS_VERIFY_SHA: sha, TESS_LEGACY_SHA: legacySha, TESS_CHANNEL: 'stable' };
 const marker = join(box, 'ran');
 // execFile, not execFileSync: this process is also the HTTP server
-const run = async () => {
+const run = async (extra = {}) => {
   try {
-    const { stdout } = await pexec('sh', [join(root, 'installer/install.sh')], { encoding: 'utf8', env: { ...env, TESS_TEST_MARKER: marker } });
+    const { stdout } = await pexec('sh', [join(root, 'installer/install.sh')], { encoding: 'utf8', env: { ...env, TESS_TEST_MARKER: marker, ...extra } });
     return { status: 0, stdout };
   } catch (e) {
     return { status: e.code ?? 1, stdout: e.stdout || '', stderr: e.stderr || '' };
@@ -81,15 +85,24 @@ try {
   }
   assert.equal(outcome(), '', 'nothing ran after a wrong pin');
 
-  // 4. a channel with no installer yet falls back to main's installer (temporary, #77)
+  // 4. a channel with no installer yet falls back to the pinned legacy copy (temporary, #77)
   rmSync(join(dist, 'install.sh'), { force: true });
   rmSync(marker, { force: true });
   r = await run();
   assert.equal(r.status, 0, r.stderr);
-  assert.match(outcome(), /installer-ran\nverifier-ok/, "main's installer ran with the checked verifier");
+  assert.match(outcome(), /installer-ran\nverifier-ok/, 'the pinned legacy installer ran with the checked verifier');
   assert.match(r.stdout, /temporary installer/, 'the temporary fallback is announced');
 
-  // 4b. any status other than 404 is an error, not a fallback to main
+  // 4a. the legacy copy is pinned: a changed copy is refused, even though the channel list has no rev
+  writeFileSync(legacy, installer + '# tampered\n');
+  rmSync(marker, { force: true });
+  r = await run();
+  assert.notEqual(r.status, 0, 'a tampered legacy copy exits non-zero');
+  assert.equal(outcome(), '', 'nothing ran after a tampered legacy copy');
+  assert.match(r.stdout, /didn't match its published checksum/, 'the failure names the legacy pin');
+  writeFileSync(legacy, installer);
+
+  // 4b. any status other than 404 is an error, not a fallback to the legacy copy
   writeFileSync(join(dist, 'install.sh'), installer);
   serverStatus = 503;
   rmSync(marker, { force: true });
@@ -117,6 +130,15 @@ try {
   assert.equal(outcome(), '', 'nothing ran when the list could not be checked');
   assert.match(r.stdout, /Couldn't check Tess's stable channel/, 'the failure names the channel check');
 
+  // 4e. the switch: with the fallback disabled, a pre-rev channel with no installer refuses
+  writeFileSync(join(dist, 'components.txt'), 'version 0.2.22\n');
+  rmSync(join(dist, 'install.sh'), { force: true });
+  rmSync(marker, { force: true });
+  r = await run({ TESS_ALLOW_LEGACY_FALLBACK: '0' });
+  assert.notEqual(r.status, 0, 'the disabled fallback exits non-zero');
+  assert.equal(outcome(), '', 'nothing ran with the fallback disabled');
+  assert.match(r.stdout, /no installer ready/, 'the refusal is explained');
+
   // 5. an installer with no signature on the channel is refused (not silently downgraded to main)
   writeFileSync(join(dist, 'install.sh'), installer);
   rmSync(join(dist, 'install.sig'), { force: true });
@@ -132,7 +154,7 @@ try {
   assert.notEqual(r.status, 0, 'network failure exits non-zero');
   assert.equal(outcome(), '', 'network failure runs nothing');
 
-  console.log('install-line tests passed (pin, signature, tamper, missing signature, main fallback, network failure)');
+  console.log('install-line tests passed (pin, signature, tamper, missing signature, legacy fallback, network failure)');
 } finally {
   await new Promise((r) => server.close(r));
   rmSync(box, { recursive: true, force: true });

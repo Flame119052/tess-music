@@ -96,8 +96,9 @@ Both public-channel jobs use the protected GitHub `release` environment and supp
 Install line: `installer/install.sh` (forwarder on `main`) pins the committed verifier's SHA-256, downloads
 `main/installer/verify/<sha>`, checks it, then downloads `$CH/dist/install.sh` and `dist/install.sig` and verifies the
 installer before running it with that verifier → the installer checks `components.txt` before unpacking the patcher.
-A channel published before the first promote has no signed installer; it gets `main`'s installer (temporary, #77), and
-the safety gate fails if that fallback outlives stable's signed installer.
+A channel published before the first promote has no signed installer; it gets the frozen installer pinned in
+`installer/install.sh` (temporary, #77). `ALLOW_LEGACY_FALLBACK=0` switches to refusal, and the safety gate requires
+that once stable carries a signed installer.
 
 ## Secrets
 
