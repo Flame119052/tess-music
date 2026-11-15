@@ -77,6 +77,9 @@ func setupSpotify(t *testing.T) (apps, staged string) {
 	staged = filepath.Join(res, "staged")
 	os.MkdirAll(staged, 0o755)
 	os.WriteFile(filepath.Join(staged, "xpui.spa"), []byte("new"), 0o644)
+	// Spotify's interface is a tree, not one file: the copy has to create folders through the descriptor too.
+	os.MkdirAll(filepath.Join(staged, "xpui", "extensions"), 0o755)
+	os.WriteFile(filepath.Join(staged, "xpui", "extensions", "theme.js"), []byte("js"), 0o644)
 	return apps, staged
 }
 
@@ -117,6 +120,9 @@ func TestSwapAppsReplaces(t *testing.T) {
 	}
 	if b, err := os.ReadFile(filepath.Join(apps, "xpui.spa")); err != nil || string(b) != "new" {
 		t.Fatalf("the staged interface was not switched in: %q, %v", b, err)
+	}
+	if b, err := os.ReadFile(filepath.Join(apps, "xpui", "extensions", "theme.js")); err != nil || string(b) != "js" {
+		t.Fatalf("the folders inside the staged interface were not switched in: %q, %v", b, err)
 	}
 	for _, leftover := range []string{apps + ".tess-new", apps + ".tess-old"} {
 		if _, err := os.Stat(leftover); !os.IsNotExist(err) {
