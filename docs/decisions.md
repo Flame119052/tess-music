@@ -99,9 +99,9 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
 - **D-63 · 13 Nov 2026 · Owner** — Work moves issue → approach comment → PR → `dev` → `beta` → `stable`
   (docs/workflow.md). Dev is live `main`, for the owner's Mac only. Krish *declaring a release* makes beta from every PR
   merged since the last beta. Promoting copies beta to stable.
-  - Reviewer agents run on self-hosted runners labelled `tess-agent`: the Instabox box `tess-reviewer` first, then the
-    owner's VPS and omarchy as backups (D-65). They are started only by allowlisted GitHub accounts tagging
-    `@tess-review`, and only after CI passes.
+  - Reviewer agents run on self-hosted runners labelled `tess-agent`: the Instabox box `tess-reviewer` first, and any
+    `tess-backup` runner (the owner's VPS or omarchy, whichever is idle) when the box does not answer (D-65). They are
+    started only by allowlisted GitHub accounts tagging `@tess-review`, and only after CI passes.
   - The review a change gets depends on which paths it touches. Docs changes get CI only. Normal changes get a lighter
     PR review. Sensitive changes get the strong model on both the approach and the PR.
   - The 5-minute wake check returns for everyone, because a rescue order can now only press D-62's five buttons. It
@@ -110,13 +110,16 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
     doctor after each update, and rolls back on failure.
   - Supersedes D-32 (PRs are now the norm) and the "wake out of every release" part of D-61/D-62. (#71)
 - **D-65 · 14 Nov 2026 · Owner** — A dedicated Instabox box (`tess-reviewer`) is the default reviewer machine, with the
-  VPS (`paperclip-vps`) and then `omarchy` as fallbacks. A review wakes the box through its public `/ready` page and
-  takes it only when its runner answers that it is active and idle; otherwise the job goes to a backup by label.
+  VPS (`paperclip-vps`) and `omarchy` as equal fallbacks, whichever the `tess-backup` label finds idle; neither comes
+  first. A review wakes the box through its public `/ready` page and takes it only when its runner answers that it is
+  active and idle; otherwise the job goes to a backup by label.
   *A review needs no macOS and no keys, so a box that exists only for reviews leaves the owner's Mac and Paperclip
   untouched, and costs nothing while it is paused.* Trade-off: it is a third-party host. It holds the reviewer's Claude
   login token, its GitHub runner credentials, and, during a job, that job's `GITHUB_TOKEN` (issues/PR comment write).
   It is made with `--no-vault` and holds no Tess signing or rescue keys. Its runner runs as an unprivileged user, and it
-  reads outside code read-only. Amends D-63's "reviewer agents run on the owner's machines".
+  reads outside code read-only. Trade-off: `/ready` is public, so anyone can keep waking the box instead of letting it
+  pause, which spends free-plan time, and anyone can see when a review is running. Neither stops a review: the box is
+  only asked, and the job falls back to a backup. Amends D-63's "reviewer agents run on the owner's machines".
   (#71)
 
 ## Releases and process

@@ -19,7 +19,7 @@ Only `beta` and `stable` are public. The release workflow does it:
 
 1. **Issue.** Every change starts as an issue. It says the goal, the check, and what blocks it.
 2. **Approach.** The agent picking up the issue posts its plan as a comment: what changes, which files, how it will be checked.
-3. **Approach review.** For changes that need one (see tiers below), the agent tags the reviewer in that comment (`@tess-review approach`). A reviewer agent runs on a self-hosted runner on one of the reviewer machines (Instabox first, then the VPS or omarchy), reads the issue and the plan, and replies **approve** or **changes needed**.
+3. **Approach review.** For changes that need one (see tiers below), the agent tags the reviewer in that comment (`@tess-review approach`). A reviewer agent runs on a self-hosted runner on one of the reviewer machines (Instabox, or whichever backup is idle), reads the issue and the plan, and replies **approve** or **changes needed**.
 4. **PR.** The change lands as a pull request into `main`, with `(#issue)` in its title.
 5. **Checks.** CI (`check.yml`: safety gate, builds, tests) must pass. No AI reviewer runs on a PR whose checks haven't passed.
 6. **PR review.** The agent tags `@tess-review pr`. The reviewer reads the diff against the approved plan and the issue's check, and posts a review.
