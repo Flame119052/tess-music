@@ -108,6 +108,15 @@ try {
   assert.equal(outcome(), '', 'nothing ran when a newer channel has no installer');
   assert.match(r.stdout, /nothing was installed/, 'the failure is explained');
 
+  // 4d. a failed list download is an error, not a cue to fall back
+  rmSync(join(dist, 'components.txt'), { force: true });
+  rmSync(join(dist, 'install.sh'), { force: true });
+  rmSync(marker, { force: true });
+  r = await run();
+  assert.notEqual(r.status, 0, 'a failed list download exits non-zero');
+  assert.equal(outcome(), '', 'nothing ran when the list could not be checked');
+  assert.match(r.stdout, /Couldn't check Tess's stable channel/, 'the failure names the channel check');
+
   // 5. an installer with no signature on the channel is refused (not silently downgraded to main)
   writeFileSync(join(dist, 'install.sh'), installer);
   rmSync(join(dist, 'install.sig'), { force: true });

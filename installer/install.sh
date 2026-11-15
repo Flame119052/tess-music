@@ -24,8 +24,10 @@ chmod +x "$D/tess-verify" || fail "Couldn't prepare Tess's signature checker."
 code=$(curl -sS -L --max-time 60 -w '%{http_code}' -o "$D/install.sh" "$BASE/$CH/dist/install.sh" 2>/dev/null) || code=000
 if [ "$code" = 404 ]; then
   # A channel built after this PR carries a rev. If its installer is missing, that is a fault, not a cue to run
-  # something older from main.
-  if curl -fsSL --max-time 60 "$BASE/$CH/dist/components.txt" 2>/dev/null | grep -q '^rev '; then
+  # something older from main. A failed list download is also a fault: it is not the same as "no rev".
+  list=$(curl -fsSL --max-time 60 "$BASE/$CH/dist/components.txt" 2>/dev/null) \
+    || fail "Couldn't check Tess's $CH channel. Check your connection and try again."
+  if printf '%s\n' "$list" | grep -q '^rev '; then
     fail "Tess's installer is missing on $CH, so nothing was installed. Try again in a few minutes."
   fi
   echo "Tess's installer isn't on $CH yet; using the temporary installer."
