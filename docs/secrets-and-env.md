@@ -30,7 +30,7 @@ How Tess Music stores, loads, and backs up secrets across **local development**,
 - **Releases ([`tools/release.mjs`](../tools/release.mjs)):** Reads `TESS_SIGNING_KEY`, `TESS_CODESIGN_P12`, `TESS_CODESIGN_PASS`, and `TESS_MIRROR_KEY_FILE` from `process.env` in CI, and falls back to `~/.config/tess-signing/` locally.
 - **Promotion ([`tools/promote.mjs`](../tools/promote.mjs)):** Uses `TESS_MIRROR_KEY_FILE` in CI or local git/GitHub auth locally.
 - **Rescue orders ([`tools/rescue.mjs`](../tools/rescue.mjs)):** Always reads `~/.config/tess-signing/rescue.pem` directly so the rescue key never needs to live in CI or `.env`.
-- **Sandbox testing ([`installer/tess-install.sh`](../installer/tess-install.sh)):** Uses `TESS_TEST=1`, `TESS_HOME`, `TESS_CONFIG`, `TESS_SPOTIFY`, and `TESS_CHANNEL` (`stable` | `beta` | `dev`). See [`.env.example`](../.env.example).
+- **Sandbox testing ([`installer/tess-install.sh`](../installer/tess-install.sh)):** Uses `TESS_TEST=1`, `TESS_HOME`, `TESS_CONFIG`, `TESS_SPOTIFY`, and `TESS_CHANNEL` (`stable` | `beta` | `dev`). See [`.env.example`](../.env.example). A checkout's copy of any installer script refuses to act outside a sandbox — sourcing one does nothing at all — and needs `TESS_REAL_INSTALL=1` before it will run on a real Mac ([#107](https://github.com/Flame119052/tess-music/issues/107)).
 
 ## 4. Offline & cloud key backups
 

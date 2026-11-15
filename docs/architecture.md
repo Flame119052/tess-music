@@ -75,6 +75,7 @@ Its files go back to stock (`Apps/xpui.spa`). The updater notices (LaunchAgent W
 | Permission check first | `tess-patcher can-write` | macOS blocking mid-change |
 | Safety copy + repair | `original-<ver>/`, patcher backup, known stock SHA-256s | lost interface files |
 | Release gate | `tools/check-safety.sh` (CI + release script) | shipping a destructive or unparsable script |
+| Script entry guard | the same block at the top of every `installer/*.sh` entry point, gated by `tools/check-safety.sh` and proved by `tools/test-script-guards.mjs` | an agent or a person running the real install, update, repair or uninstall by accident: a sourced copy, or a checkout's copy (#107) |
 | Signed content | Ed25519 release key (CI secret + Krish's Mac) | tampered downloads |
 | Pinned verifier | `installer/install.sh` + `installer/verify/<sha>` | a channel or mirror swapping the checker and installer together |
 | Signed envelope + `rev` floor | `dist/manifest.json`, `components.txt`, loader | a correctly signed but older release (downgrade) |
@@ -108,6 +109,12 @@ Install line: `installer/install.sh` (forwarder on `main`) pins the committed ve
 installer before running it with that verifier → the installer checks `components.txt` before unpacking the patcher.
 A channel with no signed installer refuses to install: the forwarder checks the verifier's pin and then stops with a
 clear message. There is no fallback to `main`; after the first promote stable carries its own signed installer.
+
+Every script that can act on a Mac — `install.sh`, `tess-install.sh`, `updater.sh`, `doctor.sh`, `rescue.sh`,
+`uninstall.sh`, `wake.sh`, `tess-command.sh` — refuses to act when it is sourced, and, outside `TESS_TEST=1`, refuses
+to run from a git checkout or worktree unless `TESS_REAL_INSTALL=1` is set (#107). The installed copies keep working:
+they are not checkout files, and the published install line arrives through a pipe, which names no file. `installer/redact.sh`
+is a library, so it is the one file that is meant to be sourced.
 
 ## Secrets
 

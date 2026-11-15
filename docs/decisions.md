@@ -345,6 +345,19 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   it could not live in `package main` — that package's `init()` exits before any test runs, and does so on a real Mac's
   config. *Trade-off:* one more file in `src/cmd`, and the command is now reachable from a package that already has
   tests.
+- **D-85 · 15 Nov 2026 · Agent** — Every script that can act on a Mac (`install.sh`, `tess-install.sh`, `updater.sh`,
+  `doctor.sh`, `rescue.sh`, `uninstall.sh`, `wake.sh`, `tess-command.sh`) carries the same guard block at the top.
+  Sourcing one does nothing and says why; outside `TESS_TEST=1`, a copy inside a git checkout or worktree (a `.git`
+  folder or file above it) exits unless `TESS_REAL_INSTALL=1`. *Why:* an agent testing one function ran
+  `sh -c '. installer/tess-install.sh; …'`, which ran the real installer on the owner's Mac from the stable channel with
+  no sandbox (#107). A checkout's copy must not be able to act at all outside a sandbox. *Not affected:* the installed
+  copies (not checkout files), the published install line (`curl … | sh` names no file, so it is code from a pipe), the
+  sandbox tests (`TESS_TEST=1`), and `installer/redact.sh`, which is a library and stays sourceable. Detection walks up
+  for a `.git` entry instead of asking `git`, because a user's Mac may have no developer tools, and stops at the home
+  folder so a dotfiles repository in `~` is not mistaken for a checkout. *Trade-off:* a deliberate real run from a
+  checkout needs one environment variable, and the block is copied into every script (the gate compares the copies byte
+  for byte, `tools/test-script-guards.mjs` proves the behaviour) rather than living in one library, because each
+  installed script has to stand alone.
 
 ## Releases and process
 
