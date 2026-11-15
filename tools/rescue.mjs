@@ -2,7 +2,7 @@
 // Signed with the rescue key, ~/.config/tess-signing/rescue.pem, which exists only on the owner's Mac (never in
 // GitHub, never in CI).
 //
-//   node tools/rescue.mjs <action> [--days 3] [--only <install id>,<install id>] [--yes]
+//   node tools/rescue.mjs <action> [--days 3] [--only <install id>,<install id>] [--timeout 1800] [--yes]
 //
 // Actions (the only things a rescue line can do; they are fixed in installer/rescue.sh, an order can't add one):
 //   check            Tess's doctor checks Tess and Spotify and sends a report
@@ -11,6 +11,8 @@
 //   restore-spotify  Tess is taken out of Spotify and Spotify's own interface put back
 //   uninstall        Tess is removed completely
 // To try it on one Mac first, use --only with that Mac's install id (tess report prints it).
+// --timeout (60-3600 seconds, half an hour by default) is how long the action may run before the Mac stops it, and the
+// limit is written in the order so the Mac that ran it says which limit it passed.
 import { execFileSync } from 'node:child_process';
 import { createPrivateKey, sign } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -22,10 +24,16 @@ const ACTIONS = ['check', 'update', 'repair', 'restore-spotify', 'uninstall'];
 const args = process.argv.slice(2);
 const opt = (n) => { const i = args.indexOf(`--${n}`); return i >= 0 ? args[i + 1] : undefined; };
 const action = args[0];
-if (!ACTIONS.includes(action)) { console.error(`usage: node tools/rescue.mjs <${ACTIONS.join('|')}> [--days 3] [--only id,id]`); process.exit(1); }
+if (!ACTIONS.includes(action)) { console.error(`usage: node tools/rescue.mjs <${ACTIONS.join('|')}> [--days 3] [--only id,id] [--timeout 1800]`); process.exit(1); }
 const days = Number(opt('days') || 3);
 const only = (opt('only') || '').split(',').filter(Boolean);
 if (only.some((i) => !/^[0-9a-f]{32}$/.test(i))) { console.error('--only takes install ids (32 hex characters)'); process.exit(1); }
+// The Mac clamps this too; refusing a silly number here is kinder than a surprise half an hour later.
+const timeoutArg = opt('timeout');
+const timeout = timeoutArg === undefined ? 0 : Number(timeoutArg);
+if (timeoutArg !== undefined && (!Number.isInteger(timeout) || timeout < 60 || timeout > 3600)) {
+  console.error('--timeout takes whole seconds between 60 and 3600 (default 1800)'); process.exit(1);
+}
 
 const REPO = 'Flame119052/tess-music';
 // The next serial must be above every order already out. raw.githubusercontent caches for ~5 minutes, so read
@@ -36,11 +44,11 @@ const serial = Math.max(
   Number(read(['https://tess-music-player.janus.ing/v1/wake']).trim().match(/^\d+$/)?.[0] || 0),
 ) + 1;
 const expires = Math.floor(Date.now() / 1000) + days * 86400;
-const order = ['tess-rescue 2', `serial ${serial}`, `expires ${expires}`, ...(only.length ? [`only ${only.join(' ')}`] : []), `action ${action}`].join('\n') + '\n';
+const order = ['tess-rescue 2', `serial ${serial}`, `expires ${expires}`, ...(only.length ? [`only ${only.join(' ')}`] : []), ...(timeout ? [`timeout ${timeout}`] : []), `action ${action}`].join('\n') + '\n';
 const key = createPrivateKey(readFileSync(`${homedir()}/.config/tess-signing/rescue.pem`));
 const sig = sign(null, Buffer.from(order), key).toString('base64');
 
-console.log(`\n${order}---\nRescue order ${serial} (${action}): runs on ${only.length ? `${only.length} Mac(s)` : 'EVERY Tess Mac'}, valid ${days} day(s).`);
+console.log(`\n${order}---\nRescue order ${serial} (${action}): runs on ${only.length ? `${only.length} Mac(s)` : 'EVERY Tess Mac'}, valid ${days} day(s), stopped after ${timeout || 1800}s.`);
 if (!args.includes('--yes')) {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const a = await rl.question('Type "publish" to sign and send it: ');

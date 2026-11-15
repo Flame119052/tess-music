@@ -20,7 +20,7 @@ helper blanked its Spotify).
 
 | # | Priority | Area | What | State / next step |
 | --- | --- | --- | --- | --- |
-| #56 | `P0` | `installer`, `release-ci` | Security audit (DeepSeek V4.1 via OpenCode Go): 25 findings, 2 Critical, 4 High | Open; Phase 1 top priority. |
+| #56 | `P0` | `installer`, `release-ci` | Security audit (DeepSeek V4.1 via OpenCode Go): 25 findings, 2 Critical, 4 High | Open; Phase 1 top priority. Release B (#72) merged: the install line verifies itself, downgrades are refused, the cache is verified, Spicetify's files are vendored. Release C (#73) in review: one privacy filter, a verified `sudo chown`, an escaped path/plist writer, a bounded rescue order with a redacted per-order report, an inbox that fails closed, and an exclusive `can-write` probe. Left open by #73: SEC-06, SEC-12, SEC-17, SEC-21 and most of SEC-24. |
 | #68 | `P1` | `installer`, `release-ci` | Rescue line: start a new order within a minute instead of waiting up to six hours | Shipped to every Mac as the 5-minute wake check (D-63, #75): it reads two public files and starts the updater or the rescue line, which can only run its five actions (#69). Users can turn the rescue line off with `tess rescue off` (#53). |
 | #53 | `P1` | `installer` | Tell users about the rescue line; `tess rescue off`, `tess status` | PR #75 review fixes implemented; sandbox checks cover persistent opt-out, older channel installs, separate wake reads, and the older-script notice. Awaiting CI and reviewer acceptance; not released. |
 | #54 | `P1` | `docs`, `release-ci` | Purge old issue revisions and commit messages with personal details | Waiting on Krish (Phase 1). |

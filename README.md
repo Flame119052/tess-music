@@ -64,11 +64,13 @@ Each Mac has three layers. Each one keeps working when the layer above it is bro
    or CI), with a higher serial than any it has run, not expired, and for every Mac or this Mac's id. An order can only
    name one of five actions built into the current `rescue.sh` (check, update, repair, restore-spotify, uninstall), never a script.
    Rescue lines installed before 13 Nov 2026 keep an older script, which updates never replace, and a signed order for that script can run any command.
-   Publish one with `node tools/rescue.mjs <action> [--days 3] [--only <install id>]`.
+   An order can also carry `timeout <seconds>` (60-3600, half an hour by default): the action is stopped at that limit and the log says so.
+   Publish one with `node tools/rescue.mjs <action> [--days 3] [--only <install id>] [--timeout <seconds>]`.
 
 **Reports.** Macs send anonymous health reports (a daily heartbeat, problems, failed installs, rescue results) to
-the inbox, a Cloudflare Worker at `tess-music-player.janus.ing` (`inbox/`). Nothing personal is sent: the home
-folder, account name, computer name and emails are removed. Users can turn reports off with `tess reports off`.
+the inbox, a Cloudflare Worker at `tess-music-player.janus.ing` (`inbox/`). Nothing personal is sent: one filter, used by
+every report path, removes home folders, account names, computer names and emails. Users can turn reports off with
+`tess reports off`, and make a new random install id (so earlier reports cannot be linked) with `tess reports new-id`.
 The inbox has no way to read anything over the web. Read reports with `node tools/reports.mjs`
 (`problems`, `macs`, `mac <id>`, `show <n>`), which needs your Cloudflare login. Its limits keep it inside
 Cloudflare's free allowances: 6 reports a minute per IP, 2,000 a day in total, 24 KB each, kept 30 days.

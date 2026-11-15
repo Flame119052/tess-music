@@ -8,6 +8,8 @@ channel() {
 # A launchd label is per user. Under TESS_TEST, /bin/launchctl is the owner's real jobs.
 real_launchctl() { [ -n "$TESS_TEST" ] && [ "$(command -v launchctl)" = /bin/launchctl ]; }
 lctl() { real_launchctl && return 1; command launchctl "$@"; }
+# A folder name with & or < in it would otherwise produce a launchd file macOS refuses to load.
+xml_esc() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
 case "$1" in
   update) /usr/bin/env TESS_FORCE=1 /bin/zsh "$T/updater.sh" ;;
   repair) V="$T/bin/patcher/tess-verify"; [ -x "$V" ] || { echo "Tess's verifier is missing; run the install line to repair Tess."; exit 1; }; exec /usr/bin/env TESS_CHANNEL="$(channel)" TESS_VERIFY="$V" /bin/sh "$T/installer.sh" ;;
@@ -18,6 +20,12 @@ case "$1" in
     case "$2" in
       off) touch "$T/reports-off"; echo "Health reports are off." ;;
       on) rm -f "$T/reports-off"; echo "Health reports are on." ;;
+      # The id is the only thing that links this Mac's reports over time. A new one breaks the link for good.
+      new-id)
+        rm -f "$T/install-id"
+        od -An -tx1 -N16 /dev/urandom | tr -d ' \n' > "$T/install-id" || { echo "Couldn't write a new install id."; exit 1; }
+        echo "New install id: $(cat "$T/install-id")"
+        echo "Reports from this Mac can no longer be linked to the ones before it." ;;
       *) [ -f "$T/reports-off" ] && echo "Health reports are off." || echo "Health reports are on. (tess reports off)" ;;
     esac ;;
   rescue)
@@ -38,7 +46,7 @@ case "$1" in
           exit 1
         fi
         mkdir -p "$LA"
-        RESCUE_PATH=$(printf '%s' "$T/rescue/rescue.sh" | sed 's/\&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+        RESCUE_PATH=$(xml_esc "$T/rescue/rescue.sh")
         printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
           '<plist version="1.0"><dict><key>Label</key><string>music.tess.rescue</string>' \
           "<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$RESCUE_PATH</string></array>" \

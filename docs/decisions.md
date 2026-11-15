@@ -296,6 +296,55 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   is the checkout the watcher keeps current), so the copy can see the public history — never the reviewed commit. A
   temporary T3 project per review was rejected: a new project gets the environment's default runtime mode, not the
   `approval-required` the gate needs, and `t3 project add` cannot set one. (#71, #105)
+- **D-80 · 15 Nov 2026 · Agent** — One privacy filter for every report path is a function copied byte for byte, not a new
+  installed file: `installer/redact.sh` holds `tess_redact`, the installer's failure report, the doctor's report and the
+  rescue report each carry that same function, and `tools/check-safety.sh` fails if any copy drifts. It removes the home
+  folder of every account on the Mac, this account's short name where no letter touches it, this Mac's computer and local
+  host names, and email addresses.
+  *Why:* every installed script is standalone and may run when the others are broken, so a shared file would either be a
+  new signed part the rescue line cannot rely on or a thing that silently goes missing. The gate removes the real
+  problem: the installer leaked the account name while the doctor removed it (SEC-10), because the two were written
+  separately. *Revisit* if the filter ever needs to change between report paths, which it must not.
+- **D-81 · 15 Nov 2026 · Agent** — Tess takes ownership of a Spotify bundle only after macOS confirms it is Spotify's own
+  app: `CFBundleIdentifier` is `com.spotify.client`, `codesign --verify --strict` passes, `spctl` accepts it, and
+  `codesign --verify --strict --ignore-resources -R=…` tests a code requirement — `anchor apple generic and certificate
+  leaf[subject.OU] = "2FNC3A47ZF"` — against the signature itself, never a line read out of `codesign -dvvv` output. The
+  path is canonicalised first, and a canonical path holding a control character (a newline, a CR, a tab) is refused
+  before any of those checks. Otherwise the install stops and says to reinstall Spotify from Spotify.
+  *Why:* `sudo chown -R` on a path chosen from a running process's name, with no signature check, was a root-owned
+  recursive write on an attacker-influencable folder (SEC-09). `codesign -dvvv` also prints `Executable=<path>`, so a
+  bundle whose folder name carries a newline — reached through a clean-looking symlink that `pwd -P` resolves — put a
+  forged `TeamIdentifier=` line into that output: a text search accepted a team that is not Spotify's, and `spctl`
+  accepts any notarized app. A requirement is evaluated by codesign against the certificate, so no text in a path can
+  stand in for it. Resources are skipped in the requirement call only because the seal is checked on the line before and
+  Tess itself rewrites Spotify's interface files. *Trade-off:* a Spotify copied out of a DMG by hand now stops here
+  rather than being silently taken over — which matches the app-management and DMG warnings elsewhere.
+- **D-82 · 15 Nov 2026 · Agent** — A rescue order may carry `timeout <seconds>` (60-3600, 1800 by default), is stopped at
+  its limit with the limit in the log, and reports only the lines it wrote through the shared filter. The action runs in
+  a process group of its own, and the limit stops the whole group — TERM, a ten-second grace period, then KILL — so
+  nothing the order started outlives it, and the stop is logged only after the group is gone.
+  *Why:* a fixed 15-minute kill could interrupt a real repair silently, and the old upload sent the whole log tail with
+  only the home folder removed (SEC-16). Killing the one pid that was started stopped the action's shell and left its
+  children — the patcher, `ditto`, `curl` — running and reparented, while the log said the order had stopped and the
+  rescue plist's `AbandonProcessGroup` meant launchd would not reap them either. `/bin/sh` turns job control on for the
+  action because zsh refuses `set -m` in a script and the rescue script's own group must not be the one that is killed.
+  *Trade-off:* an order that genuinely needs longer than an hour cannot ask for it; the next order can, and an order whose
+  child ignores TERM takes the grace period before it is killed.
+- **D-83 · 15 Nov 2026 · Agent** — The inbox refuses health reports when `SALT` is missing or shorter than 16 characters,
+  measures the body in bytes, counts every limit with one statement, and stores no character a terminal would hide: C0
+  and C1 controls, bidi overrides and marks, zero-width characters and the byte-order mark are removed on write, and
+  again when `tools/reports.mjs` prints them.
+  *Why:* an unset salt made the stored per-IP keys a plain hash of an IPv4 address (SEC-11), the character-counted body
+  limit allowed a four-times-larger stored report (SEC-14), and check-then-act counters could be overshot by concurrent
+  requests. Anyone can post a report, and a bidi override in one can reorder the line so a path reads as a different
+  path in the owner's terminal. *Trade-off:* a deployment without the secret loses reports instead of storing weak data,
+  which is the way a privacy control should fail.
+- **D-84 · 15 Nov 2026 · Agent** — `tess-patcher can-write` moved into `src/cmd` as `CanWrite`, and probes with
+  `os.CreateTemp` (exclusive, random name) instead of a predictable `.tess-can-write` opened with `O_TRUNC`.
+  *Why:* a planted link at the known name was followed and truncated inside Spotify's bundle (SEC-20), and a Go test for
+  it could not live in `package main` — that package's `init()` exits before any test runs, and does so on a real Mac's
+  config. *Trade-off:* one more file in `src/cmd`, and the command is now reachable from a package that already has
+  tests.
 
 ## Releases and process
 

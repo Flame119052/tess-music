@@ -17,8 +17,8 @@ How Tess gets onto a Mac, runs inside Spotify, keeps itself current, and gets fi
   rescue-off          present after `tess rescue off`: the rescue line and its wake-up stay off
   state/              sha of each installed part, version, stamps (.reapply-tried-<ver>, .asked-<ver>, .checked, .heartbeat)
   original-<ver>/     a copy of this Spotify version's own interface files (for repair)
-  install-id          random id used only in health reports
-  tess                command: update | repair | doctor | report | reports on|off | uninstall
+  install-id          random id used only in health reports (a new one any time: `tess reports new-id`)
+  tess                command: update | repair | doctor | report | reports on|off|new-id | rescue on|off|log | status | uninstall
 ~/.config/tess-patcher/   patcher config + Themes/Tess (the loader theme)
 ~/.local/state/tess-patcher/Backup/   the patcher's backup of Spotify's .spa files
 ~/Applications/Tess Mini.app        ← LaunchAgent music.tess.mini
@@ -47,7 +47,13 @@ Inside Spotify (`Spotify.app/Contents/Resources/Apps/xpui`): Spicetify's wrapper
 `rescue.sh` runs every six hours, at login, and within about 5 minutes of a new order (the wake check sees the new serial on the public `rescue` branch and starts it). The wake check reads that serial only when the rescue line is on, and a failure to read it does not block an update wake-up. `tess rescue off` turns it off for good; `tess status` shows whether it's on and which rescue key it trusts. The installer tells every user this. What it can do is fixed in the file and limited to Tess and Spotify: an
 order names one of five actions (`check`, `update`, `repair`, `restore-spotify`, `uninstall`), each of which calls Tess's
 own installed, signed tool (doctor, updater, the installed installer copy, the patcher's safe restore, the installed
-uninstaller). Rescue lines installed from this release on download nothing from `main`; `repair` runs the installer
+uninstaller). An order's header is `tess-rescue 2`, a serial, an expiry, an optional `only <id>...`, an optional
+`timeout <seconds>` (60-3600, half an hour by default) and the action; nothing in it is executed as a script. The order
+is stopped at its limit, and the stop and the limit go in the log. An action runs in a process group of its own, so the
+limit stops the action and every process it started (the patcher, `ditto`, `curl`), not just the shell that started them;
+nothing of the order is still running when the line is logged. The report sent afterwards covers only the lines that
+order wrote (the log's size is noted before it starts) and passes through the same privacy filter as every other report.
+Rescue lines installed from this release on download nothing from `main`; `repair` runs the installer
 the Mac last installed with. Older installed rescue
 scripts remain unchanged and may still fetch repair and uninstall scripts from `main`. A current rescue script's
 order can't carry a script or a command, so the rescue key can only press those buttons; `tools/test-rescue.mjs` proves scripts, unknown
@@ -78,6 +84,10 @@ Its files go back to stock (`Apps/xpui.spa`). The updater notices (LaunchAgent W
 | Channels | `dev` → declare → `beta` → promote → `stable` | untested builds reaching users |
 | Rescue line | `installer/rescue.sh`, offline rescue key | updates stuck on a Mac |
 | Health reports | `doctor.sh` → inbox | problems nobody reports |
+| One privacy filter | `installer/redact.sh`, copied into the installer, doctor and rescue line, gated by `tools/check-safety.sh` | a report path leaking names, paths or emails because it was written separately |
+| Verified ownership | `codesign`/`spctl` before any `sudo chown`: `codesign --verify --strict -R=…` tests Spotify's team id `2FNC3A47ZF` against the signature itself, and the canonical path is refused if it holds a control character | a password prompt and a root `chown -R` on a folder that is not Spotify |
+| Single-statement inbox limits | `inbox/worker.js` | two requests at once slipping past a capped counter |
+| Invisible characters dropped | `inbox/worker.js`, and again in `tools/reports.mjs` | a bidi override or zero-width character reordering a report line in a terminal |
 
 ## Release pipeline
 
@@ -117,6 +127,13 @@ gitignored `.local/`).
 ## Inbox (`inbox/`)
 
 Cloudflare Worker `tess-inbox`, custom domain `tess-music-player.janus.ing` (Cloudflare Access bypass for that host
-only). `POST /v1/report` (≤32 KB JSON; Cloudflare per-IP limiter, 30/h per IP and 60/day per install in D1, 2,000/day
-total, kept 30 days); `GET /v1/rescue.txt|.sig` from KV; `GET /v1/wake` returns the newest rescue serial from D1
-(KV fallback). No endpoint returns reports.
+only). `POST /v1/report` (≤32 KB JSON counted in bytes; Cloudflare per-IP limiter, 30/h per IP and 60/day per install in
+D1, 2,000/day total, 24 KB of bytes kept per report, kept 30 days); `GET /v1/rescue.txt|.sig` from KV; `GET /v1/wake`
+returns the newest rescue serial from D1 (KV fallback). No endpoint returns reports.
+
+It fails closed: without the `SALT` secret (or with one shorter than 16 characters) `POST /v1/report` answers 503 and
+stores nothing, because the stored per-IP keys would otherwise be a plain hash of an IP address. Every counter is one
+`INSERT ... ON CONFLICT ... DO UPDATE`, so requests that arrive together cannot both read the same number and pass. Every
+text field is stored with its C0 and C1 controls, bidi overrides and marks, zero-width characters and byte-order mark
+removed: a report is read in a terminal, and those characters can reorder a line so an honest path reads as another one.
+`tools/reports.mjs` drops them again on the way out, because rows stored before this rule are still in the database.

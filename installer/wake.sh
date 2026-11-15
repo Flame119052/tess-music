@@ -8,14 +8,17 @@ R="$T/rescue"
 REPO="Flame119052/tess-music"
 CHANNEL=$(sed -n "s/^TESS_PARTS_CHANNEL='\(.*\)'$/\1/p" "$T/updater.env" 2>/dev/null)
 CHANNEL="${CHANNEL:-stable}"
+# A folder name with & or < in it would otherwise produce a launchd file macOS refuses to load.
+xml_esc() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
 
 if [ "$1" = --plist ]; then
+  WAKE_SCRIPT=$(xml_esc "$T/wake.sh")
   cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>music.tess.wake</string>
-<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$T/wake.sh</string></array>
+<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$WAKE_SCRIPT</string></array>
 <key>StartInterval</key><integer>300</integer>
 <key>RunAtLoad</key><true/>
 <key>ProcessType</key><string>Background</string>

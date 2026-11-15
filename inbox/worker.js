@@ -8,22 +8,35 @@
 //    offline rescue key's signature, so even someone who took over this Worker could not make a Mac run anything.
 // Cost: everything here stays inside Cloudflare's free allowances even under a flood. Requests over the per-IP limit
 // are refused by Cloudflare's rate limiter before any database work; past the daily total only one row is read per
-// request; at most DAILY_CAP reports are stored a day (~6 rows written each), kept 30 days, 24 KB each at most.
+// request; at most DAILY_CAP reports are stored a day (~6 rows written each), kept 30 days, 24 KB of bytes each at most.
 const MAX_BODY = 32 * 1024;
+const MAX_STORE = 24 * 1024;
 const DAILY_CAP = 2000;
 const KINDS = new Set(['heartbeat', 'problem', 'doctor', 'rescue', 'install']);
-const short = (v, n) => (typeof v === 'string' ? v.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '').slice(0, n) : null);
+// The stored per-IP keys are only useless without the salt: an unsalted SHA-256 of an IPv4 address is brute-forceable
+// in minutes. A Worker with no usable secret refuses reports instead of weakening that promise.
+const MIN_SALT = 16;
+const utf8 = (s) => new TextEncoder().encode(s);
+// Cut by bytes, not by characters: 24K characters of 4-byte characters is 96 KB in the database.
+const cut = (s, n) => { const b = utf8(s); return b.length <= n ? s : new TextDecoder().decode(b.slice(0, n)); };
+// Nothing every terminal would hide from the person reading a report is stored: C0 and C1 controls, the bidi overrides
+// and marks (they can reorder a line so an honest path reads as something else), zero-width joiners and the byte-order
+// mark, and the invisible operators. Anyone can post here, and tools/reports.mjs prints these values to a terminal.
+const INVISIBLE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
+const short = (v, n) => (typeof v === 'string' ? cut(v.replace(INVISIBLE, ''), n) : null);
 
 async function hit(env, key, max, seconds) {
   const now = Math.floor(Date.now() / 1000);
-  const row = await env.DB.prepare('SELECT n, until FROM limits WHERE k = ?').bind(key).first();
-  if (!row || row.until < now) {
-    await env.DB.prepare('INSERT OR REPLACE INTO limits (k, n, until) VALUES (?, 1, ?)').bind(key, now + seconds).run();
-    return true;
-  }
-  if (row.n >= max) return false;
-  await env.DB.prepare('UPDATE limits SET n = n + 1 WHERE k = ?').bind(key).run();
-  return true;
+  // The count is written by one statement, so two requests that arrive together cannot both read the same number and
+  // pass: the increment is the check, and the row it just wrote is what decides.
+  await env.DB.prepare(
+    `INSERT INTO limits (k, n, until) VALUES (?, 1, ?)
+     ON CONFLICT(k) DO UPDATE SET
+       n = CASE WHEN limits.until <= ? THEN 1 ELSE limits.n + 1 END,
+       until = CASE WHEN limits.until <= ? THEN ? ELSE limits.until END`,
+  ).bind(key, now + seconds, now, now, now + seconds).run();
+  const row = await env.DB.prepare('SELECT n FROM limits WHERE k = ?').bind(key).first();
+  return !!row && row.n <= max;
 }
 
 async function sha(text) {
@@ -31,9 +44,13 @@ async function sha(text) {
   return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
 }
 
-const reply = (status, text = '') => new Response(text, { status, headers: { 'content-type': 'text/plain', 'cache-control': 'no-store' } });
+// A 204 carries no body at all (a Response with one is invalid), so the empty reply passes null rather than "".
+const reply = (status, text = '') => new Response(status === 204 ? null : text, { status, headers: { 'content-type': 'text/plain', 'cache-control': 'no-store' } });
 
 async function report(request, env) {
+  // Fail closed, before anything else: no salt or no database means no safe place to put a report, so none is taken.
+  if (typeof env.SALT !== 'string' || env.SALT.length < MIN_SALT) return reply(503);
+  if (!env.DB) return reply(503);
   if (request.headers.get('content-type') !== 'application/json') return reply(415);
   const len = Number(request.headers.get('content-length') || 0);
   if (!len || len > MAX_BODY) return reply(413);
@@ -42,7 +59,7 @@ async function report(request, env) {
   const day = await env.DB.prepare('SELECT n, until FROM limits WHERE k = ?').bind('all').first();
   if (day && day.until > Date.now() / 1000 && day.n >= DAILY_CAP) return reply(429);
   const raw = await request.text();
-  if (raw.length > MAX_BODY) return reply(413);
+  if (utf8(raw).length > MAX_BODY) return reply(413);
   let r;
   try { r = JSON.parse(raw); } catch { return reply(400); }
   if (!r || typeof r !== 'object' || !/^[0-9a-f]{32}$/.test(r.install || '') || !KINDS.has(r.kind)) return reply(400);
@@ -52,7 +69,7 @@ async function report(request, env) {
   if (!(await hit(env, `id:${r.install}`, 60, 86400))) return reply(429);
   if (!(await hit(env, 'all', DAILY_CAP, 86400))) return reply(429);
   await env.DB.prepare('INSERT INTO reports (at, install, kind, tess, spotify, macos, status, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .bind(Date.now(), r.install, r.kind, short(r.tess, 40), short(r.spotify, 40), short(r.macos, 40), short(r.status, 2000), short(r.body, 24 * 1024))
+    .bind(Date.now(), r.install, r.kind, short(r.tess, 40), short(r.spotify, 40), short(r.macos, 40), short(r.status, 2000), short(r.body, MAX_STORE))
     .run();
   return reply(204);
 }

@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 
 	colorable "github.com/mattn/go-colorable"
 	"github.com/pterm/pterm"
@@ -160,7 +159,7 @@ func main() {
 		// Tess: may this program change files inside Spotify? Exit 0 yes, 3 blocked by macOS (App Management),
 		// 4 the files belong to another user, 1 anything else.
 		// Runs as the patcher itself, so macOS judges it exactly like a real patch; it only adds and removes one empty file.
-		os.Exit(canWrite(commands[1:]))
+		os.Exit(cmd.CanWrite(commands[1:]))
 	case "config":
 		commands = commands[1:]
 		if len(commands) == 0 {
@@ -596,30 +595,4 @@ sidebar_config <0 | 1>
 
 ` + utils.Bold("[Patch]") + `
 Allows you to apply custom patches to Spotify.`)
-}
-
-func canWrite(args []string) int {
-	if len(args) != 1 {
-		return 1
-	}
-	// EPERM is macOS's App Management protection; EACCES is ordinary file ownership
-	code := func(err error) int {
-		if errors.Is(err, syscall.EPERM) {
-			return 3
-		}
-		if errors.Is(err, syscall.EACCES) {
-			return 4
-		}
-		return 1
-	}
-	probe := filepath.Join(args[0], ".tess-can-write")
-	f, err := os.OpenFile(probe, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return code(err)
-	}
-	f.Close()
-	if err := os.Remove(probe); err != nil {
-		return code(err)
-	}
-	return 0
 }
