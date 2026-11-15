@@ -21,6 +21,12 @@ const showJson = (ref, path) => JSON.parse(git('show', `${ref}:${path}`));
 
 run('git', ['-C', root, 'fetch', '-q', 'origin', 'dev', 'beta', 'main']);
 const devManifest = showJson('origin/dev', 'dist/manifest.json');
+const betaRev = (() => { try { return Number(showJson('origin/beta', 'dist/manifest.json').rev) || 0; } catch { return 0; } })();
+const devRev = Number(devManifest.rev) || 0;
+if (devRev < betaRev) {
+  console.error(`dev rev ${devRev} is lower than beta rev ${betaRev}; beta Macs would refuse it`);
+  process.exit(1);
+}
 const version = positionals[0] || devManifest.version;
 if (devManifest.version !== version) {
   console.error(`dev has ${devManifest.version}, not ${version}; nothing declared`);

@@ -4,7 +4,7 @@
 // expired orders, replays and orders for other Macs do nothing.
 import { execFileSync } from 'node:child_process';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +22,9 @@ const ID = 'a'.repeat(32), OTHER = 'b'.repeat(32);
 writeFileSync(join(T, 'install-id'), ID);
 writeFileSync(join(T, 'installer.sh'), '#!/bin/sh\nexit 0\n');
 writeFileSync(join(T, 'uninstall.sh'), '#!/bin/sh\nexit 0\n');
+mkdirSync(join(T, 'bin/patcher'), { recursive: true });
+writeFileSync(join(T, 'bin/patcher/tess-verify'), '#!/bin/sh\nexit 0\n');
+chmodSync(join(T, 'bin/patcher/tess-verify'), 0o755);
 const env = { ...process.env, TESS_TEST: '1', TESS_HOME: T, TESS_RESCUE_DIR: orders };
 const later = () => Math.floor(Date.now() / 1000) + 3600;
 
@@ -72,6 +75,15 @@ try {
   // 9. ...and one naming this Mac runs
   publish(order(++s, 'check', [`only ${OTHER} ${ID}`])); run();
   assert.equal(serial(), s); assert.match(log().slice(n), /would run.*doctor/);
+  // 10. repair without a verifier is refused loudly, not run against the archive's own checker
+  const beforeMissing = log().length;
+  rmSync(join(T, 'bin/patcher/tess-verify'));
+  publish(order(++s, 'repair')); run();
+  assert.equal(serial(), s, 'the order is marked seen');
+  assert.match(log().slice(beforeMissing), /repair: no verifier installed; refused/);
+  assert.ok(!log().slice(beforeMissing).includes('would run'), 'repair did not run without a verifier');
+  writeFileSync(join(T, 'bin/patcher/tess-verify'), '#!/bin/sh\nexit 0\n');
+  chmodSync(join(T, 'bin/patcher/tess-verify'), 0o755);
   writeFileSync(join(T, 'rescue-off'), '');
   publish(order(++s, 'uninstall'));
   const beforeAdopt = log();
