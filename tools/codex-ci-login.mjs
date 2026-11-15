@@ -97,10 +97,12 @@ const freshExpiry = expiryOf(fresh);
 if (freshExpiry === null || freshExpiry <= Date.now()) throw new Error('the new login has no usable access token');
 
 // `codex login status` is the CLI's own check; it catches a file that exists but was never completed.
-const status = execFileSync('codex', ['login', 'status'], {
+// It prints to stderr (0.167), so both streams are read.
+const statusRun = spawnSync('codex', ['login', 'status'], {
   encoding: 'utf8',
   env: { ...process.env, CODEX_HOME: home },
 });
+const status = `${statusRun.stdout || ''}${statusRun.stderr || ''}`;
 if (!/ChatGPT/i.test(status)) {
   throw new Error(`codex reports "${status.trim()}" instead of a ChatGPT login; not uploading that`);
 }
