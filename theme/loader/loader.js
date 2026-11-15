@@ -8,7 +8,7 @@
   const REPO = 'Flame119052/tess-music';
   const channel = (() => { try { return JSON.parse(localStorage.getItem('tess:settings') || '{}').channel || 'stable'; } catch { return 'stable'; } })();
   // The GitHub contents API is read live (raw.githubusercontent and CDNs cache a branch for minutes to hours, which
-  // is what made updates arrive late). jsDelivr is only a fallback, pinned to the commit the API reports when it can.
+  // is what made updates arrive late). jsDelivr is only a fallback on the channel branch; it is not commit-pinned.
   const API = `https://api.github.com/repos/${REPO}/contents/dist/`;
   const raw = (path) => fetch(`${API}${path}?ref=${channel}`, { cache: 'no-store', headers: { Accept: 'application/vnd.github.raw' } })
     .then((r) => { if (!r.ok) throw new Error(r.status); return r.text(); });

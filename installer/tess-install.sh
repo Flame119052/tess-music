@@ -172,7 +172,7 @@ part() { awk -v n="$1" '$1 == n { print $'"$2"' }' "$TMP/components.txt"; }
 rev=$(awk '$1 == "rev" { print $2 }' "$TMP/components.txt") || true
 old=$(cat "$HOME_TESS/state/rev-$CH" 2>/dev/null) || true; case "$old" in ''|*[!0-9]*) old=0 ;; esac
 if [ -z "$rev" ]; then
-  [ "$old" -gt 0 ] && fail "This installer's list has no rev, but version $old is already installed; nothing was changed."
+  if [ "$old" -gt 0 ]; then fail "This installer's list has no rev, but rev $old is already installed; nothing was changed."; fi
 else
   case "$rev" in *[!0-9]*) fail "This installer's list has a bad rev; nothing was changed." ;; esac
   [ "$rev" -ge "$old" ] || fail "This installer is older than the version already installed; nothing was changed."

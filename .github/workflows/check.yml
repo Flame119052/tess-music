@@ -52,5 +52,7 @@ jobs:
           node tools/test-loader.mjs
           node tools/test-install-line.mjs
           node tools/test-install.mjs
+          node tools/test-release-revs.mjs
+          node tools/test-loader-perf.mjs
       - name: Tools parse
         run: for f in tools/*.mjs; do node --check "$f"; done
