@@ -16,16 +16,19 @@ import {
   capsFor,
   containsHeldSecret,
   eligibleModels,
+  freshestSnapshot,
   headMismatchMessage,
   looksSecret,
   parseClaudeOutput,
   parseCodexOutput,
   parseRequest,
+  parseSnapshot,
   providerHasUsage,
   reserveProblem,
   reservationEnd,
   resolveReviewers,
   reviewerEnv,
+  readSnapshots,
   reviewerCandidates,
   reviewCost,
   reviewCostPercent,
@@ -37,9 +40,11 @@ import {
   skipReason,
   skippedLine,
   snapshot,
+  snapshotUsage,
   stripAgentConfig,
   timeoutSeconds,
   tierForPaths,
+  usageNote,
   usageProblem,
   usedLine,
   verifyPrHead,
@@ -619,6 +624,439 @@ test('what a review used is read from the output the CLI actually prints', () =>
   assert.equal(parseCodexOutput('{"type":"turn.completed"}').text, '{"type":"turn.completed"}');
 });
 
+test('the freshest snapshot from any machine decides, and one older than half an hour is ignored', () => {
+  const now = Date.parse('2026-11-15T04:40:00Z');
+  const snapshot = (machine, minutesAgo, sessionLeft) => JSON.stringify({
+    version: 1,
+    machine,
+    takenAt: new Date(now - minutesAgo * 60000).toISOString(),
+    providers: [
+      { provider: 'codex', instance: 'codex', windows: [
+        { kind: 'session', leftPercent: sessionLeft, resetsAt: '2026-11-15T07:48:00Z' },
+      ] },
+    ],
+  });
+  const env = {
+    USAGE_SNAPSHOT_MAC: snapshot('mac', 45, 90),
+    USAGE_SNAPSHOT_VPS: snapshot('vps', 5, 5),
+    USAGE_SNAPSHOT_OMARCHY: '{not json',
+  };
+  const fresh = freshestSnapshot(env, now);
+  assert.equal(fresh.source, 'vps', 'the Mac has published, but its copy is too old to trust');
+  assert.equal(fresh.ageMs, 5 * 60000);
+  assert.equal(readSnapshots(env, now).length, 2, 'a broken snapshot is skipped, not fatal');
+
+  // 5% left in a 5-hour window is fewer than three reviews for a 7%-a-review model, so it is skipped by name and the
+  // fallback reviewer runs. The comment names the machine and the age, so nobody has to guess where the numbers came from.
+  const models = [{ provider: 'codex', model: 'gpt-6.1-sol' }, { provider: 'claude', model: 'claude-sonnet-5-5' }];
+  const called = [];
+  const result = runReviewer(models, 'prompt', '/w', {
+    usageFor: () => undefined,
+    commandAvailable: () => true,
+    sandbox: () => null,
+    caps: capsFor(config),
+    snapshot: fresh,
+    now,
+    invoke: (provider) => {
+      called.push(provider);
+      return { status: 0, text: 'Looks right.\nVerdict: approve' };
+    },
+  });
+  assert.deepEqual(called, ['claude']);
+  assert.match(skippedLine(result), /codex\/gpt-6\.1-sol \(fewer than 3 reviews left in its session window\)/);
+  assert.equal(usageNote(result), '\nUsage: vps, 5 min old');
+
+  // Nothing fresh: no snapshot at all, so the local hub decides exactly as before.
+  assert.equal(freshestSnapshot({ USAGE_SNAPSHOT_MAC: snapshot('mac', 31, 90) }, now), null);
+  assert.equal(freshestSnapshot({}, now), null);
+  assert.equal(usageNote({}), '', 'a review with no snapshot carries no line');
+
+  // The freshest wins whatever order the variables come in.
+  const both = { USAGE_SNAPSHOT_MAC: snapshot('mac', 29, 90), USAGE_SNAPSHOT_OMARCHY: snapshot('omarchy', 1, 90) };
+  assert.equal(freshestSnapshot(both, now).source, 'omarchy');
+  // A snapshot whose timestamp cannot be read is ignored rather than trusted.
+  assert.equal(freshestSnapshot({ USAGE_SNAPSHOT_MAC: JSON.stringify({ machine: 'mac', providers: [] }) }, now), null);
+});
+
+test('a snapshot names the pool an OpenCode model really spends, and the hub fills in anything it lacks', () => {
+  const now = Date.parse('2026-11-15T04:40:00Z');
+  const snapshot = {
+    source: 'mac',
+    takenAt: now - 60000,
+    ageMs: 60000,
+    providers: [
+      { provider: 'opencode', instance: 'opencode-go', windows: [
+        { kind: 'weekly', leftPercent: 50, resetsAt: '2099-01-01T00:00:00Z' },
+      ] },
+    ],
+  };
+  const go = snapshotUsage(snapshot, { provider: 'opencode', model: 'opencode-go/deepseek-v4.1-flash' });
+  assert.equal(go.windows[0].usedPercent, 50, 'what is left becomes what was used, the way the hub reports it');
+  assert.equal(go.windows[0].windowDurationMins, 10080, 'a kind has a length, so the pace rule still works');
+  // The Z.ai connector is a different pool: a snapshot with no entry for it leaves that model to the local hub.
+  assert.equal(snapshotUsage(snapshot, { provider: 'opencode', model: 'zai-coding-plan/glm-5.3' }), undefined);
+
+  // So a model the snapshot does not cover still runs when the hub is healthy, while one the snapshot says is empty is skipped.
+  const models = [
+    { provider: 'opencode', model: 'opencode-go/deepseek-v4.1-flash' },
+    { provider: 'opencode', model: 'zai-coding-plan/glm-5.3' },
+  ];
+  const emptyGoSnapshot = {
+    source: 'mac',
+    takenAt: now - 60000,
+    ageMs: 60000,
+    providers: [
+      { provider: 'opencode', instance: 'opencode-go', windows: [
+        { kind: 'weekly', leftPercent: 0, resetsAt: '2099-01-01T00:00:00Z' },
+      ] },
+    ],
+  };
+  const { candidates, skipped } = reviewerCandidates(models, {
+    usageByModel: { 'opencode/opencode-go/deepseek-v4.1-flash': snapshotUsage(emptyGoSnapshot, models[0]) },
+    usageByProvider: { opencode: { windows: [{ kind: 'session', usedPercent: 10 }] } },
+    caps: capsFor(config),
+    now,
+  });
+  assert.deepEqual(candidates.map((model) => model.model), ['zai-coding-plan/glm-5.3'],
+    'the connector the snapshot does not name is judged by the healthy hub, not by its empty sibling');
+  assert.match(skipped[0].reason, /no usage left in its weekly window/);
+  assert.equal(skipped[0].model, 'opencode-go/deepseek-v4.1-flash');
+
+  // An exhausted local reading still wins even if the snapshot says that connector has quota left.
+  const blockedByHub = reviewerCandidates(models, {
+    usageByModel: { 'opencode/opencode-go/deepseek-v4.1-flash': snapshotUsage(snapshot, models[0]) },
+    usageByProvider: { opencode: { windows: [{ kind: 'session', usedPercent: 100 }] } },
+    caps: capsFor(config),
+    now,
+  });
+  assert.deepEqual(blockedByHub.candidates, [], 'an exhausted local reading always wins');
+  assert.equal(blockedByHub.skipped.length, 2);
+});
+
+test('reader validates the allowlist schema and drops anything outside it', () => {
+  const now = Date.parse('2026-11-15T04:40:00Z');
+  const takenAt = new Date(now - 60000).toISOString();
+
+  // Unknown top-level, provider, window, and pace fields are stripped; invalid providers (including any provider with
+  // even one invalid window) are dropped completely.
+  const mixed = JSON.stringify({
+    version: 1,
+    machine: 'mac',
+    takenAt,
+    extraTop: 'alice@example.com',
+    providers: [
+      null,
+      'not-an-object',
+      { provider: 'devin', instance: 'devin', windows: [{ kind: 'session', leftPercent: 90 }] },
+      { provider: 'opencode', instance: 'alice@example.com', windows: [{ kind: 'session', leftPercent: 90 }] },
+      {
+        provider: 'codex',
+        instance: 'codex',
+        label: 'acct-alice',
+        windows: [
+          null,
+          { kind: 'custom', leftPercent: 50 },
+          { kind: 'session', leftPercent: 105 },
+          { kind: 'session', leftPercent: -5 },
+          { kind: 'session', leftPercent: '80' },
+          { kind: 'session', leftPercent: 40, resetsAt: 'alice@example.com' },
+          { kind: 'session', leftPercent: 70, resetsAt: '2026-11-15T07:48:00Z' },
+        ],
+      },
+      {
+        provider: 'claude',
+        instance: 'claudeAgent',
+        label: 'acct-alice',
+        windows: [
+          {
+            kind: 'session',
+            leftPercent: 70,
+            resetsAt: '2026-11-15T07:48:00Z',
+            label: 'Plan Pro',
+            pace: { deltaPp: 12.5, runsOutInMins: 60, note: 'secret' },
+          },
+        ],
+      },
+    ],
+  });
+  const parsed = parseSnapshot('USAGE_SNAPSHOT_MAC', mixed, now);
+  assert.ok(parsed);
+  assert.equal(parsed.source, 'mac');
+  assert.equal(parsed.providers.length, 1, 'codex with invalid windows is dropped; valid claude survives');
+  assert.deepEqual(parsed.providers[0], {
+    provider: 'claude',
+    instance: 'claudeAgent',
+    windows: [
+      {
+        kind: 'session',
+        leftPercent: 70,
+        resetsAt: '2026-11-15T07:48:00.000Z',
+        pace: { deltaPp: 12.5, runsOutInMins: 60 },
+      },
+    ],
+  });
+  assert.ok(!JSON.stringify(parsed).includes('alice'), 'free text never survives into parsed snapshot');
+  assert.ok(!JSON.stringify(parsed).includes('Plan Pro'), 'labels never survive');
+  assert.ok(!JSON.stringify(parsed).includes('secret'), 'extra pace fields never survive');
+
+  // Invalid machine, version, or takenAt causes the whole snapshot to be rejected.
+  const validProviders = [{ provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: 80 }] }];
+  assert.equal(parseSnapshot('USAGE_SNAPSHOT_MAC', JSON.stringify({ version: 1, machine: 'laptop', takenAt, providers: validProviders }), now), null);
+  assert.equal(parseSnapshot('USAGE_SNAPSHOT_MAC', JSON.stringify({ version: 1, takenAt, providers: validProviders }), now), null, 'missing machine is not guessed from variable name');
+  assert.equal(parseSnapshot('USAGE_SNAPSHOT_MAC', JSON.stringify({ version: 2, machine: 'mac', takenAt, providers: validProviders }), now), null);
+  assert.equal(parseSnapshot('USAGE_SNAPSHOT_MAC', JSON.stringify({ version: 1, machine: 'mac', takenAt: '2026-02-30T00:00:00Z', providers: validProviders }), now), null);
+});
+
+test('one bad window plus one good window ignores the snapshot for that provider and falls back to local usage', () => {
+  const now = Date.parse('2026-11-15T04:40:00Z');
+  const takenAt = new Date(now - 60000).toISOString();
+  const codexModel = { provider: 'codex', model: 'gpt-6.1-sol' };
+  const claudeModel = { provider: 'claude', model: 'claude-sonnet-5-5' };
+
+  // Mixed good + bad windows on Codex alongside a valid Claude entry: Codex fails closed while Claude stays usable.
+  const mixedRaw = JSON.stringify({
+    version: 1,
+    machine: 'mac',
+    takenAt,
+    providers: [
+      {
+        provider: 'codex',
+        instance: 'codex',
+        windows: [
+          { kind: 'session', leftPercent: 100, resetsAt: '2099-01-01T00:00:00Z' },
+          { kind: 'weekly', leftPercent: 'broken' },
+        ],
+      },
+      {
+        provider: 'claude',
+        instance: 'claudeAgent',
+        windows: [{ kind: 'session', leftPercent: 80 }],
+      },
+    ],
+  });
+  const parsed = parseSnapshot('USAGE_SNAPSHOT_MAC', mixedRaw, now);
+  assert.ok(parsed);
+  assert.equal(snapshotUsage(parsed, codexModel), undefined, 'codex snapshot is rejected because one window is invalid');
+  assert.equal(snapshotUsage(parsed, claudeModel)?.windows[0].usedPercent, 20, 'other valid providers still work');
+
+  // If the only provider in the snapshot has one good and one bad window, the whole snapshot is ignored and
+  // selection falls back to the local hub reading (here, weekly exhausted).
+  const codexOnlyPartial = {
+    source: 'mac',
+    takenAt: now - 60000,
+    ageMs: 60000,
+    providers: [
+      {
+        provider: 'codex',
+        instance: 'codex',
+        windows: [
+          { kind: 'session', leftPercent: 100, resetsAt: '2099-01-01T00:00:00Z' },
+          { kind: 'weekly', leftPercent: 'broken' },
+        ],
+      },
+    ],
+  };
+  assert.equal(parseSnapshot('USAGE_SNAPSHOT_MAC', JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: codexOnlyPartial.providers }), now), null);
+  assert.equal(snapshotUsage(codexOnlyPartial, codexModel), undefined);
+
+  const models = [codexModel, claudeModel];
+  const called = [];
+  const result = runReviewer(models, 'prompt', '/w', {
+    usageFor: (provider) => (provider === 'codex' ? { windows: [{ kind: 'weekly', usedPercent: 100 }] } : undefined),
+    commandAvailable: () => true,
+    sandbox: () => null,
+    caps: capsFor(config),
+    snapshot: codexOnlyPartial,
+    now,
+    invoke: (provider) => {
+      called.push(provider);
+      return { status: 0, text: 'Looks right.\nVerdict: approve' };
+    },
+  });
+  assert.deepEqual(called, ['claude'], 'exhausted local codex is still skipped');
+  assert.match(skippedLine(result), /codex\/gpt-6\.1-sol \(no usage left in its weekly window\)/);
+  assert.equal(usageNote(result), '', 'partially malformed snapshot is not cited');
+
+  // Without a local reading, a partial malformed snapshot (e.g. 0% left good window + broken window) is still ignored.
+  const emptyGoodPlusBad = {
+    source: 'mac',
+    takenAt: now - 60000,
+    ageMs: 60000,
+    providers: [
+      {
+        provider: 'codex',
+        instance: 'codex',
+        windows: [
+          { kind: 'session', leftPercent: 0 },
+          { kind: 'weekly', leftPercent: 'broken' },
+        ],
+      },
+    ],
+  };
+  const noLocalCalls = [];
+  runReviewer([codexModel], 'prompt', '/w', {
+    usageFor: () => undefined,
+    commandAvailable: () => true,
+    sandbox: () => null,
+    caps: capsFor(config),
+    snapshot: emptyGoodPlusBad,
+    now,
+    invoke: (provider) => {
+      noLocalCalls.push(provider);
+      return { status: 0, text: 'Looks right.\nVerdict: approve' };
+    },
+  });
+  assert.deepEqual(noLocalCalls, ['codex'], 'with no local reading, a bad+good snapshot falls back to today behaviour');
+});
+
+test('a snapshot can never loosen a limit and an exhausted local reading always wins', () => {
+  const now = Date.parse('2026-11-15T04:40:00Z');
+  const codexModel = { provider: 'codex', model: 'gpt-6.1-sol' };
+  const claudeModel = { provider: 'claude', model: 'claude-sonnet-5-5' };
+  const models = [codexModel, claudeModel];
+  const healthySnapshot = (windows) => ({
+    source: 'mac',
+    takenAt: now - 60000,
+    ageMs: 60000,
+    providers: [{ provider: 'codex', instance: 'codex', windows }],
+  });
+
+  // 1. Exhausted local reading on the same window kind + healthy snapshot => skipped.
+  const sameKindCalled = [];
+  const sameKindResult = runReviewer(models, 'prompt', '/w', {
+    usageFor: (provider) => (provider === 'codex' ? { windows: [{ kind: 'session', usedPercent: 100 }] } : undefined),
+    commandAvailable: () => true,
+    sandbox: () => null,
+    caps: capsFor(config),
+    snapshot: healthySnapshot([{ kind: 'session', leftPercent: 100, resetsAt: '2099-01-01T00:00:00Z' }]),
+    now,
+    invoke: (provider) => {
+      sameKindCalled.push(provider);
+      return { status: 0, text: 'Looks right.\nVerdict: approve' };
+    },
+  });
+  assert.deepEqual(sameKindCalled, ['claude']);
+  assert.match(skippedLine(sameKindResult), /codex\/gpt-6\.1-sol \(no usage left in its session window\)/);
+
+  // 2. Exhausted local reading on a different window kind + healthy snapshot => skipped.
+  const diffKindCalled = [];
+  const diffKindResult = runReviewer(models, 'prompt', '/w', {
+    usageFor: (provider) => (provider === 'codex' ? { windows: [{ kind: 'weekly', usedPercent: 100 }] } : undefined),
+    commandAvailable: () => true,
+    sandbox: () => null,
+    caps: capsFor(config),
+    snapshot: healthySnapshot([{ kind: 'session', leftPercent: 100, resetsAt: '2099-01-01T00:00:00Z' }]),
+    now,
+    invoke: (provider) => {
+      diffKindCalled.push(provider);
+      return { status: 0, text: 'Looks right.\nVerdict: approve' };
+    },
+  });
+  assert.deepEqual(diffKindCalled, ['claude']);
+  assert.match(skippedLine(diffKindResult), /codex\/gpt-6\.1-sol \(no usage left in its weekly window\)/);
+
+  // 3. Same window kind in both: lower % left wins (tighter local beats looser snapshot, and tighter snapshot beats looser local).
+  const tighterLocal = reviewerCandidates([codexModel], {
+    usageByProvider: { codex: { windows: [{ kind: 'session', usedPercent: 85 }] } }, // 15% left (< 21% floor for gpt-6.1-sol)
+    usageByModel: { 'codex/gpt-6.1-sol': { windows: [{ kind: 'session', usedPercent: 10 }] } }, // 90% left
+    caps: capsFor(config),
+    now,
+  });
+  assert.deepEqual(tighterLocal.candidates, []);
+  assert.match(tighterLocal.skipped[0].reason, /fewer than 3 reviews left in its session window/);
+
+  const tighterSnapshot = reviewerCandidates([codexModel], {
+    usageByProvider: { codex: { windows: [{ kind: 'session', usedPercent: 10 }] } }, // 90% left
+    usageByModel: { 'codex/gpt-6.1-sol': { windows: [{ kind: 'session', usedPercent: 85 }] } }, // 15% left
+    caps: capsFor(config),
+    now,
+  });
+  assert.deepEqual(tighterSnapshot.candidates, []);
+  assert.match(tighterSnapshot.skipped[0].reason, /fewer than 3 reviews left in its session window/);
+
+  // 4. An already-reset local window does not block when the active snapshot is healthy.
+  const expiredLocal = reviewerCandidates([codexModel], {
+    usageByProvider: { codex: { windows: [{ kind: 'session', usedPercent: 100, resetsAt: '2020-01-01T00:00:00Z' }] } },
+    usageByModel: { 'codex/gpt-6.1-sol': { windows: [{ kind: 'session', usedPercent: 20, resetsAt: '2099-01-01T00:00:00Z' }] } },
+    caps: capsFor(config),
+    now,
+  });
+  assert.deepEqual(expiredLocal.candidates, [codexModel]);
+});
+
+test('malformed or empty snapshot data never crashes selection and falls back to the local hub', () => {
+  const now = Date.parse('2026-11-15T04:40:00Z');
+  const takenAt = new Date(now - 60000).toISOString();
+  const codexModel = { provider: 'codex', model: 'gpt-6.1-sol' };
+
+  // Empty, malformed JSON, wrong top-level types, missing windows, and empty providers all yield null.
+  for (const raw of [
+    '',
+    '   ',
+    '{not json',
+    'null',
+    '[]',
+    '"hello"',
+    '123',
+    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: 'nope' }),
+    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: [] }),
+    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: [null] }),
+    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: [{ provider: 'codex', instance: 'codex' }] }),
+    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: [{ provider: 'codex', instance: 'codex', windows: 'bad' }] }),
+    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: [{ provider: 'codex', instance: 'codex', windows: [] }] }),
+    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: [{ provider: 'codex', instance: 'codex', windows: [null, { kind: 'session', leftPercent: '100' }] }] }),
+  ]) {
+    assert.equal(parseSnapshot('USAGE_SNAPSHOT_MAC', raw, now), null, `rejected: ${raw}`);
+    assert.equal(freshestSnapshot({ USAGE_SNAPSHOT_MAC: raw }, now), null);
+  }
+
+  // Exported snapshotUsage must also reject malformed/empty entries without crashing or bypassing the local hub.
+  for (const bad of [
+    null,
+    {},
+    { providers: 'bad' },
+    { providers: [null] },
+    { providers: [{ provider: 'codex', instance: 'codex' }] },
+    { providers: [{ provider: 'codex', instance: 'codex', windows: 'bad' }] },
+    { providers: [{ provider: 'codex', instance: 'codex', windows: [] }] },
+    { providers: [{ provider: 'codex', instance: 'codex', windows: [null] }] },
+    { providers: [{ provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: '100' }] }] },
+    { providers: [{ provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: Number.NaN }] }] },
+    { providers: [{ provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: 50, resetsAt: 'not-a-date' }] }] },
+  ]) {
+    assert.equal(snapshotUsage(bad, codexModel), undefined);
+  }
+
+  // Regression: a fresh snapshot with providers: [null] or empty windows must NOT bypass an exhausted local hub.
+  const models = [codexModel, { provider: 'claude', model: 'claude-sonnet-5-5' }];
+  for (const badProviders of [
+    [null],
+    [{ provider: 'codex', instance: 'codex', windows: [] }],
+    [{ provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: 'bad' }] }],
+  ]) {
+    const called = [];
+    const result = runReviewer(models, 'prompt', '/w', {
+      usageFor: (provider) => (provider === 'codex' ? { windows: [{ kind: 'session', usedPercent: 100 }] } : undefined),
+      commandAvailable: () => true,
+      sandbox: () => null,
+      caps: capsFor(config),
+      snapshot: { source: 'mac', takenAt: now - 60000, ageMs: 60000, providers: badProviders },
+      now,
+      invoke: (provider) => {
+        called.push(provider);
+        return { status: 0, text: 'Looks right.\nVerdict: approve' };
+      },
+    });
+    assert.deepEqual(called, ['claude'], 'exhausted local codex is still skipped');
+    assert.match(skippedLine(result), /codex\/gpt-6\.1-sol \(no usage left in its session window\)/);
+    assert.equal(usageNote(result), '', 'invalid snapshot is not cited in the comment');
+  }
+
+  // Direct usageProblem / reserveProblem also tolerate malformed window arrays without crashing.
+  assert.equal(usageProblem({ windows: [null, { usedPercent: Number.NaN }] }, now), null);
+  assert.equal(reserveProblem({ windows: [null] }, { session: 10 }, now), null);
+});
+
 test('an unknown flag or variant tries the next reviewer instead of failing the review', () => {
   assert.ok(retries({ status: 1, stderr: 'error: unknown option --variant' }));
   assert.ok(retries({ status: 2, stderr: "unexpected argument '--variant' found" }));
@@ -1037,4 +1475,32 @@ test("an npm-installed CLI starts: its package folder and its own Node are bound
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('duplicate entries for one provider are merged, so an exhausted window in the second still counts', () => {
+  const now = Date.parse('2026-11-15T04:40:00Z');
+  const raw = JSON.stringify({
+    version: 1,
+    machine: 'mac',
+    takenAt: '2026-11-15T04:39:00Z',
+    providers: [
+      { provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: 100, resetsAt: '2099-01-01T00:00:00Z' }] },
+      { provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: 0, resetsAt: '2099-01-01T00:00:00Z' }] },
+    ],
+  });
+  const snap = parseSnapshot('USAGE_SNAPSHOT_MAC', raw, now);
+  assert.ok(snap, 'a snapshot with a duplicate provider still parses');
+  assert.equal(snap.providers.length, 1);
+  assert.equal(snap.providers[0].windows.length, 2);
+  const called = [];
+  runReviewer([{ provider: 'codex', model: 'gpt-6.1-sol' }, { provider: 'claude', model: 'claude-sonnet-5-5' }], 'prompt', '/w', {
+    usageFor: () => undefined,
+    commandAvailable: () => true,
+    sandbox: () => null,
+    caps: capsFor(config),
+    snapshot: snap,
+    now,
+    invoke: (provider) => { called.push(provider); return { status: 0, text: 'Looks right.\nVerdict: approve' }; },
+  });
+  assert.deepEqual(called, ['claude']);
 });

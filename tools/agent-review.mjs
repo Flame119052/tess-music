@@ -8,6 +8,7 @@ import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { machines, normalizeProviders, parseIsoTimestamp, snapshotVersion } from './usage-publish/publish.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const marker = '<!-- tess-review-bot -->';
@@ -113,17 +114,20 @@ const windowKind = (window) => window.kind || window.id || 'usage';
 export function usageProblem(usage, now = Date.now(), cost = reviewCostPercent) {
   if (!usage || !Array.isArray(usage.windows)) return null;
   for (const window of usage.windows) {
-    const resetsAt = window.resetsAt ? Date.parse(window.resetsAt) : null;
-    if (resetsAt && resetsAt <= now) continue;
-    if (typeof window.usedPercent !== 'number') continue;
+    if (!window || typeof window !== 'object') continue;
+    const resetsAt = typeof window.resetsAt === 'string' ? Date.parse(window.resetsAt) : null;
+    if (resetsAt && Number.isFinite(resetsAt) && resetsAt <= now) continue;
+    if (typeof window.usedPercent !== 'number' || !Number.isFinite(window.usedPercent)) continue;
     const kind = windowKind(window);
     if (window.usedPercent >= 100) return `no usage left in its ${kind} window`;
     const left = 100 - window.usedPercent;
     if (kind === 'session' && left < reviewsToKeep * cost) {
       return `fewer than ${reviewsToKeep} reviews left in its ${kind} window`;
     }
-    const durationMs = typeof window.windowDurationMins === 'number' ? window.windowDurationMins * 60000 : null;
-    if (!durationMs || !resetsAt) continue;
+    const durationMs = typeof window.windowDurationMins === 'number' && Number.isFinite(window.windowDurationMins)
+      ? window.windowDurationMins * 60000
+      : null;
+    if (!durationMs || !resetsAt || !Number.isFinite(resetsAt)) continue;
     const elapsedMs = durationMs - (resetsAt - now);
     // Ignore the first few percent of a window: dividing by a tiny elapsed time would predict almost anything.
     if (elapsedMs <= durationMs * 0.05) continue;
@@ -134,6 +138,77 @@ export function usageProblem(usage, now = Date.now(), cost = reviewCostPercent) 
 
 export function providerHasUsage(usage, now = Date.now()) {
   return usageProblem(usage, now) === null;
+}
+
+// A usage snapshot from one of Krish's machines, published every few minutes as a repository variable (tools/usage-publish).
+// It is quota only (strict allowlist schema): the share left per window, when each resets, and numeric pace fields. The
+// reviewer uses the freshest valid one no older than half an hour and names it in the comment; anything malformed, empty,
+// or older is ignored, so a broken variable or sleeping Mac falls back to the local hub.
+export const snapshotVariables = ['USAGE_SNAPSHOT_MAC', 'USAGE_SNAPSHOT_VPS', 'USAGE_SNAPSHOT_OMARCHY'];
+export const snapshotMaxAgeMs = 30 * 60 * 1000;
+// The hub prints a window's length only in its own detail view, and the pace rule needs one. A kind is a length: the
+// provider renews these windows on a fixed clock, so this is a fact about the provider rather than a guess about the data.
+export const windowMinsByKind = { session: 300, weekly: 10080, monthly: 43200 };
+
+export function parseSnapshot(name, raw, now = Date.now()) {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  let data;
+  try { data = JSON.parse(raw); } catch { return null; }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  if (data.version !== snapshotVersion) return null;
+  if (typeof data.machine !== 'string' || !machines.includes(data.machine)) return null;
+  const takenAtIso = parseIsoTimestamp(data.takenAt);
+  if (!takenAtIso) return null;
+  const takenAt = Date.parse(takenAtIso);
+  if (!Number.isFinite(takenAt)) return null;
+  const providers = normalizeProviders(data.providers);
+  if (!providers.length) return null;
+  return { source: data.machine, takenAt, ageMs: now - takenAt, providers };
+}
+
+export function readSnapshots(env = process.env, now = Date.now()) {
+  return snapshotVariables.flatMap((name) => {
+    const raw = env[name];
+    if (!raw) return [];
+    const parsed = parseSnapshot(name, raw, now);
+    return parsed ? [parsed] : [];
+  });
+}
+
+export function freshestSnapshot(env = process.env, now = Date.now()) {
+  return readSnapshots(env, now)
+    .filter((snapshot) => snapshot.ageMs >= 0 && snapshot.ageMs <= snapshotMaxAgeMs)
+    .sort((a, b) => a.ageMs - b.ageMs)[0] || null;
+}
+
+// A snapshot entry in the shape the hub produces, so one set of rules judges both. A model names its own pool where the
+// providers differ: `opencode-go/deepseek-v4.1-flash` is the `opencode-go` connector, not OpenCode as a whole.
+export function snapshotUsage(snapshot, model) {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return undefined;
+  if (!model || typeof model !== 'object' || typeof model.provider !== 'string') return undefined;
+  const entries = normalizeProviders(snapshot.providers);
+  if (!entries.length) return undefined;
+  // OpenCode has one pool per connector, so its instance is the part of the model name before the slash and never the
+  // provider as a whole: the Z.ai plan and OpenCode Go are separate allowances.
+  const instance = model.provider === 'opencode' ? String(model.model || '').split('/')[0] : model.provider;
+  const entry = entries.find((item) => item.instance === instance)
+    || (model.provider === 'opencode' ? undefined : entries.find((item) => item.provider === instance));
+  if (!entry || !entry.windows.length) return undefined;
+  return {
+    windows: entry.windows.map((window) => ({
+      kind: window.kind,
+      usedPercent: 100 - window.leftPercent,
+      ...(window.resetsAt ? { resetsAt: window.resetsAt } : {}),
+      ...(typeof windowMinsByKind[window.kind] === 'number' ? { windowDurationMins: windowMinsByKind[window.kind] } : {}),
+    })),
+  };
+}
+
+export const snapshotAge = (ageMs) => (ageMs < 60 * 1000 ? 'under a minute old' : `${Math.round(ageMs / 60000)} min old`);
+
+// The line the posted comment carries, so a reader knows which machine's numbers decided the review and how old they were.
+export function usageNote(result) {
+  return result?.snapshot ? `\nUsage: ${result.snapshot.source}, ${snapshotAge(result.snapshot.ageMs)}` : '';
 }
 
 // Quota the owner keeps back, from `.github/agents.json` `reserve`: a number of % left per window kind, an optional
@@ -149,9 +224,12 @@ export function reserveProblem(usage, reserve, now = Date.now()) {
   if (!reserve) return null;
   const end = reservationEnd(reserve.until);
   if (end !== null && now > end) return null;
-  for (const window of usage?.windows || []) {
+  const windows = Array.isArray(usage?.windows) ? usage.windows : [];
+  for (const window of windows) {
+    if (!window || typeof window !== 'object') continue;
     const keep = reserve[windowKind(window)];
-    if (typeof keep !== 'number' || typeof window.usedPercent !== 'number') continue;
+    if (typeof keep !== 'number' || !Number.isFinite(keep)) continue;
+    if (typeof window.usedPercent !== 'number' || !Number.isFinite(window.usedPercent)) continue;
     if (window.resetsAt && Date.parse(window.resetsAt) <= now) continue;
     if (100 - window.usedPercent <= keep) {
       return `reserved${reserve.note ? ` for ${reserve.note}` : ''} (${keep}% of its ${windowKind(window)} window is held back)`;
@@ -160,11 +238,31 @@ export function reserveProblem(usage, reserve, now = Date.now()) {
   return null;
 }
 
+// A snapshot can never loosen a limit: combine local and snapshot windows so the lower % left (higher usedPercent)
+// is evaluated first and an exhausted local reading always wins.
+function combineUsage(local, snap) {
+  if (!snap) return local;
+  if (!local) return snap;
+  const localWindows = Array.isArray(local.windows) ? local.windows : [];
+  const snapWindows = Array.isArray(snap.windows) ? snap.windows : [];
+  const ranked = [
+    ...localWindows.map((window) => ({ window, source: 0 })),
+    ...snapWindows.map((window) => ({ window, source: 1 })),
+  ].sort((a, b) => {
+    const usedA = typeof a.window?.usedPercent === 'number' && Number.isFinite(a.window.usedPercent) ? a.window.usedPercent : -1;
+    const usedB = typeof b.window?.usedPercent === 'number' && Number.isFinite(b.window.usedPercent) ? b.window.usedPercent : -1;
+    if (usedB !== usedA) return usedB - usedA;
+    return a.source - b.source;
+  });
+  return { windows: ranked.map((entry) => entry.window) };
+}
+
 // One place decides which reviewers can run, and why the rest cannot. The reasons travel with the models, so a
 // requested provider that was filtered out is still named in the posted comment instead of vanishing.
 export function reviewerCandidates(models, context = {}) {
   const {
     usageByProvider = {},
+    usageByModel = {},
     commandAvailable = () => true,
     sandboxProblem = () => null,
     reserve = {},
@@ -175,7 +273,7 @@ export function reviewerCandidates(models, context = {}) {
   const skipped = [];
   for (const model of models) {
     const details = providerDetails[model.provider];
-    const usage = usageByProvider[model.provider];
+    const usage = combineUsage(usageByProvider[model.provider], usageByModel[modelKey(model)]);
     const reason = !details ? 'unknown provider'
       : !commandAvailable(details.command) ? 'no local CLI'
         : reserveProblem(usage, reserve[model.provider], now)
@@ -637,12 +735,26 @@ export function runReviewer(models, prompt, work, deps = {}) {
     sandbox = (provider) => sandboxProblem(),
     reserve = {},
     caps = defaultCaps,
+    snapshot = null,
     now = Date.now(),
     invoke = cliInvocation,
   } = deps;
+  const validProviders = snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)
+    ? normalizeProviders(snapshot.providers)
+    : [];
+  const activeSnapshot = validProviders.length
+    && typeof snapshot.source === 'string' && machines.includes(snapshot.source)
+    && typeof snapshot.ageMs === 'number' && Number.isFinite(snapshot.ageMs)
+    && snapshot.ageMs >= 0 && snapshot.ageMs <= snapshotMaxAgeMs
+    ? { source: snapshot.source, takenAt: snapshot.takenAt, ageMs: snapshot.ageMs, providers: validProviders }
+    : null;
   const usageByProvider = Object.fromEntries(models.map(({ provider }) => [provider, usageFor(provider)]));
+  // A fresh snapshot never loosens the hub: both are combined per model so the tighter limit always wins.
+  const usageByModel = Object.fromEntries(models
+    .map((model) => [modelKey(model), activeSnapshot ? snapshotUsage(activeSnapshot, model) : undefined])
+    .filter(([, usage]) => usage));
   const { candidates, skipped: filtered } = reviewerCandidates(models, {
-    usageByProvider, commandAvailable, sandboxProblem: sandbox, reserve, caps, now,
+    usageByProvider, usageByModel, commandAvailable, sandboxProblem: sandbox, reserve, caps, now,
   });
 
   const skipped = filtered.map(({ provider, model, reason }) => `${provider}/${model} (${reason})`);
@@ -655,7 +767,7 @@ export function runReviewer(models, prompt, work, deps = {}) {
       continue;
     }
     if (result.status === 0 && `${result.text ?? result.stdout ?? ''}`.trim()) {
-      return { ...candidate, text: `${result.text ?? result.stdout}`.trim(), usage: result.usage || null, skipped };
+      return { ...candidate, text: `${result.text ?? result.stdout}`.trim(), usage: result.usage || null, skipped, snapshot: activeSnapshot };
     }
     const reason = skipReason(result);
     if (reason) {
@@ -734,6 +846,8 @@ async function main() {
   const repo = process.env.GITHUB_REPOSITORY || 'Flame119052/tess-music';
   const config = JSON.parse(readFileSync(`${root}.github/agents.json`, 'utf8'));
   const caps = capsFor(config);
+  // The freshest snapshot from any of Krish's machines, or none: with none, selection reads the local hub as before.
+  const snapshot = freshestSnapshot();
   const issue = apiJson(`repos/${repo}/issues/${number}`);
 
   if (role === 'approach') {
@@ -745,13 +859,14 @@ async function main() {
       result = runReviewer(pick.models, reviewPrompt(role, { issue: issueText(issue), approach }), work, {
         reserve: config.reserve,
         caps,
+        snapshot,
       });
     } finally {
       rmSync(work, { recursive: true, force: true });
     }
     const verdict = verdictFor(result.text);
     const review = result.text.replaceAll(marker, '').replace(/\n?Verdict:\s*(?:approve|changes needed)\s*$/i, '').trim();
-    postComment(repo, number, `${marker}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${usedLine(result, caps)}${skippedLine(result)}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
+    postComment(repo, number, `${marker}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${usedLine(result, caps)}${usageNote(result)}${skippedLine(result)}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
     return;
   }
 
@@ -792,13 +907,13 @@ async function main() {
       issue: linked ? issueText(linked) : '(no linked issue found)',
       approach,
       diff,
-    }), work, { reserve: config.reserve, caps });
+    }), work, { reserve: config.reserve, caps, snapshot });
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
   const verdict = verdictFor(result.text);
   const review = result.text.replaceAll(marker, '').replace(/\n?Verdict:\s*(?:approve|changes needed)\s*$/i, '').trim();
-  postComment(repo, number, `${marker}\nTier: ${tier}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${usedLine(result, caps)}${skippedLine(result)}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
+  postComment(repo, number, `${marker}\nTier: ${tier}\nReviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}${usedLine(result, caps)}${usageNote(result)}${skippedLine(result)}${pick.note ? `\n${pick.note}` : ''}\n\n${review}\n\nVerdict: ${verdict}`);
 }
 
 if (resolve(process.argv[1] || '') === fileURLToPath(import.meta.url)) {
