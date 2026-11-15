@@ -52,32 +52,122 @@ The agent that writes the approach comment or opens the PR picks who reviews it,
 @tess-review pr provider=codex model=gpt-6.1-terra effort=medium
 ```
 
-**How to choose.** Before tagging:
-1. Check usage with the usage tool (`provider_usage` in T3; it reads the same hub the runners read). Skip any provider near its limit.
-2. Pick using this table.
+**One file holds what changes.** [`.github/agents.json`](../.github/agents.json) is the only place with model names,
+their order per role, what a tag may ask for, what one review costs, and any quota kept back. This page explains how to
+read it and when to change it; it does not repeat the values.
 
-| The work | Stage | Reviewer | Effort |
-| --- | --- | --- | --- |
-| Docs only | PR | none (CI is the review) | — |
-| Small theme/tool change, one file, clear check | PR | lighter: `codex gpt-6.1-terra` or `claude claude-sonnet-5-5` | low–medium |
-| Bigger theme work, several files, new behaviour | approach | strong | medium |
-|  | PR | lighter | medium–high |
-| Sensitive (installer, updater, rescue, inbox, patcher, release, signing) | approach and PR | strong only: `claude claude-opus-5-5` or `codex gpt-6.1-sol` | high |
-| Security fixes, or anything that can stop Spotify working | approach and PR | strong, and a *different* provider from the one that wrote it | high–max |
+| Field | What it decides |
+| --- | --- |
+| `approach`, `pr_normal`, `pr_sensitive` | the models tried for that role, first to last |
+| `allowed` | every model a tag may name |
+| `strong` | the models sensitive work may use |
+| `efforts` | the effort words a tag may ask for |
+| `cost` | what one review costs: `light` (pennies), `medium` (worth a thought), `heavy` (a visible bite out of a weekly pool) |
+| `reserve` | quota kept back per provider, as the % left per window kind, with a plain `note` and an optional `until` date |
+| `notes` | dated, temporary facts, such as a model with its own pool; not rules |
+
+**The runner picks by itself.** It tries the role's list from the top and skips a candidate, naming it and the reason in
+the posted comment, when:
+- its CLI is not installed on that machine;
+- a usage window is already used up (a window that has reset no longer counts);
+- it is **on pace to run out before its reset**, even with usage left — Claude at 84% of a week with two days to go;
+- fewer than three reviews are left in its 5-hour window (a review is counted as 10% of that window, a cautious round
+  number: the hub reports what is left, not what a review spends);
+- it is inside a `reserve` amount that has not expired;
+- the machine has no working `bubblewrap` sandbox (see below).
+
+A requested reviewer that is filtered out is named in the comment too, never silently replaced. Usage the hub has no
+numbers for is treated as usable, and the CLI's own error then moves the runner on, which the comment also names.
+
+**What the agent still checks by hand, before tagging.** The runner knows usage; it does not know what the change is
+worth.
+1. **Open `provider_usage` in T3** — the tool that reads the same hub the runners read. It shows the **session (5-hour)**
+   and **weekly** windows, the share left in each, and when each renews.
+2. **Read the pace, not just what is left.** On the morning of 15 Nov, Claude had 59% of its session left but only 16% of
+   its week, with two days to run; Codex had 93% of its session and 89% of its week. Only one was safe to spend that
+   morning, and the session numbers alone would have picked the wrong one.
+3. **Spend to the size of the change.** One review per stage, and a second only after a fix changed something a reviewer
+   would read differently. `cost` says what a review takes; a per-review cap is being measured in
+   [#71](https://github.com/Flame119052/tess-music/issues/71) until then.
+4. **Then pick from the role's list**, skipping anything you just ruled out.
+
+Some pools are separate, and a provider's `notes` in the config say which: a model with its own weekly pool leaves the
+shared pool alone, and a connector that bills on top of a subscription costs more than the weight alone suggests.
+
+Which model is good at what comes from the providers' own docs, review benchmarks, and what developers said on X,
+Hacker News and Reddit in Sep–Nov 2026. Sources are in [`docs/research/reviewer-models-2026-11.md`](research/reviewer-models-2026-11.md).
+
+**Left out on purpose:**
+- **Grok 4.7:** reviews well but uses by far the most tokens per review.
+- **Zed:** hosts other agents and has no command-line reviewer of its own.
+- **Devin:** has no read-only mode when run without a person.
+- **ZCode:** starts with every permission on when run without a person.
+- **Cline:** can't block shell commands without a hook.
+- **Copilot:** possible later.
+- **Antigravity:** can't sign in on a server yet.
+
+Every reviewer runs inside a real boundary, whichever provider it is. Each CLI starts inside **bubblewrap** (`bwrap`,
+unprivileged, with `--unshare-all --share-net --die-with-parent`) in an empty filesystem where only these are bound,
+read-only: the review copy, the CLI and its runtime (`/usr`, `/lib*`, `/etc/ssl`, `/etc/resolv.conf`), and that
+provider's own config and sign-in files, mounted **inside** the throwaway `HOME` at the paths its CLI looks in
+(`~/.codex` for Codex, `~/.config/opencode` and `~/.local/share/opencode/auth.json` for OpenCode) — a mount at the
+runner's real home is invisible once `HOME` changes. It gets only its own key in the environment. It cannot see
+`~/actions-runner`, the job's other keys, or another provider's folder. A machine without `bubblewrap`, or with user
+namespaces switched off, refuses that provider with a skip reason and tries the next one: no reviewer is run bare.
+`--share-net` is deliberate, because the API call needs it, so the **network** is limited one level up: the
+`actions.runner.*` service carries [`tools/runner/network.conf`](../tools/runner/network.conf), which refuses loopback,
+link-local, multicast, every private range, Tailscale and the cloud metadata address, and allows only the local DNS stub.
+One file therefore covers Claude and every other provider, and a command a diff talks a model into running reaches its
+own API and nothing else on the machine.
+
+On top of that, each CLI is told to stay read-only:
+- Claude: `--restricted --safe-mode` with only the Read, Grep and Glob tools.
+- Codex: `--sandbox read-only --ephemeral --ignore-rules`, with project document loading off (`project_doc_max_bytes=0`).
+  That flag limits the shell commands the model may ask for; the boundary above is what stops it reading the runner.
+- Cursor: `--mode ask --sandbox enabled`.
+- OpenCode: the `tess-reviewer` agent (`tools/opencode-reviewer.md`), which denies everything except reading, and denies
+  `external_directory` so reads stop at the review copy. The runner's copy must match that file on `main` exactly, or the
+  review stops instead of running under wider rules. That file is sensitive work: a PR that changes it gets the strong
+  reviewer, never "docs only".
+
+Any agent settings shipped inside a PR (`.opencode`, `.cursor`, `.claude` and the like) are removed from the review copy
+first, at any depth and in any letter case, together with the PR's own `AGENTS.md` and `CLAUDE.md`: a reviewer reads a PR
+as data, never as instructions. A file that is a link is removed too, because a link can point at the runner's own files
+(the diff already shows where a link pointed). Before a review is posted, it is also refused if its text contains the
+value of any key the job holds, `GH_TOKEN` included.
 
 **Rules.**
 - Don't use the strongest model at both stages unless the work is sensitive.
 - The reviewer should come from a different provider than the agent that wrote the change, so it doesn't share the same blind spots.
-- Only models listed under `allowed` in `.github/agents.json` are accepted. Sensitive work must use one listed under `strong`. If the request breaks a rule, or that provider has no usage left, the runner falls back to the defaults for that role and says so in its comment.
-- Leaving the choice out is fine: the defaults are the first model with usage left in that role's list.
+- Usage comes before preference, and the runner applies it: exhausted usage, a provider on pace to run out, or reserved quota all skip it before it starts.
+- Only models listed under `allowed` in `.github/agents.json` are accepted. Sensitive work must use one listed under `strong`. If the request breaks a rule, the runner falls back to the defaults for that role and says so in its comment.
+- Leaving the choice out is fine: the defaults are the first model in that role's list that can run.
 - Only allowlisted accounts can tag. Krish can use the same syntax himself.
+
+### How to update this
+
+Everything below is one edit to `.github/agents.json`, then `node tools/test-agent-review.mjs`, then a PR. The test
+checks that every allowed model has a cost weight, that every default is an allowed model with a valid effort, and that
+every note stays dated.
+
+- **A new model came out.** Add it to `allowed` for its provider, give it a `cost`, then put it where it should be
+  tried: a role list, or nowhere (allowed by tag only). Add it to `strong` only if sensitive work may use it.
+- **A provider changed its limits.** Nothing to edit: the usage hub reads the limits by itself. The three-review floor is
+  a number in code (`reviewCostPercent` and `reviewsToKeep` in `tools/agent-review.mjs`), changed only with a measured
+  cost per review to point at.
+- **Reserve quota for something else.** Add an entry under `reserve`, for example
+  `"claude": { "weekly": 30, "note": "Krish's own work", "until": "2026-11-20" }`. The provider counts as out of usage
+  once its % left falls to that number, and the reservation lifts by itself after the `until` day. Delete the entry, or
+  the whole block, to reserve nothing.
+- **Stop using a model.** Remove it from the role lists, from `allowed`, and its `cost`. Sensitive work must keep at
+  least the two strong models in `approach` and `pr_sensitive`.
 
 ## Reviewer agents on Krish's machines
 
 - **Who can call them.** Only GitHub accounts in the allowlist (the repo variable `AGENT_ALLOWLIST`, today just `Flame119052`). A tag from anyone else is ignored. Anyone can still open issues and PRs.
 - **Where runners may live.** Only on machines that hold no Tess keys: `omarchy` and `paperclip-vps`. Krish's Mac keeps the signing and rescue keys, and a reviewer reading an outside diff could be tricked into printing files it can read. A Mac runner is allowed only under a separate macOS user that can't read Krish's home folder. As a second guard, the reviewer refuses to post any text that looks like a key or token.
 - **How the job reaches a machine.** Each runner machine runs a GitHub self-hosted runner labelled `tess-agent` (see the line above for which machines). GitHub gives the job to whichever runner is online and idle. Each job checks out a fresh copy of the repo, so the machines need no extra syncing.
-- **Picking the model.** `.github/agents.json` lists the reviewer models per role, strongest first. Each runner picks the first one whose provider has usage left, using the local usage hub when it is there, and otherwise falls back down the list.
+- **Picking the model.** `.github/agents.json` lists the reviewer models per role, default first. Each runner takes the first one that has a local CLI, enough usage (both windows and pace), no unexpired reservation, and a working `bubblewrap` sandbox, and names everything it skipped in the comment. Usage comes from the local hub; a provider with no numbers is treated as usable.
 - **Safety, because the repo is public:**
   - The workflow is triggered only by `issue_comment`, which always runs the workflow file from `main`, never from a PR.
   - The first job runs on GitHub's own machine. It checks the commenter against the allowlist and checks that CI passed on the PR's exact commit. Only then does a job reach a self-hosted runner.
@@ -130,7 +220,7 @@ These rules come from mistakes made while setting this up: agents started from t
 
 **`paperclip-vps` runs Paperclip first. Tess work there must never slow it down or touch it.**
 - **The reviewer runner** runs as `tess-runner`, with no admin rights and a hard cap: 1 CPU core and 1.5 GB of memory, at the lowest priority for CPU and disk. If it runs out, the review fails; Paperclip doesn't. `omarchy` has the same setup with a 2 GB cap.
-- **No Tess agent edits, restarts or reads Paperclip.** That covers `/srv/paperclip`, its PostgreSQL database, its services, and the Tincan relay. Nothing for Tess is installed system-wide there. Everything lives in `~tess-runner`.
+- **No Tess agent edits, restarts or reads Paperclip.** That covers `/srv/paperclip`, its PostgreSQL database, its services, and the Tincan relay. Nothing for Tess is installed system-wide there. Everything lives in `~tess-runner`. The runner's network drop-in is the guard: a review cannot open a connection to any local address, so a diff cannot talk a model into reaching Paperclip even if it gets a shell command run.
 - **No builds or tests run on the VPS,** only reviews, which read code. Heavy work goes to GitHub's machines or `omarchy`.
 - **Tess agents don't run on the VPS through T3 Code.** T3 runs as root there, so any agent it starts has root power next to Paperclip. Claude refuses full access as root, and we leave that check on. Tess agent work goes to Krish's Mac or `omarchy`. Moving T3 on the VPS to a normal account is a separate decision for Krish.
 

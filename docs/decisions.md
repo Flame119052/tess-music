@@ -185,3 +185,31 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   and requires adoption success; wording permits an unexpired order sent while off because old rescue scripts
   cannot report adoption failure reliably. Reinstall and uninstall clear launchd's persistent rescue disable.
   Theme refresh runs with a copied config against staged Spotify files to preserve generated colors before swap.
+- **15 Nov 2026 · PR #87 second review (#71)** — A review is chosen by usage first and preference second: the agent
+  reads both the 5-hour and the weekly window from the usage hub and skips a provider that is on pace to run out before
+  its reset, even with usage left (Claude sat at 59% session and 16% weekly on 15 Nov). Pools are not shared even inside a
+  provider: Opus spends Claude's weekly pool and Fable 5.2 has its own, and GLM-5.3 on OpenCode Go empties that allowance
+  far faster per review than DeepSeek V4.1 Flash, so DeepSeek is the OpenCode default and GLM is tagged deliberately
+  through the Z.ai coding plan. The guide gains a cost weight per row and states that one review is the budget until a
+  per-review cap lands (#71). The review copy also drops symlinks and matches agent-file names in any letter case, and a
+  skipped reviewer is named in the posted comment instead of falling through silently.
+- **15 Nov 2026 · PR #87 third review (#71)** — Every reviewer now runs inside an unprivileged **bubblewrap** sandbox:
+  only the review copy, the CLI and its runtime, and that provider's own config folder are bound, read-only, with a
+  throwaway `HOME`, the network for the API call, and only its own key in the environment. A machine without a working
+  sandbox refuses that provider and says so, instead of running it bare. Automatic selection now implements the pace rule
+  the docs promised (a provider on track to empty a window before it resets is skipped) and keeps three reviews in hand in
+  the 5-hour window; a candidate filtered out before it starts is named in the comment like one that ran and refused.
+  Everything likely to change about reviewers — the order per role, the allowed models, the cost weight, dated pool
+  notes, and quota reserved for the owner with an `until` date — lives in `.github/agents.json`, with one short
+  "How to update this" guide in `docs/workflow.md`. (#71)
+- **15 Nov 2026 · PR #87 fourth review (#71)** — The reviewer's network boundary is the **runner service**, not the
+  sandbox: bubblewrap keeps the host network namespace because the API call needs it, so `tools/runner/network.conf` is a
+  systemd drop-in for `actions.runner.*` that refuses loopback, link-local, multicast, `10/8`, `172.16/12`, `192.168/16`,
+  Tailscale's `100.64/10`, the cloud metadata address and `fc00::/7`, and allows a single local address, the
+  `systemd-resolved` stub `127.0.0.53`. A review therefore reaches its provider's API and nothing else on the machine —
+  on `paperclip-vps`, not Paperclip's PostgreSQL, its services or the Tincan relay — and the one file covers Claude and
+  every other provider. A machine whose resolver is the router (plain Arch) either turns on `systemd-resolved` or names
+  that one address in the drop-in. A provider's config and sign-in files are mounted **inside** the throwaway `HOME`, at
+  the path its CLI looks in: the earlier mounts sat at the runner's real home, which `HOME` had already moved away from,
+  so OpenCode could not find its agent file and Codex could not find its login. Applying the drop-in to a machine is a
+  root action the owner approves; the repository only carries the file and the check. (#71)
