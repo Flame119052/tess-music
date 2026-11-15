@@ -20,6 +20,8 @@ import {
   failureSummary,
   forkProblem,
   freshestSnapshot,
+  headAnswer,
+  headFacts,
   headMismatchMessage,
   headReviewProblem,
   installedProviders,
@@ -1579,22 +1581,26 @@ test('duplicate entries for one provider are merged, so an exhausted window in t
 });
 
 // The gate runs the rules from `tools/agent-gate.sh` with a fake `gh`, so the fork boundary is a tested fact rather than
-// something a reader has to trust in YAML.
+// something a reader has to trust in YAML. `gh` answers a pull request with the JSON GitHub really sends and the gate
+// reads it in Node: a `--jq` filter mocked at the shell is exactly how `fork: false` once became "not ours" while every
+// test still passed.
 const gateScript = fileURLToPath(new URL('./agent-gate.sh', import.meta.url));
 
 function runGate({ answers = {}, env = {} } = {}) {
   const dir = temp();
   const out = join(dir, 'out');
   const log = join(dir, 'calls');
-  const { issue = '', pull = '', ci = '', files = '' } = answers;
+  const { issue = '', issueUrl = '', pull = '', ci = '', files = '' } = answers;
   try {
     writeFileSync(join(dir, 'gh'), `#!/bin/sh
 printf '%s\\n' "$2" >> '${log}'
 case "$2" in
-  *"/issues/"*) printf '%s' '${issue}' ;;
+  *"/issues/"*) if [ "$3" = "--jq" ]; then printf '%s' '${issueUrl}'; else printf '%s' '${issue}'; fi ;;
+  # The two filters that remain in the gate (the file list and the CI conclusion) have no false/no-value trap in them;
+  # the one that did has moved into the gate's own Node code, where a fake gh cannot hide it.
   *"/files") printf '%s' '${files}' ;;
   *"/pulls/"*) printf '%s' '${pull}' ;;
-  *"/actions/"*) printf '%s' '${ci}' ;;
+  *"/actions/"*) if [ "$3" = "--jq" ]; then printf '%s' '${ci}'; else printf '{"workflow_runs":[{"conclusion":"%s"}]}' '${ci}'; fi ;;
   *) exit 99 ;;
 esac
 exit 0
@@ -1626,17 +1632,31 @@ exit 0
   }
 }
 
-const ourHead = 'abc123\tFlame119052/tess-music\tfalse';
-const prComment = { issue: '{"number":7,"pull_request":{"url":"https://api.github.com/repos/x/y/pulls/7"}}' };
+// GitHub's own answer for the head, not a pre-cut TSV: the gate parses it, so a `false` that jq would swallow is a
+// `false` here too.
+const prHead = (sha = 'abc123') => JSON.stringify({ head: { sha, repo: { full_name: 'Flame119052/tess-music', fork: false } } });
+const prComment = {
+  issue: '{"number":7,"pull_request":{"url":"https://api.github.com/repos/x/y/pulls/7"}}',
+  issueUrl: 'https://api.github.com/repos/x/y/pulls/7',
+};
+
+test('a normal pull request of this repository is allowed, and only a fork is refused', () => {
+  // The bug this covers: `(.head.repo.fork // true)` read a real `fork: false` as missing, so every ordinary PR was
+  // refused and no review could ever run. A same-repository PR must pass on its own merits.
+  const grown = runGate({ answers: { ...prComment, pull: prHead(), ci: 'success', files: 'theme/Tess/src/core.js\n' } });
+  assert.equal(grown.allowed, 'true', 'a same-repository head with green CI is reviewed');
+  assert.equal(grown.head_sha, 'abc123', 'the review reads the commit the gate checked');
+  assert.ok(!/fork/i.test(grown.allowed), 'a non-fork is not held to the fork rule');
+});
 
 test('the gate lets an allowlisted tag through only for this repository\'s own green commit', () => {
-  const allowed = runGate({ answers: { ...prComment, pull: ourHead, ci: 'success', files: 'theme/Tess/src/core.js\n' } });
+  const allowed = runGate({ answers: { ...prComment, pull: prHead(), ci: 'success', files: 'theme/Tess/src/core.js\n' } });
   assert.deepEqual({ allowed: allowed.allowed, role: allowed.role, head_sha: allowed.head_sha, tier: allowed.tier },
     { allowed: 'true', role: 'pr', head_sha: 'abc123', tier: 'normal' });
   assert.equal(allowed.number, '7');
 
   // A docs-only PR still runs no CLI, but it is still a PR of this repository.
-  assert.equal(runGate({ answers: { ...prComment, pull: ourHead, ci: 'success', files: 'docs/workflow.md\n' } }).tier, 'docs');
+  assert.equal(runGate({ answers: { ...prComment, pull: prHead(), ci: 'success', files: 'docs/workflow.md\n' } }).tier, 'docs');
 
   // An approach review reads main, not a branch, so no pull request has to exist.
   const approach = runGate({ env: { COMMENT_BODY: '@tess-review approach' } });
@@ -1647,18 +1667,31 @@ test('the gate lets an allowlisted tag through only for this repository\'s own g
 
 test('a fork head is refused at the gate, so its content never reaches the job holding a key', () => {
   // An allowlisted maintainer tagged a fork PR whose CI is green: the fork author still wrote the diff, so no review.
-  const fork = runGate({ answers: { ...prComment, pull: 'abc123\toutside/tess-music\ttrue', ci: 'success' } });
+  const fork = runGate({
+    answers: { ...prComment, ci: 'success', pull: JSON.stringify({ head: { sha: 'abc123', repo: { full_name: 'outside/tess-music', fork: true } } }) },
+  });
   assert.equal(fork.allowed, 'false');
   assert.equal(fork.head_sha, '', 'a refused tag leaves no commit for the review job to pick up');
 
-  // A deleted head repository, a same-named repository marked as a fork, and an answer with no flags all fail closed.
-  for (const pull of ['abc123\t\t', 'abc123\tFlame119052/tess-music\t', 'abc123\tFlame119052/tess-music\ttrue']) {
-    assert.equal(runGate({ answers: { ...prComment, pull, ci: 'success' } }).allowed, 'false', JSON.stringify(pull));
+  // A deleted or missing head repository, no `fork` flag at all, a null flag, and a fork flag that says true all refuse:
+  // the rule needs a positive `fork: false` from this repository, so an absent answer fails closed.
+  const heads = [
+    { head: { sha: 'abc123', repo: null } },
+    { head: { sha: 'abc123' } },
+    { head: { sha: 'abc123', repo: { full_name: 'Flame119052/tess-music' } } },
+    { head: { sha: 'abc123', repo: { full_name: 'Flame119052/tess-music', fork: null } } },
+    { head: { sha: 'abc123', repo: { full_name: 'Flame119052/tess-music', fork: true } } },
+    { head: { sha: 'abc123', repo: { full_name: 'Flame119052/tess-music', fork: 'false' } } },
+    { head: { repo: { full_name: 'Flame119052/tess-music', fork: false } } },
+  ];
+  for (const head of heads) {
+    assert.equal(runGate({ answers: { ...prComment, pull: JSON.stringify(head), ci: 'success' } }).allowed, 'false',
+      JSON.stringify(head));
   }
 
   // Everything else that used to refuse still refuses.
-  assert.equal(runGate({ answers: { ...prComment, pull: ourHead, ci: 'failure' } }).allowed, 'false', 'red CI');
-  assert.equal(runGate({ answers: { issue: '{"number":7}' } }).allowed, 'false', 'a plain issue is not a PR');
+  assert.equal(runGate({ answers: { ...prComment, pull: prHead(), ci: 'failure' } }).allowed, 'false', 'red CI');
+  assert.equal(runGate({ answers: { issue: '{"number":7}', issueUrl: '' } }).allowed, 'false', 'a plain issue is not a PR');
   assert.equal(runGate({ env: { COMMENTER: 'stranger' } }).allowed, 'false', 'the caller is not on the allowlist');
   const stranger = runGate({ env: { COMMENTER: 'stranger' } });
   assert.equal(stranger.calls, '', 'a stranger\'s comment reads nothing');
@@ -1681,6 +1714,16 @@ test('a fork head is refused inside the review as well as at the gate', () => {
   assert.match(forkProblem({ full_name: repo, fork: true }, repo), /fork/, 'a fork flag wins over a matching name');
   assert.match(forkProblem(null, repo), /missing or was deleted/, 'a deleted head repository fails closed');
   assert.match(forkProblem({ full_name: repo }, repo), /fork/, 'an unknown flag fails closed too');
+
+  // The gate's own parse of GitHub's answer: the same-repository head it must allow, and every shape it must refuse.
+  assert.deepEqual(headFacts({ head: { sha: 'abc123', repo: { full_name: repo, fork: false } } }, repo),
+    { sha: 'abc123', problem: '' }, 'a real fork: false is a review, not a refusal');
+  assert.equal(headAnswer(headFacts({ head: { sha: 'abc123', repo: { full_name: repo, fork: false } } }, repo)),
+    'review abc123\n');
+  assert.equal(headAnswer(headFacts({ head: { sha: 'abc123', repo: { full_name: repo, fork: true } } }, repo)),
+    'refuse abc123\n', 'a fork is refused, and its sha is still named in the log');
+  assert.match(headFacts(null, repo).problem, /missing or was deleted/, 'an empty answer fails closed');
+  assert.match(headFacts({ head: { repo: { full_name: repo, fork: false } } }, repo).problem, /no head commit/);
 
   const facts = { head: { sha: 'abc123', repo: { full_name: 'outside/tess-music', fork: true } } };
   const message = headReviewProblem(facts, repo, 'abc123');

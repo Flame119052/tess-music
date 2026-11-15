@@ -935,6 +935,19 @@ export function forkProblem(headRepo, repo) {
   return null;
 }
 
+// The gate makes the same fork decision as the review, from the same function, so the two doors cannot disagree: the
+// gate asks which commit to review and refuses anything that is not this repository's own branch, before the job that
+// holds a provider key exists. The answer is one line, `review <sha>` or `refuse <sha>`, because a tab-separated
+// answer with an empty first field is exactly the shape bash's `read` quietly shifts along.
+export function headFacts(pullRequest, repo) {
+  const head = pullRequest?.head && typeof pullRequest.head === 'object' ? pullRequest.head : {};
+  const sha = typeof head.sha === 'string' ? head.sha : '';
+  const problem = forkProblem(head.repo, repo) || (sha ? '' : 'the pull request has no head commit');
+  return { sha, problem };
+}
+
+export const headAnswer = (facts) => `${facts.problem ? 'refuse' : 'review'} ${facts.sha || '-'}\n`;
+
 // The one guard every PR review passes: this repository's own branch, at the commit CI passed.
 export function headReviewProblem(facts, repo, gated) {
   const head = facts?.head || {};
@@ -979,6 +992,22 @@ async function main() {
   if (role === 'tier') {
     const paths = readFileSync(0, 'utf8').split('\n');
     console.log(tierForPaths(paths));
+    return;
+  }
+  // `head <owner/repo>`: read a pull request as GitHub answered it and say whether its head may be reviewed. Node reads
+  // the JSON because jq's `//` treats `false` as missing, which once turned every `fork: false` head into a refusal.
+  if (role === 'head') {
+    const repo = process.argv[3] || '';
+    if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) {
+      console.error('usage: node tools/agent-review.mjs head <owner/repo>');
+      process.exit(1);
+    }
+    // A body GitHub did not send, or sent malformed, is not a reason to start a review: it reads as "not ours".
+    let pull = null;
+    try { pull = JSON.parse(readFileSync(0, 'utf8') || 'null'); } catch { pull = null; }
+    const facts = headFacts(pull, repo);
+    if (facts.problem) console.error(`refused: ${facts.problem}`);
+    process.stdout.write(headAnswer(facts));
     return;
   }
   if (role === 'pick') {

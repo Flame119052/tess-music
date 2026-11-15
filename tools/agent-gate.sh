@@ -56,16 +56,16 @@ if [[ "$role" == "pr" ]]; then
   pr_url="$(gh api "repos/$repository/issues/$number" --jq '.pull_request.url // empty')"
   [[ -n "$pr_url" ]] || exit 0
 
-  # One read gives the commit to review and the repository that commit lives in.
-  facts="$(gh api "repos/$repository/pulls/$number" \
-    --jq '[.head.sha // "", .head.repo.full_name // "", (.head.repo.fork // true)] | @tsv')"
-  IFS=$'\t' read -r head_sha head_repo head_fork <<< "$facts"
-
-  # A review only ever reads a branch of this repository. A fork author writes the diff and the snapshot the reviewer
-  # would read, and the review job holds a provider key, so a fork's head is refused even when it is tagged by an
-  # allowlisted maintainer and its CI is green. Fail closed: a deleted head repository, an empty answer and a missing
-  # `fork` flag all count as "not ours".
-  if [[ -z "$head_sha" || -z "$head_repo" || "$head_repo" != "$repository" || "$head_fork" != "false" ]]; then
+  # One read gives the commit to review and whether that commit is this repository's own branch. A fork author writes
+  # the diff and the snapshot the reviewer would read, and the review job holds a provider key, so a fork's head is
+  # refused even when an allowlisted maintainer tagged it and its CI is green. The decision is Node, not a jq filter:
+  # jq's `//` treats `false` as missing, so `(.head.repo.fork // true)` turned a real `fork: false` into "not ours" and
+  # refused every ordinary pull request. The same function decides it inside the review, so both doors agree, and
+  # `tools/test-agent-review.mjs` drives it with the JSON GitHub really returns.
+  facts="$(gh api "repos/$repository/pulls/$number" | node tools/agent-review.mjs head "$repository")"
+  read -r head_verdict head_sha <<< "$facts"
+  # Fail closed: a deleted head repository, an empty answer, a missing `fork` flag and a missing commit all refuse.
+  if [[ "$head_verdict" != "review" || -z "$head_sha" || "$head_sha" == "-" ]]; then
     head_sha=""
     exit 0
   fi
