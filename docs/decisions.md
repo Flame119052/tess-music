@@ -160,13 +160,16 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   Mac's outside-agent OAuth MCP endpoint. With no named machine it tries Instabox, then `omarchy`; the Mac and
   `paperclip-vps` run only when the tag names them, because the Mac holds the signing and rescue keys and the VPS runs
   Paperclip first. A pull request from a fork is refused for every task. At most two dispatched threads run
-  (`TESS_AGENT_SLOTS`), and an uncertain lost reply keeps its slot occupied. VPS prompts put Paperclip first and forbid
-  access to Paperclip, its data and its services, builds and long tests, and require worktree cleanup. The dispatcher
-  is its own user with its own credential file, and its runner's job-started hook admits only this workflow from `main`.
+  (`TESS_AGENT_SLOTS`), and an uncertain lost reply keeps its slot occupied. A tag that finds every slot taken waits
+  up to `TESS_AGENT_SLOT_WAIT_MINUTES` (an hour), then is answered "slots busy" instead of being left to the job's
+  six-hour cancellation; a slot no job can still be holding, older than that 360-minute limit, is reclaimed and the
+  reclaim is logged. VPS prompts put Paperclip first and forbid access to Paperclip, its data and its services,
+  builds and long tests, and require worktree cleanup. The dispatcher is its own user with its own credential file,
+  and its runner's job-started hook admits only this workflow from `main`.
   *The owner wants every T3 provider available from GitHub and made this the latest machine policy for #88.* Trade-off:
-  the VPS boundary is a prompt policy rather than an OS sandbox, a stuck slot needs manual reconciliation, and a tag
-  can no longer reach the Mac or the VPS by falling through the default order. Revisit when T3 on the VPS runs as a
-  normal account.
+  the VPS boundary is a prompt policy rather than an OS sandbox, a reclaimed slot is judged by age rather than by a
+  confirmed dead thread, and a tag can no longer reach the Mac or the VPS by falling through the default order.
+  Revisit when T3 on the VPS runs as a normal account.
 
 ## Design and performance
 

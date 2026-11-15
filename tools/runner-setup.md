@@ -325,6 +325,7 @@ TESS_T3_MCP_URL=https://<mac-environment-address>/mcp
 TESS_T3_MCP_CREDENTIAL_FILE=/home/tess-dispatch/.config/tess-agent-dispatch/credential
 TESS_AGENT_SLOT_DIR=/home/tess-dispatch/.local/state/tess-agent-dispatch
 TESS_AGENT_SLOTS=2
+TESS_AGENT_SLOT_WAIT_MINUTES=60
 
 TESS_T3_INSTABOX_ENVIRONMENT_ID=<T3 environment id>
 TESS_T3_INSTABOX_PROJECT_ID=<Tess project id there>
@@ -340,7 +341,9 @@ TESS_T3_MAC_PROJECT_ID=<Tess project id on the Mac>
 of it in this repository or a GitHub secret.
 
 Use the T3 environment and project IDs shown by T3; labels are not stable identifiers. `TESS_AGENT_SLOTS` is the
-number of live threads this lane allows (default 2, at most 8). Restart both runner services after changing `.env`.
+number of live threads this lane allows (default 2, at most 8). `TESS_AGENT_SLOT_WAIT_MINUTES` is how long a tag
+waits for a free slot before it is answered "slots busy" (default 60, at most 120, and always inside the job's
+360-minute limit). Restart both runner services after changing `.env`.
 
 Before the first tag, run the read-only preflight as `tess-dispatch` on the dispatcher host. It proves the sign-in and
 the machine IDs and starts nothing:
@@ -357,6 +360,13 @@ slot normally disappears after `t3_thread_wait` confirms the thread and all of i
 network failure leaves one behind, find that thread in T3 by its `Tess <task>: #<number>` title and GitHub comment,
 then confirm it completed or stop it. Remove that one slot directory only after reconciliation. Never clear all slots
 just to make the queue move.
+
+Two cases clean themselves up. A tag that finds every slot taken waits for `TESS_AGENT_SLOT_WAIT_MINUTES` (an hour by
+default) and then answers "slots busy", so a stuck slot cannot leave the tag unanswered. A slot held by a job that
+cannot still exist — GitHub kills a dispatch job after 360 minutes and a killed job keeps its slot — is reclaimed
+once it is more than seven hours old, and the reclaim is written into the job log. A thread that outlives its job is
+still running at that point only if something is badly wrong; if you see a reclaim logged while you know a thread is
+live, reconcile it in T3 and raise this in the issue.
 
 When dispatch refuses a request, the person who wrote the tag is told on the issue or pull request: a fixed reason
 plus a link to the run. The text comes from `refusalReasons` in `tools/agent-dispatch.mjs`, never from an error

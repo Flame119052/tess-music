@@ -204,11 +204,14 @@ unreachable machine, a fork PR, CI that hasn't passed, a full queue, or a sign-i
 outside the allowlist is ignored in silence.
 
 Two dedicated dispatcher runner instances and the same number of durable local slots cap this lane at two live
-threads (`TESS_AGENT_SLOTS` changes the slot count, default 2). Extra GitHub jobs queue. A slot is removed only after
-T3 confirms the thread and all delegated work settled. If a launch or wait reply is lost, its slot remains occupied
-until a person reconciles it; automatically freeing an uncertain slot could start a third thread. A wait returns
-before Node's five-minute fetch limit and re-waits, so a thread that runs for hours keeps its slot and its session
-reconnects once it expires.
+threads (`TESS_AGENT_SLOTS` changes the slot count, default 2). Extra GitHub jobs wait their turn for up to an hour
+(`TESS_AGENT_SLOT_WAIT_MINUTES`, default 60), then the tag is answered "slots busy" instead of being left to the
+job's six-hour cancellation, which posts nothing. A slot is removed only after T3 confirms the thread and all
+delegated work settled. If a launch or wait reply is lost, its slot remains occupied until a person reconciles it;
+automatically freeing an uncertain slot could start a third thread. A slot no job can still be holding — the
+workflow's own limit is 360 minutes — is reclaimed, and the reclaim is logged. A wait returns before Node's
+five-minute fetch limit and re-waits, so a thread that runs for hours keeps its slot and its session reconnects once
+it expires.
 
 The dispatcher's credential is not readable by any other job. It lives in a file only the `tess-dispatch` user can
 read, and that runner's job-started hook refuses every job that is not an `issue_comment` run of this workflow from
