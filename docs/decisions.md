@@ -279,8 +279,23 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   before posting. *Why:* #105's second review showed the boundary was a read-back rather than a folder — the thread
   started on the pull request's own tree, and its answer was posted unchecked — and that a machine review was missing
   #104's bounds entirely. *Trade-off:* `t3 thread start` takes no token limit, so the comment says `Cap: none on this
-  path` and the bound is the same `timeout_s` the GitHub job uses; and the worktree T3 makes still carries a `.git`
-  pointer into the watcher's clone. (#71, #105)
+  path` and the bound is the same `timeout_s` the GitHub job uses. (#71, #105)
+
+- **D-79 · 15 Nov 2026 · Owner** — The reviewer's copy gets an **object store of its own**. D-78 built the stripped
+  commit in the watcher's clone, and a worktree of it shares that clone's object store, so `git show <sha>:AGENTS.md`
+  answered from inside the thread's folder — the removed instructions were one command away. Now a pull request's head
+  is fetched into a scratch bare repository under the state directory, the filtered tree is archived out of it and
+  written into the project as one branch with one commit, and the scratch repository is deleted before a thread exists.
+  The reviewed commit is then in no object store the reviewer's git can reach, and `git cat-file -e <sha>` fails in the
+  worktree as well as in the project. The copy is deleted with the review — worktree, branch, and a `gc --prune=now`
+  behind them — so nothing of one review is readable from the next. A thread's copy is also waited for: `t3 thread
+  start` returns while the worktree is still being written, and the changed files are read from it, so the review is
+  held until the index matches `HEAD`'s tree and refused with a comment after `copyWaitMs`. *Why:* the re-check at
+  `6fec684` printed `AGENTS.md` from the worktree through the shared store, and found the changed-files section missing
+  whenever the checkout had not finished. *Trade-off:* the project's object store still holds the repo's own `main` (it
+  is the checkout the watcher keeps current), so the copy can see the public history — never the reviewed commit. A
+  temporary T3 project per review was rejected: a new project gets the environment's default runtime mode, not the
+  `approval-required` the gate needs, and `t3 project add` cannot set one. (#71, #105)
 
 ## Releases and process
 

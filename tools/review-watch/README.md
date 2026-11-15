@@ -37,15 +37,21 @@ GitHub-hosted jobs cannot reach Krish's machines, and the self-hosted runners th
 1. The workflow's gate reads the tag, checks it, and stops. Its notice job posts `Review queued for mac`.
 2. The watcher on the Mac polls GitHub every couple of minutes for comments that name `machine=mac`.
 3. It checks each one with the same code the GitHub job uses (`tools/agent-review.mjs`), then builds the reviewed commit
-   into the same stripped copy the GitHub job reads — agent settings, instruction files at any depth, and links removed
-   — as a commit in its own clone. It starts `t3 thread start` on a worktree of **that** commit, with a fixed first
-   message that contains nothing from the pull request.
-4. It reads the new thread's runtime mode back from T3. Only if that is `approval-required` does it send the review
-   (compacted diff, SENSITIVE notices, changed files, issue, focus) to the same thread. A project left wider is refused,
-   the thread's copy is deleted, and the pull request is told why.
+   into the same stripped copy the GitHub job reads — agent settings, instruction files at any depth, and links removed.
+   The pull request's own commit is fetched into a scratch repository that is **not** the project, its filtered tree is
+   written into the project as one branch with one commit, and the scratch repository is deleted again. It starts
+   `t3 thread start` on a worktree of **that** branch, with a fixed first message that contains nothing from the pull
+   request. The reviewer's object store therefore never held the commit it is reviewing, so `git show <sha>:AGENTS.md`
+   has nothing to answer with.
+4. It reads the new thread's runtime mode back from T3 and waits for T3 to finish checking the copy out — the changed
+   files are read from that folder, so a half-written checkout is waited for, and one that never arrives is refused.
+   Only if the mode is `approval-required` does it send the review (compacted diff, SENSITIVE notices, changed files,
+   issue, focus) to the same thread. A project left wider is refused, the thread's copy is deleted, and the pull request
+   is told why.
 5. The thread answers with the review as its last message. The watcher waits for T3 to report the run over (`idle` or
    `completed` — not the sidebar's `settled`, which is days of quiet), checks the shape and its keys, and posts it with
-   its own `gh`, after confirming the pull request still points at the commit the review read. Then it deletes the copy.
+   its own `gh`, after confirming the pull request still points at the commit the review read. Then it deletes the copy —
+   folder, branch and objects.
 
 Nothing is exposed inbound, and no T3 credential is stored on GitHub: the thread is started by the machine's own command,
 using the sign-ins it already has. The watcher holds no key of its own.
@@ -56,7 +62,8 @@ using the sign-ins it already has. The watcher holds no key of its own.
    `AGENT_ALLOWLIST` repository variable. It uses the sign-in this machine already has; there is no token file.
 2. **T3 Code** running on that machine. The watcher does not start it.
 3. **Its own clone of the repository**, which is also the T3 project the review threads belong to. It keeps itself on
-   `main`, so the rules it runs are the rules on `main`:
+   `main`, so the rules it runs are the rules on `main`. It never fetches a pull request's head into this clone: that
+   goes to `stateDir/fetch`, a scratch repository of its own that is deleted before each review thread starts:
 
    ```sh
    git clone https://github.com/Flame119052/tess-music ~/.local/share/tess-review-watch/src
@@ -77,8 +84,10 @@ using the sign-ins it already has. The watcher holds no key of its own.
    ```
 
    On omarchy use `"machine": "omarchy"`. Nothing on the VPS: it is refused on purpose. Other optional keys:
-   `repoPath`, `stateDir`, `slots`, `slotWaitMs`, `slotStaleMs`, `providers` (the T3 provider instance per provider, if
-   T3 renames one), and `allowlist` as a fallback for a token that cannot read the repository variable.
+   `repoPath`, `stateDir`, `fetchPath` (where a pull request's own commit is fetched, deleted before the thread starts),
+   `slots`, `slotWaitMs`, `slotStaleMs`, `copyWaitMs` (how long a review waits for T3 to finish checking out its copy,
+   3 minutes by default), `providers` (the T3 provider instance per provider, if T3 renames one), and `allowlist` as a
+   fallback for a token that cannot read the repository variable.
 
 ## Check it before scheduling it
 
@@ -146,6 +155,10 @@ the last ticks. To stop it: `systemctl --user disable --now tess-review-watch.ti
   started in a copy this watcher builds, never in the pull request's checkout, so an `AGENTS.md` or a `CLAUDE.md` in the
   change is gone before the first turn exists. A thread found at a wider mode is sent nothing further and its copy is
   deleted; T3's CLI has no command to delete a thread, so it stays in the list for you to delete.
+- **A review waits for its copy.** `t3 thread start` returns before the worktree is written, and the changed files are
+  read from that folder, so the review is held until the checkout is finished — the index listing exactly what `HEAD`'s
+  tree lists — and refused with a comment if it has not appeared within `copyWaitMs` (3 minutes). Nothing from the pull
+  request is sent to a thread whose copy is not there.
 - **Nothing posts from the thread.** The watcher holds the write; the thread is only read text and a worktree. The text it
   answers with goes through the same two refusals the GitHub job applies: `looksSecret` and any key this machine holds.
   A review that quotes one is not posted, in the same words the job uses.
@@ -157,7 +170,9 @@ Enforced, and checked before anything from a pull request arrives:
 - the runtime mode T3 itself reported for the thread (wider than `approval-required` → refused, never reviewed);
 - the commit reviewed (CI green on it, this repository's own head, unchanged at launch and at posting);
 - the copy the thread reads: the reviewed commit with agent settings, instruction files at any depth, and every link
-  removed, as a commit with no parent, so the change's own history cannot hand the instructions back;
+  removed, as one commit on a branch of the project — and the reviewed commit itself fetched into a scratch repository
+  that is deleted before the thread starts, so the copy's own object store has never held it and no git command can
+  hand the removed files back;
 - the allowlist, the author rule, the tier, plans-only, usage and reserve, read from `main`;
 - who posts. The thread cannot post, push, merge or release in your name, because it is never given a way to.
 

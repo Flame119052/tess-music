@@ -104,7 +104,10 @@ What the machine path enforces, before any pull-request text reaches a thread (D
   project's default runtime mode is set to `approval-required` once, when the watcher is installed.
 - **The copy the thread reads.** Not the pull request's checkout: the reviewed commit is unpacked into the same stripped
   copy the GitHub job makes — agent settings, instruction files at any depth and every link removed — before the thread
-  exists, so an `AGENTS.md` in the change cannot brief the reviewer. The copy is deleted with the review.
+  exists, so an `AGENTS.md` in the change cannot brief the reviewer. The reviewed commit itself is fetched into a scratch
+  repository that is not the project, and deleted before the thread starts, so the copy's object store has never held it
+  and `git show <sha>:AGENTS.md` fails there. The copy is deleted with the review, branch and objects too. A review also
+  waits for T3 to finish checking that copy out, because the changed files are read from it.
 - **When a review is finished.** T3's own end of the run (`idle`, `completed`, or an ended status), checked against the
   run `t3 thread send` started — not the sidebar's `settled`, which is days of quiet. The mode is read again on the way
   out, and the answer is posted only if its shape is a review and it holds no key.
