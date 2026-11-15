@@ -34,7 +34,7 @@ The tier comes from the paths the PR touches. `tools/agent-review.mjs` works it 
 | --- | --- | --- | --- | --- |
 | **docs** | only `docs/`, `*.md`, issue templates | no | no (CI only) | merges |
 | **normal** | theme, Tess Mini, tools | no | yes, lighter model | merges |
-| **sensitive** | `installer/`, `inbox/`, `patcher/`, `.github/`, `tools/release.mjs`, `tools/promote.mjs`, `tools/rescue.mjs`, `tools/check-safety.sh`, signing, rescue | yes, strong model | yes, strong model | reviews and merges |
+| **sensitive** | `installer/`, `inbox/`, `patcher/`, `support/`, `.github/`, `tools/release.mjs`, `tools/promote.mjs`, `tools/rescue.mjs`, `tools/check-safety.sh`, signing, rescue | yes, strong model | yes, strong model | reviews and merges |
 
 **Which model reviews what:**
 - The **strong model** reviews the approach, because a wrong design is the costliest mistake.

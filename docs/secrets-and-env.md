@@ -30,6 +30,12 @@ How Tess Music stores, loads, and backs up secrets across **local development**,
 - **Releases ([`tools/release.mjs`](../tools/release.mjs)):** Reads `TESS_SIGNING_KEY`, `TESS_CODESIGN_P12`, `TESS_CODESIGN_PASS`, and `TESS_MIRROR_KEY_FILE` from `process.env` in CI, and falls back to `~/.config/tess-signing/` locally.
 - **Promotion ([`tools/promote.mjs`](../tools/promote.mjs)):** Uses `TESS_MIRROR_KEY_FILE` in CI or local git/GitHub auth locally.
 - **Rescue orders ([`tools/rescue.mjs`](../tools/rescue.mjs)):** Always reads `~/.config/tess-signing/rescue.pem` directly so the rescue key never needs to live in CI or `.env`.
+- **Support bot ([`support/`](../support/README.md), D-76, D-77):** Runs on Krish's server, not on anyone's Mac,
+  and holds `TELEGRAM_BOT_TOKEN`, `TESS_OWNER_ID`, `TESS_SUPPORT_TOKEN` and `TESS_INBOX` in the profile's own `.env` at
+  600. It has **no GitHub token at all** — filing happens with Krish's own Cloudflare and GitHub logins on his machine.
+- **Support posting tokens (inbox):** minted by `node tools/reports.mjs support token add "<label>"`, stored in D1 as a
+  plain SHA-256, revoked with `support token revoke "<label>"`. Recordings go to the `tess-support` R2 bucket, never the
+  database, and are deleted when the report is filed or at 14 days.
 - **Sandbox testing ([`installer/tess-install.sh`](../installer/tess-install.sh)):** Uses `TESS_TEST=1`, `TESS_HOME`, `TESS_CONFIG`, `TESS_SPOTIFY`, and `TESS_CHANNEL` (`stable` | `beta` | `dev`). See [`.env.example`](../.env.example).
 
 ## 4. Offline & cloud key backups

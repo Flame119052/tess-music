@@ -1,0 +1,9 @@
+Tess doctor  2026-11-14 11:26:48
+  ✓ patcher
+  ✓ updater
+  ✓ Tess is in Spotify 1.2.52.442
+  ✓ update helper running
+  ✕ the update helper is missing (run the install line once)
+  ✓ can reach updates
+  1 problem(s), 0 fixed.
+Report sent. Your install id: 7d3f1a2b9c4e5061728394a5b6c7d8e9

@@ -1,0 +1,4 @@
+the lyrics are always about half a second behind the music and it makes the whole thing feel cheap. it's worse on
+songs with long intros. i'm on stable, tess says 0.1.9. everything else is lovely, no errors anywhere.
+
+screenshot attached of the lyric line when it's out of sync
