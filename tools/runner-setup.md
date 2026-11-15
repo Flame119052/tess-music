@@ -126,3 +126,8 @@ run` would fall back to its default agent, which can run shell; with a copy that
 widen the reviewer's rights. So the review checks the file before it starts and stops with a clear message instead of
 running either way. Update the copy whenever that file changes on `main`. Then restart the runner service. A provider
 with no CLI on the machine is simply skipped.
+
+GLM through the **Z.ai coding plan** is an OpenCode provider, not a separate CLI: sign the connector in as `tess-runner`
+(`opencode auth login`, choosing the Z.ai coding plan) and `zai-coding-plan/glm-5.3` works by tag. It bills the Z.ai
+subscription instead of OpenCode Go's per-model allowance, which GLM empties quickly. It is not a default, so a runner
+without the connector still reviews everything else.

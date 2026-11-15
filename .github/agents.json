@@ -1,5 +1,6 @@
 {
-  "_note": "Defaults per role (first with usage left wins) and the models an allowlisted tag may ask for. Why each is here: docs/workflow.md -> Choosing a reviewer, and docs/research/reviewer-models-2026-11.md.",
+  "_note": "Defaults per role, default first: the first with usage left wins, and a provider on pace to run out before its reset is skipped (docs/workflow.md -> Choosing a reviewer). Models here are the cheap end of what is allowed; the expensive ones are kept for sensitive work. Allowed models may be asked for by tag. Why each is here: docs/workflow.md and docs/research/reviewer-models-2026-11.md.",
+  "_note_zai": "zai-coding-plan/glm-5.3 is the same GLM on the Z.ai coding-plan connector, which does not touch OpenCode Go quota. It needs that connector signed in on the runner (tools/runner-setup.md) and is not a default.",
   "approach": [
     {
       "provider": "claude",
@@ -25,7 +26,7 @@
     },
     {
       "provider": "opencode",
-      "model": "opencode-go/glm-5.3",
+      "model": "opencode-go/deepseek-v4.1-flash",
       "effort": "high"
     }
   ],
@@ -45,6 +46,7 @@
     "claude": [
       "claude-opus-5-5",
       "claude-sonnet-5-5",
+      "claude-fable-5-2",
       "claude-haiku-5-5"
     ],
     "codex": [
@@ -55,8 +57,9 @@
       "gpt-5.6-sol"
     ],
     "opencode": [
-      "opencode-go/glm-5.3",
       "opencode-go/deepseek-v4.1-flash",
+      "zai-coding-plan/glm-5.3",
+      "opencode-go/glm-5.3",
       "opencode-go/kimi-k3"
     ]
   },

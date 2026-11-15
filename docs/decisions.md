@@ -185,3 +185,11 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   and requires adoption success; wording permits an unexpired order sent while off because old rescue scripts
   cannot report adoption failure reliably. Reinstall and uninstall clear launchd's persistent rescue disable.
   Theme refresh runs with a copied config against staged Spotify files to preserve generated colors before swap.
+- **15 Nov 2026 · PR #87 second review (#71)** — A review is chosen by usage first and preference second: the agent
+  reads both the 5-hour and the weekly window from the usage hub and skips a provider that is on pace to run out before
+  its reset, even with usage left (Claude sat at 59% session and 16% weekly on 15 Nov). Pools are not shared even inside a
+  provider: Opus spends Claude's weekly pool and Fable 5.2 has its own, and GLM-5.3 on OpenCode Go empties that allowance
+  far faster per review than DeepSeek V4.1 Flash, so DeepSeek is the OpenCode default and GLM is tagged deliberately
+  through the Z.ai coding plan. The guide gains a cost weight per row and states that one review is the budget until a
+  per-review cap lands (#71). The review copy also drops symlinks and matches agent-file names in any letter case, and a
+  skipped reviewer is named in the posted comment instead of falling through silently.

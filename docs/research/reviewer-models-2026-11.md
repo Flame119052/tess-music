@@ -364,22 +364,54 @@ person, useless for a bot (<https://zed.dev/docs/ai/agents>). The rest fail one 
 > choice** — sensitive work waits for Opus 5.5 or GPT-6.1 Sol rather than going to a cheaper model, so do not add GLM to
 > `pr_sensitive` — and the Antigravity third choice for approaches is not used yet, because it cannot sign in on a runner.
 > Keeping the table as written finds the best third choice if one is ever needed; it is not a list to copy into the config.
+> The normal-PR third choice is now **DeepSeek V4.1 Flash**, not GLM on OpenCode Go, because GLM uses that quota up fast
+> (see "What a review costs, and in which pool" below); GLM is still the pick when it goes through the Z.ai coding plan.
 
 Rules that shaped this: the reviewer comes from a different provider than the author; the strongest model does not run
 twice on one change unless a Mac can break; the third choice must be cheap enough to run on a bad day. Model ids are the
 ones this repo already allows (<https://github.com/Flame119052/tess-music/blob/main/.github/agents.json>); the tiers come
 from `docs/workflow.md` (<https://github.com/Flame119052/tess-music/blob/main/docs/workflow.md>).
 
-| Role | First choice | Second choice | Third choice |
-| --- | --- | --- | --- |
-| **Approach review** (is this the right design?) | **claude `claude-opus-5-5`, effort high** — best design judgement, and the only model here with an independent review benchmark behind it | **codex `gpt-6.1-sol`, effort high** — close second, half the cost per task, and a genuinely different reading of a plan | **antigravity `gemini-4-argon-high`, effort high** — strongest planner outside the big two; burns quota, so use when the first two are out (**not used yet**: no headless sign-in on a runner) |
-| **Normal PR** (theme, Tess Mini, tools) | **codex `gpt-6.1-terra`, effort medium** — cheapest strong reviewer, fast, and a different provider from a Claude author | **claude `claude-sonnet-5-5`, effort medium** — good balance when Codex is short of weekly quota | **opencode `glm-5.3`, effort high** — pennies per review and good at root causes, run with the deny-everything agent |
-| **Sensitive PR** (installer, patcher, release, rescue, signing) | **claude `claude-opus-5-5`, effort high** — strongest reviewer for a change that can break someone's Mac | **codex `gpt-6.1-sol`, effort high** — the closest thing to a second opinion, and must be the other provider from the author | **superseded: none.** GLM-5.3 is the best third pair of eyes on security, but sensitive work waits for a strong model instead |
-| **Docs** | **opencode `deepseek-v4.1-flash`, effort medium** — $0.30/$1.20 per million and good enough for prose and links | **codex `gpt-6.1-terra`, effort low** — quick sanity read when OpenCode is not set up | **claude `claude-haiku-5-5`, effort low** — the cheap Claude, if a docs change touches a safety claim |
+| Role | First choice | Second choice | Third choice | Cost weight |
+| --- | --- | --- | --- | --- |
+| **Approach review** (is this the right design?) | **claude `claude-opus-5-5`, effort high** — best design judgement, and the only model here with an independent review benchmark behind it | **codex `gpt-6.1-sol`, effort high** — close second, half the cost per task, and a genuinely different reading of a plan | **antigravity `gemini-4-argon-high`, effort high** — strongest planner outside the big two; burns quota, so use when the first two are out (**not used yet**: no headless sign-in on a runner) | heavy |
+| **Normal PR** (theme, Tess Mini, tools) | **codex `gpt-6.1-terra`, effort medium** — cheapest strong reviewer, fast, and a different provider from a Claude author | **claude `claude-sonnet-5-5`, effort medium** — good balance when Codex is short of weekly quota | **opencode `deepseek-v4.1-flash`, effort high** — $0.30/$1.20 per million; for GLM use `zai-coding-plan/glm-5.3`, never GLM on OpenCode Go | light |
+| **Sensitive PR** (installer, patcher, release, rescue, signing) | **claude `claude-opus-5-5`, effort high** — strongest reviewer for a change that can break someone's Mac | **codex `gpt-6.1-sol`, effort high** — the closest thing to a second opinion, and must be the other provider from the author | **superseded: none.** GLM-5.3 is the best third pair of eyes on security, but sensitive work waits for a strong model instead | heavy |
+| **Docs** | **opencode `deepseek-v4.1-flash`, effort high** — $0.30/$1.20 per million and good enough for prose and links | **codex `gpt-6.1-terra`, effort low** — quick sanity read when OpenCode is not set up | **claude `claude-haiku-5-5`, effort low** — the cheap Claude, if a docs change touches a safety claim | light |
+
+Cost weight is the size of one review, not the size of the model: **light** is pennies, **heavy** is a visible bite out of
+a weekly pool.
 
 Two deliberate omissions. **Grok 4.7** reviews better than it codes, but its token burn per review is the worst here and
 two threads call it out (<https://www.reddit.com/r/cursor/comments/1wu9jj0/>) — a spare, not a default. **Cursor
 `gpt-5.6-sol`** works, but has no review benchmark and bills at list price on top of a subscription.
+
+## What a review costs, and in which pool
+
+The model is only half the choice. The other half is **whose allowance it spends and how fast that allowance is going**.
+This is what the usage hub reports, and it is the first thing to read before tagging a reviewer.
+
+**Two windows, and the weekly one is the one that surprises.** Claude on the morning of 15 November: 59% of the 5-hour
+session left, but only **16% of the week**, with two days until it renewed. Codex the same morning: 93% of the session and
+89% of the week. A session-only reading would have picked Claude and run the week dry. So: read both windows, work out the
+pace, and skip a provider that is on track to run out before its reset even with usage left. The same hub showed Cursor at
+43% of a 7-day window and the Z.ai coding plan at 61% of its week.
+
+**Models do not share one pool, even inside a provider.** Opus 5.5 draws on Claude's shared **weekly** pool. Fable 5.2 has
+**its own weekly pool** (98% left that morning while the shared one was at 16%), so a Fable review is the cheap way to
+spend Claude. Cursor bills at list price on top of its subscription.
+
+**On OpenCode Go, the model you pick decides how long the quota lasts.** The plan is $10/month with 5-hour and weekly
+caps over a per-model dollar allowance (<https://opencode.ai/docs/go>), and GLM-5.3 is priced at $1.40/$4.40 per million
+against DeepSeek V4.1 Flash at $0.30/$1.20 (<https://opencode.ai/docs/zen>). GLM therefore empties that allowance several
+times faster per review, which is why DeepSeek V4.1 Flash is the OpenCode default in `agents.json`. The cheaper route for
+GLM is the **Z.ai coding plan**, which `opencode models` lists as its own provider (`zai-coding-plan/glm-5.3`, checked on
+OpenCode 2.2.6); it bills the Z.ai subscription and leaves OpenCode's allowance alone. It needs that connector signed in
+on the runner (`tools/runner-setup.md`), so it is allowed by tag and is not a default.
+
+**A review has a budget too.** One review should cost no more than the change is worth, and a second review is only
+justified when a fix changed something a reviewer would read differently. A per-review cap is being measured as its own
+change; this note is the placeholder record of why it exists (#71).
 
 ## What to verify on the runner machines first
 
@@ -388,10 +420,16 @@ two threads call it out (<https://www.reddit.com/r/cursor/comments/1wu9jj0/>) �
    cannot run `git diff` needs the diff piped in on stdin instead.
 2. **Antigravity:** whether a copied `~/.gemini` profile is enough on `omarchy`, or whether `agy` demands a fresh login.
 3. **OpenCode:** whether a deny-everything reviewer agent beats the built-in `plan` agent, which still allows
-   permission-controlled shell (<https://opencode.ai/docs/agents/>).
-4. **Every provider:** the usage hub is the real gate. The cache files store `usedPercent`; the reviewer skips a
-   provider only when a window reaches 100% used. Claude's weekly allowance (38% left on 14 Nov) is the one most likely
-   to run out, so the fallback order in `agents.json` matters.
+   permission-controlled shell (<https://opencode.ai/docs/agents/>). **Done, 15 Nov:** `opencode run --model
+   opencode-go/glm-5.3#high` answers (2.2.6), so the `#variant` spelling the runner uses for effort is real, and an
+   effort the model lacks is refused with `Variant unavailable for <model>: <variant>`. The runner now treats that as a
+   reason to move to the next reviewer and says so in its comment, instead of failing the review.
+4. **Every provider:** the usage hub is the real gate, and it gates on **pace**, not on a single number. Read both the
+   session (5-hour) and the weekly window: Claude sat at 59% session and 16% weekly on 15 Nov, so the session alone would
+   have spent it dry. A provider on track to run out before its reset is skipped even with usage left. Note the pools too
+   — Opus spends Claude's shared weekly pool, Fable 5.2 has its own, and on OpenCode Go GLM-5.3 empties the allowance far
+   faster per review than DeepSeek V4.1 Flash — which is why the fallback order in `agents.json` begins with the cheap
+   model in each provider.
 
 ## Summary
 
@@ -402,7 +440,9 @@ OpenCode is the cheapest credible third provider, with one caveat: its `plan` ag
 shell, so a reviewer needs an agent that denies `edit` and `shell` outright. Devin, ZCode, Zed and Antigravity each fail
 one of the four properties — ZCode most alarmingly, because `--prompt` starts in `yolo` mode.
 
-For this repo: Opus 5.5 reviews approaches and sensitive PRs, GPT-6.1 Terra reviews normal PRs, and GLM-5.3 or DeepSeek
-V4.1 Flash is the cheap third when the big two are out of quota.
+For this repo: Opus 5.5 reviews approaches and sensitive PRs, GPT-6.1 Terra reviews normal PRs, and **DeepSeek V4.1
+Flash** is the cheap third when the big two are out of quota — GLM-5.3 stays the better reviewer, but on OpenCode Go it
+spends the allowance several times faster, so it is tagged deliberately (through the Z.ai coding plan where the runner
+has it) rather than used as a fallback.
 
 Branch: `reviewer-models-research`.

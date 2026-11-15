@@ -52,27 +52,47 @@ The agent that writes the approach comment or opens the PR picks who reviews it,
 @tess-review pr provider=codex model=gpt-6.1-terra effort=medium
 ```
 
-**How to choose.** Before tagging:
-1. Check usage with the usage tool (`provider_usage` in T3; it reads the same hub the runners read). Skip any provider near its limit.
-2. Pick using this table.
+**Usage decides, before the table does.** A review spends a real allowance, and the same model can be free this hour and
+gone the next. So, before tagging:
+
+1. **Read the usage first:** `provider_usage` in T3, the tool that reads the same hub the runners read. It shows each
+   provider's **session (5-hour)** window and its **weekly** window, the share left in each, and when each one renews.
+2. **Read the pace, not just what is left.** If a provider is on track to run out before its next reset, skip it, even
+   with plenty left. On the morning of 15 Nov, Claude had 59% of its session left but only 16% of its week, with two
+   days to run; Codex had 93% of its session and 89% of its week. Only one of those two was safe to spend that morning,
+   and the session numbers alone would have picked the wrong one.
+3. **Then pick from the table**, skipping anything you just ruled out.
+
+Models cost very different amounts per review, and they do not all spend the same pool:
+- **Opus 5.5 draws on Claude's weekly pool**, which every other Claude session on the Mac shares. **Fable 5.2 has its own
+  weekly pool**, so a Fable review leaves the shared Claude pool alone.
+- **GLM-5.3 on OpenCode Go uses OpenCode's quota up very fast** — a few reviews can empty it. Prefer GLM through the
+  **Z.ai coding-plan connector** (`zai-coding-plan/glm-5.3`, once it is signed in on the runner), or use **DeepSeek V4.1
+  Flash**, the cheap OpenCode model and the default there.
+- **Codex is the cheapest strong reviewer per review.** **Cursor** bills at list price on top of its subscription, and
+  **Grok 4.7** uses the most tokens per review of anything surveyed.
 
 Which model is good at what comes from the providers' own docs, review benchmarks, and what developers said on X,
 Hacker News and Reddit in Sep–Nov 2026. Sources are in [`docs/research/reviewer-models-2026-11.md`](research/reviewer-models-2026-11.md).
 The first choice in each row is the default; the runner moves down the list when a provider has no usage left.
 
-| The work | 1st choice | 2nd | 3rd |
-| --- | --- | --- | --- |
-| **Approach** (is the design right?) | `claude claude-opus-5-5` high: best design judgement | `codex gpt-6.1-sol` high: close second at half the cost, and a different way of reading a plan | none yet. Gemini via Antigravity is the planned third, once it can sign in on a runner |
-| **Normal PR** (theme, Tess Mini, tools) | `codex gpt-6.1-terra` medium: cheapest strong reviewer, fast | `claude claude-sonnet-5-5` medium: good when Codex is low on weekly quota | `opencode opencode-go/glm-5.3` high: pennies per review, good at root causes, sometimes loops |
-| **Sensitive PR** (installer, updater, rescue, inbox, patcher, release, signing) | `claude claude-opus-5-5` high | `codex gpt-6.1-sol` high | none. Sensitive work waits for one of the two strong models rather than using a weaker one |
-| **Docs** | none: CI is the review | | |
+| The work | 1st choice | 2nd | 3rd | Cost weight |
+| --- | --- | --- | --- | --- |
+| **Approach** (is the design right?) | `claude claude-opus-5-5` high: best design judgement | `codex gpt-6.1-sol` high: close second at half the cost, and a different way of reading a plan | none yet. Gemini via Antigravity is the planned third, once it can sign in on a runner | heavy |
+| **Normal PR** (theme, Tess Mini, tools) | `codex gpt-6.1-terra` medium: cheapest strong reviewer, fast | `claude claude-sonnet-5-5` medium: good when Codex is low on weekly quota | `opencode opencode-go/deepseek-v4.1-flash` high: pennies per review; GLM on the Z.ai plan instead, never GLM on OpenCode Go | light |
+| **Sensitive PR** (installer, updater, rescue, inbox, patcher, release, signing) | `claude claude-opus-5-5` high | `codex gpt-6.1-sol` high | none. Sensitive work waits for one of the two strong models rather than using a weaker one | heavy |
+| **Docs** | none: CI is the review | | | light |
+
+Cost weight is the size of one review: **light** is pennies and fine on any PR, **medium** is worth a thought before
+spending it, **heavy** takes a visible bite out of a weekly pool.
 
 What each model is known for (opinions are labelled in the research note):
 - **Claude Opus 5.5:** strongest at design and safety reasoning. Expensive: it draws on Krish's own Claude allowance.
 - **GPT-6.1 Sol:** top code-review score in one developer's test, roughly half Opus's cost. Treat a fresh release as unproven for a week.
 - **GPT-6.1 Terra / Claude Sonnet 5.5:** fast, sensible everyday reviewers.
-- **GLM-5.3 (OpenCode):** cheap; its maker says it's the best open model at finding vulnerabilities. Testers say it can loop and break repo rules more often than DeepSeek.
-- **DeepSeek V4.1 Flash, Kimi K3 (OpenCode):** allowed in a tag for cheap second opinions, not defaults.
+- **Claude Fable 5.2:** its own weekly pool, so a useful change from Opus that costs the shared Claude pool nothing. Allowed in a tag, not a default, and not accepted for sensitive work until it has a review benchmark.
+- **GLM-5.3:** cheap; its maker says it's the best open model at finding vulnerabilities. Testers say it can loop and break repo rules more often than DeepSeek. On the Z.ai coding plan it costs no OpenCode quota.
+- **DeepSeek V4.1 Flash, Kimi K3 (OpenCode):** cheap second opinions. DeepSeek is the default there; Kimi is tag-only.
 - **Cursor `gpt-5.6-sol`:** works, but has no review benchmark and bills extra on top of the subscription. A spare.
 
 **Left out on purpose:**
@@ -94,23 +114,30 @@ Every reviewer runs read-only, whichever provider it is:
   reviewer, never "docs only".
 
 Any agent settings shipped inside a PR (`.opencode`, `.cursor`, `.claude` and the like) are removed from the review copy
-first, at any depth, together with the PR's own `AGENTS.md` and `CLAUDE.md`: a reviewer reads a PR as data, never as
-instructions. Before a review is posted, it is also refused if its text contains the value of any key the job holds,
-`GH_TOKEN` included.
+first, at any depth and in any letter case, together with the PR's own `AGENTS.md` and `CLAUDE.md`: a reviewer reads a PR
+as data, never as instructions. A file that is a link is removed too, because a link can point at the runner's own files
+(the diff already shows where a link pointed). Before a review is posted, it is also refused if its text contains the
+value of any key the job holds, `GH_TOKEN` included.
 
 **Rules.**
 - Don't use the strongest model at both stages unless the work is sensitive.
 - The reviewer should come from a different provider than the agent that wrote the change, so it doesn't share the same blind spots.
+- Usage comes before preference: a provider on pace to run out before its reset is skipped even when it has usage left.
 - Only models listed under `allowed` in `.github/agents.json` are accepted. Sensitive work must use one listed under `strong`. If the request breaks a rule, or that provider has no usage left, the runner falls back to the defaults for that role and says so in its comment.
 - Leaving the choice out is fine: the defaults are the first model with usage left in that role's list.
 - Only allowlisted accounts can tag. Krish can use the same syntax himself.
+
+**A review has a budget too.** One review should cost no more than the change is worth: one per stage, and a second only
+after a fix changes something a reviewer would read differently. What a single review may spend is being measured
+separately in [#71](https://github.com/Flame119052/tess-music/issues/71); until that lands, the cost weight column above
+is the guide.
 
 ## Reviewer agents on Krish's machines
 
 - **Who can call them.** Only GitHub accounts in the allowlist (the repo variable `AGENT_ALLOWLIST`, today just `Flame119052`). A tag from anyone else is ignored. Anyone can still open issues and PRs.
 - **Where runners may live.** Only on machines that hold no Tess keys: `omarchy` and `paperclip-vps`. Krish's Mac keeps the signing and rescue keys, and a reviewer reading an outside diff could be tricked into printing files it can read. A Mac runner is allowed only under a separate macOS user that can't read Krish's home folder. As a second guard, the reviewer refuses to post any text that looks like a key or token.
 - **How the job reaches a machine.** Each runner machine runs a GitHub self-hosted runner labelled `tess-agent` (see the line above for which machines). GitHub gives the job to whichever runner is online and idle. Each job checks out a fresh copy of the repo, so the machines need no extra syncing.
-- **Picking the model.** `.github/agents.json` lists the reviewer models per role, strongest first. Each runner picks the first one whose provider has usage left, using the local usage hub when it is there, and otherwise falls back down the list.
+- **Picking the model.** `.github/agents.json` lists the reviewer models per role, default first. Each runner picks the first one whose provider has usage left, using the local usage hub when it is there, and otherwise falls back down the list.
 - **Safety, because the repo is public:**
   - The workflow is triggered only by `issue_comment`, which always runs the workflow file from `main`, never from a PR.
   - The first job runs on GitHub's own machine. It checks the commenter against the allowlist and checks that CI passed on the PR's exact commit. Only then does a job reach a self-hosted runner.
