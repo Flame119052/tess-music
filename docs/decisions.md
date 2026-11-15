@@ -367,3 +367,16 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   so nobody has to guess. OpenCode is matched per connector (`opencode-go`, `zai-coding-plan`), because those are separate
   allowances. Scheduling is a LaunchAgent on the Mac and a user systemd timer on Linux, at the lowest priority the
   machine offers, with nothing system-wide; installing it on a machine is the owner's step, not a merge. (#93)
+- **15 Nov 2026 · Review token cap & footer fix (#103)** — PR #76's Codex `gpt-6.1-sol` review spent 779,470 tokens
+  (777,093 in, 2,377 out) because raw `gh pr diff 76` was 693 KB (~578 KB in vendored/sourcemap files under
+  `patcher/prebuilt/`), no changed-file contents were supplied inline so the reviewer spent extra turns reading files,
+  and `model_auto_compact_token_limit=180000` only compacts per-turn context rather than session total tokens. PR prompts
+  now compact the diff (omitting vendored/generated/map/lockfile diffs, capping at 16 KB/file and 64 KB total), inline
+  changed files/hunk excerpts (up to 16 KB/file and 64 KB total), and direct the reviewer to start there while keeping
+  the snapshot read-only if external callers need checking. Codex reviews lower `model_auto_compact_token_limit` to
+  `64000`, enable `features.rollout_budget` (`limit_tokens=200000`, `enforce_limit=true`,
+  `reminder_at_remaining_tokens=[50000]`), and stream `--json` lines so any review exceeding `caps.codex.max_tokens`
+  (200,000) is killed immediately and refused with a comment. Expected per-review usage drops to ~25k–100k tokens
+  (~1–4% of a 5-hour window typical, 7% ceiling on `sol`). Comment formatting now separates `Used:` and `Usage:` with a
+  newline and strips any standalone `Verdict:` line regardless of trailing punctuation/markdown so exactly one verdict
+  line is posted. (#103)

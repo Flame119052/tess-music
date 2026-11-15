@@ -77,6 +77,7 @@ import {
   usedLine,
   verifyPrHead,
 } from './agent-review.mjs';
+import * as agentReview from './agent-review.mjs';
 import { proxyProviders, proxyRoutes } from './review-proxy.mjs';
 import { createReviewProxy, maxProxyBodyBytes, matchProxyRoute, proxyReviewerConfig } from './review-proxy.mjs';
 
@@ -732,12 +733,17 @@ test('every review carries a hard cap, spelled the way its CLI takes it', () => 
   assert.deepEqual(opus.slice(opus.indexOf('--output-format'), opus.indexOf('--output-format') + 2), ['--output-format', 'json'],
     'the JSON result is what reports the turns and dollars a review used');
 
-  // Codex has no turn or budget cap, so effort and auto-compaction are its levers, and --json is what reports tokens.
+  // Codex gets a lower auto-compact threshold plus a hard rollout token cap (both via rollout_budget and the --json stream).
   const codex = cliArgs('codex', 'gpt-6.1-terra', 'medium', '/w', caps);
-  assert.ok(codex.includes('model_auto_compact_token_limit=180000'), 'Codex compacts instead of filling its window');
+  assert.ok(codex.includes('model_auto_compact_token_limit=64000'), 'Codex compacts at 64k instead of waiting until 180k');
+  assert.ok(codex.includes('features.rollout_budget.enabled=true'), 'Codex rollout budget feature is enabled');
+  assert.ok(codex.includes('features.rollout_budget.enforce_limit=true'), 'Codex rollout budget is enforced');
+  assert.ok(codex.includes('features.rollout_budget.limit_tokens=200000'), 'Codex rollout budget carries max_tokens');
+  assert.ok(codex.includes('features.rollout_budget.reminder_at_remaining_tokens=[50000]'), 'Codex rollout budget warns before the cap');
   assert.ok(codex.includes('model_reasoning_effort=medium'));
   assert.ok(codex.includes('--json'), 'Codex reports the tokens a review used');
   assert.ok(codex.includes('--skip-git-repo-check'), 'the review copy has no .git, so Codex has to be told that');
+  assert.equal(caps.codex.max_tokens, 200000);
 
   // Cursor is not offered: a Claude or GPT model inside it bills prepaid credit from the first request, which breaks the
   // plans-only rule, and the job installs no Cursor CLI anyway.
@@ -2513,5 +2519,331 @@ test('the review workflow has a failure step that comments, and it holds no prov
   assert.match(step, /agent-review\.mjs stop/, 'the tested script posts the comment');
   for (const names of Object.values(providerKeys)) {
     for (const name of names) assert.ok(!step.includes(name), `${name} is never on the failure step`);
+  }
+});
+
+test('the review comment puts Used and Usage on separate lines and prints one Verdict line (#103)', () => {
+  const caps = capsFor(config);
+  const { formatReviewComment, verdictFor } = agentReview;
+  assert.equal(typeof formatReviewComment, 'function', 'formatReviewComment is exported');
+
+  // The exact shape that broke on PR #76: Used + Usage glued together, and `Verdict: changes needed.` duplicated.
+  const comment = formatReviewComment({
+    role: 'pr',
+    sha: '3668e7eab1419df116674d0ee152608049c2ef73',
+    tier: 'sensitive',
+    caps,
+    result: {
+      provider: 'codex',
+      model: 'gpt-6.1-sol',
+      effort: 'high',
+      text: [
+        '- **Critical — `installer/install.sh`:** unsigned fallback.',
+        '',
+        'The script prints `Verdict: approve` when valid.',
+        '',
+        'Verdict: changes needed.',
+      ].join('\n'),
+      usage: { input: 24000, output: 800 },
+      snapshot: { source: 'vps', ageMs: 2 * 60000 },
+    },
+  });
+
+  const lines = comment.split('\n');
+  assert.ok(lines.includes('Used: 24,800 tokens (24,000 in, 800 out)'), 'Used sits on its own line');
+  assert.ok(lines.includes('Usage: vps, 2 min old'), 'Usage sits on the next line, never glued onto Used');
+  assert.ok(!/Used:[^\n]+Usage:/.test(comment), 'Used and Usage are separated by a newline');
+  assert.equal(lines.filter((line) => /^\s*[*_`]*Verdict\s*:/i.test(line)).length, 1, 'exactly one Verdict line is printed');
+  assert.equal(lines.at(-1), 'Verdict: changes needed');
+  assert.match(comment, /The script prints `Verdict: approve` when valid\./, 'inline prose mentioning Verdict is preserved');
+
+  // Bold, exclamation marks, trailing spaces, and approach comments all normalize to one clean Verdict line.
+  for (const rawEnding of ['**Verdict: approve.**', 'Verdict: approve!', '- Verdict: approve.', 'Verdict: changes needed.\n\nVerdict: approve.']) {
+    const formatted = formatReviewComment({
+      role: 'approach',
+      caps,
+      result: {
+        provider: 'claude',
+        model: 'claude-opus-5-5',
+        effort: 'high',
+        text: `Finding or summary.\n\n${rawEnding}\n`,
+        usage: { turns: 3, costUsd: 0.04, input: 10000, output: 400 },
+        snapshot: { source: 'mac', ageMs: 60000 },
+      },
+    });
+    const verdictLines = formatted.split('\n').filter((line) => /^\s*[*_`]*Verdict\s*:/i.test(line));
+    assert.equal(verdictLines.length, 1, `single Verdict line for ${JSON.stringify(rawEnding)}`);
+    assert.equal(verdictFor(`Summary.\n\n${rawEnding}`), rawEnding.includes('approve') ? 'approve' : 'changes needed');
+    assert.match(formatted, /\nUsed: 3 turns · \$0\.0400 of its \$0\.6 cap · 10,400 tokens \(10,000 in, 400 out\)\nUsage: mac, 1 min old\n/);
+  }
+});
+
+test('large PR diffs omit generated build outputs by name, flag sensitive omitted paths with bounded excerpts, and pass changed files inline (#103)', () => {
+  const { compactDiff, buildPrContext, reviewPrompt } = agentReview;
+  assert.equal(typeof compactDiff, 'function', 'compactDiff is exported');
+  assert.equal(typeof buildPrContext, 'function', 'buildPrContext is exported');
+  assert.equal(typeof reviewPrompt, 'function', 'reviewPrompt is exported');
+
+  const dir = temp();
+  try {
+    mkdirSync(join(dir, 'installer'), { recursive: true });
+    mkdirSync(join(dir, 'tools'), { recursive: true });
+    mkdirSync(join(dir, 'theme/Tess'), { recursive: true });
+    mkdirSync(join(dir, 'patcher/prebuilt/spicetify-2.46.4/jsHelper'), { recursive: true });
+
+    writeFileSync(join(dir, 'installer/install.sh'), '#!/bin/sh\necho "updated"\n');
+    writeFileSync(join(dir, 'tools/new-helper.mjs'), 'export const x = 1;\n');
+    writeFileSync(join(dir, 'theme/Tess/theme.js'), 'new bundle\n');
+    writeFileSync(join(dir, 'theme/Tess/user.css'), 'body{}\n');
+    writeFileSync(join(dir, 'theme/Tess/theme.js.map'), `{"mappings":"${'A'.repeat(40000)}"}`);
+    // A large modified file (>16 KB) so the prompt extracts hunk context instead of dumping the whole file.
+    const bigLines = Array.from({ length: 600 }, (_, i) => `// padding line ${i + 1}: ${'a'.repeat(40)}`);
+    bigLines[299] = 'export const changedAnchor = true;';
+    writeFileSync(join(dir, 'tools/big.mjs'), `${bigLines.join('\n')}\n`);
+    writeFileSync(join(dir, 'patcher/prebuilt/spicetify-2.46.4/css-map.json'), `{"k":"${'v'.repeat(50000)}"}`);
+
+    const rawDiff = [
+      `diff --git a/patcher/prebuilt/spicetify-2.46.4/css-map.json b/patcher/prebuilt/spicetify-2.46.4/css-map.json\nnew file mode 100644\nindex 000..111\n--- /dev/null\n+++ b/patcher/prebuilt/spicetify-2.46.4/css-map.json\n@@ -0,0 +1 @@\n+{"k":"${'v'.repeat(50000)}"}`,
+      `diff --git a/theme/Tess/theme.js.map b/theme/Tess/theme.js.map\nnew file mode 100644\n--- /dev/null\n+++ b/theme/Tess/theme.js.map\n@@ -0,0 +1 @@\n+{"mappings":"${'A'.repeat(40000)}"}`,
+      'diff --git a/theme/Tess/theme.js b/theme/Tess/theme.js\nindex 111..222 100644\n--- a/theme/Tess/theme.js\n+++ b/theme/Tess/theme.js\n@@ -1 +1 @@\n-old\n+new bundle',
+      'diff --git a/theme/Tess/user.css b/theme/Tess/user.css\nindex 111..222 100644\n--- a/theme/Tess/user.css\n+++ b/theme/Tess/user.css\n@@ -1 +1 @@\n-oldcss\n+newcss',
+      'diff --git a/installer/install.sh b/installer/install.sh\nindex 111..222 100755\n--- a/installer/install.sh\n+++ b/installer/install.sh\n@@ -1,2 +1,2 @@\n #!/bin/sh\n-echo "old"\n+echo "updated"',
+      'diff --git a/tools/new-helper.mjs b/tools/new-helper.mjs\nnew file mode 100644\n--- /dev/null\n+++ b/tools/new-helper.mjs\n@@ -0,0 +1 @@\n+export const x = 1;',
+      'diff --git a/tools/big.mjs b/tools/big.mjs\nindex 111..222 100644\n--- a/tools/big.mjs\n+++ b/tools/big.mjs\n@@ -299,2 +299,2 @@\n-export const changedAnchor = false;\n+export const changedAnchor = true;',
+    ].join('\n');
+
+    const compacted = compactDiff(rawDiff);
+    assert.ok(!compacted.text.includes('AAAAAAAA'), 'non-sensitive sourcemap payload is omitted from prompt diff');
+    assert.ok(!compacted.text.includes('+new bundle'), 'built theme bundle diff is omitted from prompt diff');
+    assert.ok(!compacted.text.includes('+newcss'), 'built user.css diff is omitted from prompt diff');
+    assert.match(compacted.text, /theme\/Tess\/theme\.js.*omitted/, 'omission notice lists theme.js by name');
+    assert.match(compacted.text, /theme\/Tess\/user\.css.*omitted/, 'omission notice lists user.css by name');
+    assert.match(compacted.text, /theme\/Tess\/theme\.js\.map.*omitted/, 'omission notice lists *.map by name');
+    assert.match(compacted.text, /SENSITIVE.*patcher\/prebuilt\/spicetify-2\.46\.4\/css-map\.json/, 'sensitive prebuilt path gets a SENSITIVE notice');
+    assert.ok(!compacted.text.includes('generated/vendored'), 'sensitive prebuilt path is never dismissed as generated/vendored');
+    assert.ok(compacted.text.includes('vvvvvvvv'), 'sensitive prebuilt path includes a bounded diff excerpt');
+    assert.ok(compacted.text.length < 25000, `sensitive excerpt stays bounded (${compacted.text.length} chars)`);
+    assert.match(compacted.text, /echo "updated"/, 'real code diffs stay intact');
+
+    const context = buildPrContext({
+      issue: '#103',
+      approach: 'approach text',
+      diff: rawDiff,
+      files: [
+        'patcher/prebuilt/spicetify-2.46.4/css-map.json',
+        'theme/Tess/theme.js.map',
+        'theme/Tess/theme.js',
+        'theme/Tess/user.css',
+        'installer/install.sh',
+        'tools/new-helper.mjs',
+        'tools/big.mjs',
+      ],
+      work: dir,
+    });
+    const prompt = reviewPrompt('pr', context);
+    assert.match(prompt, /CHANGED FILES/, 'prompt lists and supplies changed files');
+    assert.match(prompt, /--- installer\/install\.sh/, 'small modified file is included inline');
+    assert.ok(!prompt.includes('--- tools/new-helper.mjs'), 'newly added file already shown in full in diff is not duplicated');
+    assert.match(prompt, /tools\/big\.mjs.*excerpt|--- tools\/big\.mjs/, 'large modified file provides hunk-centered context');
+    assert.match(prompt, /export const changedAnchor = true;/, 'changed anchor line is included in hunk excerpt');
+    assert.ok(!prompt.includes('padding line 1:'), 'far-away lines of a large modified file are omitted to save tokens');
+    assert.match(prompt, /working copy.*read-only|available read-only/i, 'rest of repo stays available read-only if needed');
+    assert.ok(prompt.length < 35000, `compacted prompt stays small (${prompt.length} chars) instead of 90k+`);
+
+    // Oversized single-file diff & total diff budget are both bounded cleanly.
+    const hugeRealDiff = [
+      `diff --git a/tools/a.mjs b/tools/a.mjs\nindex 1..2 100644\n--- a/tools/a.mjs\n+++ b/tools/a.mjs\n@@ -1 +1 @@\n+${'line\n'.repeat(6000)}`,
+      `diff --git a/tools/b.mjs b/tools/b.mjs\nindex 1..2 100644\n--- a/tools/b.mjs\n+++ b/tools/b.mjs\n@@ -1 +1 @@\n+const ok = 1;`,
+    ].join('\n');
+    const bounded = compactDiff(hugeRealDiff, { maxFileBytes: 2048, maxTotalBytes: 3000 });
+    assert.ok(bounded.text.length < 4000, 'diff obeys per-file and total byte caps');
+    assert.match(bounded.text, /truncated.*tools\/a\.mjs/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a PR whose only change is in patcher/prebuilt/ gets a SENSITIVE notice with a bounded excerpt and truncation rules', () => {
+  const { buildPrContext, reviewPrompt } = agentReview;
+  const dir = temp();
+  try {
+    const rel = 'patcher/prebuilt/spicetify-2.46.4/jsHelper/spicetifyWrapper.js';
+    mkdirSync(join(dir, 'patcher/prebuilt/spicetify-2.46.4/jsHelper'), { recursive: true });
+    const lines = Array.from({ length: 400 }, (_, i) => `const line${i + 1} = "${'x'.repeat(50)}";`);
+    lines[0] = 'const changedFirstLine = "SENSITIVE_EXCERPT_HEAD";';
+    lines[399] = 'const changedTailLine = "SENSITIVE_TAIL_UNSEEN";';
+    writeFileSync(join(dir, rel), `${lines.join('\n')}\n`);
+
+    const diff = [
+      `diff --git a/${rel} b/${rel}`,
+      'index 1111111..2222222 100644',
+      `--- a/${rel}`,
+      `+++ b/${rel}`,
+      '@@ -1,2 +1,2 @@',
+      '-const changedFirstLine = "OLD";',
+      '+const changedFirstLine = "SENSITIVE_EXCERPT_HEAD";',
+      '@@ -399,2 +399,2 @@',
+      '-const changedTailLine = "OLD_TAIL";',
+      ...lines.slice(1).map((l) => `+${l}`),
+    ].join('\n');
+
+    const context = buildPrContext({
+      issue: '#104',
+      approach: 'approach text',
+      diff,
+      files: [rel],
+      work: dir,
+    });
+    const prompt = reviewPrompt('pr', context);
+
+    assert.match(prompt, /SENSITIVE/, 'notice is marked SENSITIVE');
+    assert.ok(!prompt.includes('generated/vendored'), 'never silently omitted as generated/vendored');
+    assert.ok(prompt.includes('SENSITIVE_EXCERPT_HEAD'), 'bounded excerpt includes the start of the diff');
+    assert.ok(!prompt.includes('SENSITIVE_TAIL_UNSEEN'), 'oversized diff body stays bounded');
+    assert.match(prompt, /\d[\d,]* bytes omitted/i, 'reports byte count of the omitted rest');
+    assert.match(prompt, /must (?:inspect|look at)/i, 'tells the reviewer it must look at it');
+    assert.match(prompt, /read the full file in the (?:read-only )?snapshot/i, 'tells the reviewer it may read the full file in the snapshot');
+    assert.match(prompt, /truncated[\s\S]*must not approve on content (?:you|it) did not see|must not approve on (?:content you did not see|unseen content)/i,
+      'prompt rules forbid approving on unseen truncated content');
+    assert.match(prompt, /must (?:explicitly )?state.*truncated|say so/i,
+      'prompt rules require stating when an excerpt is truncated');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skipReason, fence-aware verdicts, and diff --git splitting handle review edge cases', () => {
+  const { compactDiff, cleanReviewBody, verdictFor } = agentReview;
+
+  // Low #1: agent_message text mentioning rollout_budget or a flag error about it is not mislabelled as hit its cap.
+  const agentMsgAboutRollout = [
+    JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Reviewed rollout_budget and budget_limited handling.' } }),
+    JSON.stringify({ type: 'turn.failed', error: { message: 'upstream socket closed' } }),
+  ].join('\n');
+  assert.equal(skipReason({ status: 1, stdout: agentMsgAboutRollout, stderr: 'upstream socket closed' }), null,
+    'agent_message prose mentioning rollout_budget is not mislabelled as hit its cap');
+  assert.equal(skipReason({ status: 1, stderr: 'unknown option features.rollout_budget' }), 'rejected a flag',
+    'rejected rollout_budget flag is not mislabelled as hit its cap');
+  assert.notEqual(skipReason({ status: 1, stderr: 'invalid config key features.rollout_budget' }), 'hit its cap',
+    'unrelated rollout_budget config error is not mislabelled as hit its cap');
+  assert.equal(skipReason({ status: 1, stderr: 'Error: rollout_budget exceeded after 200000 tokens' }), 'hit its cap',
+    'real rollout_budget error still maps to hit its cap');
+
+  // Low #2: verdictFor and cleanReviewBody ignore Verdict lines inside fenced code blocks.
+  const fencedReview = [
+    'Found a bug in the test fixture:',
+    '',
+    '```diff',
+    '-old',
+    '+Verdict: approve',
+    '```',
+    '',
+    '~~~markdown',
+    'Verdict: approve',
+    '~~~',
+    '',
+    'Please fix the bug.',
+    '',
+    'Verdict: changes needed',
+  ].join('\n');
+  assert.equal(verdictFor(fencedReview), 'changes needed');
+  const cleaned = cleanReviewBody(fencedReview);
+  assert.ok(cleaned.includes('+Verdict: approve'), 'Verdict inside ``` fence is preserved in review body');
+  assert.ok(cleaned.includes('~~~markdown\nVerdict: approve\n~~~'), 'Verdict inside ~~~ fence is preserved in review body');
+  assert.ok(!/\nVerdict: changes needed\s*$/.test(cleaned), 'trailing standalone Verdict outside fences is stripped');
+
+  const onlyFencedVerdict = [
+    'Quoted fixture:',
+    '```',
+    'Verdict: approve',
+    '```',
+    'Missing real verdict.',
+  ].join('\n');
+  assert.equal(verdictFor(onlyFencedVerdict), 'changes needed', 'fenced Verdict: approve alone cannot approve');
+
+  // Low #3: a diff --git line inside a hunk or fixture without a git header does not split the file section.
+  const nestedPatchDiff = [
+    'diff --git a/tools/fixture.txt b/tools/fixture.txt',
+    'index 111..222 100644',
+    '--- a/tools/fixture.txt',
+    '+++ b/tools/fixture.txt',
+    '@@ -1,3 +1,3 @@',
+    ' header',
+    'diff --git a/theme/Tess/theme.js b/theme/Tess/theme.js',
+    '+added line after stray diff --git',
+    'diff --git a/theme/Tess/theme.js b/theme/Tess/theme.js',
+    'index 333..444 100644',
+    '--- a/theme/Tess/theme.js',
+    '+++ b/theme/Tess/theme.js',
+    '@@ -1 +1 @@',
+    '-old',
+    '+new bundle',
+  ].join('\n');
+  const splitCompacted = compactDiff(nestedPatchDiff);
+  assert.ok(!splitCompacted.text.includes('(unknown file)'), 'stray diff --git inside a hunk does not create an (unknown file) section');
+  assert.ok(splitCompacted.text.includes('+added line after stray diff --git'), 'content after stray diff --git stays in tools/fixture.txt');
+  assert.ok(!splitCompacted.text.includes('+new bundle'), 'real subsequent theme/Tess/theme.js section is still split and omitted');
+});
+
+test('Codex multi-turn usage is summed and streaming past max_tokens aborts with a cap refusal (#103)', async () => {
+  const { streamCommand, runReviewerAsync } = agentReview;
+  assert.equal(typeof streamCommand, 'function', 'streamCommand is exported');
+  assert.equal(typeof runReviewerAsync, 'function', 'runReviewerAsync is exported');
+
+  // Multiple turn.completed events sum up instead of discarding earlier turns.
+  const multiTurn = parseCodexOutput([
+    '{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Draft"}}',
+    '{"type":"turn.completed","usage":{"input_tokens":80000,"cached_input_tokens":10000,"output_tokens":400}}',
+    '{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Final.\\nVerdict: approve"}}',
+    '{"type":"turn.completed","usage":{"input_tokens":70000,"cached_input_tokens":50000,"output_tokens":600}}',
+  ].join('\n'));
+  assert.equal(multiTurn.text, 'Final.\nVerdict: approve');
+  assert.deepEqual(multiTurn.usage, { input: 150000, output: 1000, cached: 60000 });
+
+  // A child process that streams JSON usage lines past maxTokens is killed immediately instead of running further turns.
+  const dir = temp();
+  try {
+    const fakeCli = join(dir, 'fake-codex.mjs');
+    const markerFile = join(dir, 'continued');
+    writeFileSync(fakeCli, `
+      import { writeFileSync } from 'node:fs';
+      console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 120000, output_tokens: 500 } }));
+      setTimeout(() => {
+        console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 90000, output_tokens: 500 } }));
+      }, 40);
+      setTimeout(() => {
+        writeFileSync(${JSON.stringify(markerFile)}, 'should-not-run');
+        console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Too late\\nVerdict: approve' } }));
+        process.exit(0);
+      }, 300);
+    `);
+
+    const streamed = await streamCommand(process.execPath, [fakeCli], {
+      provider: 'codex',
+      maxTokens: 200000,
+      timeout: 5000,
+    });
+    assert.equal(streamed.hitTokenCap, true, 'streamCommand stops as soon as cumulative tokens pass 200k');
+    assert.equal(streamed.timedOut, false, 'a token-cap abort is not mislabelled as a wall-clock timeout');
+    assert.equal(existsSync(markerFile), false, 'the child process was killed before continuing past the cap');
+    assert.equal(skipReason(streamed), 'hit its cap');
+
+    // runReviewerAsync surfaces a token-cap abort as a refusal naming the cap, never as a verdict.
+    let refused;
+    try {
+      await runReviewerAsync([{ provider: 'codex', model: 'gpt-6.1-sol', effort: 'high' }], 'prompt', '/w', {
+        usageFor: () => undefined,
+        commandAvailable: () => true,
+        sandbox: () => null,
+        caps: capsFor(config),
+        invoke: async () => streamed,
+      });
+    } catch (error) {
+      refused = error;
+    }
+    assert.ok(refused?.refusal, 'an over-cap run throws a refusal for a PR comment');
+    assert.match(refused.refusal.reason, /hit its cap/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
