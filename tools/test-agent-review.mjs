@@ -45,7 +45,7 @@ const temp = () => mkdtempSync(join(tmpdir(), 'tess-test-'));
 
 // Run the workflow's machine-picking step for real, with fake `curl` and `sleep` in front of PATH, so the answer that
 // decides between the Instabox box and a backup is the same shell the runner runs.
-function pickMachine({ wakeUrl, readyBody = '', curlFails = false, readyOnTry = 1, countCalls = false }) {
+function pickMachine({ wakeUrl, readyBody = '', curlFails = false, readyOnTry = 1, countCalls = false, expectUrl }) {
   const workflow = readFileSync(new URL('../.github/workflows/agent-review.yml', import.meta.url), 'utf8').split('\n');
   const start = workflow.findIndex((line) => line.trim() === '- name: Pick the reviewer machine (Instabox first, then the VPS or omarchy)');
   assert.ok(start > 0, 'the workflow still has the machine step');
@@ -61,9 +61,10 @@ function pickMachine({ wakeUrl, readyBody = '', curlFails = false, readyOnTry = 
   try {
     const out = join(dir, 'output');
     writeFileSync(out, '');
-    // The fake curl counts its calls in a file, so a box that wakes on a later try and the 12-try limit can be checked.
+    // The fake curl records the arguments it was given, so the test checks the URL the workflow actually asks for, not
+    // just the answer it gets back. One line per call, which also drives the "wakes on a later try" case.
     const calls = join(dir, 'calls');
-    writeFileSync(join(dir, 'curl'), `#!/bin/sh\necho x >> '${calls}'\n` + (curlFails
+    writeFileSync(join(dir, 'curl'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n` + (curlFails
       ? 'exit 7\n'
       : `[ "$(wc -l < '${calls}')" -ge ${readyOnTry} ] && printf '%s' '${readyBody}'\nexit 0\n`));
     writeFileSync(join(dir, 'sleep'), '#!/bin/sh\nexit 0\n');
@@ -73,6 +74,11 @@ function pickMachine({ wakeUrl, readyBody = '', curlFails = false, readyOnTry = 
     if (wakeUrl !== undefined) env.WAKE_URL = wakeUrl;
     execFileSync('bash', ['-e', '-c', script.join('\n')], { env, stdio: 'pipe' });
     const result = readFileSync(out, 'utf8').trim();
+    if (expectUrl) {
+      const asked = readFileSync(calls, 'utf8').split('\n').filter(Boolean);
+      assert.ok(asked.length > 0, 'the step asked the wake URL something');
+      for (const line of asked) assert.ok(line.endsWith(` ${expectUrl}`), `asked for ${line}, wanted ...${expectUrl}`);
+    }
     if (!countCalls) return result;
     return { result, calls: existsSync(calls) ? readFileSync(calls, 'utf8').split('\n').filter(Boolean).length : 0 };
   } finally {
@@ -87,12 +93,13 @@ test('no wake URL keeps the old behaviour: any tess-agent runner', () => {
 
 test('only the exact ready answer pins the job to Instabox', () => {
   const pinned = 'runs_on=["self-hosted","tess-agent","tess-primary"]';
-  assert.equal(pickMachine({ wakeUrl: 'https://box.example/ready', readyBody: 'tess-ready' }), pinned);
+  // REVIEW_WAKE_URL is the box's host (the step adds /ready itself), so a value without a path is the real shape.
+  assert.equal(pickMachine({ wakeUrl: 'https://box.example', readyBody: 'tess-ready', expectUrl: 'https://box.example/ready' }), pinned);
   // A trailing slash must not turn the request into //ready, and a platform's 200 "starting…" page is not ready.
-  assert.equal(pickMachine({ wakeUrl: 'https://box.example/', readyBody: 'tess-ready' }), pinned);
+  assert.equal(pickMachine({ wakeUrl: 'https://box.example/', readyBody: 'tess-ready', expectUrl: 'https://box.example/ready' }), pinned);
   const backup = 'runs_on=["self-hosted","tess-agent","tess-backup"]';
-  assert.equal(pickMachine({ wakeUrl: 'https://box.example', readyBody: 'starting…' }), backup);
-  assert.equal(pickMachine({ wakeUrl: 'https://box.example', curlFails: true }), backup);
+  assert.equal(pickMachine({ wakeUrl: 'https://box.example', readyBody: 'starting…', expectUrl: 'https://box.example/ready' }), backup);
+  assert.equal(pickMachine({ wakeUrl: 'https://box.example', curlFails: true, expectUrl: 'https://box.example/ready' }), backup);
 });
 
 test('a box that wakes on a later try still gets the job, and the check gives up after 12 tries', () => {
