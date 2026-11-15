@@ -4,18 +4,20 @@
 // .github/agents.json `allowed` are accepted; sensitive work must use a `strong` model. Anything else falls back to
 // the role's defaults, and the comment says why.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const marker = '<!-- tess-review-bot -->';
+// `sandboxDirs` is the only part of the runner's own home a provider's CLI may read: its sign-in state, and for OpenCode
+// the reviewer agent file, which is what limits its reads. Every other provider's directory stays out of the sandbox.
 const providerDetails = {
-  claude: { command: 'claude', cache: 'claudeAgent.json' },
-  codex: { command: 'codex', cache: 'codex.json' },
-  cursor: { command: 'cursor-agent', cache: 'cursor.json' },
-  opencode: { command: 'opencode', cache: 'opencode.json' },
+  claude: { command: 'claude', cache: 'claudeAgent.json', sandboxDirs: [] },
+  codex: { command: 'codex', cache: 'codex.json', sandboxDirs: ['.codex'] },
+  cursor: { command: 'cursor-agent', cache: 'cursor.json', sandboxDirs: [] },
+  opencode: { command: 'opencode', cache: 'opencode.json', sandboxDirs: ['.config/opencode', '.local/share/opencode/auth.json'] },
 };
 
 // The key each provider signs in with on a headless runner. A review gets its own provider's key and nothing else.
@@ -46,20 +48,99 @@ export function tierForPaths(paths) {
   return 'normal';
 }
 
-export function providerHasUsage(usage) {
-  if (!usage || !Array.isArray(usage.windows) || usage.windows.length === 0) return true;
-  const now = Date.now();
-  return usage.windows.every((window) => {
-    if (window.resetsAt && Date.parse(window.resetsAt) <= now) return true;
-    return typeof window.usedPercent !== 'number' || window.usedPercent < 100;
-  });
+// What one review is assumed to cost in a provider's 5-hour session window, as a share of it. It is a round, cautious
+// number rather than a measurement: the hub reports what is left, not what a review spends, and #71 tracks measuring it.
+// Automatic selection keeps three of these in hand, so one review cannot take the window down to nothing.
+export const reviewCostPercent = 10;
+export const reviewsToKeep = 3;
+
+const windowKind = (window) => window.kind || window.id || 'usage';
+
+// Why a provider is out of usage, or null when it is fine. Three rules, in order:
+//  - a window that already reads 100% used is out until it resets;
+//  - a provider on pace to use its window up before its reset is out, even with plenty left (Claude at 59% of the
+//    session but 16% of the week on 15 Nov);
+//  - the 5-hour session must keep about three reviews in hand, measured by reviewCostPercent.
+// A window with no numbers, and a provider with no usage file at all, count as usable: the CLI still refuses when it is
+// really out, and the posted comment names the skip when that happens.
+export function usageProblem(usage, now = Date.now()) {
+  if (!usage || !Array.isArray(usage.windows)) return null;
+  for (const window of usage.windows) {
+    const resetsAt = window.resetsAt ? Date.parse(window.resetsAt) : null;
+    if (resetsAt && resetsAt <= now) continue;
+    if (typeof window.usedPercent !== 'number') continue;
+    const kind = windowKind(window);
+    if (window.usedPercent >= 100) return `no usage left in its ${kind} window`;
+    const left = 100 - window.usedPercent;
+    if (kind === 'session' && left < reviewsToKeep * reviewCostPercent) {
+      return `fewer than ${reviewsToKeep} reviews left in its ${kind} window`;
+    }
+    const durationMs = typeof window.windowDurationMins === 'number' ? window.windowDurationMins * 60000 : null;
+    if (!durationMs || !resetsAt) continue;
+    const elapsedMs = durationMs - (resetsAt - now);
+    // Ignore the first few percent of a window: dividing by a tiny elapsed time would predict almost anything.
+    if (elapsedMs <= durationMs * 0.05) continue;
+    if ((window.usedPercent * durationMs) / elapsedMs >= 100) return `on pace to run out before its ${kind} reset`;
+  }
+  return null;
+}
+
+export function providerHasUsage(usage, now = Date.now()) {
+  return usageProblem(usage, now) === null;
+}
+
+// Quota the owner keeps back, from `.github/agents.json` `reserve`: a number of % left per window kind, an optional
+// plain-English note, and an optional `until` date (a date keeps the reservation through the end of that day, UTC).
+export function reservationEnd(until) {
+  if (!until) return null;
+  const start = Date.parse(until);
+  if (!Number.isFinite(start)) return null;
+  return /T/.test(until) ? start : start + 24 * 60 * 60 * 1000 - 1;
+}
+
+export function reserveProblem(usage, reserve, now = Date.now()) {
+  if (!reserve) return null;
+  const end = reservationEnd(reserve.until);
+  if (end !== null && now > end) return null;
+  for (const window of usage?.windows || []) {
+    const keep = reserve[windowKind(window)];
+    if (typeof keep !== 'number' || typeof window.usedPercent !== 'number') continue;
+    if (window.resetsAt && Date.parse(window.resetsAt) <= now) continue;
+    if (100 - window.usedPercent <= keep) {
+      return `reserved${reserve.note ? ` for ${reserve.note}` : ''} (${keep}% of its ${windowKind(window)} window is held back)`;
+    }
+  }
+  return null;
+}
+
+// One place decides which reviewers can run, and why the rest cannot. The reasons travel with the models, so a
+// requested provider that was filtered out is still named in the posted comment instead of vanishing.
+export function reviewerCandidates(models, context = {}) {
+  const {
+    usageByProvider = {},
+    commandAvailable = () => true,
+    sandboxProblem = () => null,
+    reserve = {},
+    now = Date.now(),
+  } = context;
+  const candidates = [];
+  const skipped = [];
+  for (const model of models) {
+    const details = providerDetails[model.provider];
+    const usage = usageByProvider[model.provider];
+    const reason = !details ? 'unknown provider'
+      : !commandAvailable(details.command) ? 'no local CLI'
+        : reserveProblem(usage, reserve[model.provider], now)
+        || usageProblem(usage, now)
+        || sandboxProblem(model.provider);
+    if (reason) skipped.push({ ...model, reason });
+    else candidates.push(model);
+  }
+  return { candidates, skipped };
 }
 
 export function eligibleModels(models, usageByProvider, commandAvailable = () => true) {
-  return models.filter(({ provider }) => {
-    const details = providerDetails[provider];
-    return details && commandAvailable(details.command) && providerHasUsage(usageByProvider[provider]);
-  });
+  return reviewerCandidates(models, { usageByProvider, commandAvailable }).candidates;
 }
 
 export function parseRequest(body) {
@@ -186,6 +267,75 @@ export function stripAgentConfig(dir) {
   walk(dir);
 }
 
+// Every reviewer runs inside bubblewrap: an unprivileged OS boundary, not a promise in the prompt. The sandbox starts
+// empty, so a diff that talks the model into running a shell command finds no runner files at all: not `~/actions-runner`,
+// not the job's environment, not another provider's directory. Bound read-only: the copy under review, the CLI, its
+// runtime, what it needs for TLS and DNS, and its own sign-in state. Network stays on, because the API call needs it.
+export const sandboxRuntime = ['/usr', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/libx32', '/etc/ssl',
+  '/etc/ca-certificates', '/etc/ca-certificates.conf', '/etc/resolv.conf', '/etc/hosts', '/etc/nsswitch.conf',
+  '/etc/passwd', '/etc/group', '/etc/localtime', '/etc/alternatives', '/etc/ld.so.cache', '/etc/ld.so.conf',
+  '/etc/ld.so.conf.d'];
+
+export const sandboxHome = '/tmp/tess-review-home';
+
+function commandLocation(command) {
+  const found = spawnSync('sh', ['-c', 'command -v "$1"', 'sh', command], { encoding: 'utf8' });
+  const path = String(found.stdout || '').trim();
+  if (!path) return null;
+  try { return realpathSync(path); } catch { return path; }
+}
+
+// The argv handed to `bwrap`. `work` is the snapshot: the only folder from the job a reviewer can read, and the only
+// place the change is visible from. The rest is the minimum to start a process and reach the provider's API.
+export function sandboxArgv(provider, work, cli, options = {}) {
+  const {
+    home = homedir(),
+    exists = existsSync,
+    commandPath = commandLocation(providerDetails[provider]?.command || ''),
+  } = options;
+  const args = ['--die-with-parent', '--unshare-all', '--share-net', '--new-session', '--proc', '/proc', '--dev', '/dev',
+    '--tmpfs', '/tmp', '--tmpfs', '/home'];
+  for (const path of sandboxRuntime) if (exists(path)) args.push('--ro-bind', path, path);
+  for (const dir of providerDetails[provider]?.sandboxDirs || []) {
+    const path = join(home, dir);
+    if (exists(path)) args.push('--ro-bind', path, path);
+  }
+  if (commandPath && exists(commandPath)) {
+    args.push('--ro-bind', commandPath, commandPath);
+    // Node-based CLIs load files next to their entry point, so the folder goes in too when it is not already part of the
+    // runtime (/usr, /lib*). It holds no secret: it is the same bin folder the runner's PATH already points at.
+    const dir = dirname(commandPath);
+    if (!sandboxRuntime.some((runtime) => dir === runtime || dir.startsWith(`${runtime}/`))) {
+      args.push('--ro-bind', dir, dir);
+    }
+  }
+  args.push('--ro-bind', work, work, '--chdir', work, '--tmpfs', sandboxHome, '--',
+    commandPath || providerDetails[provider].command, ...cli);
+  return { command: 'bwrap', args, home: sandboxHome };
+}
+
+// `--unshare-all` needs unprivileged user namespaces. The probe runs the real thing, because bubblewrap installed with
+// user namespaces switched off fails at start with an error that reads like a crash of the reviewer.
+let sandboxProbe;
+export function probeSandbox(run) {
+  if (run) return run();
+  if (sandboxProbe !== undefined) return sandboxProbe;
+  const result = spawnSync('bwrap',
+    ['--die-with-parent', '--unshare-all', '--share-net', '--ro-bind', '/', '/', '--', 'true'], { encoding: 'utf8' });
+  sandboxProbe = result.error || result.status !== 0
+    ? `bubblewrap cannot start a sandbox here (${String(result.stderr || result.error?.message || 'unknown error').trim().split('\n')[0]}); check user namespaces (tools/runner-setup.md)`
+    : null;
+  return sandboxProbe;
+}
+
+// A provider with no working sandbox is refused, never run bare. The reason is a skip like any other, so the next
+// reviewer runs and the posted comment says what happened.
+export function sandboxProblem(options = {}) {
+  const { bwrapAvailable = commandExists('bwrap'), probe } = options;
+  if (!bwrapAvailable) return 'bubblewrap is not installed (tools/runner-setup.md)';
+  return probe === undefined ? probeSandbox() : probe;
+}
+
 // The flags each CLI needs to stay read-only, and the folder to stay in. Effort is spelled differently by each of them:
 // Claude has --effort, Codex a config key, OpenCode rides a #variant on the model id (`opencode run` has no --variant).
 export function cliArgs(provider, model, effort, work = root) {
@@ -224,12 +374,19 @@ export function assertReviewerAgent(
   }
 }
 
-function cliInvocation(provider, model, prompt, effort, work = root) {
-  if (provider === 'opencode') assertReviewerAgent();
-  const args = cliArgs(provider, model, effort, work);
-  return spawnSync(providerDetails[provider].command, provider === 'cursor' ? [...args, prompt] : args, {
+function cliInvocation(provider, model, prompt, effort, work = root, options = {}) {
+  if (provider === 'opencode') assertReviewerAgent(options.agentInstalled, options.agentSource);
+  // Cursor takes the prompt as an argument; the others read it on stdin, which has no length limit for a big diff.
+  const args = [...cliArgs(provider, model, effort, work), ...(provider === 'cursor' ? [prompt] : [])];
+  const sandbox = sandboxArgv(provider, work, args, options);
+  return spawnSync(sandbox.command, sandbox.args, {
     cwd: work,
-    env: reviewerEnv(process.env, provider),
+    env: {
+      ...reviewerEnv(process.env, provider),
+      HOME: sandbox.home,
+      TMPDIR: '/tmp',
+      PATH: '/usr/local/bin:/usr/bin:/bin',
+    },
     input: provider === 'cursor' ? undefined : prompt,
     encoding: 'utf8',
     maxBuffer: 30 * 1024 * 1024,
@@ -261,19 +418,32 @@ export function skipReason(result) {
 }
 
 // A skip is a config problem on the runner, not a fact about the change, so the posted comment has to say it happened.
-// Silence here would let a dropped flag move every sensitive review to the second model without anyone noticing.
+// Silence here would let a dropped flag move every sensitive review to the second model without anyone noticing. The list
+// covers both halves: a candidate removed before it was invoked (no CLI, no usage, reserved, no sandbox) and one that ran
+// and refused.
 export function skippedLine(result) {
   return result.skipped?.length ? `\nSkipped: ${result.skipped.join(', ')}` : '';
 }
 
-function runReviewer(models, prompt, work) {
-  const usage = Object.fromEntries(models.map(({ provider }) => [provider, readUsage(provider)]));
-  const candidates = eligibleModels(models, usage, commandExists);
-  if (!candidates.length) throw new Error('no configured reviewer provider has both usage and a local CLI');
+export function runReviewer(models, prompt, work, deps = {}) {
+  const {
+    usageFor = readUsage,
+    commandAvailable = commandExists,
+    sandbox = (provider) => sandboxProblem(),
+    reserve = {},
+    now = Date.now(),
+    invoke = cliInvocation,
+  } = deps;
+  const usageByProvider = Object.fromEntries(models.map(({ provider }) => [provider, usageFor(provider)]));
+  const { candidates, skipped: filtered } = reviewerCandidates(models, {
+    usageByProvider, commandAvailable, sandboxProblem: sandbox, reserve, now,
+  });
 
-  const skipped = [];
+  const skipped = filtered.map(({ provider, model, reason }) => `${provider}/${model} (${reason})`);
+  if (!candidates.length) throw new Error(`no reviewer could run: ${skipped.join(', ')}`);
+
   for (const candidate of candidates) {
-    const result = cliInvocation(candidate.provider, candidate.model, prompt, candidate.effort, work);
+    const result = invoke(candidate.provider, candidate.model, prompt, candidate.effort, work);
     if (result.status === 0 && result.stdout?.trim()) return { ...candidate, text: result.stdout.trim(), skipped };
     const reason = skipReason(result);
     if (reason) {
@@ -341,7 +511,9 @@ async function main() {
     const work = snapshot('HEAD');
     let result;
     try {
-      result = runReviewer(pick.models, reviewPrompt(role, { issue: issueText(issue), approach }), work);
+      result = runReviewer(pick.models, reviewPrompt(role, { issue: issueText(issue), approach }), work, {
+        reserve: config.reserve,
+      });
     } finally {
       rmSync(work, { recursive: true, force: true });
     }
@@ -377,7 +549,7 @@ async function main() {
       issue: linked ? issueText(linked) : '(no linked issue found)',
       approach,
       diff,
-    }), work);
+    }), work, { reserve: config.reserve });
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

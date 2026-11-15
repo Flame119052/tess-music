@@ -116,6 +116,31 @@ setup.
 - Krish's Mac makes the registration token and sends it over SSH standard input, so the token never sits in a file or in
   an agent's instructions.
 
+## bubblewrap: the read-only boundary (required)
+
+Every reviewer CLI runs inside `bubblewrap`, so a diff cannot talk a model into running a shell command that reads the
+runner, the job's environment, or another provider's files. A machine without a working sandbox refuses that provider
+with a skip reason and the next reviewer runs; no reviewer is ever started bare.
+
+```sh
+sudo apt install bubblewrap        # Debian/Ubuntu; on Arch: sudo pacman -S bubblewrap
+bwrap --version
+```
+
+Unprivileged user namespaces must be on. Check on the runner machine, as `tess-runner`:
+
+```sh
+cat /proc/sys/user/max_user_namespaces            # must be greater than 0
+sysctl kernel.unprivileged_userns_clone           # 1 on Debian/Ubuntu; a missing key on 12+ means they are allowed
+bwrap --unshare-all --share-net --die-with-parent --ro-bind / / -- true && echo "sandbox works"
+```
+
+If the last line fails with a namespace error, the kernel setting is off or the install cannot unshare for that account.
+Fixing it needs root, so the machine's owner does it; until then that machine only reviews with a provider that can run.
+Each sandbox gets the review copy, the CLI and its runtime, and that provider's own config folder, all read-only, plus a
+throwaway `HOME`, the network for the API call, and only its own key in the environment. `~/actions-runner`, the job's
+environment, and other providers' folders are not in it.
+
 ## Adding another reviewer provider to a runner
 
 Install the CLI under `tess-runner` (in `~/.local/bin`), sign it in as that user, and pass only its key through the

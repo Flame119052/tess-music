@@ -1,5 +1,5 @@
 {
-  "_note": "Defaults per role, default first: the first with usage left wins, and a provider on pace to run out before its reset is skipped (docs/workflow.md -> Choosing a reviewer). Models here are the cheap end of what is allowed; the expensive ones are kept for sensitive work. Allowed models may be asked for by tag. Why each is here: docs/workflow.md and docs/research/reviewer-models-2026-11.md.",
+  "_note": "One place for everything likely to change about reviewers: which models are tried per role, what a tag may name, what one review costs, quota kept back, and dated notes. How it is read, and how to change it, is docs/workflow.md -> Choosing a reviewer. Defaults are tried in order, first to last: the first that has a local CLI, enough usage, no reservation against it, and a working bubblewrap sandbox wins. Models here are the cheap end of what is allowed; the expensive ones are kept for sensitive work. Why each is here: docs/workflow.md and docs/research/reviewer-models-2026-11.md.",
   "_note_zai": "zai-coding-plan/glm-5.3 is the same GLM on the Z.ai coding-plan connector, which does not touch OpenCode Go quota. It needs that connector signed in on the runner (tools/runner-setup.md) and is not a default.",
   "approach": [
     {
@@ -73,5 +73,39 @@
     "high",
     "xhigh",
     "max"
+  ],
+  "cost": {
+    "claude/claude-opus-5-5": "heavy",
+    "claude/claude-sonnet-5-5": "medium",
+    "claude/claude-fable-5-2": "medium",
+    "claude/claude-haiku-5-5": "light",
+    "codex/gpt-6.1-sol": "heavy",
+    "codex/gpt-6.1-terra": "medium",
+    "cursor/gpt-5.6-sol": "heavy",
+    "opencode/opencode-go/deepseek-v4.1-flash": "light",
+    "opencode/zai-coding-plan/glm-5.3": "medium",
+    "opencode/opencode-go/glm-5.3": "heavy",
+    "opencode/opencode-go/kimi-k3": "light"
+  },
+  "reserve": {
+    "claude": {
+      "weekly": 30,
+      "note": "Krish's own work",
+      "until": "2026-11-20"
+    }
+  },
+  "notes": [
+    {
+      "date": "2026-11-15",
+      "note": "Pools differ inside one provider: Opus and Sonnet share Claude's weekly pool, Fable 5.2 has its own. Recheck when Claude's plans change."
+    },
+    {
+      "date": "2026-11-15",
+      "note": "On OpenCode Go, GLM-5.3 empties that allowance several times faster per review than DeepSeek V4.1 Flash, so DeepSeek is the default and GLM goes through the Z.ai coding plan."
+    },
+    {
+      "date": "2026-11-15",
+      "note": "Cursor bills API list price on top of its subscription, so one Cursor review costs more than one review anywhere else."
+    }
   ]
 }

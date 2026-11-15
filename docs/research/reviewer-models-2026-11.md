@@ -366,6 +366,8 @@ person, useless for a bot (<https://zed.dev/docs/ai/agents>). The rest fail one 
 > Keeping the table as written finds the best third choice if one is ever needed; it is not a list to copy into the config.
 > The normal-PR third choice is now **DeepSeek V4.1 Flash**, not GLM on OpenCode Go, because GLM uses that quota up fast
 > (see "What a review costs, and in which pool" below); GLM is still the pick when it goes through the Z.ai coding plan.
+> What the runner actually tries, in order, and what each model costs, is in `.github/agents.json`; this table is the
+> reasoning behind those values, not a list to copy.
 
 Rules that shaped this: the reviewer comes from a different provider than the author; the strongest model does not run
 twice on one change unless a Mac can break; the third choice must be cheap enough to run on a bad day. Model ids are the
@@ -404,7 +406,8 @@ spend Claude. Cursor bills at list price on top of its subscription.
 **On OpenCode Go, the model you pick decides how long the quota lasts.** The plan is $10/month with 5-hour and weekly
 caps over a per-model dollar allowance (<https://opencode.ai/docs/go>), and GLM-5.3 is priced at $1.40/$4.40 per million
 against DeepSeek V4.1 Flash at $0.30/$1.20 (<https://opencode.ai/docs/zen>). GLM therefore empties that allowance several
-times faster per review, which is why DeepSeek V4.1 Flash is the OpenCode default in `agents.json`. The cheaper route for
+times faster per review, which is why **`opencode-go/glm-5.3` is weighted `heavy`** in `.github/agents.json` while
+`opencode-go/deepseek-v4.1-flash` is `light`, and why DeepSeek V4.1 Flash is the OpenCode default. The cheaper route for
 GLM is the **Z.ai coding plan**, which `opencode models` lists as its own provider (`zai-coding-plan/glm-5.3`, checked on
 OpenCode 2.2.6); it bills the Z.ai subscription and leaves OpenCode's allowance alone. It needs that connector signed in
 on the runner (`tools/runner-setup.md`), so it is allowed by tag and is not a default.

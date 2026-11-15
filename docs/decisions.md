@@ -193,3 +193,12 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   through the Z.ai coding plan. The guide gains a cost weight per row and states that one review is the budget until a
   per-review cap lands (#71). The review copy also drops symlinks and matches agent-file names in any letter case, and a
   skipped reviewer is named in the posted comment instead of falling through silently.
+- **15 Nov 2026 · PR #87 third review (#71)** — Every reviewer now runs inside an unprivileged **bubblewrap** sandbox:
+  only the review copy, the CLI and its runtime, and that provider's own config folder are bound, read-only, with a
+  throwaway `HOME`, the network for the API call, and only its own key in the environment. A machine without a working
+  sandbox refuses that provider and says so, instead of running it bare. Automatic selection now implements the pace rule
+  the docs promised (a provider on track to empty a window before it resets is skipped) and keeps three reviews in hand in
+  the 5-hour window; a candidate filtered out before it starts is named in the comment like one that ran and refused.
+  Everything likely to change about reviewers — the order per role, the allowed models, the cost weight, dated pool
+  notes, and quota reserved for the owner with an `until` date — lives in `.github/agents.json`, with one short
+  "How to update this" guide in `docs/workflow.md`. (#71)
