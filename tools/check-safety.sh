@@ -72,6 +72,33 @@ done
 if grep -nE '\$(APPS|A0)\.tess-(new|old)' installer/*.sh; then
   fail "a shell script swaps Spotify's interface folder itself; use tess-patcher swap-apps"
 fi
+# A script may only read Spotify's folder out (ditto "$APPS" "$TMP/…"). A write, a move or a delete of it must stay
+# inside tess-patcher: a fallback added to any one of the three swap_apps bodies would pass the checks above and still
+# be the copy that macOS denies, or the delete-then-copy that leaves Spotify with no interface at all.
+apps_write() {
+  awk '
+    /^[[:space:]]*#/ { next }
+    {
+      rest = $0
+      while (match(rest, /"[$](APPS|A0)"|"[$](APPS|A0)\/"/)) {
+        before = substr(rest, 1, RSTART - 1)
+        if (before !~ /(ditto|cp|swap-apps|can-write|ls -[a-zA-Z]+|shasum -a [0-9]+|-[dfex])[[:space:]]*$/) {
+          print FILENAME ":" FNR ": " $0; break
+        }
+        rest = substr(rest, RSTART + RLENGTH)
+      }
+    }' "$@"
+}
+if out=$(apps_write installer/*.sh) && [ -n "$out" ]; then
+  echo "$out"; fail "a script would write, move or delete Spotify's interface folder; use tess-patcher swap-apps"
+fi
+# The rule is only worth having if it still catches a fallback and still allows a read out.
+fixture=$(mktemp)
+printf 'swap_apps() {\n  ditto "$1" "$APPS"\n}\n' > "$fixture"
+[ -n "$(apps_write "$fixture")" ] || { rm -f "$fixture"; fail "the Apps write check lets a copy into Spotify's folder through"; }
+printf 'copy_out() {\n  ditto "$APPS" "$TMP/a"\n}\n' > "$fixture"
+[ -z "$(apps_write "$fixture")" ] || { rm -f "$fixture"; fail "the Apps write check rejects reading Spotify's folder out"; }
+rm -f "$fixture"
 # 8. the install line pins the committed verifier, and the verifier is stored under its own hash
 pin=$(sed -n "s/^VERIFY_SHA='\([0-9a-f]\{64\}\)'$/\1/p" installer/install.sh)
 [ -n "$pin" ] || fail "installer/install.sh has no VERIFY_SHA pin"
