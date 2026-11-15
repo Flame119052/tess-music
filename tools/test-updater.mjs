@@ -26,7 +26,7 @@ function sandbox({ stock = false, fresh = false, realDoctor = false, tessName = 
 
   writeFileSync(join(spotify, 'Contents', 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>1.3.9.2055</string></dict></plist>
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.spotify.client</string><key>CFBundleShortVersionString</key><string>1.3.9.2055</string></dict></plist>
 `);
   if (stock) {
     writeFileSync(join(apps, 'xpui.spa'), 'stock Spotify interface\n');

@@ -1,8 +1,12 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/xml"
 	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -65,9 +69,10 @@ func SwapApps(args []string) int {
 		return 1
 	}
 	dest, src := filepath.Clean(args[0]), filepath.Clean(args[1])
-	// Only Spotify's own interface folder: a typo must never empty some other folder and fill it with Spotify's files.
-	if !filepath.IsAbs(dest) || !strings.HasSuffix(dest, filepath.Join("Contents", "Resources", "Apps")) {
-		utils.PrintError(dest + ` is not a Spotify "Contents/Resources/Apps" folder; nothing was changed`)
+	// Only Spotify's own interface folder: the swap renames the folder aside and then deletes it, so a typo or a
+	// lookalike path must never be able to reach some other folder.
+	if err := checkSpotifyApps(dest); err != nil {
+		utils.PrintError(dest + ": " + err.Error() + "; nothing was changed")
 		return 1
 	}
 	if st, err := os.Stat(dest); err == nil && !st.IsDir() {
@@ -93,6 +98,100 @@ func SwapApps(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// checkSpotifyApps answers "is this really Spotify's own interface folder?".
+//
+// A string ending is not enough. `…/NotContents/Resources/Apps` ends in the same words, and a `Resources` that is a
+// symlink to somewhere else ends in them too, yet the swap would rename that folder aside and then delete it. So the
+// path must end in a separator-bounded `Contents/Resources/Apps`, must still do so after its symlinks are resolved
+// (which is what lets `/var` stand for `/private/var`, and what refuses a symlinked `Resources`), and the bundle
+// around it must be the app whose Info.plist names Spotify.
+func checkSpotifyApps(dest string) error {
+	suffix := string(filepath.Separator) + filepath.Join("Contents", "Resources", "Apps")
+	if !filepath.IsAbs(dest) || len(dest) <= len(suffix) || !strings.HasSuffix(dest, suffix) {
+		return errors.New(`not a Spotify "Contents/Resources/Apps" folder`)
+	}
+	// A run killed between the two renames leaves Apps absent, so fall back to the parent: it still has to be a real
+	// Resources folder, which is all "Apps is missing" says about the folder that is about to come back.
+	resolved, err := filepath.EvalSymlinks(dest)
+	if err != nil {
+		parent, perr := filepath.EvalSymlinks(filepath.Dir(dest))
+		if perr != nil {
+			return errors.New(`not a Spotify "Contents/Resources/Apps" folder`)
+		}
+		resolved = filepath.Join(parent, filepath.Base(dest))
+	}
+	if len(resolved) <= len(suffix) || !strings.HasSuffix(resolved, suffix) {
+		return errors.New(`its symlinks lead outside a "Contents/Resources/Apps" folder`)
+	}
+	bundle := filepath.Dir(filepath.Dir(filepath.Dir(resolved)))
+	if filepath.Ext(bundle) != ".app" {
+		return errors.New(`not inside an ".app" bundle`)
+	}
+	id, err := bundleIdentifier(filepath.Join(bundle, "Contents", "Info.plist"))
+	if err != nil {
+		return errors.New("its Info.plist cannot be read: " + err.Error())
+	}
+	if id != spotifyBundleID {
+		return errors.New(`it belongs to "` + id + `", not ` + spotifyBundleID)
+	}
+	return nil
+}
+
+const spotifyBundleID = "com.spotify.client"
+
+// Spotify's real Info.plist is a binary plist; a test bundle's is XML. XML is read here in Go, and the binary form is
+// left to PlistBuddy, which the updater already uses to read the same file for Spotify's version.
+func bundleIdentifier(plist string) (string, error) {
+	b, err := os.ReadFile(plist)
+	if err != nil {
+		return "", err
+	}
+	if !bytes.HasPrefix(b, []byte("bplist")) {
+		return xmlStringValue(b, "CFBundleIdentifier")
+	}
+	out, err := exec.Command("/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", plist).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// xmlStringValue returns the first <string> in a plist that follows the <key>name</key>.
+func xmlStringValue(b []byte, name string) (string, error) {
+	d := xml.NewDecoder(bytes.NewReader(b))
+	want := false
+	for {
+		tok, err := d.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+		se, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		if se.Name.Local == "key" {
+			var k string
+			if err := d.DecodeElement(&k, &se); err != nil {
+				return "", err
+			}
+			want = strings.TrimSpace(k) == name
+			continue
+		}
+		if se.Name.Local == "string" && want {
+			var v string
+			if err := d.DecodeElement(&v, &se); err != nil {
+				return "", err
+			}
+			return v, nil
+		}
+		want = false
+	}
+	return "", errors.New(name + " is missing")
 }
 
 // Spotify's interface is there: either its packed form (xpui.spa) or an unpacked folder with a page to load

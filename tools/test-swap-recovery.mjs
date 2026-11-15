@@ -28,6 +28,11 @@ try {
   execFileSync('go', ['build', '-o', bin, '.'], { cwd: join(root, 'patcher') });
   mkdirSync(apps, { recursive: true });
   mkdirSync(staged, { recursive: true });
+  // swap-apps only takes a real-shaped Spotify bundle: the path check reads the identifier before it moves anything.
+  writeFileSync(join(box, 'Spotify.app', 'Contents', 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.spotify.client</string></dict></plist>
+`);
   writeFileSync(join(apps, 'xpui.spa'), original);
   writeFileSync(join(staged, 'xpui.spa'), 'replacement interface\n');
   // A FIFO blocks inside the copy (opening it waits for a writer), so the kill lands in the middle of the copy with

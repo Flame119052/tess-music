@@ -3,7 +3,9 @@ package cmd
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -71,13 +73,41 @@ func TestSwapRecoversInterruptedRun(t *testing.T) {
 func setupSpotify(t *testing.T) (apps, staged string) {
 	t.Helper()
 	res := t.TempDir()
-	apps = filepath.Join(res, "Spotify.app", "Contents", "Resources", "Apps")
+	apps = makeApp(t, res, "Spotify.app", "com.spotify.client")
 	staged = filepath.Join(res, "staged")
-	os.MkdirAll(apps, 0o755)
 	os.MkdirAll(staged, 0o755)
-	os.WriteFile(filepath.Join(apps, "xpui.spa"), []byte("original"), 0o644)
 	os.WriteFile(filepath.Join(staged, "xpui.spa"), []byte("new"), 0o644)
 	return apps, staged
+}
+
+// makeApp builds a bundle shaped like a real one (Info.plist names its identifier) and returns its Apps folder.
+func makeApp(t *testing.T, root, name, id string) string {
+	t.Helper()
+	app := filepath.Join(root, name)
+	apps := filepath.Join(app, "Contents", "Resources", "Apps")
+	os.MkdirAll(apps, 0o755)
+	if err := os.WriteFile(filepath.Join(app, "Contents", "Info.plist"), []byte(plistFor(id)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(apps, "xpui.spa"), []byte("original"), 0o644)
+	os.WriteFile(filepath.Join(apps, "keep-me"), []byte("keep"), 0o644)
+	return apps
+}
+
+func plistFor(id string) string {
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>1.2.3</string><key>CFBundleIdentifier</key><string>` + id + `</string></dict></plist>`
+}
+
+func assertKept(t *testing.T, dir string) {
+	t.Helper()
+	if b, err := os.ReadFile(filepath.Join(dir, "xpui.spa")); err != nil || string(b) != "original" {
+		t.Fatalf("a folder that is not Spotify's was changed: %q, %v", b, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "keep-me")); err != nil {
+		t.Fatalf("a folder that is not Spotify's was emptied: %v", err)
+	}
 }
 
 func TestSwapAppsReplaces(t *testing.T) {
@@ -160,6 +190,102 @@ func TestSwapAppsRefusesAnotherFolder(t *testing.T) {
 		t.Fatal("a folder that is not Spotify's interface folder must be refused")
 	}
 	appsHas(t, "original")
+}
+
+// A name that ends in the right words is not the right folder: the words must start at a separator.
+func TestSwapAppsRefusesLookalikeFolder(t *testing.T) {
+	res := t.TempDir()
+	look := filepath.Join(res, "NotContents", "Resources", "Apps")
+	os.MkdirAll(look, 0o755)
+	os.WriteFile(filepath.Join(look, "xpui.spa"), []byte("original"), 0o644)
+	os.WriteFile(filepath.Join(look, "keep-me"), []byte("keep"), 0o644)
+	staged := filepath.Join(res, "staged")
+	os.MkdirAll(staged, 0o755)
+	os.WriteFile(filepath.Join(staged, "xpui.spa"), []byte("new"), 0o644)
+	if code := SwapApps([]string{look, staged}); code == 0 {
+		t.Fatal("a lookalike path that is not inside a bundle must be refused")
+	}
+	assertKept(t, look)
+}
+
+// `Resources` as a symlink points the swap at a folder that is not the bundle's own, so the resolved path must keep the
+// shape too. This is the same rule that lets /var stand for /private/var (the sandbox temp folders).
+func TestSwapAppsRefusesSymlinkedResources(t *testing.T) {
+	res := t.TempDir()
+	victim := filepath.Join(res, "victim")
+	os.MkdirAll(victim, 0o755)
+	os.WriteFile(filepath.Join(victim, "xpui.spa"), []byte("original"), 0o644)
+	os.WriteFile(filepath.Join(victim, "keep-me"), []byte("keep"), 0o644)
+	app := filepath.Join(res, "Spotify.app")
+	os.MkdirAll(filepath.Join(app, "Contents"), 0o755)
+	os.WriteFile(filepath.Join(app, "Contents", "Info.plist"), []byte(plistFor("com.spotify.client")), 0o644)
+	if err := os.Symlink(victim, filepath.Join(app, "Contents", "Resources")); err != nil {
+		t.Skipf("cannot make a symlink here: %v", err)
+	}
+	staged := filepath.Join(res, "staged")
+	os.MkdirAll(staged, 0o755)
+	os.WriteFile(filepath.Join(staged, "xpui.spa"), []byte("new"), 0o644)
+	dest := filepath.Join(app, "Contents", "Resources", "Apps")
+	if code := SwapApps([]string{dest, staged}); code == 0 {
+		t.Fatal("a Resources folder that is a symlink to somewhere else must be refused")
+	}
+	assertKept(t, victim)
+}
+
+// Another app's interface folder is not Spotify's, even with the same shape inside.
+func TestSwapAppsRefusesAnotherApp(t *testing.T) {
+	res := t.TempDir()
+	apps := makeApp(t, res, "Other.app", "com.example.other")
+	staged := filepath.Join(res, "staged")
+	os.MkdirAll(staged, 0o755)
+	os.WriteFile(filepath.Join(staged, "xpui.spa"), []byte("new"), 0o644)
+	if code := SwapApps([]string{apps, staged}); code == 0 {
+		t.Fatal("another app's interface folder must be refused")
+	}
+	assertKept(t, apps)
+}
+
+// The resolved path is allowed to differ from the typed one, as /var does from /private/var on every Mac.
+func TestSwapAppsFollowsSymlinkedRoot(t *testing.T) {
+	res := t.TempDir()
+	real := filepath.Join(res, "real")
+	os.MkdirAll(real, 0o755)
+	apps := makeApp(t, real, "Spotify.app", "com.spotify.client")
+	if err := os.Symlink(real, filepath.Join(res, "link")); err != nil {
+		t.Skipf("cannot make a symlink here: %v", err)
+	}
+	staged := filepath.Join(res, "staged")
+	os.MkdirAll(staged, 0o755)
+	os.WriteFile(filepath.Join(staged, "xpui.spa"), []byte("new"), 0o644)
+	linked := filepath.Join(res, "link", "Spotify.app", "Contents", "Resources", "Apps")
+	if code := SwapApps([]string{linked, staged}); code != 0 {
+		t.Fatalf("a symlinked root that still names Spotify must pass, exit %d", code)
+	}
+	if b, err := os.ReadFile(filepath.Join(apps, "xpui.spa")); err != nil || string(b) != "new" {
+		t.Fatalf("the staged interface was not switched in: %q, %v", b, err)
+	}
+}
+
+// The real Spotify ships a binary Info.plist, so the reader has to handle one: plutil makes the test file binary here.
+func TestSwapAppsReadsABinaryPlist(t *testing.T) {
+	res := t.TempDir()
+	apps := makeApp(t, res, "Spotify.app", "com.spotify.client")
+	plist := filepath.Join(res, "Spotify.app", "Contents", "Info.plist")
+	if err := exec.Command("/usr/bin/plutil", "-convert", "binary1", plist).Run(); err != nil {
+		t.Skipf("plutil cannot make a binary plist here: %v", err)
+	}
+	if b, err := os.ReadFile(plist); err != nil || !strings.HasPrefix(string(b), "bplist") {
+		t.Fatalf("the plist is not binary: %v", err)
+	}
+	staged := filepath.Join(res, "staged")
+	os.MkdirAll(staged, 0o755)
+	os.WriteFile(filepath.Join(staged, "xpui.spa"), []byte("new"), 0o644)
+	if code := SwapApps([]string{apps, staged}); code != 0 {
+		t.Fatalf("a binary Info.plist must be read like an XML one, exit %d", code)
+	}
+	if b, err := os.ReadFile(filepath.Join(apps, "xpui.spa")); err != nil || string(b) != "new" {
+		t.Fatalf("the staged interface was not switched in: %q, %v", b, err)
+	}
 }
 
 func TestSwapAppsMissingStagedFolder(t *testing.T) {
