@@ -6,23 +6,36 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, existsSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { parseRequest } from './agent-review.mjs';
+import { marker, parseRequest } from './agent-review.mjs';
 import {
   acquireLock,
   claimSlot,
   firstLookbackMs,
-  handleTag,
+  gateMessage,
+  gateReply,
+  judgeTag,
+  lastAssistantText,
+  pruneSeen,
   readConfig,
+  readState,
+  reconcileTag,
+  releaseSlot,
   refusalBody,
+  reviewCommentProblem,
+  reviewMessageLimit,
+  reviewMode,
   reviewThreadMessage,
   slotState,
+  startReview,
   t3LaunchArgs,
   t3Providers,
+  threadBranch,
+  threadModeProblem,
+  threadTitle,
   tick,
   parseThreadId,
-  threadBranch,
-  threadTitle,
   markSeen,
+  watcherRefusals,
 } from './review-watch/watch.mjs';
 
 const agentConfig = JSON.parse(readFileSync(new URL('../.github/agents.json', import.meta.url), 'utf8'));
@@ -52,9 +65,11 @@ function watcherConfig(overrides = {}) {
   };
 }
 
+const HEAD = 'abc123';
+
 const comment = (overrides = {}) => ({
   id: 1001,
-  body: '@tess-review pr provider=opencode model=opencode-go/deepseek-v4.1-flash effort=high author=codex machine=mac',
+  body: '@tess-review pr provider=opencode model=opencode-go/deepseek-v4.1-flash author=codex machine=mac',
   created_at: '2026-11-15T10:00:00Z',
   updated_at: '2026-11-15T10:00:00Z',
   user: { login: 'Flame119052' },
@@ -65,41 +80,130 @@ const comment = (overrides = {}) => ({
 const pull = (overrides = {}) => ({
   number: 95,
   body: '## Made by\n\nGPT-6.1 Sol in Codex',
-  head: { sha: 'abc123', repo: { full_name: 'Flame119052/tess-music', fork: false } },
+  head: { sha: HEAD, repo: { full_name: 'Flame119052/tess-music', fork: false } },
+  base: { sha: 'base000' },
   ...overrides,
 });
 
-// The whole outside world, faked. Each call is recorded so a test can say what the watcher did, not only what it meant.
-function fakeIo(overrides = {}) {
-  const calls = { posted: [], launched: [], commentReads: [], since: [] };
-  let thread = 0;
+const reviewText = (sha = HEAD) => [
+  marker,
+  `Reviewed: ${sha}`,
+  'Tier: normal',
+  'Reviewer: opencode / opencode-go/deepseek-v4.1-flash',
+  'Machine: mac',
+  '',
+  'One finding, with the path and the line.',
+  '',
+  'Verdict: approve',
+].join('\n');
+
+// The whole outside world, faked: GitHub's comments and pull requests, T3's threads, and the provider behind them. Every
+// call is recorded, so a test can say what the watcher did, not only what it meant.
+function fakeWorld(overrides = {}) {
+  const calls = { posted: [], launched: [], sent: [], commentReads: [], threadReads: [], diffs: [], since: [] };
+  const threads = new Map();
+  const world = {
+    comments: [],
+    gone: new Set(),
+    edited: new Map(),
+    mode: reviewMode,
+    settledEarly: false,
+    calls,
+    threads,
+    thread: (id) => threads.get(id),
+    // A thread answers: the gate reply first, then the review, then it settles.
+    answer(id, text, now = Date.now()) {
+      const entry = threads.get(id);
+      entry.messages.push({ role: 'assistant', text: gateReply });
+      entry.messages.push({ role: 'assistant', text });
+      entry.settled = true;
+      entry.settledAt = new Date(now).toISOString();
+      return entry;
+    },
+    failThread(id) {
+      threads.delete(id);
+    },
+  };
+  let seq = 0;
   const io = {
     allowlist: () => ['Flame119052'],
     comments: (config, since) => {
-      calls.commentReads.push(since);
       calls.since.push(since);
-      return calls.comments || [];
+      return world.comments.map((entry) => world.edited.get(String(entry.id)) || entry);
+    },
+    comment: (config, id) => {
+      calls.commentReads.push(id);
+      if (world.gone.has(String(id))) throw new Error('gh: Not Found (HTTP 404)');
+      if (world.edited.has(String(id))) return world.edited.get(String(id));
+      const found = world.comments.find((entry) => String(entry.id) === String(id));
+      if (!found) throw new Error('gh: Not Found (HTTP 404)');
+      return found;
     },
     pull: () => pull(),
     issue: () => ({ number: 95, title: 'A change', html_url: 'https://example.invalid/95', body: 'Closes #71' }),
     files: () => ['theme/Tess/src/core.js'],
     ci: () => 'success',
-    diff: () => 'diff --git a/x b/x',
+    diff: (config, base, head) => {
+      calls.diffs.push({ base, head });
+      return 'diff --git a/x b/x';
+    },
     approach: () => '@tess-review approach provider=codex model=gpt-6.1-sol author=opencode',
     post: (config, number, body) => calls.posted.push({ number, body }),
-    threads: () => [],
+    threads: () => [...threads.values()].map((entry) => ({
+      threadId: entry.threadId,
+      title: entry.title,
+      runtimeMode: entry.runtimeMode,
+      settled: entry.settled,
+      status: entry.settled ? 'idle' : 'working',
+      interactionMode: 'default',
+    })),
+    thread(config, id) {
+      calls.threadReads.push(id);
+      const entry = threads.get(id);
+      if (!entry) throw new Error(`No thread ${id}`);
+      return {
+        thread: {
+          threadId: entry.threadId, title: entry.title, link: `https://app.t3.codes/threads/${entry.threadId}`,
+          runtimeMode: entry.runtimeMode, settled: entry.settled, settledAt: entry.settledAt || null,
+          status: entry.settled ? 'idle' : 'working', pendingRequestCount: 0,
+        },
+        messages: entry.messages,
+      };
+    },
+    send(config, id, message) {
+      calls.sent.push({ id, message });
+      const entry = threads.get(id);
+      if (!entry) throw new Error(`No thread ${id}`);
+      // The review turn starts now; it settles when the fake provider answers it.
+      entry.reviewSent = true;
+      return '{"delivery":"started"}';
+    },
     usage: () => undefined,
-    fetchHead: () => 'abc123',
-    launch: (config, args, message) => {
-      thread += 1;
-      calls.launched.push({ args, message });
-      return `thread-${thread}`;
+    fetchHead: () => HEAD,
+    launch(config, args, message) {
+      seq += 1;
+      const id = `9b158617-62f3-4a91-af5c-88e41b302bd${String(seq).padStart(3, '0')}`;
+      const flag = (name) => args[args.indexOf(name) + 1];
+      threads.set(id, {
+        threadId: id,
+        title: flag('--title'),
+        branch: flag('--branch'),
+        provider: flag('--provider'),
+        model: flag('--model'),
+        runtimeMode: world.mode,
+        settled: world.settledEarly,
+        settledAt: world.settledEarly ? new Date(Date.now() - 1000).toISOString() : null,
+        messages: [],
+        reviewSent: false,
+      });
+      calls.launched.push({ args, message, id });
+      return id;
     },
     agentConfig: () => agentConfig,
     updateSource: () => 'no update',
     ...overrides,
   };
-  return { io, calls };
+  return { world, io, calls };
 }
 
 function runTick(config, io, { now = Date.parse('2026-11-15T10:01:00Z') } = {}) {
@@ -108,14 +212,14 @@ function runTick(config, io, { now = Date.parse('2026-11-15T10:01:00Z') } = {}) 
 
 test('a tag for this machine starts one thread, and every other comment is left alone', () => {
   const { config, dir } = watcherConfig();
-  const { io, calls } = fakeIo();
-  calls.comments = [
+  const { world, io, calls } = fakeWorld();
+  world.comments = [
     comment({ id: 1, body: '@tess-review pr provider=codex model=gpt-6.1-sol author=opencode machine=github' }),
     comment({ id: 2, body: '@tess-review pr provider=codex model=gpt-6.1-sol author=opencode machine=omarchy' }),
     comment({ id: 3, user: { login: 'stranger' } }),
-    comment({ id: 4, body: '<!-- tess-review-bot -->\nReview not run.' }),
+    comment({ id: 4, body: `${marker}\nReview not run.` }),
     comment({ id: 5, body: 'just a thought, no tag' }),
-    comment({ id: 6, body: '@tess-review pr provider=opencode model=opencode-go/deepseek-v4.1-flash effort=high author=codex machine=mac\r\nfocus: the loader\r\n' }),
+    comment({ id: 6, body: '@tess-review pr provider=opencode model=opencode-go/deepseek-v4.1-flash author=codex machine=mac\r\nfocus: the loader\r\n' }),
     comment({ id: 7, body: '@tess-review approach provider=codex model=gpt-6.1-sol author=opencode machine=mac', issue_url: 'https://api.github.com/repos/Flame119052/tess-music/issues/71' }),
   ];
 
@@ -149,13 +253,13 @@ test('a tag that breaks a rule is answered in the same words the GitHub job uses
   ];
   try {
     for (const [entry, expected] of cases) {
-      const { io, calls } = fakeIo();
-      calls.comments = [entry];
+      const { world, io, calls } = fakeWorld();
+      world.comments = [entry];
       const result = runTick(config, io);
       assert.equal(result.launched.length, 0, `${entry.id} started nothing`);
       assert.equal(calls.posted.length, 1, `${entry.id} was answered once`);
       assert.equal(calls.posted[0].number, 95);
-      assert.ok(calls.posted[0].body.startsWith('<!-- tess-review-bot -->'), `${entry.id} carries the marker`);
+      assert.ok(calls.posted[0].body.startsWith(marker), `${entry.id} carries the marker`);
       assert.match(calls.posted[0].body, expected, `${entry.id} says why`);
     }
   } finally {
@@ -167,8 +271,8 @@ test('a watcher answers only its own machine: the VPS and the other machine are 
   const { config, dir } = watcherConfig();
   try {
     for (const machine of ['vps', 'omarchy', 'github']) {
-      const { io, calls } = fakeIo();
-      calls.comments = [comment({ id: 15, body: `@tess-review pr provider=codex model=gpt-6.1-sol author=opencode machine=${machine}` })];
+      const { world, io, calls } = fakeWorld();
+      world.comments = [comment({ id: 15, body: `@tess-review pr provider=codex model=gpt-6.1-sol author=opencode machine=${machine}` })];
       const result = runTick(config, io);
       assert.deepEqual({ launched: result.launched.length, posted: calls.posted.length }, { launched: 0, posted: 0 },
         `a tag for machine=${machine} is not this watcher's`);
@@ -180,8 +284,8 @@ test('a watcher answers only its own machine: the VPS and the other machine are 
 
 test('a docs-only change is approved by CI here too, without spending a reviewer', () => {
   const { config, dir } = watcherConfig();
-  const { io, calls } = fakeIo({ files: () => ['docs/workflow.md', 'AGENTS.md'] });
-  calls.comments = [comment({ id: 25 })];
+  const { world, io, calls } = fakeWorld({ files: () => ['docs/workflow.md', 'AGENTS.md'] });
+  world.comments = [comment({ id: 25 })];
   try {
     const result = runTick(config, io);
     assert.equal(result.launched.length, 0, 'no thread, no provider run');
@@ -197,8 +301,8 @@ test('a docs-only change is approved by CI here too, without spending a reviewer
 test('a fork or a red commit is refused here too, because this machine reads the same commit', () => {
   const { config, dir } = watcherConfig();
   try {
-    const fork = fakeIo({ pull: () => pull({ head: { sha: 'abc123', repo: { full_name: 'outside/tess-music', fork: true } } }) });
-    fork.calls.comments = [comment()];
+    const fork = fakeWorld({ pull: () => pull({ head: { sha: HEAD, repo: { full_name: 'outside/tess-music', fork: true } } }) });
+    fork.world.comments = [comment()];
     assert.equal(runTick(config, fork.io).launched.length, 0);
     assert.match(fork.calls.posted[0].body, /from a fork/);
     assert.match(fork.calls.posted[0].body, /Review not run/);
@@ -206,8 +310,8 @@ test('a fork or a red commit is refused here too, because this machine reads the
     let id = 20;
     for (const ci of ['failure', 'in_progress', '']) {
       id += 1;
-      const red = fakeIo({ ci: () => ci });
-      red.calls.comments = [comment({ id })];
+      const red = fakeWorld({ ci: () => ci });
+      red.world.comments = [comment({ id })];
       const outcome = runTick(config, red.io);
       assert.equal(outcome.launched.length, 0, `CI ${ci || '(none)'} is not a pass`);
       assert.match(red.calls.posted[0].body, /CI has not passed/);
@@ -217,12 +321,14 @@ test('a fork or a red commit is refused here too, because this machine reads the
   }
 });
 
-test('the thread is started with the reviewer the tag named, at the commit CI passed, and told how to post', () => {
+// The whole point of the local path: a pull request's text reaches the reviewer only after T3 has been read back at the
+// strictest runtime mode, and the reviewer posts nothing itself.
+test('the thread is opened at the strictest mode before any pull-request text reaches it, and it posts nothing', () => {
   const { config, dir } = watcherConfig();
-  const { io, calls } = fakeIo();
-  calls.comments = [comment({
+  const { world, io, calls } = fakeWorld();
+  world.comments = [comment({
     id: 31,
-    body: '@tess-review pr provider=claude model=claude-opus-5-5 effort=high author=codex machine=mac prompt="focus on the installer fallback"',
+    body: '@tess-review pr provider=claude model=claude-opus-5-5 author=codex machine=mac prompt="focus on the installer fallback"',
   })];
   try {
     runTick(config, io);
@@ -230,46 +336,225 @@ test('the thread is started with the reviewer the tag named, at the commit CI pa
     const { args, message } = calls.launched[0];
     assert.deepEqual(args, [
       'thread', 'start', config.repoPath, '-',
-      '--title', 'Review PR #95 with claude-opus-5-5',
+      '--title', 'Review PR #95 with claude-opus-5-5 (comment 31)',
       '--provider', 'claudeAgent', '--model', 'claude-opus-5-5',
-      '--worktree', 'abc123', '--branch', 'tess-review-pr-95-31', '--json',
+      '--worktree', HEAD, '--branch', 'tess-review-pr-95-31', '--json',
     ]);
+    // The first message is fixed words: no diff, no issue, no focus, no file. That is what makes reading the mode back
+    // meaningful, because a thread at the wrong mode has never seen anything a stranger wrote.
+    assert.equal(message, gateMessage);
+    assert.match(gateMessage, /Do not read any file, run any command/);
+    assert.ok(!/focus on the installer fallback/.test(message), 'the tag\'s focus is not in the gate message');
+    assert.ok(!/diff|installer/.test(message.replace('Tess Music review gate', '')), 'no pull-request text in the gate');
 
-    // The prompt carries the rules, the owner's focus, the read-only promise, and the exact comment to post.
-    assert.match(message, /You are the Tess Music reviewer/);
-    assert.match(message, /OWNER'S FOCUS/);
-    assert.match(message, /focus on the installer fallback/);
-    assert.match(message, /STAY READ-ONLY/);
-    assert.match(message, /gh pr comment 95 --repo Flame119052\/tess-music --body-file -/);
-    assert.match(message, /<!-- tess-review-bot -->/);
-    assert.match(message, /Reviewed: abc123/);
-    assert.match(message, /Tier: normal/);
-    assert.match(message, /Reviewer: claude \/ claude-opus-5-5/);
-    assert.match(message, /Machine: mac/);
-    assert.match(message, /If it is not abc123/);
-    assert.match(message, /Verdict: changes needed/);
+    // Only after the mode is read back at the strictest setting is the review itself sent.
+    assert.equal(calls.sent.length, 1);
+    const sent = calls.sent[0].message;
+    assert.match(sent, /You are the Tess Music reviewer/);
+    assert.match(sent, /OWNER'S FOCUS/);
+    assert.match(sent, /focus on the installer fallback/);
+    assert.ok(sent.includes(marker), 'the thread is told the marker its answer must start with');
+    assert.match(sent, /Reviewed: abc123/);
+    assert.match(sent, /Tier: normal/);
+    assert.match(sent, /Reviewer: claude \/ claude-opus-5-5/);
+    assert.match(sent, /Machine: mac/);
+    assert.match(sent, /You post nothing/);
+    assert.ok(!/gh pr comment|gh issue comment/.test(sent), 'the thread is never told how to post');
+    assert.ok(!/gh api repos/.test(sent), 'the thread is not told to ask GitHub anything either');
+
+    // The diff is read between the commit CI passed and its base, not from whatever the pull request says now.
+    assert.deepEqual(calls.diffs[0], { base: 'base000', head: HEAD });
 
     // The slot records which thread holds it, so a later tick can free it when the thread settles.
     const slots = slotState(config.slotDir, { slots: 2 });
     assert.equal(slots.length, 1);
-    assert.equal(slots[0].owner.threadId, 'thread-1');
+    assert.equal(slots[0].owner.threadId, calls.launched[0].id);
     assert.equal(slots[0].owner.number, 95);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('a head that moved before the thread started is never reviewed, and the slot is given back', () => {
+test('a project left at a wider runtime mode is refused, and the review is never sent to it', () => {
   const { config, dir } = watcherConfig();
-  const { io, calls } = fakeIo({ fetchHead: () => 'def456' });
-  calls.comments = [comment({ id: 41 })];
+  const { world, io, calls } = fakeWorld();
+  world.mode = 'full-access';
+  world.comments = [comment({ id: 32 })];
   try {
     const result = runTick(config, io);
-    assert.equal(result.launched.length, 0);
-    assert.equal(calls.launched.length, 0);
-    assert.match(calls.posted[0].body, /head moved after the CI check \(abc123 → def456\)/);
-    assert.match(calls.posted[0].body, /Verdict: changes needed/);
+    assert.equal(calls.launched.length, 1, 'the gate thread exists, because the mode has to be read from T3');
+    assert.equal(calls.sent.length, 0, 'no diff, issue or focus is ever sent to a thread that can write and reach the network');
+    assert.equal(result.refused.length, 1);
+    assert.equal(result.refused[0].code, 'not-read-only');
+    assert.match(calls.posted[0].body, /cannot run the review read-only yet/);
+    assert.match(calls.posted[0].body, /approval-required/);
     assert.deepEqual(slotState(config.slotDir, { slots: 2 }), [], 'a refused review holds no slot');
+    // The gate reply on its own is not a review: nothing was posted from it.
+    assert.equal(calls.posted.length, 1, 'only the refusal, never the gate reply');
+    assert.ok(!calls.posted.some((entry) => entry.body.includes(gateReply)));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the watcher posts the thread\'s review, and only when the reply has the shape a review has', () => {
+  const { config, dir } = watcherConfig();
+  const { world, io, calls } = fakeWorld();
+  world.comments = [comment({ id: 33 })];
+  try {
+    runTick(config, io);
+    const id = calls.launched[0].id;
+    assert.equal(calls.posted.length, 0, 'the review is not posted before the thread has answered');
+
+    // Not settled yet: still nothing.
+    runTick(config, io, { now: Date.parse('2026-11-15T10:03:00Z') });
+    assert.equal(calls.posted.length, 0);
+
+    // The thread answers with something that is not a review of this commit: it is dropped, and the pull request is told.
+    world.answer(id, 'I looked at it and it seems fine to me.', Date.parse('2026-11-15T10:04:00Z'));
+    runTick(config, io, { now: Date.parse('2026-11-15T10:05:00Z') });
+    assert.equal(calls.posted.length, 1);
+    assert.match(calls.posted[0].body, /came back in a shape this machine will not post/);
+    assert.ok(!calls.posted[0].body.includes('seems fine to me'), 'the unreadable reply is never posted, not even quoted');
+    assert.deepEqual(slotState(config.slotDir, { slots: 2 }), [], 'the slot is free again');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  // And the same tick path posts a well-shaped review as the reviewer wrote it.
+  const second = watcherConfig();
+  const fresh = fakeWorld();
+  fresh.world.comments = [comment({ id: 34 })];
+  try {
+    runTick(second.config, fresh.io);
+    const id = fresh.calls.launched[0].id;
+    fresh.world.answer(id, reviewText(), Date.parse('2026-11-15T10:04:00Z'));
+    const result = runTick(second.config, fresh.io, { now: Date.parse('2026-11-15T10:05:00Z') });
+    assert.equal(result.posted.length, 1);
+    assert.equal(fresh.calls.posted.length, 1);
+    assert.equal(fresh.calls.posted[0].body.trim(), reviewText());
+    assert.deepEqual(slotState(second.config.slotDir, { slots: 2 }), []);
+    assert.equal(readState(second.config.statePath).tags['34'].status, 'done');
+
+    // Read again: a posted review is never posted twice.
+    runTick(second.config, fresh.io, { now: Date.parse('2026-11-15T10:07:00Z') });
+    assert.equal(fresh.calls.posted.length, 1);
+  } finally {
+    rmSync(second.dir, { recursive: true, force: true });
+  }
+});
+
+test('a review of a commit that moved while it ran is dropped, and the pull request gets the note', () => {
+  const { config, dir } = watcherConfig();
+  let head = HEAD;
+  const { world, io, calls } = fakeWorld({
+    pull: () => pull({ head: { sha: head, repo: { full_name: 'Flame119052/tess-music', fork: false } } }),
+  });
+  world.comments = [comment({ id: 35 })];
+  try {
+    runTick(config, io);
+    const id = calls.launched[0].id;
+    head = 'def456';
+    world.answer(id, reviewText(), Date.parse('2026-11-15T10:04:00Z'));
+    runTick(config, io, { now: Date.parse('2026-11-15T10:05:00Z') });
+    assert.equal(calls.posted.length, 1);
+    assert.match(calls.posted[0].body, /head moved after the CI check \(abc123 → def456\)/);
+    assert.ok(!calls.posted.some((entry) => entry.body.includes('Verdict: approve') && entry.body.includes('Reviewed')));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a tag deleted after it was queued never launches', () => {
+  const { config, dir } = watcherConfig({ slots: 1 });
+  const waiting = comment({ id: 51 });
+  const holding = comment({
+    id: 50,
+    body: '@tess-review pr provider=opencode model=zai-coding-plan/glm-5.3-flash author=codex machine=mac',
+  });
+  try {
+    // One slot, taken by the first tag; the second waits with its own words saved in the state file.
+    const first = fakeWorld();
+    first.world.comments = [holding, waiting];
+    runTick(config, first.io);
+    assert.equal(first.calls.launched.length, 1);
+    assert.equal(readState(config.statePath).tags['51'].status, 'pending');
+
+    // The first review is done and its slot is free again, and the tag that waited has been deleted on GitHub. The copy
+    // in the state file must not launch: the words that were judged no longer exist anywhere but here.
+    const state = readState(config.statePath);
+    state.tags['50'] = { status: 'done', number: 95, role: 'pr' };
+    writeFileSync(config.statePath, JSON.stringify(state));
+    releaseSlot(join(config.slotDir, 'slot-1'));
+
+    const second = fakeWorld();
+    second.world.comments = [];
+    second.world.gone.add('51');
+    const afterDelete = runTick(config, second.io, { now: Date.parse('2026-11-15T10:03:00Z') });
+    assert.equal(afterDelete.launched.length, 0, 'a deleted comment cannot launch from the copy saved in the state file');
+    assert.equal(second.calls.launched.length, 0);
+    assert.equal(second.calls.sent.length, 0);
+    assert.equal(second.calls.posted.length, 0, 'nothing is posted for a comment that no longer exists');
+    assert.equal(readState(config.statePath).tags['51'], undefined, 'the waiting entry is dropped');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a queued tag edited to another machine runs nothing here, and its new words are what get judged', () => {
+  const { config, dir } = watcherConfig({ slots: 1 });
+  const mine = comment({ id: 56 });
+  const holding = comment({ id: 55, body: '@tess-review pr provider=opencode model=zai-coding-plan/glm-5.3-flash author=codex machine=mac' });
+  try {
+    const first = fakeWorld();
+    first.world.comments = [holding, mine];
+    runTick(config, first.io);
+    assert.equal(readState(config.statePath).tags['56'].status, 'pending');
+
+    // The waiting tag is edited to another machine. The slot is free, and the edited tag must not send a review here.
+    const state = readState(config.statePath);
+    state.tags['55'] = { status: 'done', number: 95, role: 'pr' };
+    writeFileSync(config.statePath, JSON.stringify(state));
+    releaseSlot(join(config.slotDir, 'slot-1'));
+    const edited = { ...mine, body: mine.body.replace('machine=mac', 'machine=github'), updated_at: '2026-11-15T10:02:00Z' };
+    const second = fakeWorld();
+    second.world.comments = [edited];
+    second.world.edited.set('56', edited);
+    const afterEdit = runTick(config, second.io, { now: Date.parse('2026-11-15T10:03:00Z') });
+    assert.equal(afterEdit.launched.length, 0);
+    assert.equal(second.calls.launched.length, 0, 'the queued copy is not what runs');
+    assert.equal(second.calls.sent.length, 0, 'a tag edited to another machine does not send a review here');
+    assert.equal(second.calls.posted.length, 0);
+    assert.equal(readState(config.statePath).tags['56'], undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an edited tag is judged on its new words in the tick that notices the edit, not lost to the cursor', () => {
+  const { config, dir } = watcherConfig({ slots: 1 });
+  const mine = comment({ id: 57 });
+  const holding = comment({ id: 58, body: '@tess-review pr provider=opencode model=zai-coding-plan/glm-5.3-flash author=codex machine=mac' });
+  try {
+    const first = fakeWorld();
+    first.world.comments = [holding, mine];
+    runTick(config, first.io);
+    assert.equal(readState(config.statePath).tags['57'].status, 'pending');
+
+    // The waiting tag is edited to a different reviewer on the same machine. The cursor moves past this comment, so the
+    // edit only ever arrives through the re-read: it must be judged now, with the new model.
+    const state = readState(config.statePath);
+    state.tags['58'] = { status: 'done', number: 95, role: 'pr' };
+    writeFileSync(config.statePath, JSON.stringify(state));
+    releaseSlot(join(config.slotDir, 'slot-1'));
+    const edited = { ...mine, body: '@tess-review pr provider=claude model=claude-sonnet-5-5 author=codex machine=mac', updated_at: '2026-11-15T10:02:00Z' };
+    const second = fakeWorld();
+    second.world.comments = [edited];
+    second.world.edited.set('57', edited);
+    const afterEdit = runTick(config, second.io, { now: Date.parse('2026-11-15T10:03:00Z') });
+    assert.equal(afterEdit.launched.length, 1, 'the edited tag runs on its new words');
+    assert.equal(second.calls.sent.length, 1);
+    assert.match(second.calls.sent[0].message, /Reviewer: claude \/ claude-sonnet-5-5/);
+    assert.ok(!/deepseek/.test(second.calls.sent[0].message), 'the words it was queued with are gone');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -277,8 +562,8 @@ test('a head that moved before the thread started is never reviewed, and the slo
 
 test('one machine runs a bounded number of reviews, and a waiting tag keeps its place', () => {
   const { config, dir } = watcherConfig({ slots: 1 });
-  const { io, calls } = fakeIo();
-  calls.comments = [comment({ id: 51 }), comment({ id: 52, created_at: '2026-11-15T10:00:30Z', updated_at: '2026-11-15T10:00:30Z' })];
+  const { world, io, calls } = fakeWorld();
+  world.comments = [comment({ id: 61 }), comment({ id: 62, created_at: '2026-11-15T10:00:30Z', updated_at: '2026-11-15T10:00:30Z' })];
   try {
     const first = runTick(config, io);
     assert.equal(first.launched.length, 1, 'the slot cap is the first tag\'s place');
@@ -286,12 +571,12 @@ test('one machine runs a bounded number of reviews, and a waiting tag keeps its 
     assert.equal(calls.posted.length, 0, 'a tag that is still waiting is not answered yet');
 
     // Its thread settles: the slot is freed and the waiting tag starts on the next tick, with no second tag needed.
-    const settled = fakeIo({ threads: () => [{ threadId: 'thread-1', settled: true }] });
-    const second = runTick(config, settled.io, { now: Date.parse('2026-11-15T10:03:00Z') });
+    const id = calls.launched[0].id;
+    world.answer(id, reviewText(), Date.parse('2026-11-15T10:02:00Z'));
+    const second = runTick(config, io, { now: Date.parse('2026-11-15T10:03:00Z') });
     assert.equal(second.launched.length, 1);
-    assert.deepEqual(second.launched.map((entry) => entry.number), [95]);
-    assert.equal(settled.calls.launched.length, 1);
-    assert.equal(readJSON(config.statePath).tags['51'].status, 'done');
+    assert.equal(calls.launched.length, 2, 'the waiting tag started once the slot was free');
+    assert.equal(readState(config.statePath).tags['61'].status, 'done');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -299,8 +584,8 @@ test('one machine runs a bounded number of reviews, and a waiting tag keeps its 
 
 test('a tag that waits past its patience is told the lane is busy, not left silent', () => {
   const { config, dir } = watcherConfig({ slots: 1, slotWaitMs: 0 });
-  const { io, calls } = fakeIo();
-  calls.comments = [comment({ id: 61 }), comment({ id: 62, created_at: '2026-11-15T10:00:30Z', updated_at: '2026-11-15T10:00:30Z' })];
+  const { world, io, calls } = fakeWorld();
+  world.comments = [comment({ id: 63 }), comment({ id: 64, created_at: '2026-11-15T10:00:30Z', updated_at: '2026-11-15T10:00:30Z' })];
   try {
     const result = runTick(config, io);
     assert.equal(result.launched.length, 1);
@@ -314,8 +599,8 @@ test('a tag that waits past its patience is told the lane is busy, not left sile
 
 test('a tick that fires while the last one is still working does nothing at all', () => {
   const { config, dir } = watcherConfig();
-  const { io, calls } = fakeIo();
-  calls.comments = [comment({ id: 71 })];
+  const { world, io, calls } = fakeWorld();
+  world.comments = [comment({ id: 71 })];
   try {
     mkdirSync(config.lockPath, { recursive: true });
     const skipped = runTick(config, io);
@@ -327,15 +612,96 @@ test('a tick that fires while the last one is still working does nothing at all'
   }
 });
 
-test('a slot left by a killed tick is reclaimed, and a live one is kept', () => {
+// A slot is the concurrency cap. Giving one back on a timer is what let a long review run beside a new one.
+test('a live thread keeps its slot however old it is, and one whose thread is gone is reclaimed', () => {
   const { config, dir } = watcherConfig({ slots: 1, slotStaleMs: 60 * 60 * 1000 });
   const now = Date.parse('2026-11-15T12:00:00Z');
   try {
-    const live = claimSlot(config.slotDir, { commentId: 81 }, { slots: 1, now: now - 10 * 60 * 1000, staleMs: 60 * 60 * 1000 });
-    assert.ok(live);
-    assert.equal(claimSlot(config.slotDir, { commentId: 82 }, { slots: 1, now, staleMs: 60 * 60 * 1000 }), null);
-    // Two hours later nothing can still be holding it, so the machine reviews again instead of stopping for good.
-    assert.ok(claimSlot(config.slotDir, { commentId: 83 }, { slots: 1, now: now + 2 * 60 * 60 * 1000, staleMs: 60 * 60 * 1000 }));
+    const slot = claimSlot(config.slotDir, { commentId: 81, threadId: 'live-thread' }, { slots: 1, now: now - 6 * 60 * 60 * 1000, staleMs: 60 * 60 * 1000 });
+    assert.ok(slot);
+    // Six hours later the thread is still there: the cap still applies, so nothing else starts.
+    assert.equal(claimSlot(config.slotDir, { commentId: 82 }, {
+      slots: 1, now, staleMs: 60 * 60 * 1000, live: new Set(['live-thread']),
+    }), null);
+    // The thread is gone (deleted, or T3 restarted without it): the slot is a leftover, not a review.
+    assert.ok(claimSlot(config.slotDir, { commentId: 83 }, {
+      slots: 1, now, staleMs: 60 * 60 * 1000, live: new Set(),
+    }));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a review that outlives the stale timer is not joined by a second one', () => {
+  const { config, dir } = watcherConfig({ slots: 1, slotStaleMs: 60 * 1000 });
+  const { world, io, calls } = fakeWorld();
+  world.comments = [comment({ id: 84 }), comment({ id: 85, created_at: '2026-11-15T10:00:10Z', updated_at: '2026-11-15T10:00:10Z' })];
+  try {
+    runTick(config, io);
+    assert.equal(calls.launched.length, 1);
+    // Ten minutes later its thread is still running: the second tag waits, however stale the slot looks.
+    const later = runTick(config, io, { now: Date.parse('2026-11-15T10:10:00Z') });
+    assert.equal(later.launched.length, 0);
+    assert.equal(calls.launched.length, 1, 'the cap still holds while a thread is alive');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a tick that died after starting a thread adopts it instead of starting a second one', () => {
+  const { config, dir } = watcherConfig();
+  const tag = comment({ id: 91 });
+  try {
+    // The first tick starts a thread and then "dies" before it can record anything more: the state holds the intent and
+    // the thread's id, exactly as `startReview` writes them.
+    const first = fakeWorld();
+    first.world.comments = [tag];
+    runTick(config, first.io);
+    const startedId = first.calls.launched[0].id;
+    assert.equal(first.calls.launched.length, 1);
+
+    // The next tick sees the same comment again — the tag was never marked as judged in the crashed file — and the
+    // thread carries this comment's id in its title, so it is adopted and no second thread is opened.
+    const state = readState(config.statePath);
+    state.tags['91'] = {
+      status: 'intent', number: 95, role: 'pr', commentId: 91, tier: 'normal',
+      provider: 'opencode', model: 'opencode-go/deepseek-v4.1-flash', head: HEAD, base: 'base000',
+      branch: threadBranch({ role: 'pr', number: 95, commentId: 91 }),
+      slot: join(config.slotDir, 'slot-1'), queuedAt: Date.parse(tag.created_at), comment: tag,
+    };
+    state.seen = [];
+    writeFileSync(config.statePath, JSON.stringify(state));
+
+    const second = fakeWorld();
+    second.world.threads.set(startedId, { ...first.world.threads.get(startedId) });
+    second.world.comments = [tag];
+    const resumed = runTick(config, second.io, { now: Date.parse('2026-11-15T10:03:00Z') });
+    assert.equal(second.calls.launched.length, 0, 'no second thread for the same comment');
+    assert.equal(resumed.launched.length, 1);
+    assert.equal(second.calls.sent.length, 1, 'the review goes to the thread that already exists');
+    assert.equal(second.calls.sent[0].id, startedId);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an effort this machine cannot pass is refused instead of being quietly dropped', () => {
+  const { config, dir } = watcherConfig();
+  const { world, io, calls } = fakeWorld();
+  world.comments = [comment({
+    id: 96,
+    body: '@tess-review pr provider=opencode model=opencode-go/deepseek-v4.1-flash effort=high author=codex machine=mac',
+  })];
+  try {
+    const result = runTick(config, io);
+    assert.equal(calls.launched.length, 0, 'nothing runs at an effort nobody asked for');
+    assert.equal(result.refused.length, 1);
+    assert.equal(result.refused[0].code, 'effort-not-honored');
+    assert.match(calls.posted[0].body, /cannot be told an effort/);
+    assert.match(calls.posted[0].body, /machine=github/);
+    // The arguments carry exactly the reviewer the tag named, and no effort at all: the CLI has nowhere to put one.
+    const args = t3LaunchArgs({ projectPath: '/x', provider: 'codex', model: 'gpt-6.1-sol', title: 't', branch: 'b', base: HEAD });
+    assert.ok(!args.some((arg) => /effort/.test(arg)));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -348,7 +714,7 @@ test('a no-room refusal keeps the reset time the GitHub path would show', () => 
     resetsAt: Date.parse('2026-11-15T14:00:00Z'),
     now: Date.parse('2026-11-15T12:00:00Z'),
   });
-  assert.ok(body.startsWith('<!-- tess-review-bot -->'));
+  assert.ok(body.startsWith(marker));
   assert.match(body, /No reviewer had room to run/);
   assert.match(body, /2026-11-15 14:00 UTC/);
 });
@@ -372,19 +738,22 @@ test('the watcher is configured by machine, and refuses to run as a machine a re
 
 test('the pieces of a launch are small and checked: branch, title, and the thread id the CLI prints', () => {
   assert.equal(threadBranch({ role: 'pr', number: 95, commentId: 1234 }), 'tess-review-pr-95-1234');
-  assert.equal(threadTitle({ role: 'pr', number: 95, model: 'gpt-6.1-sol' }), 'Review PR #95 with gpt-6.1-sol');
-  assert.equal(threadTitle({ role: 'approach', number: 71, model: 'gpt-6.1-sol' }), 'Approach review for #71 with gpt-6.1-sol');
+  assert.equal(threadTitle({ role: 'pr', number: 95, model: 'gpt-6.1-sol', commentId: 1234 }),
+    'Review PR #95 with gpt-6.1-sol (comment 1234)');
+  assert.equal(threadTitle({ role: 'approach', number: 71, model: 'gpt-6.1-sol', commentId: 7 }),
+    'Approach review for #71 with gpt-6.1-sol (comment 7)');
   assert.equal(parseThreadId('{"threadId":"9b158617-62f3-4a91-af5c-88e41b302bd5"}'), '9b158617-62f3-4a91-af5c-88e41b302bd5');
   assert.equal(parseThreadId('{"id":"abc"}'), 'abc');
   assert.equal(parseThreadId('thread 72424ec0-1111-2222-3333-444455556666 ready'), '72424ec0-1111-2222-3333-444455556666');
   assert.throws(() => parseThreadId('nothing here'), /no thread id/);
-  // The prompt names the approach review as a comment on the issue, not a pull request.
+  // The prompt names the approach review as a comment on the issue, and asks for it as the thread's answer.
   const approach = reviewThreadMessage({
     role: 'approach', number: 71, sha: 'main', tier: 'sensitive', machine: 'mac',
     provider: 'codex', model: 'gpt-6.1-sol', focus: '', issue: 'ISSUE', approach: 'PLAN', diff: '', repo: 'Flame119052/tess-music', projectPath: '/tmp/x',
   });
-  assert.match(approach, /gh issue comment 71 --repo Flame119052\/tess-music --body-file -/);
+  assert.ok(!/gh issue comment|gh pr comment/.test(approach), 'the thread posts nothing, on either role');
   assert.ok(!/Reviewed:/.test(approach), 'an approach review names no commit, because it reads main');
+  assert.match(approach, /Verdict: approve/);
 });
 
 test('the lock is a directory, so it cannot be left half-written', () => {
@@ -402,46 +771,130 @@ test('the lock is a directory, so it cannot be left half-written', () => {
 
 test('everything a tag needs is read from the same rules the GitHub job reads', () => {
   const { config, dir } = watcherConfig();
-  const { io } = fakeIo();
+  const { io } = fakeWorld();
   try {
     const request = parseRequest(comment().body);
-    const outcome = handleTag({
+    const outcome = judgeTag({
       config,
       request,
-      comment: comment({ id: 91 }),
-      now: Date.parse('2026-11-15T10:01:00Z'),
-      allowlist: ['Flame119052'],
-      io,
-      state: { seen: [] },
-    });
-    assert.equal(outcome.outcome, 'launch');
-    assert.deepEqual(outcome.request, { provider: 'opencode', model: 'opencode-go/deepseek-v4.1-flash', effort: 'high' });
-    assert.equal(outcome.tier, 'normal');
-    // A tag naming a machine a review may not use is refused by the shared tag rule, not by a second copy of it.
-    const vps = handleTag({
-      config,
-      request: parseRequest('@tess-review pr provider=codex model=gpt-6.1-sol author=opencode machine=vps'),
       comment: comment({ id: 92 }),
       now: Date.parse('2026-11-15T10:01:00Z'),
       allowlist: ['Flame119052'],
       io,
-      state: { seen: [] },
     });
-    // The gate owns that refusal: a Mac's watcher never answers a tag for another machine or a refused one.
+    assert.equal(outcome.outcome, 'start');
+    assert.deepEqual(outcome.request, { provider: 'opencode', model: 'opencode-go/deepseek-v4.1-flash' });
+    assert.equal(outcome.tier, 'normal');
+    // A tag naming a machine a review may not use is refused by the shared tag rule, not by a second copy of it.
+    const vps = judgeTag({
+      config,
+      request: parseRequest('@tess-review pr provider=codex model=gpt-6.1-sol author=opencode machine=vps'),
+      comment: comment({ id: 93 }),
+      now: Date.parse('2026-11-15T10:01:00Z'),
+      allowlist: ['Flame119052'],
+      io,
+    });
     assert.equal(vps.outcome, 'skip');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('a comment is remembered by id, so a repeated read cannot start a second review', () => {
-  const state = { version: 1, cursor: '', seen: [], tags: {} };
-  markSeen(state, 5);
-  markSeen(state, 5);
-  assert.deepEqual(state.seen, [5]);
+test('a comment is remembered by id and by age, so a repeated read cannot start a second review', () => {
+  const now = Date.parse('2026-11-15T10:01:00Z');
+  const state = { version: 2, cursor: '2026-11-15T10:00:00Z', seen: [], tags: {} };
+  markSeen(state, 5, now);
+  markSeen(state, 5, now + 1000);
+  assert.deepEqual(state.seen.map((entry) => entry.id), [5]);
+
+  // Age is what forgets an id; a count would drop the oldest first and make an old, edited tag look new again.
+  state.seen.push({ id: 6, at: '2026-01-01T00:00:00Z' });
+  pruneSeen(state, { now });
+  assert.deepEqual(state.seen.map((entry) => entry.id), [5]);
   assert.ok(existsSync, 'the module loads');
 });
 
-function readJSON(path) {
-  return JSON.parse(readFileSync(path, 'utf8'));
-}
+test('a version 1 state file keeps what it remembered instead of replaying it', () => {
+  const dir = temp();
+  try {
+    const path = join(dir, 'state.json');
+    writeFileSync(path, JSON.stringify({ version: 1, cursor: '2026-11-15T10:00:00Z', seen: [11, 12], tags: {} }));
+    const state = readState(path);
+    assert.equal(state.version, 2);
+    assert.deepEqual(state.seen.map((entry) => entry.id), [11, 12]);
+    assert.ok(state.seen.every((entry) => Date.parse(entry.at) > 0), 'an old id is dated, not dropped');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the review rules are the ones this file enforces, in one place', () => {
+  assert.equal(reviewMode, 'approval-required');
+  assert.match(watcherRefusals['not-read-only'], /approval-required/);
+  assert.match(watcherRefusals['effort-not-honored'], /effort/);
+  // A thread's own report of its mode is the only thing the gate trusts.
+  assert.equal(threadModeProblem({ runtimeMode: 'approval-required' }), null);
+  assert.match(threadModeProblem({ runtimeMode: 'full-access' }), /full-access/);
+  assert.match(threadModeProblem(null), /not on this machine/);
+  // The last assistant message is the review; an older gate reply can never be mistaken for one.
+  assert.equal(lastAssistantText([
+    { role: 'user', text: 'gate' },
+    { role: 'assistant', text: gateReply },
+    { role: 'assistant', text: reviewText() },
+  ]), reviewText());
+  assert.equal(lastAssistantText([]), '');
+  // The shape a review must have to be posted.
+  assert.equal(reviewCommentProblem(reviewText(), { sha: HEAD, role: 'pr' }), null);
+  assert.match(reviewCommentProblem(reviewText('other'), { sha: HEAD, role: 'pr' }), /does not name the commit/);
+  assert.match(reviewCommentProblem(gateReply, { sha: HEAD, role: 'pr' }), /does not start with the review marker/);
+  assert.match(reviewCommentProblem(`${marker}\nReviewed: abc123\nfine`, { sha: HEAD, role: 'pr' }), /Verdict/);
+  assert.match(reviewCommentProblem(`${marker}\nReviewed: abc123\n${'x'.repeat(reviewMessageLimit)}\nVerdict: approve`, { sha: HEAD, role: 'pr' }), /over the/);
+});
+
+test('a part of a review is built from the comment as it reads now, not as it was queued', () => {
+  const { config, dir } = watcherConfig();
+  const { io } = fakeWorld();
+  try {
+    const state = { version: 2, cursor: '', seen: [], tags: {} };
+    const decision = {
+      outcome: 'start', number: 95, role: 'pr', tier: 'normal', head: HEAD, base: 'base000',
+      request: { provider: 'codex', model: 'gpt-6.1-sol' }, queuedAt: Date.parse('2026-11-15T10:00:00Z'),
+    };
+    const started = startReview({
+      config, state, id: '97', comment: comment({ id: 97 }), decision,
+      now: Date.parse('2026-11-15T10:01:00Z'), io, threads: [],
+    });
+    assert.equal(started.outcome, 'launch');
+    const entry = state.tags['97'];
+    assert.equal(entry.head, HEAD);
+    assert.equal(entry.base, 'base000');
+    assert.deepEqual(slotState(config.slotDir, { slots: 2 }).map((slot) => slot.owner.commentId), [97]);
+
+    // The gate holds, so the review is sent; the entry says so before it is sent, so a crash cannot send it twice.
+    const reconciled = reconcileTag({
+      config, state, id: '97', entry, threads: [], io, now: Date.parse('2026-11-15T10:02:00Z'),
+    });
+    assert.equal(reconciled.outcome, 'sent');
+    assert.equal(entry.status, 'review');
+    assert.ok(entry.reviewSentAt);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a thread that T3 no longer knows frees its slot and says so on the pull request', () => {
+  const { config, dir } = watcherConfig();
+  const { world, io, calls } = fakeWorld();
+  world.comments = [comment({ id: 98 })];
+  try {
+    runTick(config, io);
+    const id = calls.launched[0].id;
+    world.failThread(id);
+    const result = runTick(config, io, { now: Date.parse('2026-11-15T10:05:00Z') });
+    assert.equal(result.refused[0].code, 'review-thread-lost');
+    assert.match(calls.posted[0].body, /the review thread this machine opened is gone/);
+    assert.deepEqual(slotState(config.slotDir, { slots: 2 }), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

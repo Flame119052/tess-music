@@ -13,8 +13,18 @@
 // The rules are not copied here. A tag is judged by `tools/agent-review.mjs` — the same parser, allowlist check, tier,
 // author rule, plans-only list, usage and reserve — and this file only adds where a tag runs and how a thread is
 // opened. Installing the timer is the owner's step, not a merge (README.md beside this file).
+//
+// Two limits are enforced here rather than promised in a prompt, because a T3 thread runs with the owner's own
+// permissions (#105 review):
+//
+// 1. Nothing a pull request controls reaches a thread that is not held to T3's strictest runtime mode. The thread is
+//    opened with a fixed line that contains no diff, issue, focus or file, its runtime mode is read back from T3, and
+//    only then is the review itself sent. A project left at `full-access` gets a refusal comment, not the review.
+// 2. The thread posts nothing. It answers with its review as the last message; this watcher — plain code, no model —
+//    takes that text, checks its shape, and posts it with the owner's `gh`. A review written by a hijacked thread is
+//    then at worst a bad review, never a comment, a merge or a push made in the owner's name.
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,11 +51,37 @@ import {
   requestProblem,
 } from '../agent-review.mjs';
 
-export const stateVersion = 1;
+export const stateVersion = 2;
 
 // A tag posted before the watcher first ran is not replayed: installing a watcher must never start reviews of old
 // conversations. Ten minutes is enough to cover a tag written while the install was being finished.
 export const firstLookbackMs = 10 * 60 * 1000;
+
+// A seen comment is remembered long enough that no replay of it can ever look like a new tag. Age is the only thing
+// that forgets one, never a count: dropping the oldest ids would make an old, edited tag new again (#105 review).
+export const seenWindowMs = 30 * 24 * 60 * 60 * 1000;
+
+// The only T3 runtime mode a review may run in. T3 maps this to each provider's strictest setting — a read-only
+// sandbox with no network for Codex, a per-tool approval for Claude — and a thread's mode is the one limit this
+// machine can actually enforce, so a project set to anything wider is refused rather than reviewed (#105 review).
+export const reviewMode = 'approval-required';
+
+// The reply the gate thread is asked for. It is fixed text, so nothing a pull request controls is ever the thing a
+// misconfigured thread reads.
+export const gateReply = 'TESS REVIEW GATE READY';
+
+// The first message a review thread gets: fixed words, no pull request text, so the mode can be read back before
+// anything untrusted arrives.
+export const gateMessage = [
+  'This is the Tess Music review gate. Nothing from a pull request has been sent to this thread yet.',
+  '',
+  'Do not read any file, run any command, or use any tool.',
+  `Answer with exactly this one line and nothing else: ${gateReply}`,
+].join('\n');
+
+// A review is a comment, so it has a ceiling like any comment. A longer reply is cut by GitHub or refused by it, and
+// either way the reviewer's words would not be what a reader sees.
+export const reviewMessageLimit = 60 * 1000;
 
 // The review's own limits, bounded the way the GitHub job bounds one: this is a tuning knob for how many review threads
 // one machine runs at once, not a per-provider allowance rule.
@@ -108,18 +144,30 @@ export function readConfig(env = process.env, file = configPath()) {
   };
 }
 
+// The state of one machine: the newest comment time it has read, the comment ids it has already judged, and one entry
+// for every tag it has acted on. Version 1 remembered only ids, with no age, so a truncated list could replay a tag.
 export function readState(path) {
+  const empty = { version: stateVersion, cursor: '', seen: [], tags: {} };
   try {
     const state = JSON.parse(readFileSync(path, 'utf8'));
-    if (state?.version !== stateVersion) return { version: stateVersion, cursor: '', seen: [], tags: {} };
+    const tags = state?.tags && typeof state.tags === 'object' ? state.tags : {};
+    const seen = Array.isArray(state?.seen)
+      ? state.seen.flatMap((entry) => {
+        if (entry && typeof entry === 'object' && entry.id !== undefined) {
+          return [{ id: entry.id, at: typeof entry.at === 'string' ? entry.at : '' }];
+        }
+        // Version 1 kept a bare id and no time. It is kept, dated from now, so nothing it remembered runs again.
+        return entry === undefined ? [] : [{ id: entry, at: new Date().toISOString() }];
+      })
+      : [];
     return {
       version: stateVersion,
-      cursor: typeof state.cursor === 'string' ? state.cursor : '',
-      seen: Array.isArray(state.seen) ? state.seen : [],
-      tags: state.tags && typeof state.tags === 'object' ? state.tags : {},
+      cursor: typeof state?.cursor === 'string' ? state.cursor : '',
+      seen,
+      tags,
     };
   } catch {
-    return { version: stateVersion, cursor: '', seen: [], tags: {} };
+    return empty;
   }
 }
 
@@ -164,12 +212,13 @@ export function targetProblem({ role, pull, repo, conclusion }) {
 
 // --- slots ------------------------------------------------------------------------------------------------------------
 // A machine runs at most `slots` reviews at once, so a burst of tags cannot start a pile of provider runs. A slot is a
-// directory, claimed atomically by `mkdir`; its owner record says which thread holds it. A slot whose record is older
-// than any review could possibly run is reclaimed, or one killed tick would block this machine for good.
+// directory, claimed atomically by `mkdir`; its owner record says which thread holds it. A slot is only given back when
+// its thread is gone or when a tick died before a thread existed: a live thread keeps its slot however long it runs,
+// because giving the slot back early would run more reviews than the cap allows (#105 review).
 
-export function claimSlot(directory, owner, { slots = defaults.slots, now = Date.now(), staleMs = defaults.slotStaleMs } = {}) {
+export function claimSlot(directory, owner, { slots = defaults.slots, now = Date.now(), staleMs = defaults.slotStaleMs, live = new Set() } = {}) {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  reclaimStaleSlots(directory, { slots, now, staleMs });
+  reclaimStaleSlots(directory, { slots, now, staleMs, live });
   for (let index = 1; index <= slots; index += 1) {
     const path = join(directory, `slot-${index}`);
     try {
@@ -199,12 +248,18 @@ export function slotState(directory, { slots = defaults.slots } = {}) {
   }).filter(Boolean);
 }
 
-export function reclaimStaleSlots(directory, { slots = defaults.slots, now = Date.now(), staleMs = defaults.slotStaleMs } = {}) {
+// `live` is every thread this machine's T3 server still knows. A slot whose thread is in it is kept, settled or not:
+// a settled thread frees its slot through the state entry, not through a timer, so the cap and the threads agree.
+export function reclaimStaleSlots(directory, { slots = defaults.slots, now = Date.now(), staleMs = defaults.slotStaleMs, live = new Set() } = {}) {
   const reclaimed = [];
+  // A slot claimed a moment ago belongs to a thread this tick is still opening, so age alone never sweeps it.
+  const floor = Math.max(staleMs, 60 * 1000);
   for (const slot of slotState(directory, { slots })) {
+    const threadId = slot.owner?.threadId;
+    if (threadId && live.has(threadId)) continue;
     const claimedAt = Date.parse(slot.owner?.claimedAt || '');
     const age = Number.isFinite(claimedAt) ? now - claimedAt : Infinity;
-    if (age < staleMs) continue;
+    if (age < floor) continue;
     releaseSlot(slot.path);
     reclaimed.push(slot.path);
   }
@@ -236,17 +291,21 @@ export function acquireLock(path, { now = Date.now(), staleMs = defaults.lockSta
 // --- the thread -------------------------------------------------------------------------------------------------------
 
 // The prompt the thread gets: the same review instructions the GitHub job gives, the same owner's focus, and the one
-// write it is allowed to make. A T3 thread runs with the machine's own rights, so this is where the read-only promise is
-// made explicit — the sandbox that enforces it on GitHub's machines does not exist here.
+// output it makes. A T3 thread runs with the machine's own rights, so this file never asks it to write anything with
+// them: the review comment is the thread's last message, and this watcher posts it.
 export function reviewThreadMessage({
   role, number, sha, tier, machine, provider, model, focus, issue, approach, diff, repo, projectPath,
 }) {
   const subject = role === 'pr' ? `pull request #${number}` : `issue #${number}`;
-  const posting = role === 'pr'
-    ? `gh pr comment ${number} --repo ${repo} --body-file -`
-    : `gh issue comment ${number} --repo ${repo} --body-file -`;
+  const header = [
+    marker,
+    ...(role === 'pr' ? [`Reviewed: ${sha}`, `Tier: ${tier}`] : []),
+    `Reviewer: ${provider} / ${model}`,
+    `Machine: ${machine}`,
+  ];
   return [
-    `Review Tess Music ${subject} on this machine. This thread is the review: it reads and reports; it changes nothing.`,
+    `Review Tess Music ${subject} on this machine. This thread is the review: it reads and reports. You post nothing.`,
+    'The watcher that opened this thread takes your final reply, checks it, and posts it as the review comment.',
     '',
     reviewPrompt(role, { issue, approach, diff, focus }),
     '',
@@ -254,32 +313,25 @@ export function reviewThreadMessage({
     `The worktree this thread started in is ${role === 'pr' ? `the exact commit ${sha}` : 'main'}, taken from ${projectPath}.`,
     'Read the diff above against that code, and cite the path and line of anything you find.',
     '',
-    'STAY READ-ONLY',
-    'Do not edit, add, commit, push, delete, merge, release or promote anything. Do not run, build or install anything',
-    'from the change. Do not approve or request changes on GitHub. Your only write is the one review comment below.',
+    'WHAT THIS THREAD MAY DO',
+    `This thread runs in T3's \`${reviewMode}\` mode, the strictest this machine has: the provider is held to a read-only`,
+    'sandbox (Codex, which also loses the network) or to asking the owner before each command (Claude). Do not try to get',
+    'around either, and do not read anything outside the worktree. Do not edit, add, commit, push, delete, merge, release',
+    'or promote anything. Do not run, build or install anything from the change. Do not comment, approve or request',
+    'changes on GitHub: you have no way to, and a review that tries is not posted.',
     '',
-    'POST THE REVIEW',
-    `Post it as one comment on ${subject}, with the body on standard input:`,
-    `  ${posting}`,
-    ...(role === 'pr' ? [
-      '',
-      `Before posting, ask GitHub which commit is the head now: gh api repos/${repo}/pulls/${number} --jq .head.sha`,
-      `If it is not ${sha}, do not review it. Post this instead, starting with the marker line:`,
-      `  ${marker}`,
-      `  The pull request head moved after the tag (${sha} → the new head). Tag again once CI passes.`,
-      '',
-      '  Verdict: changes needed',
-    ] : []),
+    'HOW TO ANSWER',
+    'Your final reply is the comment. Start it with this line, then the header, then your findings, and end with one last',
+    'line that is exactly `Verdict: approve` or `Verdict: changes needed`. Nothing before the marker, nothing after the',
+    'verdict: a reply of any other shape is not posted, and the pull request is told the review came back unreadable.',
     '',
-    'The comment starts exactly like this:',
-    `  ${marker}`,
-    ...(role === 'pr' ? [`  Reviewed: ${sha}`, `  Tier: ${tier}`] : []),
-    `  Reviewer: ${provider} / ${model}`,
-    `  Machine: ${machine}`,
+    ...header.map((line) => `  ${line}`),
     '',
-    ...(focus ? ['The owner\'s focus from the tag follows, so a reader can see what was asked for.', ''] : []),
-    'then your findings, then one last line, exactly `Verdict: approve` or `Verdict: changes needed`.',
+    ...(focus ? ['The owner\'s focus from the tag is in the instructions above, so a reader can see what was asked for.', ''] : []),
     `Keep the marker as the first line: it is what stops your review from starting another review.`,
+    '',
+    `The watcher posts this to ${repo} ${role === 'pr' ? `pull request #${number}` : `issue #${number}`} after it checks the`,
+    'commit has not moved. If it has, the pull request gets a short note instead and this review is dropped.',
   ].join('\n');
 }
 
@@ -307,30 +359,78 @@ export function parseThreadId(stdout) {
   throw new Error('t3 thread start printed no thread id');
 }
 
-export function threadTitle({ role, number, model }) {
-  return `${role === 'pr' ? `Review PR #${number}` : `Approach review for #${number}`} with ${model}`;
+// The comment id is in the title and in the branch, so a tick that died after `t3 thread start` but before the state
+// write finds the thread it made instead of starting a second one (#105 review).
+export function threadTitle({ role, number, model, commentId }) {
+  const what = role === 'pr' ? `Review PR #${number}` : `Approach review for #${number}`;
+  return commentId === undefined ? `${what} with ${model}` : `${what} with ${model} (comment ${commentId})`;
 }
 
 export function threadBranch({ role, number, commentId }) {
   return `tess-review-${role}-${number}-${commentId}`;
 }
 
-// The body a refusal gets. Fixed codes use the fixed words the workflow posts; a rule refusal (a model that is not on
-// the plans-only list, the author's own provider, a window with no room) uses the same comment the GitHub path posts,
-// so the two doors say the same thing about the same rule.
+// The body a refusal gets. Tags the GitHub gate refuses use its fixed words; the codes only this machine produces say
+// what to change here. A rule refusal (a model that is not on the plans-only list, the author's own provider, a window
+// with no room) uses the same comment the GitHub path posts, so the two doors say the same thing about the same rule.
+export const watcherRefusals = {
+  'not-read-only': 'this machine cannot run the review read-only yet, so nothing was reviewed. T3 opened the thread at a wider runtime mode than `approval-required`, and a review is only sent to a thread that cannot write, push or reach the network. Set this repository\'s T3 project to the `approval-required` default runtime mode, then tag again (tools/review-watch/README.md → Limits).',
+  'effort-not-honored': 'a T3 thread on this machine cannot be told an effort: `t3 thread start` takes a provider and a model only, and this review would have run at the model\'s own default without saying so. Nothing ran. Tag again without `effort=` on this machine, or use `machine=github`, where the effort is passed to the reviewer\'s own CLI.',
+  'review-unreadable': 'the review came back in a shape this machine will not post: it must start with the review marker, name the commit it read, and end with one `Verdict:` line, and it must fit in one comment. Nothing was posted from it. The thread is on this machine for the owner to read.',
+  'review-thread-lost': 'the review thread this machine opened is gone (deleted, or the T3 server no longer knows it), so the review was never posted. Nothing was reviewed. Tag again.',
+};
+
 export function refusalBody({ code, reason, provider = '', model = '', resetsAt = null, noRoom = false, runUrl = '', now = Date.now() }) {
   if (noRoom) return noRoomComment({ reasons: [reason], earliestResetMs: resetsAt, now });
+  if (code && Object.hasOwn(watcherRefusals, code)) {
+    return [marker, '', 'Review not run.', '', `Why: ${watcherRefusals[code]}`, '', `Code: ${code}`].join('\n');
+  }
   if (code) return reviewRefusalText(code, { runUrl });
   return refusalComment({ reason, provider, model, resetsAt });
+}
+
+// --- the review, before it is posted ----------------------------------------------------------------------------------
+
+// Why a thread's reply cannot be posted, or null when it can. Everything here is shape, not opinion: a hijacked review
+// that writes anything else is dropped instead of being posted in the owner's name (#105 review).
+export function reviewCommentProblem(text, { sha, role }) {
+  const body = String(text || '').trim();
+  if (!body) return 'the thread answered with nothing';
+  if (body.length > reviewMessageLimit) return `the reply is ${body.length} characters, over the ${reviewMessageLimit} a comment can carry`;
+  const lines = body.split(/\r?\n/);
+  if (lines[0].trim() !== marker) return 'the reply does not start with the review marker';
+  if (role === 'pr' && !lines.some((line) => line.trim() === `Reviewed: ${sha}`)) {
+    return `the reply does not name the commit it read (${sha})`;
+  }
+  const last = [...lines].reverse().find((line) => line.trim());
+  if (!/^Verdict: (approve|changes needed)$/.test(last.trim())) return 'the reply does not end with one Verdict line';
+  return null;
+}
+
+// The last thing the thread said. A settled thread's newest assistant message is its review; the gate reply is older,
+// so it can never be mistaken for one.
+export function lastAssistantText(messages) {
+  const said = (Array.isArray(messages) ? messages : []).filter((message) => message?.role === 'assistant');
+  return said.at(-1)?.text || '';
+}
+
+// A thread opened at a wider mode is stopped before anything untrusted reaches it. T3 reports the thread's own mode, so
+// this is read from the server, not assumed from the tag or from a project setting nobody checked.
+export function threadModeProblem(thread) {
+  if (!thread) return 'the thread is not on this machine any more';
+  if (thread.runtimeMode !== reviewMode) {
+    return `the review thread runs at \`${thread.runtimeMode || '(unknown)'}\`, not \`${reviewMode}\``;
+  }
+  return null;
 }
 
 // --- one tick ---------------------------------------------------------------------------------------------------------
 
 const byCreated = (a, b) => String(a.created_at || '').localeCompare(String(b.created_at || ''));
 
-// The decision for one tag, with everything that needs the outside world passed in, so a test can drive every branch
-// without a network, a machine or a thread. Returns what happened, never throws for a refusal.
-export function handleTag({ config, request, comment, now, allowlist, io, state }) {
+// What a tag is allowed to become, with the world passed in so a test can drive every branch without a network, a
+// machine or a thread. Returns a decision; starting the thread is `startReview`, below.
+export function judgeTag({ config, request, comment, now, allowlist, io }) {
   const body = String(comment.body || '');
   const role = tagRole(body);
   const number = issueNumberOf(comment.issue_url);
@@ -353,7 +453,7 @@ export function handleTag({ config, request, comment, now, allowlist, io, state 
   const tier = role === 'pr' ? tierForPaths(io.files(config, number)) : 'sensitive';
   // A docs-only change needs no reviewer anywhere: the same verdict the hosted path posts, naming the commit it read.
   if (tier === 'docs') {
-    return { outcome: 'post', number, role, body: docsOnlyComment(headFacts(pull, config.repo).sha) };
+    return { outcome: 'post', number, role, body: docsOnlyComment(head.sha) };
   }
   const agentConfig = io.agentConfig(config);
   const verdict = requestProblem(agentConfig, request, {
@@ -378,159 +478,346 @@ export function handleTag({ config, request, comment, now, allowlist, io, state 
       role,
     };
   }
+  // The one setting a thread on this machine cannot carry. Saying nothing here is what the last version did, and a
+  // review then ran at whatever the provider chose (#105 review).
+  if (request.effort) {
+    return {
+      outcome: 'refuse', code: 'effort-not-honored', number, role,
+      reason: `effort=${request.effort} cannot be passed to a T3 thread on this machine`,
+    };
+  }
+  return {
+    outcome: 'start', number, role, tier, head: head.sha, base: pull?.base?.sha || '', issue, pull,
+    request: verdict.model, queuedAt: Date.parse(comment.created_at || '') || now,
+  };
+}
 
-  const queuedAt = Date.parse(comment.created_at || '') || now;
-  const slot = claimSlot(config.slotDir, { commentId: comment.id, number, role }, {
+// One review, from the slot to the thread, in the one order that survives a tick dying at any point: the intent is
+// written first, the thread's id is written the moment T3 prints it, and a thread that already exists for this comment
+// is adopted instead of started again (#105 review).
+export function startReview({ config, state, id, comment, decision, now, io, threads, log = () => {} }) {
+  const branch = threadBranch({ role: decision.role, number: decision.number, commentId: comment.id });
+  const title = threadTitle({ role: decision.role, number: decision.number, model: decision.request.model, commentId: comment.id });
+  // The commit is fetched again immediately before the thread is opened: a review is only ever of the commit CI passed,
+  // and a push in the minutes since the tag gets a note instead of a thread.
+  let base = decision.head;
+  if (decision.role === 'pr') {
+    base = io.fetchHead(config, decision.number);
+    if (base !== decision.head) {
+      return { outcome: 'post', number: decision.number, role: decision.role, body: headMismatchMessage(decision.head, base) };
+    }
+  }
+  const slot = claimSlot(config.slotDir, { commentId: comment.id, number: decision.number, role: decision.role }, {
     slots: config.slots, now, staleMs: config.slotStaleMs,
+    live: new Set((Array.isArray(threads) ? threads : []).map((thread) => thread?.threadId)),
   });
   if (!slot) {
-    if (now - queuedAt < config.slotWaitMs) return { outcome: 'pending', number, role, queuedAt };
-    return { outcome: 'refuse', code: 'slots-busy', reason: `all ${config.slots} slots are busy`, number, role };
+    if (now - decision.queuedAt < config.slotWaitMs) return { outcome: 'pending', number: decision.number, role: decision.role, queuedAt: decision.queuedAt };
+    return { outcome: 'refuse', code: 'slots-busy', reason: `all ${config.slots} slots are busy`, number: decision.number, role: decision.role };
   }
-
+  const entry = {
+    status: 'intent', number: decision.number, role: decision.role, commentId: comment.id,
+    tier: decision.tier, provider: decision.request.provider, model: decision.request.model,
+    head: decision.head, base: decision.base || '', branch, slot, queuedAt: decision.queuedAt,
+    claimedAt: new Date(now).toISOString(), comment,
+  };
+  state.tags[id] = entry;
+  writeState(config.statePath, state);
   try {
-    const base = role === 'pr' ? io.fetchHead(config, number) : 'main';
-    if (role === 'pr' && base !== headFacts(pull, config.repo).sha) {
-      releaseSlot(slot);
-      return { outcome: 'post', number, role, body: headMismatchMessage(headFacts(pull, config.repo).sha, base) };
+    const known = (Array.isArray(threads) ? threads : []).find((thread) => thread?.title === title);
+    if (known) {
+      entry.threadId = known.threadId;
+      entry.status = 'gate';
+      writeOwner(slot, entry);
+      log(`adopted thread ${known.threadId} for #${decision.number}, from an earlier tick`);
+      writeState(config.statePath, state);
+      return { outcome: 'adopt', number: decision.number, role: decision.role, threadId: known.threadId };
     }
-    const message = reviewThreadMessage({
-      role,
-      number,
-      sha: base,
-      tier,
-      machine: config.machine,
-      provider: verdict.model.provider,
-      model: verdict.model.model,
-      focus: request.prompt || '',
-      issue: issueText(issue),
-      approach: role === 'pr'
-        ? io.approach(config, number, issue)
-        : body,
-      diff: role === 'pr' ? io.diff(config, number) : '',
-      repo: config.repo,
-      projectPath: config.repoPath,
-    });
-    const args = t3LaunchArgs({
-      projectPath: config.repoPath,
-      provider: config.providers[verdict.model.provider] || verdict.model.provider,
-      model: verdict.model.model,
-      title: threadTitle({ role, number, model: verdict.model.model }),
-      branch: threadBranch({ role, number, commentId: comment.id }),
-      base,
-    });
-    const threadId = io.launch(config, args, message);
-    writeFileSync(join(slot, 'owner.json'), JSON.stringify({
-      commentId: comment.id, number, role, threadId, claimedAt: new Date(now).toISOString(),
-    }), { mode: 0o600 });
-    return { outcome: 'launch', number, role, slot, threadId, request: verdict.model, tier };
+    const launch = launchArgsFor({ config, decision, comment, branch, title });
+    const threadId = io.launch(config, launch.args, launch.message);
+    entry.threadId = threadId;
+    entry.status = 'gate';
+    // The slot names its thread as soon as there is one: that is what keeps it out of the stale sweep while it runs.
+    writeOwner(slot, entry);
+    writeState(config.statePath, state);
+    return { outcome: 'launch', number: decision.number, role: decision.role, threadId };
   } catch (error) {
     releaseSlot(slot);
-    return { outcome: 'refuse', code: 'launch-failed', reason: error?.message || String(error), number, role };
+    delete state.tags[id];
+    return { outcome: 'refuse', code: 'launch-failed', reason: error?.message || String(error), number: decision.number, role: decision.role };
+  }
+}
+
+// The slot's own record: which review it is holding, and which thread. A slot without a thread is a tick that died
+// between claiming it and starting one, which is the only case a timer may reclaim.
+export function writeOwner(slot, entry) {
+  writeFileSync(join(slot, 'owner.json'), JSON.stringify({
+    commentId: entry.commentId, number: entry.number, role: entry.role,
+    threadId: entry.threadId, claimedAt: entry.claimedAt,
+  }), { mode: 0o600 });
+}
+
+export function launchArgsFor({ config, decision, comment, branch, title }) {
+  return {
+    args: t3LaunchArgs({
+      projectPath: config.repoPath,
+      provider: config.providers[decision.request.provider] || decision.request.provider,
+      model: decision.request.model,
+      title,
+      branch,
+      base: decision.head,
+    }),
+    message: gateMessage,
+  };
+}
+
+// The review message, built from the validated commit rather than from a pull request number, so a push between the CI
+// check and the read cannot change what the reviewer reads (#105 review).
+export function reviewMessageFor({ config, entry, io, comment }) {
+  const role = entry.role;
+  const number = entry.number;
+  const issue = io.issue(config, number);
+  return reviewThreadMessage({
+    role,
+    number,
+    sha: entry.head,
+    tier: entry.tier,
+    machine: config.machine,
+    provider: entry.provider,
+    model: entry.model,
+    focus: parseRequest(String(comment?.body || '')).prompt || '',
+    issue: issueText(issue),
+    approach: role === 'pr' ? io.approach(config, number, issue) : String(comment?.body || ''),
+    diff: role === 'pr' ? io.diff(config, entry.base || '', entry.head) : '',
+    repo: config.repo,
+    projectPath: config.repoPath,
+  });
+}
+
+// Everything a running review needs between ticks. One function so a tick and the next one behave the same after a
+// crash: read the thread, hold it to the mode gate, send the review once, post the answer once.
+export function reconcileTag({ config, state, id, entry, threads, io, now, log = () => {} }) {
+  const out = { outcome: 'wait' };
+  let thread;
+  try {
+    thread = io.thread(config, entry.threadId);
+  } catch {
+    releaseSlot(entry.slot);
+    state.tags[id] = { status: 'refused', number: entry.number, role: entry.role, code: 'review-thread-lost' };
+    io.post(config, entry.number, refusalBody({ code: 'review-thread-lost', now }));
+    log(`thread ${entry.threadId} for #${entry.number} is gone; the slot is free`);
+    return { outcome: 'refuse', number: entry.number, code: 'review-thread-lost' };
+  }
+  const mode = threadModeProblem(thread.thread);
+  if (mode) {
+    releaseSlot(entry.slot);
+    state.tags[id] = { status: 'refused', number: entry.number, role: entry.role, code: 'not-read-only' };
+    io.post(config, entry.number, refusalBody({ code: 'not-read-only', now }));
+    log(`refused #${entry.number}: ${mode}`);
+    return { outcome: 'refuse', number: entry.number, code: 'not-read-only' };
+  }
+  if (entry.status !== 'review') {
+    // The gate reply may still be running; `send` queues the review behind it, which is what a watched review wants.
+    const message = reviewMessageFor({ config, entry, io, comment: entry.comment });
+    io.send(config, entry.threadId, message);
+    entry.status = 'review';
+    entry.reviewSentAt = new Date(now).toISOString();
+    writeState(config.statePath, state);
+    log(`sent the review to thread ${entry.threadId} for #${entry.number}`);
+    return { outcome: 'sent', number: entry.number, threadId: entry.threadId };
+  }
+  const settledAt = Date.parse(thread.thread?.settledAt || '');
+  const sentAt = Date.parse(entry.reviewSentAt || '');
+  if (!thread.thread?.settled || !Number.isFinite(settledAt) || !(settledAt >= sentAt)) {
+    return out;
+  }
+  // The thread has finished the review. Its answer is a comment only if it has the shape every review has.
+  const text = lastAssistantText(thread.messages);
+  const problem = reviewCommentProblem(text, { sha: entry.head, role: entry.role });
+  const link = thread.thread?.link ? `\n\nThread: ${thread.thread.link}` : '';
+  try {
+    if (problem) {
+      io.post(config, entry.number, [refusalBody({ code: 'review-unreadable', now }), link].join(''));
+      state.tags[id] = { status: 'refused', number: entry.number, role: entry.role, code: 'review-unreadable' };
+      log(`thread ${entry.threadId} answered #${entry.number} in a shape that cannot be posted: ${problem}`);
+    } else {
+      // The comment is only posted for the commit the review read. A push during the review gets a note, not a verdict.
+      if (entry.role === 'pr') {
+        const head = headFacts(io.pull(config, entry.number), config.repo).sha;
+        if (head !== entry.head) {
+          io.post(config, entry.number, headMismatchMessage(entry.head, head));
+          state.tags[id] = { status: 'refused', number: entry.number, role: entry.role, code: 'head-moved' };
+          releaseSlot(entry.slot);
+          log(`#${entry.number} moved from ${entry.head} to ${head}; the review was not posted`);
+          return { outcome: 'refuse', number: entry.number, code: 'head-moved' };
+        }
+      }
+      io.post(config, entry.number, text.trim());
+      state.tags[id] = { status: 'done', number: entry.number, role: entry.role, threadId: entry.threadId };
+      log(`posted the review of #${entry.number} from thread ${entry.threadId}`);
+    }
+    releaseSlot(entry.slot);
+    writeState(config.statePath, state);
+    return { outcome: problem ? 'refuse' : 'post', number: entry.number, threadId: entry.threadId };
+  } catch (error) {
+    // A comment that could not be posted keeps its slot: the next tick tries again, and a review is never lost silently.
+    log(`could not post the review of #${entry.number}: ${error.message}`);
+    return { outcome: 'wait' };
   }
 }
 
 // One run of the watcher. `io` is the only way this touches the world, so the tests drive it with a fake one.
 export function tick({ config, now = Date.now(), io, log = () => {} }) {
   const state = readState(config.statePath);
-  // Finish the bookkeeping before anything new starts: a settled thread frees its slot, and a slot nobody can still
-  // hold is reclaimed so this machine cannot stop reviewing after one killed tick.
+  const result = { launched: [], refused: [], posted: [], pending: 0 };
   const threads = io.threads(config);
-  const settled = new Set((Array.isArray(threads) ? threads : []).filter((thread) => thread?.settled).map((thread) => thread.threadId));
-  for (const [id, entry] of Object.entries(state.tags)) {
-    if (entry.status !== 'running') continue;
-    if (entry.threadId && settled.has(entry.threadId)) {
-      releaseSlot(entry.slot);
-      entry.status = 'done';
-      log(`thread ${entry.threadId} for #${entry.number} finished`);
-    }
-  }
-  reclaimStaleSlots(config.slotDir, { slots: config.slots, now, staleMs: config.slotStaleMs });
+  const list = Array.isArray(threads) ? threads : [];
+  const live = new Set(list.map((thread) => thread?.threadId));
 
-  const allowlist = io.allowlist(config);
-  if (!allowlist.length) {
-    log('no allowlist: set the AGENT_ALLOWLIST repository variable, or the allowlist in the config file');
-    writeState(config.statePath, state);
-    return { launched: [], refused: [], pending: 0 };
-  }
+  // One tick at a time, including the bookkeeping: a review posted twice because two ticks both saw it settled is the
+  // same mistake as two threads for one tag.
   const lock = acquireLock(config.lockPath, { now, staleMs: config.lockStaleMs });
   if (!lock) {
     log('the previous tick is still running; skipping this one');
-    return { launched: [], refused: [], pending: 0 };
+    return result;
   }
-  const result = { launched: [], refused: [], pending: 0 };
 
   try {
-    // A tag that waited for a slot last time goes first; it has already been checked, so re-checking is only what changed
-    // it: its facts are read again, because a review may take minutes and the pull request may have moved.
+    // Finish what earlier ticks started before anything new begins: a review that is ready is posted, a thread opened
+    // at a wider mode is refused, and a slot whose thread is gone is reclaimed.
+    for (const [id, entry] of Object.entries(state.tags)) {
+      if (!['intent', 'gate', 'review'].includes(entry.status)) continue;
+      if (!entry.threadId) {
+        // A tick died between the intent and the thread's id. If T3 has the thread anyway, adopt it; otherwise this tag
+        // never started, and starting it now would be a second launch for one comment.
+        const adopted = adoptByTitle({ config, entry, list, io, state, id, log });
+        if (!adopted) continue;
+      }
+      const reconciled = reconcileTag({ config, state, id, entry, threads: list, io, now, log });
+      if (reconciled.outcome === 'sent') result.launched.push({ number: reconciled.number, threadId: reconciled.threadId });
+      if (reconciled.outcome === 'post') result.posted.push({ number: reconciled.number, threadId: reconciled.threadId });
+      if (reconciled.outcome === 'refuse') {
+        result.refused.push({ number: reconciled.number, code: reconciled.code, reason: watcherRefusals[reconciled.code] || reconciled.code });
+      }
+    }
+    reclaimStaleSlots(config.slotDir, { slots: config.slots, now, staleMs: config.slotStaleMs, live });
+
+    const allowlist = io.allowlist(config);
+    if (!allowlist.length) {
+      log('no allowlist: set the AGENT_ALLOWLIST repository variable, or the allowlist in the config file');
+      return result;
+    }
+    // A tag that waited for a slot last time goes first; its facts are read again, because a review may take minutes and
+    // the pull request may have moved.
     const pending = Object.entries(state.tags)
       .filter(([, entry]) => entry.status === 'pending')
       .sort((a, b) => a[1].queuedAt - b[1].queuedAt);
     const fresh = [];
     const since = state.cursor || new Date(now - firstLookbackMs).toISOString();
     const comments = io.comments(config, since);
+    const seen = new Set(state.seen.map((entry) => String(entry.id)));
     for (const comment of comments) {
       if (String(comment.body || '').includes(marker)) continue;
-      if (state.seen.includes(comment.id)) continue;
+      if (seen.has(String(comment.id))) continue;
       if (!tagRole(comment.body)) continue;
       if (!allowlist.includes(comment.user?.login || '')) continue;
       fresh.push(comment);
     }
 
-    const work = [
-      ...pending.map(([id, entry]) => ({ id, entry, comment: entry.comment })),
-      ...fresh.map((comment) => ({ id: comment.id, entry: null, comment })),
-    ].sort((a, b) => byCreated(a.comment, b.comment)).slice(0, defaults.tickLimit);
+    // One entry per comment id: a pending copy and a fresh copy of the same comment are one tag, not two (#105 review).
+    const work = new Map();
+    for (const [id, entry] of pending) work.set(String(id), { id, entry, comment: entry.comment });
+    for (const comment of fresh) work.set(String(comment.id), { ...(work.get(String(comment.id)) || {}), id: comment.id, comment });
+    const ordered = [...work.values()]
+      .filter((item) => item.comment)
+      .sort((a, b) => byCreated(a.comment, b.comment))
+      .slice(0, defaults.tickLimit);
 
-    for (const { id, entry, comment } of work) {
-      if (!comment) continue;
-      const request = parseRequest(comment.body);
-      const outcome = handleTag({ config, request, comment, now, allowlist, io, state });
-      if (outcome.outcome === 'skip') {
-        markSeen(state, id);
+    for (const { id, entry, comment: listed } of ordered) {
+      // A tag this tick has already adopted or sent is not started again below: the tag is one request, however many
+      // times it is read.
+      const inFlight = state.tags[String(id)];
+      if (inFlight && ['intent', 'gate', 'review'].includes(inFlight.status)) continue;
+      // The comment is read again from GitHub the moment it is acted on: a tag deleted or edited after it was queued is
+      // not the tag that was judged, so it does not launch (#105 review).
+      const current = rereadComment({ config, io, id, listed, state, log, now });
+      if (!current) continue;
+      const request = parseRequest(current.body);
+      const decision = judgeTag({ config, request, comment: current, now, allowlist, io });
+      if (decision.outcome === 'skip') {
+        markSeen(state, id, now);
         continue;
       }
-      if (outcome.outcome === 'pending') {
-        state.tags[id] = {
-          status: 'pending', number: outcome.number, role: outcome.role,
-          queuedAt: outcome.queuedAt, comment,
+      if (decision.outcome === 'pending') {
+        state.tags[String(id)] = {
+          status: 'pending', number: decision.number, role: decision.role,
+          queuedAt: decision.queuedAt, comment: current,
         };
         result.pending += 1;
         continue;
       }
-      markSeen(state, id);
-      if (outcome.outcome === 'post') {
-        io.post(config, outcome.number, outcome.body);
-        state.tags[id] = { status: 'done', number: outcome.number, role: outcome.role };
+      if (decision.outcome === 'post') {
+        markSeen(state, id, now);
+        io.post(config, decision.number, decision.body);
+        state.tags[String(id)] = { status: 'done', number: decision.number, role: decision.role };
+        result.posted.push({ number: decision.number });
         continue;
       }
-      if (outcome.outcome === 'refuse') {
-        const body = refusalBody({ ...outcome, now });
-        io.post(config, outcome.number, body);
-        state.tags[id] = {
-          status: 'refused', number: outcome.number, role: outcome.role, code: outcome.code || 'rule',
+      if (decision.outcome === 'refuse') {
+        markSeen(state, id, now);
+        io.post(config, decision.number, refusalBody({ ...decision, now }));
+        state.tags[String(id)] = { status: 'refused', number: decision.number, role: decision.role, code: decision.code || 'rule' };
+        result.refused.push({ number: decision.number, code: decision.code || 'rule', reason: decision.reason });
+        log(`refused #${decision.number}: ${decision.reason || decision.code}`);
+        continue;
+      }
+      markSeen(state, id, now);
+      const started = startReview({
+        config, state, id: String(id), comment: current, decision, now, io, threads: list, log,
+      });
+      if (started.outcome === 'pending') {
+        // The slot was taken between the claim and here: wait, and keep the comment for the next tick.
+        state.tags[String(id)] = {
+          status: 'pending', number: started.number, role: started.role,
+          queuedAt: started.queuedAt, comment: current,
         };
-        result.refused.push({ number: outcome.number, code: outcome.code || 'rule', reason: outcome.reason });
-        log(`refused #${outcome.number}: ${outcome.reason || outcome.code}`);
+        result.pending += 1;
         continue;
       }
-      state.tags[id] = {
-        status: 'running', number: outcome.number, role: outcome.role, slot: outcome.slot,
-        threadId: outcome.threadId, tier: outcome.tier,
-      };
-      result.launched.push({ number: outcome.number, threadId: outcome.threadId });
-      log(`started thread ${outcome.threadId} for #${outcome.number} (${outcome.request.provider} / ${outcome.request.model})`);
+      if (started.outcome === 'post') {
+        io.post(config, started.number, started.body);
+        state.tags[String(id)] = { status: 'refused', number: started.number, role: started.role, code: 'head-moved' };
+        result.refused.push({ number: started.number, code: 'head-moved' });
+        continue;
+      }
+      if (started.outcome === 'refuse') {
+        io.post(config, started.number, refusalBody({ ...started, now }));
+        state.tags[String(id)] = { status: 'refused', number: started.number, role: started.role, code: started.code };
+        result.refused.push({ number: started.number, code: started.code, reason: started.reason });
+        log(`refused #${started.number}: ${started.reason || started.code}`);
+        continue;
+      }
+      const entry = state.tags[String(id)];
+      writeState(config.statePath, state);
+      const reconciled = reconcileTag({ config, state, id: String(id), entry, threads: list, io, now, log });
+      if (reconciled.outcome === 'sent' || reconciled.outcome === 'wait') {
+        result.launched.push({ number: decision.number, threadId: entry.threadId });
+        log(`started thread ${entry.threadId} for #${decision.number} (${decision.request.provider} / ${decision.request.model})`);
+      }
+      if (reconciled.outcome === 'refuse') {
+        result.refused.push({ number: reconciled.number, code: reconciled.code });
+      }
     }
 
     const newest = comments.at(-1);
     const cursor = [state.cursor, newest?.updated_at || newest?.created_at || ''].filter(Boolean).sort().at(-1) || state.cursor;
     if (cursor) state.cursor = cursor;
-    // Seen ids are bounded: the cursor already stops old comments being read again, and the file is 0600 on this machine.
-    if (state.seen.length > 500) state.seen = state.seen.slice(-500);
+    pruneSeen(state, { now });
     const tags = Object.entries(state.tags);
     if (tags.length > 200) {
-      state.tags = Object.fromEntries(tags.filter(([, entry]) => entry.status === 'pending' || entry.status === 'running')
-        .concat(tags.filter(([, entry]) => entry.status !== 'pending' && entry.status !== 'running').slice(-50)));
+      const inFlight = (entry) => ['pending', 'intent', 'gate', 'review'].includes(entry.status);
+      state.tags = Object.fromEntries(tags.filter(([, entry]) => inFlight(entry))
+        .concat(tags.filter(([, entry]) => !inFlight(entry)).slice(-50)));
     }
   } finally {
     rmSync(lock, { recursive: true, force: true });
@@ -539,8 +826,69 @@ export function tick({ config, now = Date.now(), io, log = () => {} }) {
   return result;
 }
 
-export function markSeen(state, id) {
-  if (!state.seen.includes(id)) state.seen.push(id);
+// An entry whose thread id was never written: T3 may still have started the thread before the tick died, and the title
+// carries the comment id, so it can be found again. Without it the slot is released and the tag is answered, once.
+export function adoptByTitle({ config, entry, list, io, state, id, log = () => {} }) {
+  const title = threadTitle({ role: entry.role, number: entry.number, model: entry.model, commentId: entry.commentId });
+  const known = (Array.isArray(list) ? list : []).find((thread) => thread?.title === title);
+  if (known) {
+    entry.threadId = known.threadId;
+    entry.status = 'gate';
+    writeOwner(entry.slot, entry);
+    writeState(config.statePath, state);
+    log(`adopted thread ${known.threadId} for #${entry.number}, recorded without an id`);
+    return true;
+  }
+  releaseSlot(entry.slot);
+  state.tags[id] = { status: 'refused', number: entry.number, role: entry.role, code: 'launch-failed' };
+  io.post(config, entry.number, refusalBody({ code: 'launch-failed' }));
+  log(`#${entry.number} was recorded but never started; tag again`);
+  return false;
+}
+
+// The comment as GitHub has it now, or null when it must not be acted on: gone, edited, from another account, or not
+// readable at all. A tag that changed while it waited is judged again as a fresh comment, never as its old self.
+function rereadComment({ config, io, id, listed, state, log, now = Date.now() }) {
+  let current;
+  try {
+    current = io.comment(config, id);
+  } catch (error) {
+    markSeen(state, id, now);
+    delete state.tags[String(id)];
+    log(`#${id} could not be read again (${error.message}); nothing was started for it`);
+    return null;
+  }
+  if (!current || String(current.id) !== String(id)) {
+    markSeen(state, id, now);
+    delete state.tags[String(id)];
+    log(`#${id} is gone from GitHub; nothing was started for it`);
+    return null;
+  }
+  if (current.user?.login !== listed?.user?.login || String(current.body || '') !== String(listed.body || '')) {
+    // An edited tag is a new request. Forget the old id, and hand back the new words so they are judged now: the cursor
+    // has already moved past this comment, so waiting for the next poll would lose it.
+    state.seen = state.seen.filter((entry) => String(entry.id) !== String(id));
+    delete state.tags[String(id)];
+    log(`#${id} was edited after it was queued; it is judged as it reads now`);
+    return { ...current };
+  }
+  return current;
+}
+
+export function markSeen(state, id, now = Date.now()) {
+  if (state.seen.some((entry) => String(entry.id) === String(id))) return;
+  state.seen.push({ id, at: new Date(now).toISOString() });
+}
+
+// Old ids are forgotten by age, never by count: a count would drop the oldest id first and let an old, edited tag look
+// new again (#105 review).
+export function pruneSeen(state, { now = Date.now() } = {}) {
+  const cursor = Date.parse(state.cursor || '');
+  const cutoff = (Number.isFinite(cursor) ? cursor : now) - seenWindowMs;
+  state.seen = state.seen.filter((entry) => {
+    const at = Date.parse(entry.at || '');
+    return Number.isFinite(at) ? at >= cutoff : false;
+  });
 }
 
 // --- the world --------------------------------------------------------------------------------------------------------
@@ -578,6 +926,9 @@ export function createIo({ env = process.env, run = execFileSync } = {}) {
       }
       return out;
     },
+    // One comment, as it is now. This is what a launch is decided on: a tag deleted or edited after it was queued must
+    // not run on its old words.
+    comment: (config, id) => json(['api', `repos/${config.repo}/issues/comments/${id}`]),
     pull: (config, number) => json(['api', `repos/${config.repo}/pulls/${number}`]),
     issue: (config, number) => json(['api', `repos/${config.repo}/issues/${number}`]),
     files: (config, number) => gh(['api', `repos/${config.repo}/pulls/${number}/files`, '--paginate', '--jq', '.[].filename'])
@@ -586,7 +937,12 @@ export function createIo({ env = process.env, run = execFileSync } = {}) {
       const runs = json(['api', `repos/${config.repo}/actions/workflows/check.yml/runs?head_sha=${sha}&event=pull_request&per_page=100`]);
       return ciConclusion(runs?.workflow_runs);
     },
-    diff: (config, number) => gh(['pr', 'diff', String(number), '-R', config.repo]),
+    // The diff between the commit CI passed and its base, not the pull request's current diff: a push after the CI check
+    // must not change what the reviewer reads (#105 review).
+    diff(config, base, head) {
+      if (!base || !head) return gh(['pr', 'diff', String(head || ''), '-R', config.repo]);
+      return gh(['api', `repos/${config.repo}/compare/${base}...${head}`, '-H', 'Accept: application/vnd.github.diff']);
+    },
     // The approach comment the pull request is judged against: the newest `@tess-review approach` tag on its linked issue.
     approach(config, number, issue) {
       const linked = linkedIssueNumber(issue?.body);
@@ -599,6 +955,13 @@ export function createIo({ env = process.env, run = execFileSync } = {}) {
     threads(config) {
       return JSON.parse(String(exec('t3', ['thread', 'list', '--project', config.repoPath, '--json'])) || '[]');
     },
+    // One thread with its latest messages: the runtime mode this machine gave it, whether it has settled, and what it
+    // said last.
+    thread(config, threadId) {
+      return JSON.parse(String(exec('t3', ['thread', 'show', String(threadId), '--json', '--messages', '10'])) || '{}');
+    },
+    // The review itself, sent only after the thread's mode has been read back. A busy thread queues it.
+    send: (config, threadId, message) => String(exec('t3', ['thread', 'send', String(threadId), '-'], { input: message })).trim(),
     usage: (request, now) => reviewUsage(request, { env, now }),
     // The pull request's head, fetched into the watcher's own clone so the thread can be based on exactly that commit.
     fetchHead(config, number) {
@@ -653,6 +1016,9 @@ function check(config, io) {
   } catch (error) {
     bad('t3', `the local T3 server did not answer (${error.message}); start T3 on this machine`);
   }
+  // Not a provider setting and not a promise in a prompt: a review is only sent to a thread T3 reports at this mode, and
+  // the project's own default runtime mode is what T3 gives every thread it opens here.
+  ok('mode', `${reviewMode} (set this repository's T3 project to it; a wider thread is refused, never reviewed)`);
   ok('providers', Object.entries(config.providers).map(([provider, instance]) => `${provider}→${instance}`).join(', '));
   ok('slots', `${config.slots}, state in ${config.stateDir}`);
   console.log(lines.join('\n'));
@@ -689,10 +1055,9 @@ function main() {
   }
   try {
     const result = tick({ config, io, log: (line) => console.error(line) });
-    console.error(`tick: ${result.launched.length} launched, ${result.refused.length} refused, ${result.pending} waiting`);
+    console.error(`tick: ${result.launched.length} launched, ${result.posted.length} posted, ${result.refused.length} refused, ${result.pending} waiting`);
     return 0;
   } catch (error) {
-    // A failed tick posts nothing: the tag is not marked seen, so the next tick tries it again with the same rules.
     console.error(`tick failed: ${error.message}`);
     return 1;
   }
