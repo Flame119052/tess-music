@@ -15,10 +15,15 @@ shown by GitHub:
   --url https://github.com/Flame119052/tess-music \
   --token "$RUNNER_TOKEN" \
   --name "tess-agent-$(hostname -s)" \
-  --labels tess-agent \
+  --labels tess-agent,tess-backup \
   --unattended \
   --replace
 ```
+
+The Instabox default runner uses `--labels tess-agent,tess-primary` instead (see the Instabox section below). The
+workflow sends a review to `tess-primary` when the box answers ready and to `tess-backup` when it doesn't, so a runner
+missing its label waits in the queue until GitHub's 24-hour expiry. The labels on a runner already registered can be
+changed in **Settings → Actions → Runners**; the ones set up on 14 Nov carry them already.
 
 Install and authenticate at least one reviewer CLI listed in `.github/agents.json`. The runner also needs `git`,
 GitHub CLI (`gh`), and Node.js 22. Do not put provider tokens in the repository or the service file.
@@ -27,7 +32,8 @@ GitHub CLI (`gh`), and Node.js 22. Do not put provider tokens in the repository 
 
 Only on a Mac that holds no Tess keys, or under a separate macOS user that can't read the owner's home folder
 (`~/.config/tess-signing/` holds the signing and rescue keys; a reviewer reading an outside diff could be talked into
-printing any file it can read). The preferred runners are `omarchy` and `paperclip-vps`.
+printing any file it can read). The default reviewer machine is the Instabox box `tess-reviewer`; `omarchy` and
+`paperclip-vps` are the backups.
 
 Use a LaunchAgent, not a system LaunchDaemon. Replace `/absolute/path/to/actions-runner` below with the runner
 directory:
@@ -107,9 +113,10 @@ setup.
 4. **Branch protection:** protect `main`, `dev`, `beta`, and `stable`; require the `check` status where applicable,
    block force-pushes and deletions, and grant only the release workflow the bypass needed to update channel branches.
 5. **Runner access:** keep the runner repository-scoped (or in a runner group limited to this repository) and confirm
-   that it has the `tess-agent` label.
+   that it has the `tess-agent` label plus `tess-primary` on the Instabox default or `tess-backup` on the VPS and
+   omarchy. A job whose label no runner carries waits 24 hours and then fails.
 
-## What a runner machine has (set up 14 Nov on `omarchy` and `paperclip-vps`)
+## What a runner machine has (set up 14 Nov on `omarchy` and `paperclip-vps`, reachable via `ssh vps`)
 
 - A `tess-runner` account with no `sudo` rights. The runner lives in `~/actions-runner` and runs as the
   `actions.runner.Flame119052-tess-music.<name>` system service, as that user.
@@ -118,7 +125,7 @@ setup.
   `CLAUDE_CODE_OAUTH_TOKEN` variable. It sits in the runner's `.env` (mode 600). `config.sh` rewrites `.env` and
   `.path`, so set both again after re-registering, then restart the service. The reviewer passes only this one variable
   on from the job; `GH_TOKEN` never reaches it.
-- Krish's Mac makes the registration token and sends it over SSH standard input, so the token never sits in a file or in
+- Krish's Mac makes the registration token and sends it over SSH standard input (`ssh vps` for `paperclip-vps`), so the token never sits in a file or in
   an agent's instructions.
 
 ## Network: the provider's API and nothing else
@@ -227,3 +234,30 @@ GLM through the **Z.ai coding plan** is an OpenCode provider, not a separate CLI
 (`opencode auth login`, choosing the Z.ai coding plan) and `zai-coding-plan/glm-5.3` works by tag. It bills the Z.ai
 subscription instead of OpenCode Go's per-model allowance, which GLM empties quickly. It is not a default, so a runner
 without the connector still reviews everything else.
+
+## The Instabox reviewer (default machine, set up 14 Nov)
+
+- Box `tess-reviewer`, made with `--no-vault` so none of Krish's Instabox secrets reach a box that reads outside code.
+  It pauses itself after 30 idle minutes (the free plan's fixed setting) and costs nothing while paused.
+- Same setup as the other runners: a `tess-runner` user, the sandbox and a cap (3 cores, 6 GB, as the box does nothing
+  else), and the workspace wiped after every job. Its runner carries the extra label `tess-primary`; the VPS and omarchy
+  carry `tess-backup`.
+- `tess-ready.service` runs as `nobody` with a 64 MB cap and answers `GET /ready` on port 8787. It replies 200 with the
+  exact body `tess-ready` only while the runner is active and no `Runner.Worker` job is running, so a job is never pinned
+  to a box that is still starting, busy or paused; every other case gets a different status or body. Its source is one
+  `python3` file, `/usr/local/lib/tess-ready.py`, started by `tess-ready.service`; it uses only the standard library and
+  asks `systemctl` and `pgrep`. The port is published; its URL is the repo variable `REVIEW_WAKE_URL`. Requesting it is what wakes the
+  paused box, and it reveals nothing but ready or not ready.
+- The workflow waits up to 12 requests of up to 5 s with 5 s pauses between them, under 2 minutes, for that answer, then sends the job to
+  `tess-backup`. The `review` job carries `timeout-minutes: 30`, so a box that freezes mid-job fails the review instead
+  of holding the queue. It does not cover a job still waiting in the queue: if the box pauses (or a second tag takes it)
+  between answering ready and picking the job up, the job waits for it, up to GitHub's 24-hour limit. If that is ever
+  seen, cancel the run and tag again; the next check sends it to a backup.
+- The 30-minute pause counts idle time as Instabox defines it. A review that runs longer than that could be paused
+  mid-job; if that is ever seen, the fix is the `timeout-minutes` failure above plus a second wake, not a longer pause.
+- **Before setting `REVIEW_WAKE_URL`:** make sure both guards are already in place so Instabox never receives an
+  unapproved fork PR or an unverified commit — (1) **"Require approval for all outside collaborators"** is turned on
+  under **Settings → Actions → General**, and (2) the `REVIEW_HEAD_SHA` check in
+  [`.github/workflows/agent-review.yml`](../.github/workflows/agent-review.yml) and
+  [`tools/agent-review.mjs`](agent-review.mjs) is merged on `main`.
+- To retire it: `instabox port unpublish tess-reviewer 8787`, remove the runner in GitHub, then `instabox rm tess-reviewer`.

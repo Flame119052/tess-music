@@ -531,6 +531,24 @@ function postComment(repo, number, body) {
   });
 }
 
+// The gate checks CI against head_sha before waiting up to 2 minutes for Instabox (and potentially longer in queue).
+// Refuse to review if the PR head moved after the CI check, or if REVIEW_HEAD_SHA was never passed, so unverified
+// commits never reach the reviewer or get a docs-only approval.
+export function headMismatchMessage(gated, fetched) {
+  if (gated && fetched && fetched === gated) return null;
+  return `${marker}\n\nThe PR head moved after the CI check (${gated || 'none'} → ${fetched || 'none'}). Tag again once CI passes.\n\nVerdict: changes needed`;
+}
+
+export function verifyPrHead(gated, fetchHead, postMismatch) {
+  const fetched = fetchHead();
+  const message = headMismatchMessage(gated, fetched);
+  if (message) {
+    postMismatch(message);
+    return null;
+  }
+  return fetched;
+}
+
 async function main() {
   const [role, numberText] = process.argv.slice(2);
   if (role === 'tier') {
@@ -566,9 +584,19 @@ async function main() {
     return;
   }
 
+  const gated = process.env.REVIEW_HEAD_SHA || '';
+  const post = (msg) => postComment(repo, number, msg);
+  const fetchHead = () => {
+    execFileSync('git', ['-C', root, 'fetch', '--quiet', '--depth=1', 'origin', `pull/${number}/head`]);
+    return execFileSync('git', ['-C', root, 'rev-parse', 'FETCH_HEAD'], { encoding: 'utf8' }).trim();
+  };
+  if (!verifyPrHead(gated, fetchHead, post)) return;
+
   const files = gh(['api', `repos/${repo}/pulls/${number}/files`, '--paginate', '--jq', '.[].filename']).split('\n').filter(Boolean);
   const tier = tierForPaths(files);
   if (tier === 'docs') {
+    // Re-check live head before auto-approving docs-only so a race push cannot slip a non-docs change through.
+    if (!verifyPrHead(gated, () => gh(['api', `repos/${repo}/pulls/${number}`, '--jq', '.head.sha']), post)) return;
     postComment(repo, number, `${marker}\n\ndocs-only: CI is the review\n\nVerdict: approve`);
     return;
   }
@@ -581,10 +609,11 @@ async function main() {
     const approved = comments.filter((comment) => /(^|\n)@tess-review approach(?:\s|$)/.test(comment.body || ''));
     if (approved.length) approach = approved.at(-1).body;
   }
-  const diff = gh(['pr', 'diff', String(number), '-R', repo]);
   const key = tier === 'sensitive' ? 'pr_sensitive' : 'pr_normal';
   const pick = resolveReviewers(config, config[key], parseRequest(eventComment()), tier);
-  execFileSync('git', ['-C', root, 'fetch', '--quiet', '--depth=1', 'origin', `pull/${number}/head`]);
+  const diff = gh(['pr', 'diff', String(number), '-R', repo]);
+  // Confirm the PR head did not move while reading `gh pr diff`, so the diff and the snapshot are the same commit.
+  if (!verifyPrHead(gated, () => gh(['api', `repos/${repo}/pulls/${number}`, '--jq', '.head.sha']), post)) return;
   const work = snapshot('FETCH_HEAD');
   let result;
   try {

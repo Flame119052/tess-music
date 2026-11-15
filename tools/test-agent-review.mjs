@@ -1,10 +1,12 @@
 // Test reviewer tier, model selection, sandbox prep and the deny-everything agent without GitHub or provider calls.
 // Usage: node tools/test-agent-review.mjs
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
   agentConfig,
   assertReviewerAgent,
@@ -12,6 +14,7 @@ import {
   cliArgs,
   containsHeldSecret,
   eligibleModels,
+  headMismatchMessage,
   looksSecret,
   parseRequest,
   providerHasUsage,
@@ -32,6 +35,7 @@ import {
   stripAgentConfig,
   tierForPaths,
   usageProblem,
+  verifyPrHead,
 } from './agent-review.mjs';
 
 const config = JSON.parse(readFileSync(new URL('../.github/agents.json', import.meta.url), 'utf8'));
@@ -41,6 +45,174 @@ const available = (usedPercent) => ({ windows: [{ usedPercent }] });
 // stays true when the failure is about the runner (a flag, a usage limit) rather than about the change
 const retries = (result) => skipReason(result) !== null;
 const temp = () => mkdtempSync(join(tmpdir(), 'tess-test-'));
+
+// Run the workflow's machine-picking step for real, with fake `curl` and `sleep` in front of PATH, using the same shell
+// options GitHub Actions uses for `run:` blocks (`bash --noprofile --norc -eo pipefail`).
+function pickMachine({ wakeUrl, readyBody = '', curlFails = false, curlExit = 0, readyOnTry = 1, countCalls = false, expectUrl }) {
+  const workflow = readFileSync(new URL('../.github/workflows/agent-review.yml', import.meta.url), 'utf8').split('\n');
+  const stepLines = workflow.filter((line) => line.trim() === '- name: Pick the reviewer machine (Instabox first, then the VPS or omarchy)');
+  assert.equal(stepLines.length, 1, 'the workflow has exactly one machine-picking step');
+  const start = workflow.findIndex((line) => line.trim() === '- name: Pick the reviewer machine (Instabox first, then the VPS or omarchy)');
+  assert.ok(start > 0, 'the workflow still has the machine step');
+  const runAt = workflow.findIndex((line, i) => i > start && line.trim() === 'run: |');
+  assert.ok(workflow.slice(start, runAt).some((line) => line.trim() === "if: steps.gate.outputs.allowed == 'true'"),
+    'the Instabox wake probe only runs after the gate allows the caller');
+  const indent = workflow[runAt].search(/\S/);
+  const script = [];
+  for (const line of workflow.slice(runAt + 1)) {
+    if (line.trim() !== '' && line.search(/\S/) <= indent) break;
+    script.push(line.slice(indent + 2));
+  }
+
+  const dir = mkdtempSync(join(tmpdir(), 'tess-machine-'));
+  try {
+    const out = join(dir, 'output');
+    writeFileSync(out, '');
+    // The fake curl records the arguments it was given, so the test checks the URL the workflow actually asks for, not
+    // just the answer it gets back. One line per call, which also drives the "wakes on a later try" case.
+    const calls = join(dir, 'calls');
+    writeFileSync(join(dir, 'curl'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n` + (curlFails
+      ? 'exit 7\n'
+      : `[ "$(wc -l < '${calls}')" -ge ${readyOnTry} ] && printf '%s' '${readyBody}'\nprintf '|200'\nexit ${curlExit}\n`));
+    writeFileSync(join(dir, 'sleep'), '#!/bin/sh\nexit 0\n');
+    chmodSync(join(dir, 'curl'), 0o755);
+    chmodSync(join(dir, 'sleep'), 0o755);
+    const env = { PATH: `${dir}:${process.env.PATH}`, GITHUB_OUTPUT: out, HOME: dir };
+    if (wakeUrl !== undefined) env.WAKE_URL = wakeUrl;
+    execFileSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', script.join('\n')], { env, stdio: 'pipe' });
+    const result = readFileSync(out, 'utf8').trim();
+    if (expectUrl) {
+      const asked = readFileSync(calls, 'utf8').split('\n').filter(Boolean);
+      assert.ok(asked.length > 0, 'the step asked the wake URL something');
+      for (const line of asked) assert.ok(line.endsWith(` ${expectUrl}`), `asked for ${line}, wanted ...${expectUrl}`);
+    }
+    if (!countCalls) return result;
+    return { result, calls: existsSync(calls) ? readFileSync(calls, 'utf8').split('\n').filter(Boolean).length : 0 };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('no wake URL keeps the old behaviour: any tess-agent runner', () => {
+  assert.equal(pickMachine({}), 'runs_on=["self-hosted","tess-agent"]');
+  assert.equal(pickMachine({ wakeUrl: '' }), 'runs_on=["self-hosted","tess-agent"]');
+});
+
+test('only the exact ready answer pins the job to Instabox', () => {
+  const pinned = 'runs_on=["self-hosted","tess-agent","tess-primary"]';
+  // REVIEW_WAKE_URL is the box's host (the step adds /ready itself), so a value without a path is the real shape.
+  assert.equal(pickMachine({ wakeUrl: 'https://box.example', readyBody: 'tess-ready', expectUrl: 'https://box.example/ready' }), pinned);
+  // A trailing slash must not turn the request into //ready, and a platform's 200 "starting…" page is not ready.
+  assert.equal(pickMachine({ wakeUrl: 'https://box.example/', readyBody: 'tess-ready', expectUrl: 'https://box.example/ready' }), pinned);
+  const backup = 'runs_on=["self-hosted","tess-agent","tess-backup"]';
+  assert.equal(pickMachine({ wakeUrl: 'https://box.example', readyBody: 'starting…', expectUrl: 'https://box.example/ready' }), backup);
+  assert.equal(pickMachine({ wakeUrl: 'https://box.example', curlFails: true, expectUrl: 'https://box.example/ready' }), backup);
+  // Trailing newlines are not trimmed into a match, and a curl that fails after printing the ready text doesn't count.
+  assert.equal(pickMachine({ wakeUrl: 'https://box.example', readyBody: 'tess-ready\n\n' }), backup);
+  assert.equal(pickMachine({ wakeUrl: 'https://box.example', readyBody: 'tess-ready', curlExit: 7 }), backup);
+});
+
+test('a box that wakes on a later try still gets the job, and the check gives up after 12 tries', () => {
+  const late = pickMachine({ wakeUrl: 'https://box.example', readyBody: 'tess-ready', readyOnTry: 3, countCalls: true });
+  assert.deepEqual(late, { result: 'runs_on=["self-hosted","tess-agent","tess-primary"]', calls: 3 });
+  const never = pickMachine({ wakeUrl: 'https://box.example', curlFails: true, countCalls: true });
+  assert.deepEqual(never, { result: 'runs_on=["self-hosted","tess-agent","tess-backup"]', calls: 12 });
+});
+
+test('review refuses when the PR head moved after the CI gate or gated SHA is missing', () => {
+  assert.equal(headMismatchMessage('abc123', 'abc123'), null);
+  const moved = headMismatchMessage('abc123', 'def456');
+  assert.match(moved, /abc123 → def456/);
+  assert.match(moved, /Verdict: changes needed/);
+
+  const posted = [];
+  assert.equal(verifyPrHead('', () => 'def456', (msg) => posted.push(msg)), null);
+  assert.equal(verifyPrHead('abc123', () => 'def456', (msg) => posted.push(msg)), null);
+  assert.equal(posted.length, 2);
+  assert.match(posted[0], /none → def456/);
+  assert.match(posted[1], /abc123 → def456/);
+  assert.equal(verifyPrHead('abc123', () => 'abc123', (msg) => posted.push(msg)), 'abc123');
+  assert.equal(posted.length, 2);
+
+  // Also verify the real workflow passes REVIEW_HEAD_SHA and `agent-review.mjs` refuses before reading the diff.
+  const workflow = readFileSync(new URL('../.github/workflows/agent-review.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /REVIEW_HEAD_SHA:\s*\$\{\{\s*needs\.gate\.outputs\.head_sha\s*\}\}/);
+
+  const scriptPath = fileURLToPath(new URL('./agent-review.mjs', import.meta.url));
+  const dir = mkdtempSync(join(tmpdir(), 'tess-head-'));
+  try {
+    const commentOut = join(dir, 'comment');
+    writeFileSync(join(dir, 'git'), `#!/bin/sh
+case "$*" in
+  *" rev-parse FETCH_HEAD"*) printf 'cafebabe\\n' ;;
+  *) exit 0 ;;
+esac
+`);
+    writeFileSync(join(dir, 'gh'), `#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "repos/Flame119052/tess-music/issues/89" ]; then
+  printf '{"number":89,"title":"t","html_url":"https://example.invalid/89","body":""}'
+  exit 0
+fi
+if [ "$1" = "issue" ] && [ "$2" = "comment" ]; then
+  cat > '${commentOut}'
+  exit 0
+fi
+exit 99
+`);
+    chmodSync(join(dir, 'git'), 0o755);
+    chmodSync(join(dir, 'gh'), 0o755);
+    execFileSync(process.execPath, [scriptPath, 'pr', '89'], {
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, REVIEW_HEAD_SHA: 'deadbeef' },
+      stdio: 'pipe',
+    });
+    const postedBody = readFileSync(commentOut, 'utf8');
+    assert.match(postedBody, /deadbeef → cafebabe/);
+    assert.match(postedBody, /Verdict: changes needed/);
+
+    // And if the PR moves between FETCH_HEAD and `gh pr diff`, it still refuses before snapshotting or running a model.
+    writeFileSync(join(dir, 'git'), `#!/bin/sh
+case "$*" in
+  *" rev-parse FETCH_HEAD"*) printf 'deadbeef\\n' ;;
+  *" archive "*) exit 98 ;;
+  *) exit 0 ;;
+esac
+`);
+    writeFileSync(join(dir, 'gh'), `#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "repos/Flame119052/tess-music/issues/89" ]; then
+  printf '{"number":89,"title":"t","html_url":"https://example.invalid/89","body":""}'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "repos/Flame119052/tess-music/pulls/89/files" ]; then
+  printf 'tools/agent-review.mjs\\n'
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+  printf 'diff --git a/x b/x\\n'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "repos/Flame119052/tess-music/pulls/89" ]; then
+  printf 'cafebabe\\n'
+  exit 0
+fi
+if [ "$1" = "issue" ] && [ "$2" = "comment" ]; then
+  cat > '${commentOut}'
+  exit 0
+fi
+exit 99
+`);
+    chmodSync(join(dir, 'git'), 0o755);
+    chmodSync(join(dir, 'gh'), 0o755);
+    execFileSync(process.execPath, [scriptPath, 'pr', '89'], {
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, REVIEW_HEAD_SHA: 'deadbeef' },
+      stdio: 'pipe',
+    });
+    const raceBody = readFileSync(commentOut, 'utf8');
+    assert.match(raceBody, /deadbeef → cafebabe/);
+    assert.match(raceBody, /Verdict: changes needed/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('review roles keep the requested model order', () => {
   assert.deepEqual(config.approach, [
