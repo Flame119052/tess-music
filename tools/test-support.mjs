@@ -315,10 +315,10 @@ exit 0
     '',
   ].join('\n'));
   console.log('─'.repeat(96));
-  console.log('The exact command Krish\'s side files it with, and the issue text, for the blank-Spotify report:');
+  console.log('The exact payload the bot posts to the inbox for the blank-Spotify report (nothing created):');
   console.log('─'.repeat(96) + '\n');
-  console.log(cmd + '\n');
-  console.log(blank);
+  console.log(inboxPayload.trim() + '\n');
+  console.log('Filing is Krish\'s side, from the inbox — the bot has no path to GitHub at all.');
 } finally {
   rmSync(box, { recursive: true, force: true });
 }
