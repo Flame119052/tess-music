@@ -288,6 +288,46 @@ func TestSwapAppsReadsABinaryPlist(t *testing.T) {
 	}
 }
 
+// The check and the swap must be the same folder. Here Resources is moved aside and replaced by a symlink to an
+// unrelated folder at the moment a caller can do it — after the check, partway through the copy. The swap holds a
+// descriptor of the folder it checked, so the folder the link points at is never copied into, renamed or deleted, the
+// run says so instead of exiting 0, and Spotify's own folder is still exactly as it was.
+//
+// The second staged file matters: a path-based copy finishes writing into the linked folder and then finds a complete
+// interface there, which is how the old code renamed and deleted an unrelated folder and exited 0.
+func TestSwapAppsAbortsWhenResourcesReplacedDuringCopy(t *testing.T) {
+	apps, staged := setupSpotify(t)
+	os.WriteFile(filepath.Join(staged, "a-first"), []byte("first"), 0o644)
+	resources := filepath.Dir(apps)
+	victim := filepath.Join(t.TempDir(), "elsewhere")
+	victimApps := filepath.Join(victim, "Apps")
+	os.MkdirAll(victimApps, 0o755)
+	os.WriteFile(filepath.Join(victimApps, "xpui.spa"), []byte("original"), 0o644)
+	os.WriteFile(filepath.Join(victimApps, "keep-me"), []byte("keep"), 0o644)
+	moved := resources + "-real"
+	swapHook = func() {
+		swapHook = nil
+		if err := os.Rename(resources, moved); err != nil {
+			t.Errorf("cannot move Resources aside: %v", err)
+			return
+		}
+		if err := os.Symlink(victim, resources); err != nil {
+			t.Errorf("cannot put a symlink in its place: %v", err)
+		}
+	}
+	defer func() { swapHook = nil }()
+	if code := SwapApps([]string{apps, staged}); code == 0 {
+		t.Fatal("a Resources folder swapped for a symlink during the copy must not report success")
+	}
+	assertKept(t, victimApps)
+	if b, err := os.ReadFile(filepath.Join(moved, "Apps", "xpui.spa")); err != nil || string(b) != "original" {
+		t.Fatalf("Spotify's own interface changed or is missing: %q, %v", b, err)
+	}
+	if _, err := os.Stat(filepath.Join(moved, "Apps.tess-new")); !os.IsNotExist(err) {
+		t.Fatal("the aborted run left its half-made folder inside Spotify")
+	}
+}
+
 func TestSwapAppsMissingStagedFolder(t *testing.T) {
 	apps, staged := setupSpotify(t)
 	if code := SwapApps([]string{apps, filepath.Join(filepath.Dir(staged), "missing")}); code == 0 {

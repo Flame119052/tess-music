@@ -21,6 +21,10 @@ import (
 // window. swapApps instead builds the new folder next to Apps, checks it, and only then switches the two with
 // renames in the same folder; if a rename fails the original goes straight back. If macOS blocks writing at all, the
 // very first step (making the new folder) fails and Spotify is untouched.
+//
+// This is the path-based swap `apply` and `backup` use, where the folder comes from the user's own Spicetify config.
+// The signed swap-apps command, which a script or any other caller can point at a path, uses swapAppsAt instead: it
+// does the same steps relative to an open descriptor, so replacing the path mid-copy cannot redirect them.
 func swapApps(fill func(dir string) error) error {
 	staged := appDestPath + ".tess-new"
 	old := appDestPath + ".tess-old"
@@ -63,6 +67,9 @@ func swapApps(fill func(dir string) error) error {
 // denies that very copy when a script makes it with /usr/bin/ditto under /bin/zsh, which is how launchd starts Tess's
 // helper, so a background theme update could never reach Spotify through a shell. Exit 0 swapped, 3 macOS blocked it,
 // 4 the files belong to another user, 1 anything else.
+//
+// The check and the swap are the same folder even if the path is moved underneath them: the folder the check resolved
+// is opened once and every step runs relative to that descriptor (swapAppsAt).
 func SwapApps(args []string) int {
 	if len(args) != 2 {
 		utils.PrintError(`usage: tess-patcher swap-apps <Spotify's Apps folder> <staged folder>`)
@@ -71,7 +78,8 @@ func SwapApps(args []string) int {
 	dest, src := filepath.Clean(args[0]), filepath.Clean(args[1])
 	// Only Spotify's own interface folder: the swap renames the folder aside and then deletes it, so a typo or a
 	// lookalike path must never be able to reach some other folder.
-	if err := checkSpotifyApps(dest); err != nil {
+	resources, err := checkSpotifyApps(dest)
+	if err != nil {
 		utils.PrintError(dest + ": " + err.Error() + "; nothing was changed")
 		return 1
 	}
@@ -80,14 +88,25 @@ func SwapApps(args []string) int {
 		return 1
 	}
 	appDestPath = dest
-	// The source is checked by the fill step, after swapApps has already put back the original of an interrupted
+	// The source is checked by the fill step, after swapAppsAt has already put back the original of an interrupted
 	// swap: a failed restore must repair Spotify even when the staged copy it wanted is gone.
-	if err := swapApps(func(dir string) error {
+	var stepped func()
+	if swapHook != nil {
+		hook, done := swapHook, false
+		stepped = func() {
+			if !done {
+				done = true
+				hook()
+			}
+		}
+	}
+	err = swapAppsAt(resources, func(dirfd int) error {
 		if st, err := os.Stat(src); err != nil || !st.IsDir() {
 			return errors.New("the staged folder is missing or is not a folder")
 		}
-		return utils.Copy(src, dir, true, nil)
-	}); err != nil {
+		return copyTreeAt(dirfd, src, stepped)
+	})
+	if err != nil {
 		utils.PrintError("Spotify's interface folder was left as it was: " + err.Error())
 		if errors.Is(err, syscall.EPERM) {
 			return 3
@@ -100,43 +119,42 @@ func SwapApps(args []string) int {
 	return 0
 }
 
-// checkSpotifyApps answers "is this really Spotify's own interface folder?".
+// swapHook runs once, after the first file of the new folder is written. It is nil in the shipped binary; a test uses it
+// to replace Resources with a symlink at the one moment a caller could, and so prove the swap cannot follow it.
+var swapHook func()
+
+// checkSpotifyApps answers "is this really Spotify's own interface folder?" and returns the resolved Resources folder
+// that the swap must then open. Resolving happens here, once: everything after this is descriptor-relative.
 //
 // A string ending is not enough. `…/NotContents/Resources/Apps` ends in the same words, and a `Resources` that is a
 // symlink to somewhere else ends in them too, yet the swap would rename that folder aside and then delete it. So the
-// path must end in a separator-bounded `Contents/Resources/Apps`, must still do so after its symlinks are resolved
-// (which is what lets `/var` stand for `/private/var`, and what refuses a symlinked `Resources`), and the bundle
-// around it must be the app whose Info.plist names Spotify.
-func checkSpotifyApps(dest string) error {
+// path must end in a separator-bounded `Contents/Resources/Apps`, its parent must still end in
+// `Contents/Resources` after its symlinks are resolved (which is what lets `/var` stand for `/private/var`, and what
+// refuses a symlinked `Resources`), and the bundle around it must be the app whose Info.plist names Spotify.
+func checkSpotifyApps(dest string) (string, error) {
 	suffix := string(filepath.Separator) + filepath.Join("Contents", "Resources", "Apps")
+	folder := string(filepath.Separator) + filepath.Join("Contents", "Resources")
 	if !filepath.IsAbs(dest) || len(dest) <= len(suffix) || !strings.HasSuffix(dest, suffix) {
-		return errors.New(`not a Spotify "Contents/Resources/Apps" folder`)
+		return "", errors.New(`not a Spotify "Contents/Resources/Apps" folder`)
 	}
-	// A run killed between the two renames leaves Apps absent, so fall back to the parent: it still has to be a real
-	// Resources folder, which is all "Apps is missing" says about the folder that is about to come back.
-	resolved, err := filepath.EvalSymlinks(dest)
-	if err != nil {
-		parent, perr := filepath.EvalSymlinks(filepath.Dir(dest))
-		if perr != nil {
-			return errors.New(`not a Spotify "Contents/Resources/Apps" folder`)
-		}
-		resolved = filepath.Join(parent, filepath.Base(dest))
+	// A run killed between the two renames leaves Apps absent, so only the parent is resolved: it still has to be a
+	// real Resources folder, which is all "Apps is missing" says about the folder that is about to come back.
+	resolved, err := filepath.EvalSymlinks(filepath.Dir(dest))
+	if err != nil || len(resolved) <= len(folder) || !strings.HasSuffix(resolved, folder) {
+		return "", errors.New(`its symlinks lead outside a "Contents/Resources/Apps" folder`)
 	}
-	if len(resolved) <= len(suffix) || !strings.HasSuffix(resolved, suffix) {
-		return errors.New(`its symlinks lead outside a "Contents/Resources/Apps" folder`)
-	}
-	bundle := filepath.Dir(filepath.Dir(filepath.Dir(resolved)))
+	bundle := filepath.Dir(filepath.Dir(resolved))
 	if filepath.Ext(bundle) != ".app" {
-		return errors.New(`not inside an ".app" bundle`)
+		return "", errors.New(`not inside an ".app" bundle`)
 	}
 	id, err := bundleIdentifier(filepath.Join(bundle, "Contents", "Info.plist"))
 	if err != nil {
-		return errors.New("its Info.plist cannot be read: " + err.Error())
+		return "", errors.New("its Info.plist cannot be read: " + err.Error())
 	}
 	if id != spotifyBundleID {
-		return errors.New(`it belongs to "` + id + `", not ` + spotifyBundleID)
+		return "", errors.New(`it belongs to "` + id + `", not ` + spotifyBundleID)
 	}
-	return nil
+	return resolved, nil
 }
 
 const spotifyBundleID = "com.spotify.client"
