@@ -1476,3 +1476,31 @@ test("an npm-installed CLI starts: its package folder and its own Node are bound
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('duplicate entries for one provider are merged, so an exhausted window in the second still counts', () => {
+  const now = Date.parse('2026-11-15T04:40:00Z');
+  const raw = JSON.stringify({
+    version: 1,
+    machine: 'mac',
+    takenAt: '2026-11-15T04:39:00Z',
+    providers: [
+      { provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: 100, resetsAt: '2099-01-01T00:00:00Z' }] },
+      { provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: 0, resetsAt: '2099-01-01T00:00:00Z' }] },
+    ],
+  });
+  const snap = parseSnapshot('USAGE_SNAPSHOT_MAC', raw, now);
+  assert.ok(snap, 'a snapshot with a duplicate provider still parses');
+  assert.equal(snap.providers.length, 1);
+  assert.equal(snap.providers[0].windows.length, 2);
+  const called = [];
+  runReviewer([{ provider: 'codex', model: 'gpt-6.1-sol' }, { provider: 'claude', model: 'claude-sonnet-5-5' }], 'prompt', '/w', {
+    usageFor: () => undefined,
+    commandAvailable: () => true,
+    sandbox: () => null,
+    caps: capsFor(config),
+    snapshot: snap,
+    now,
+    invoke: (provider) => { called.push(provider); return { status: 0, text: 'Looks right.\nVerdict: approve' }; },
+  });
+  assert.deepEqual(called, ['claude']);
+});

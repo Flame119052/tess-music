@@ -176,7 +176,17 @@ export function normalizeProviders(entries) {
     }
     valid.push(normalized);
   }
-  return valid.filter((entry) => !rejected.has(`${entry.provider}:${entry.instance}`));
+  // Duplicate entries for one provider are merged, keeping every window, so a limit in any of them still counts (the
+  // most restrictive one wins downstream). Dropping a duplicate could hide an exhausted window.
+  const merged = new Map();
+  for (const entry of valid) {
+    const key = `${entry.provider}:${entry.instance}`;
+    if (rejected.has(key)) continue;
+    const seen = merged.get(key);
+    if (seen) seen.windows.push(...entry.windows);
+    else merged.set(key, { ...entry, windows: [...entry.windows] });
+  }
+  return [...merged.values()];
 }
 
 // One line per provider, from `tess-usage` with no argument:
