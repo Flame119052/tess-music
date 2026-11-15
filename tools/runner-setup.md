@@ -119,14 +119,17 @@ gh secret set ZHIPU_API_KEY -R Flame119052/tess-music
 1. Checks out `main` (no credentials kept) and installs Node 22.
 2. Lets bubblewrap start, then proves it works (below).
 3. `node tools/agent-review.mjs pick <role> <tier>` reads the reviewer the tag named and checks it against the hard rules
-   — plans-only list, installed CLI, `strong` for a sensitive change, a different provider from the author, usage, any
-   reserve, and the Codex login's expiry. It prints that provider, model and effort. A tag that breaks a rule gets a
-   comment on the pull request and the job stops; it never picks a substitute.
+   — plans-only list, installed CLI, `strong` for a sensitive change, an `author=` that is known and is not the reviewer's
+   own provider, usage, any reserve, and the Codex login's expiry. It prints that provider, model and effort. A tag that
+   breaks a rule gets a comment on the pull request and the job stops; it never picks a substitute.
 4. Installs only that provider's CLI, at a pinned version.
 5. Runs `node tools/agent-review.mjs <role> <number>` with only that provider's login in its environment. The script
    snapshots the change, runs the CLI inside bubblewrap, and posts the review with the `gh` token it keeps away from
    the reviewer. The posted verdict names the commit it read, and the head is checked once more immediately before
    posting, so a push during the review gets a re-tag instead of a verdict about a commit nobody read.
+6. A step that runs only when the job has already failed (`if: failure()`) posts one marker comment naming what broke,
+   using the same command with `stop` and only the job's own token, so a review that stops without a verdict is never
+   silent.
 
 The review job has `timeout-minutes: 30`, and the VM is thrown away afterwards.
 

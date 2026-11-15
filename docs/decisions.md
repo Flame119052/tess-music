@@ -227,6 +227,15 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   subcommand or headless credential file for that account, so a GitHub Linux VM cannot sign in on the plan. *Why:* a
   reviewer that cannot authenticate on the runner is worse than one that is honestly absent, and storing a keyring dump
   as a secret would be a worse credential than the plan login it replaces. Revisit if it grows a credential-file login.
+- **D-75 · 15 Nov 2026 · Agent** — Authorship is attested by the tag, not read from the pull request. The tag carries
+  `author=<provider>` (`claude`, `codex`, `opencode`, `antigravity`, or `none` for a person), written by the one allowlisted
+  account allowed to tag; a review is refused when that field is missing, unknown, the reviewer's own provider, or
+  contradicted by the PR's `Made by` line. The parser reads both shapes the repo really writes — `Made by: …` on one line
+  and the template's `## Made by` heading — and prose can only ever add a refusal. *Why:* the earlier rule read the
+  `Made by` line out of the PR body, which its own author can edit, delete, or point at a different provider; it also
+  missed this repository's own `## Made by` format, so an OpenCode review of a DeepSeek change was allowed. *Trade-off:*
+  a tag now carries one more field, and the tagging agent has to state something the job cannot verify by itself.
+  *Guard, not permission:* no wording anywhere can make a review run that a rule would refuse.
 
 ## Releases and process
 

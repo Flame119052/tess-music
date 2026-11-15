@@ -22,7 +22,7 @@ Only `beta` and `stable` are public. The release workflow does it:
 3. **Approach review.** For changes that need one (see tiers below), the agent tags the reviewer in that comment (`@tess-review approach`). A reviewer agent runs on a fresh GitHub-hosted Linux machine (an ordinary GitHub Actions job, free for this public repo), reads the issue and the plan, and replies **approve** or **changes needed**.
 4. **PR.** The change lands as a pull request into `main`, with `(#issue)` in its title.
 5. **Checks.** CI (`check.yml`: safety gate, builds, tests) must pass. No AI reviewer runs on a PR whose checks haven't passed.
-6. **PR review.** The agent tags `@tess-review pr`. The reviewer reads the diff against the approved plan and the issue's check, and posts a review.
+6. **PR review.** The agent tags `@tess-review pr`, naming the reviewer and the author as below. The reviewer reads the diff against the approved plan and the issue's check, and posts a review.
 7. **Merge.** Krish merges. That builds dev, and Krish's Mac gets it.
 8. **Release.** When Krish declares a release, everything merged since the last beta becomes the next beta. When it's clean, he promotes it to stable.
 
@@ -51,15 +51,20 @@ choice against the hard rules, and refuses loudly rather than quietly using a di
 no fallback: a review runs the model that was asked for, or it does not run.
 
 ```
-@tess-review approach provider=opencode model=zai-coding-plan/glm-5.3 effort=high
-@tess-review pr provider=codex model=gpt-6.1-terra effort=medium
+@tess-review approach provider=opencode model=zai-coding-plan/glm-5.3 effort=high author=codex
+@tess-review pr provider=codex model=gpt-6.1-terra effort=medium author=opencode
 ```
+
+`author=` is the provider that wrote the change (`claude`, `codex`, `opencode`, `antigravity`, or `none` when a person
+wrote it). **The tag must name it**, because the tag is the only trusted statement of authorship: a pull request's own
+`Made by` line is written by the same agent whose work is being reviewed, so it can only ever cause a refusal (when it
+disagrees with the tag), never grant a review.
 
 The line after the tag says why, in one sentence, so a reader can see the reasoning without opening a dashboard:
 
 ```
-@tess-review pr provider=opencode model=zai-coding-plan/glm-5.3 effort=high
-GLM-5.3 on the Z.ai plan: 71% of its week left, resets Tuesday, and the change was written by DeepSeek.
+@tess-review pr provider=opencode model=zai-coding-plan/glm-5.3 effort=high author=codex
+GLM-5.3 on the Z.ai plan: 71% of its week left, resets Tuesday, and the change was written by Codex.
 ```
 
 **Plans only.** Every model on the list runs on one of Krish's subscriptions — the Claude plan, the ChatGPT plan, the
@@ -84,21 +89,27 @@ OpenCode Go plan, or the Z.ai coding plan. No per-token API key is used, ever: a
 7. **The strength the tier needs.** A sensitive change needs a model in `strong`: GLM-5.3 on the Z.ai plan,
    `gpt-6.1-sol` on the ChatGPT plan, or Claude Opus. Everything else may use a cheaper model.
 8. **A different provider from the author.** DeepSeek writes most of the fixes here. A reviewer from the same provider
-   shares the author's blind spots, so read the PR's `Made by:` line and skip that provider.
+   shares the author's blind spots, so work out which provider wrote it and say so in the tag with `author=`. Then pick a
+   reviewer from another one. The job enforces this from `author=`, not from the pull request text.
 
 **What the job checks, and what it refuses.** A tag is refused, with a marker comment on the pull request, when:
 - it names no `provider=` and `model=` (the comment says which shape to use);
 - the model is not in `allowed` — which is the plans-only list, so an API-key model cannot be reached;
 - the job does not install that CLI;
 - the change is sensitive and the model is not in `strong`;
-- the `Made by:` line names the same provider as the reviewer;
+- it names no `author=`, names one that is not a known provider, or names the reviewer's own provider;
+- the pull request's `Made by` line (in any shape: `Made by: …` or a `## Made by` heading) names a provider that
+  disagrees with `author=`;
 - a usage snapshot shows that window used up, on pace to run out, or inside a `reserve`;
 - the Codex plan login is missing or inside its last 12 hours.
 
 The refusal names the reason and, for usage, the exact reset time in UTC plus how far away it is, so the next tag can be
 a good one. **Nothing is substituted.** A review that does not run is better than a review by a model nobody chose, so
 the tagging agent re-tags after reading the refusal. A reviewer that fails mid-run (a cap, a usage limit, a timeout) is
-reported the same way, in a comment, and the job stops there.
+reported the same way, in a comment, and the job stops there. So is a failure nobody planned for — a CLI that crashes, a
+proxy that will not start, a GitHub read that fails — because a job that stops without a word leaves the tagging agent
+waiting: the script posts one marker comment naming what broke (never a secret) and exits non-zero, and the review job
+has a last step that does the same for failures outside the script, such as installing the CLI.
 
 **One file holds the rules.** [`.github/agents.json`](../.github/agents.json) is the only place with model names, the
 plans-only list, what one review costs, the hard caps, and any quota kept back. Its role lists (`approach`, `pr_normal`,
@@ -202,7 +213,7 @@ watched. Claude reports no numbers of its own, so it keeps the cautious 10%.
 
 **Rules.**
 - Don't use the strongest model at both stages unless the work is sensitive.
-- The reviewer must come from a different provider than the agent that wrote the change, so it doesn't share the same blind spots. The job refuses a tag that breaks this.
+- The reviewer must come from a different provider than the agent that wrote the change, so it doesn't share the same blind spots. The tag states the author with `author=`, and the job refuses a tag that leaves it out, names an unknown provider, names the reviewer's own, or disagrees with the PR's `Made by` line. A tag is the only place authorship counts.
 - Usage comes first: exhausted usage, a provider on pace to run out, or reserved quota is a refusal, and the comment names when there is room again.
 - Only models listed under `allowed` in `.github/agents.json` are accepted, and that list is plans-only. Sensitive work must use one listed under `strong`. A tag that breaks a rule is refused with a comment; nothing is substituted.
 - Naming the reviewer is required. A tag without `provider=` and `model=` is refused, because the job does not choose.

@@ -1,8 +1,9 @@
 // Run a read-only issue approach or pull-request review and post the verdict.
 // Usage: node tools/agent-review.mjs <approach|pr> <number>
-// The tag may name the reviewer: `@tess-review pr provider=codex model=gpt-6.1-sol effort=high`. Only models listed in
-// .github/agents.json `allowed` are accepted; sensitive work must use a `strong` model. Anything else falls back to
-// the role's defaults, and the comment says why.
+// The tag names the reviewer and attests the author:
+// `@tess-review pr provider=codex model=gpt-6.1-sol effort=high author=opencode`. Only models listed in
+// .github/agents.json `allowed` are accepted, sensitive work must use a `strong` model, and a tag that breaks a rule is
+// refused with a comment instead of falling back to some other model.
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { appendFileSync, closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -374,13 +375,15 @@ export function parseRequest(body) {
   const line = String(body || '').split('\n').find((l) => /^@tess-review (approach|pr)(\s|$)/.test(l));
   if (!line) return {};
   const out = {};
-  for (const [, k, v] of line.matchAll(/\b(provider|model|effort)=([A-Za-z0-9._\/-]{1,80})/g)) out[k] = v;
+  for (const [, k, v] of line.matchAll(/\b(provider|model|effort|author)=([A-Za-z0-9._\/-]{1,80})/g)) out[k] = v;
   return out;
 }
 
-// Which provider wrote the change, from the pull request's own "Made by:" line. It decides only one rule: a reviewer
-// from the same provider shares the author's blind spots, so that provider is refused. An unreadable line means the rule
-// cannot be applied, which is not a reason to block a review.
+// Which provider wrote the change. It decides only one rule (a reviewer from the same provider shares the author's blind
+// spots), and it comes from two places on purpose: the tag's `author=`, written by the one account allowed to tag, is the
+// attestation the job acts on, and the pull request's own authorship line is read only to catch a contradiction. Prose in
+// a pull request is written by the same agent whose work is under review, so it can never allow anything; the rules below
+// read it in one direction only, where it can add a refusal and nothing else.
 export const authorProviders = [
   [/claude|opus|sonnet|haiku|fable/i, 'claude'],
   [/codex|gpt|chatgpt/i, 'codex'],
@@ -388,11 +391,43 @@ export const authorProviders = [
   [/gemini|antigravity|\bagy\b/i, 'antigravity'],
 ];
 
+// The values `author=` may take: the provider that wrote the change, or `none` when a person wrote it. Anything else is
+// refused, because a typo (`author=claud`) would otherwise quietly allow the provider it was meant to exclude.
+export const authorChoices = ['claude', 'codex', 'opencode', 'antigravity', 'none'];
+
+// The templates and agents here write the author two ways: `Made by: DeepSeek V4.1 Flash in OpenCode` on one line, and a
+// `## Made by` heading with the sentence under it (which is what this repository's own PRs use). Both are read, in any
+// heading level and with any bold or bullet decoration, and a heading's section stops at the next heading so a later
+// mention of another agent is not mistaken for the author.
+const authorLine = /^[ \t]*(?:[-*+][ \t]+)?[*_]{0,2}[ \t]*made by[ \t]*[*_]{0,2}[ \t]*:[ \t]*[*_]{0,2}(.*)$/im;
+const authorHeading = /^[ \t]*#{1,6}[ \t]*[*_]{0,2}[ \t]*made by[ \t]*[*_]{0,2}[ \t]*:?[ \t]*$/im;
+
+export function authorText(body) {
+  // HTML comments are instructions to the person filling the template, not content: the template's own `## Made by`
+  // section carries an example in one, and reading it would name an author nobody wrote.
+  const text = String(body || '').replace(/<!--[\s\S]*?-->/g, '');
+  const line = text.match(authorLine);
+  if (line) {
+    const value = line[1].replace(/^[*_\s]+|[*_\s]+$/g, '');
+    if (value) return value;
+  }
+  const heading = authorHeading.exec(text);
+  if (!heading) return '';
+  const section = text.slice(heading.index + heading[0].length).split(/^[ \t]*#{1,6}[ \t]/m)[0];
+  const first = section.split('\n').map((entry) => entry.trim()).find(Boolean) || '';
+  return first.replace(/^[*_\s]+|[*_\s]+$/g, '');
+}
+
+// The providers a sentence names. Two of them ("Claude Opus in OpenCode") is not an answer, so it reads as none: the tag
+// still decides the rule, and this only ever adds a refusal.
+export function providersInText(text) {
+  const found = new Set();
+  for (const [pattern, provider] of authorProviders) if (pattern.test(String(text || ''))) found.add(provider);
+  return found.size === 1 ? [...found][0] : '';
+}
+
 export function authorProvider(body) {
-  const line = String(body || '').match(/^\s*Made by\s*:\s*(.+)$/im);
-  if (!line) return '';
-  const found = authorProviders.find(([pattern]) => pattern.test(line[1]));
-  return found ? found[1] : '';
+  return providersInText(authorText(body));
 }
 
 // When a candidate is blocked by usage or a reservation, its own blocking windows decide when it next has room
@@ -481,17 +516,35 @@ export function refusalComment({ reason, provider = '', model = '', resetsAt = n
   return lines.join('\n');
 }
 
+// The comment a run that stopped short owes the pull request. It names what failed in one redacted line and never guesses
+// at a reviewer or a verdict: an unexpected failure says nothing about the change under review.
+export function failureComment({ reason }) {
+  return [
+    marker,
+    '',
+    'The review stopped before it posted a verdict.',
+    '',
+    `Why: ${reason}.`,
+    '',
+    'Nothing was substituted and no verdict was posted. Tag again once the cause is fixed — see docs/workflow.md → Choosing a reviewer.',
+  ].join('\n');
+}
+
 // A tag names the reviewer. This decides only whether that choice may run; it never picks one. Every rule here is a
 // hard one, because the alternative is a review by a model nobody chose: a model outside the plans-only list, a model
 // too weak for a sensitive change, the author's own provider, or one whose usage is out.
+//
+// `author` is the tag's attestation and `authorBody` the pull request's own authorship line, which anyone who can edit
+// the PR can change. They are read in one direction only: a missing or garbled attestation refuses, a body that
+// contradicts it refuses, and no wording anywhere can allow a review the rules would otherwise refuse.
 export function requestProblem(config, request, context = {}) {
   const {
-    tier = 'normal', author = '', usage, now = Date.now(), installed = installedProviders, caps = defaultCaps,
-    credential = null, reserve = (config.reserve || {})[request?.provider],
+    tier = 'normal', author = '', authorBody = '', usage, now = Date.now(), installed = installedProviders,
+    caps = defaultCaps, credential = null, reserve = (config.reserve || {})[request?.provider],
   } = context;
   const { provider, model, effort } = request || {};
   if (!provider || !model) {
-    return { reason: 'the tag names no reviewer. Write `@tess-review pr provider=<provider> model=<model> effort=<effort>` and a line saying why' };
+    return { reason: 'the tag names no reviewer. Write `@tess-review pr provider=<provider> model=<model> effort=<effort> author=<the author\'s provider>` and a line saying why' };
   }
   if (!(config.allowed?.[provider] || []).includes(model)) {
     return { reason: `${provider}/${model} is not on the plans-only list in .github/agents.json` };
@@ -504,7 +557,20 @@ export function requestProblem(config, request, context = {}) {
   if (effort && !(config.efforts || []).includes(effort)) {
     return { reason: `effort must be one of ${(config.efforts || []).join(', ')}` };
   }
-  if (author && author === provider) {
+  if (!author) {
+    return {
+      reason: 'the tag does not name the author\'s provider. Add `author=<provider>` (`none` when a person wrote it); the'
+        + ' job reads authorship from the tag, because the pull request text is written by the author it would be checking',
+    };
+  }
+  if (!authorChoices.includes(author)) {
+    return { reason: `author=${author} is not one of ${authorChoices.join(', ')}` };
+  }
+  // A disagreement is not resolved in anyone's favour: one of the two statements is wrong, so the review does not run.
+  if (authorBody && authorBody !== author) {
+    return { reason: `the pull request's "Made by" line names ${authorBody}, but the tag attests ${author}; the two disagree, so the review does not run` };
+  }
+  if (author !== 'none' && author === provider) {
     return { reason: `the change was written by ${author}, and a reviewer from the same provider shares its blind spots` };
   }
   // A usage or reserve refusal is the "no room" case, so its comment is the one #100 shipped: it lists the reason and
@@ -1065,18 +1131,27 @@ export function runReviewer(models, prompt, work, deps = {}) {
 
   const skipped = filtered.map(({ provider, model, reason }) => `${provider}/${model} (${reason})`);
   // The refusal a comment can carry: the model the tag named, the first reason it cannot run, and when its blocking
-  // window resets. It never becomes a second attempt with another model.
-  const refusal = (candidate, reason) => Object.assign(new Error(reason), {
+  // window resets. It never becomes a second attempt with another model. `failure` marks a run that stopped for a reason
+  // that is not a rule, so the comment says what broke instead of pretending a rule refused it.
+  const refusal = (candidate, reason, extra = {}) => Object.assign(new Error(reason), {
     refusal: {
       reason,
       provider: candidate?.provider || models[0]?.provider || '',
       model: candidate?.model || models[0]?.model || '',
+      ...extra,
     },
   });
   if (!candidates.length) throw refusal(null, `no ${models[0]?.provider || ''}/${models[0]?.model || ''} review could run: ${skipped.join(', ') || 'the reviewer is not usable here'}`);
 
   for (const candidate of candidates) {
-    const result = invoke(candidate.provider, candidate.model, prompt, candidate.effort, work, { caps });
+    // A CLI that throws, or a proxy that cannot start, leaves this function the same way a nonzero exit does: as a
+    // refusal. Anything else would stop the job without the comment the tagging agent is waiting for.
+    let result;
+    try {
+      result = invoke(candidate.provider, candidate.model, prompt, candidate.effort, work, { caps }) || {};
+    } catch (error) {
+      throw refusal(candidate, `${candidate.provider}/${candidate.model} could not start: ${failureSummary({ stderr: error?.message ?? error }, env)}`, { failure: true });
+    }
     if (result.timedOut) {
       const reason = `${candidate.provider}/${candidate.model} timed out after ${timeoutSeconds(candidate, caps)}s`;
       skipped.push(reason);
@@ -1092,7 +1167,7 @@ export function runReviewer(models, prompt, work, deps = {}) {
     }
     // Its own output is untrusted: the log gets one redacted line of stderr and never the stream it printed, in case a
     // diff talked it into quoting its key there.
-    throw new Error(`${candidate.provider} reviewer failed (exit ${result.status ?? 'no status'}): ${failureSummary(result, env)}`);
+    throw refusal(candidate, `${candidate.provider} reviewer failed (exit ${result.status ?? 'no status'}): ${failureSummary(result, env)}`, { failure: true });
   }
   throw refusal(null, `the ${models[0]?.provider || ''}/${models[0]?.model || ''} review was skipped: ${skipped.join(', ')}`);
 }
@@ -1181,6 +1256,10 @@ export function failureSummary(result, env = process.env) {
   return line.length > 200 ? `${line.slice(0, 200)}…` : line;
 }
 
+// The workflow's last step and this script would otherwise both comment on the same failure. A successful post leaves
+// this file, in the job's own scratch space that is thrown away with the machine, so the second one stays quiet.
+const commentedPath = () => join(process.env.RUNNER_TEMP || tmpdir(), 'tess-review-commented');
+
 function postComment(repo, number, body) {
   if (looksSecret(body) || containsHeldSecret(body)) {
     body = `${marker}\n\nThe review was not posted: its text contained a key or token, so nothing from it is safe to show here. Krish, tag again once the diff no longer asks the reviewer to quote one.`;
@@ -1189,6 +1268,7 @@ function postComment(repo, number, body) {
     input: body,
     stdio: ['pipe', 'inherit', 'inherit'],
   });
+  try { writeFileSync(commentedPath(), '1'); } catch { /* the comment itself was posted */ }
 }
 
 // The gate checks CI against head_sha before waiting up to 2 minutes for Instabox (and potentially longer in queue).
@@ -1288,12 +1368,28 @@ function postRefusal(repo, number, details) {
   try {
     postComment(repo, number, details.noRoom
       ? noRoomComment({ reasons: [details.reason], earliestResetMs: details.resetsAt ?? null, now: details.now })
-      : refusalComment(details));
+      : details.failure ? failureComment(details) : refusalComment(details));
     return true;
   } catch (error) {
-    console.error(`could not post the refusal comment: ${failureSummary({ stderr: error?.message || String(error) })}`);
+    console.error(`could not post the comment: ${failureSummary({ stderr: error?.message || String(error) })}`);
     return false;
   }
+}
+
+// The pull request a stopped run belongs to: the number the review was asked for, or the one the gate found. Both are
+// read here rather than passed in, because this runs from the outermost guard, where nothing else is still in scope.
+function stopTarget(argv = process.argv.slice(2)) {
+  const [role, numberText] = argv;
+  const number = Number(role === 'pick' || role === 'stop' ? process.env.REVIEW_NUMBER : numberText);
+  return { repo: process.env.GITHUB_REPOSITORY || 'Flame119052/tess-music', number };
+}
+
+// Every failure after the gate posts a marker comment, because the agent that tagged is waiting for a review and a job
+// that stops without a word looks like the request was dropped. The reason is one redacted line: a CLI's stderr can hold
+// a key, and both the log and the pull request are public.
+function postStop(reason) {
+  const { repo, number } = stopTarget();
+  return postRefusal(repo, number, { reason: failureSummary({ stderr: reason }), failure: true, now: Date.now() });
 }
 
 async function main() {
@@ -1317,6 +1413,22 @@ async function main() {
     const facts = headFacts(pull, repo);
     if (facts.problem) console.error(`refused: ${facts.problem}`);
     process.stdout.write(headAnswer(facts));
+    return;
+  }
+  if (role === 'stop') {
+    // The workflow's last step, run only when the job has already failed: it covers what this script cannot see, such as
+    // installing the CLI. The reason is a step description the workflow writes, never a log line, and this step holds
+    // only the job's own token. It exits non-zero so the job's failure stays visible in Actions.
+    const why = process.argv[3] || 'the job failed';
+    // The step that failed may have posted its own comment before it stopped; one failure gets one comment.
+    if (existsSync(commentedPath())) {
+      console.error('a comment was already posted for this failure; nothing to add');
+      process.exitCode = 1;
+      return;
+    }
+    const printed = postStop(why);
+    console.error(`review stopped: ${failureSummary({ stderr: why })}${printed ? '' : ' (the comment could not be posted)'}`);
+    process.exitCode = 1;
     return;
   }
   if (role === 'pick') {
@@ -1346,7 +1458,10 @@ async function main() {
       : undefined;
     const verdict = requestProblem(config, request, {
       tier,
-      author: pullRequestAuthor(repo, number),
+      author: request.author,
+      // Read only to catch a contradiction: this text is written by the author of the change under review, so it can
+      // add a refusal and never grant a review.
+      authorBody: pullRequestAuthor(repo, number),
       usage,
       // The login itself is not visible here: a step that holds no secret cannot read CODEX_AUTH_JSON. It is checked in
       // the review step, which does hold it, and a dead login is refused there with a comment (D-73).
@@ -1404,7 +1519,8 @@ async function main() {
   const refuseOnFailure = (error) => {
     const details = error?.refusal;
     if (!details) return error;
-    postRefusal(repo, number, { ...details, now: Date.now() });
+    // Marked so the outer guard does not post the same failure twice.
+    if (postRefusal(repo, number, { ...details, now: Date.now() })) error.refusalPosted = true;
     return error;
   };
 
@@ -1468,9 +1584,16 @@ async function main() {
   if (!requirePinned(`${tier} review`)) return;
   // The same hard rules the pick step applied, checked again against this run's own reading of authorship: the
   // environment is not a reason to skip a rule. A CLI that cannot install is caught by the workflow before this runs.
-  const author = authorProvider(facts()?.body || '');
+  // Authorship comes from the tag the gate accepted, never from the pull request text, which the author of the change
+  // writes; that text is read only so a contradiction can refuse.
+  const author = parseRequest(eventComment()).author;
   const requestVerdict = requestProblem(config, pinned, {
-    tier, author, caps, credential: credentialProblem(pinned.provider), now: Date.now(),
+    tier,
+    author,
+    authorBody: authorProvider(facts()?.body || ''),
+    caps,
+    credential: credentialProblem(pinned.provider),
+    now: Date.now(),
   });
   if (!requestVerdict.model) {
     postRefusal(repo, number, {
@@ -1517,5 +1640,14 @@ async function main() {
 }
 
 if (resolve(process.argv[1] || '') === fileURLToPath(import.meta.url)) {
-  await main();
+  try {
+    await main();
+  } catch (error) {
+    // Anything after the gate that stops the run — a GitHub read, the git fetch, a review CLI, the proxy — owes the pull
+    // request a comment. A refusal already posted is marked, and any comment at all leaves a marker, so one run never
+    // leaves two comments saying the same thing.
+    if (!error?.refusalPosted && !existsSync(commentedPath())) postStop(error?.message || String(error));
+    console.error(`review stopped: ${failureSummary({ stderr: error?.message || String(error) })}`);
+    process.exitCode = 1;
+  }
 }

@@ -17,4 +17,5 @@ Closes #
 - [ ] docs/status.md updated if something user-visible changed state
 
 ## Made by
-<!-- Who wrote this: a person, or the agent's model and harness, e.g. "DeepSeek V4.1 Flash in OpenCode". The reviewer must come from a different provider. -->
+<!-- Who wrote this: a person, or the agent's model and harness, e.g. "DeepSeek V4.1 Flash in OpenCode". The reviewer must
+     come from a different provider, and the tagging agent states that provider as `author=` in the review tag. -->

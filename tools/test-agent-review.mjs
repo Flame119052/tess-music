@@ -19,6 +19,7 @@ import {
   capsFor,
   containsHeldSecret,
   eligibleModels,
+  failureComment,
   failureSummary,
   formatUtcTime,
   formatRelativeTime,
@@ -47,6 +48,7 @@ import {
   reservationEnd,
   requestProblem,
   refusalComment,
+  authorChoices,
   authorProvider,
   codexAuth,
   credentialProblem,
@@ -368,13 +370,13 @@ test('unknown usage is eligible and any exhausted window blocks a provider', () 
 
 test('a tag names the reviewer, and only a hard rule can refuse it', () => {
   const now = Date.parse('2026-11-15T06:30:00Z');
-  const honoured = requestProblem(config, { provider: 'codex', model: 'gpt-6.1-terra', effort: 'high' }, { now });
+  const honoured = requestProblem(config, { provider: 'codex', model: 'gpt-6.1-terra', effort: 'high' }, { author: 'opencode', now });
   assert.deepEqual(honoured.model, { provider: 'codex', model: 'gpt-6.1-terra', effort: 'high' }, 'the job runs what the tag named');
 
   // A sensitive change needs a strong model, and GLM-5.3 on the Z.ai plan is one: this is the case that used to be
   // blocked by Claude and Codex being short of room.
-  assert.match(requestProblem(config, { provider: 'claude', model: 'claude-sonnet-5-5' }, { tier: 'sensitive' }).reason, /strong model/);
-  assert.ok(requestProblem(config, { provider: 'opencode', model: 'zai-coding-plan/glm-5.3' }, { tier: 'sensitive' }).model);
+  assert.match(requestProblem(config, { provider: 'claude', model: 'claude-sonnet-5-5' }, { tier: 'sensitive', author: 'codex' }).reason, /strong model/);
+  assert.ok(requestProblem(config, { provider: 'opencode', model: 'zai-coding-plan/glm-5.3' }, { tier: 'sensitive', author: 'codex' }).model);
 
   // No model named: refused, because the job does not choose.
   assert.match(requestProblem(config, {}, {}).reason, /names no reviewer/);
@@ -398,12 +400,14 @@ test('a tag names the reviewer, and only a hard rule can refuse it', () => {
   // A window with nothing left, and a reserved one, are refusals that carry the moment there is room again.
   const empty = requestProblem(config, { provider: 'codex', model: 'gpt-6.1-sol' }, {
     now,
+    author: 'opencode',
     usage: { windows: [{ kind: 'weekly', usedPercent: 100, resetsAt: '2026-11-16T09:00:00Z' }] },
   });
   assert.match(empty.reason, /no usage left/);
   assert.equal(empty.resetsAt, Date.parse('2026-11-16T09:00:00Z'));
   const reserved = requestProblem(config, { provider: 'claude', model: 'claude-opus-5-5' }, {
     now,
+    author: 'opencode',
     reserve: { weekly: 30, note: "Krish's own work" },
     usage: { windows: [{ kind: 'weekly', usedPercent: 85, resetsAt: '2026-11-17T09:00:00Z' }] },
   });
@@ -479,13 +483,67 @@ test('a no-room comment names the reset time in UTC and in plain time', () => {
   assert.match(noRoomComment({ reasons: [], now }), /Tag again once a reviewer has usage available\./);
 });
 
-test('the author is read from the pull request. and the same provider is skipped', () => {
+test('the author is read from every authorship shape this repository really uses', () => {
+  // The one-line form the docs and most PRs use, plain and bold.
   assert.equal(authorProvider('Made by: DeepSeek V4.1 Flash in OpenCode\n\nbody'), 'opencode');
-  assert.equal(authorProvider('Made by: Claude Opus 5.5'), 'claude');
-  assert.equal(authorProvider('Made by: Codex gpt-6.1-terra'), 'codex');
+  assert.equal(authorProvider('**Made by:** Claude Opus 5.5'), 'claude');
+  assert.equal(authorProvider('- Made by: Codex gpt-6.1-terra'), 'codex');
   assert.equal(authorProvider('Made by: Gemini 4 in Antigravity'), 'antigravity');
-  assert.equal(authorProvider('no line at all'), '');
-  assert.equal(authorProvider(''), '');
+  // The template's `## Made by` heading with the sentence under it, which is what this repository's own PRs use.
+  assert.equal(authorProvider('## Made by\n\nDeepSeek V4.1 Flash in OpenCode\n'), 'opencode');
+  assert.equal(authorProvider('### Made by\nCodex gpt-6.1-sol'), 'codex');
+  assert.equal(authorProvider('## Made by\r\n\r\nClaude Opus 5.5 in Claude Code\r\n'), 'claude');
+  // The section ends at the next heading, so a later mention of another agent is not read as the author.
+  assert.equal(authorProvider('## Made by\n\nDeepSeek V4.1 Flash in OpenCode\n\n## Checklist\nCodex reviewed it'), 'opencode');
+  // The real template: its `## Made by` hint is an HTML comment, which is instruction rather than an author, and the
+  // section is empty until somebody fills it in.
+  const template = readFileSync(new URL('../.github/PULL_REQUEST_TEMPLATE.md', import.meta.url), 'utf8');
+  assert.equal(authorProvider(template), '', 'an unfilled template names no author');
+  assert.equal(authorProvider(`${template}\nDeepSeek V4.1 Flash in OpenCode\n`), 'opencode', 'a filled one does');
+  // Nothing to read: no marker, an empty marker, a sentence naming nobody, or one naming two providers. A reviewer the
+  // text cannot name is never a reason to allow anything (see the guard test below).
+  for (const body of ['no line at all', '', '## Made by\n\n', 'Made by:', 'Made by: someone', 'Made by: Claude Opus in OpenCode']) {
+    assert.equal(authorProvider(body), '', JSON.stringify(body));
+  }
+});
+
+test('the different-provider rule is a guard: only the tag attests the author, and text can only refuse', () => {
+  const now = Date.parse('2026-11-15T06:30:00Z');
+  const deepseek = { provider: 'opencode', model: 'opencode-go/deepseek-v4.1-flash' };
+  const terra = { provider: 'codex', model: 'gpt-6.1-terra' };
+  const reason = (request, context) => requestProblem(config, request, { now, ...context }).reason || '';
+  const runs = (request, context) => Boolean(requestProblem(config, request, { now, ...context }).model);
+
+  // The tag is the trusted metadata; a tag that does not attest the author is refused, however clear the PR body is.
+  assert.match(reason(deepseek, {}), /author=/);
+  assert.match(reason(deepseek, { authorBody: 'opencode' }), /author=/);
+  assert.match(reason(deepseek, { author: 'claud' }), /not one of/);
+
+  // This PR's own shape — `## Made by` and then the sentence — is read now, so the case the review reproduced is refused.
+  const headingBody = '## Made by\n\nDeepSeek V4.1 Flash in OpenCode\n\n## Checklist\n- [x] check-safety';
+  assert.equal(authorProvider(headingBody), 'opencode');
+  assert.match(reason(deepseek, { author: 'opencode', authorBody: authorProvider(headingBody) }), /same provider/);
+
+  // A different provider runs, and the author's own provider never does, whichever way round it is.
+  assert.ok(runs(deepseek, { author: 'codex' }));
+  assert.ok(runs(terra, { author: 'opencode' }));
+  assert.match(reason(terra, { author: 'codex' }), /same provider/);
+  // A person wrote the change: no provider shares its blind spots.
+  assert.ok(runs(deepseek, { author: 'none' }));
+
+  // The pull request text can only ever add a refusal: a body that disagrees with the tag is refused, while a body that
+  // agrees, says nothing, or names two providers changes nothing the tag already decided.
+  assert.match(reason(terra, { author: 'codex', authorBody: 'opencode' }), /disagree/);
+  assert.match(reason(terra, { author: 'opencode', authorBody: 'claude' }), /disagree/);
+  assert.ok(runs(terra, { author: 'opencode', authorBody: 'opencode' }));
+  assert.ok(runs(terra, { author: 'opencode', authorBody: '' }));
+  // An ambiguous body (two providers in one sentence) names no author, so it adds nothing either way.
+  assert.ok(runs(terra, { author: 'opencode', authorBody: authorProvider('Made by: Claude Opus in OpenCode') }));
+
+  // The words `author=` may take are a fixed list, because a typo (`author=claud`) would otherwise quietly allow the
+  // provider it was meant to exclude. The tag parser reads it like the other fields.
+  assert.deepEqual(authorChoices, ['claude', 'codex', 'opencode', 'antigravity', 'none']);
+  assert.equal(parseRequest('@tess-review pr provider=codex model=gpt-6.1-terra author=opencode').author, 'opencode');
 });
 
 test('review text that looks like a key or token is never posted', () => {
@@ -835,7 +893,7 @@ test('the freshest snapshot from any machine decides, and one older than half an
   // 5% left in a 5-hour window is fewer than three reviews for a 7%-a-review model, so the named model is refused and
   // the refusal carries the window that empties it.
   const sol = { provider: 'codex', model: 'gpt-6.1-sol' };
-  const refused = requestProblem(config, sol, { usage: snapshotUsage(fresh, sol), caps: capsFor(config), now });
+  const refused = requestProblem(config, sol, { usage: snapshotUsage(fresh, sol), caps: capsFor(config), author: 'opencode', now });
   assert.match(refused.reason, /fewer than 3 reviews left in its session window/);
 
   // A model the snapshot has room for runs, and the comment cites the machine and the age it read.
@@ -1047,6 +1105,7 @@ test('one bad window plus one good window ignores the snapshot for that provider
   const refused = requestProblem(config, codexModel, {
     usage: { windows: [{ kind: 'weekly', usedPercent: 100 }] },
     snapshot: codexOnlyPartial,
+    author: 'opencode',
     now,
   });
   assert.match(refused.reason, /no usage left in its weekly window/);
@@ -1794,6 +1853,7 @@ test('the pick step runs the model the tag named, and refuses anything the rules
   // the test can read exactly what a maintainer would see.
   writeFileSync(join(dir, 'gh'), `#!/bin/sh
 if [ "$1" = "api" ]; then
+  [ "$GH_API_FAIL" = "1" ] && exit 1
   printf '{"number":1,"title":"t","body":"%s","html_url":"https://example.invalid/1"}' "$GH_PR_BODY"
   exit 0
 fi
@@ -1834,7 +1894,7 @@ exit 99
 
   try {
     // The tag names the reviewer: that is the model the job installs and runs. Nothing else is consulted.
-    assert.equal(run(['pr', 'normal'], '@tess-review pr provider=codex model=gpt-6.1-terra effort=high'),
+    assert.equal(run(['pr', 'normal'], '@tess-review pr provider=codex model=gpt-6.1-terra effort=high author=opencode'),
       'provider=codex\nmodel=gpt-6.1-terra\neffort=high\nskipped=[]');
 
     // No model named: refused with a comment that says what to write. The job does not choose.
@@ -1854,15 +1914,45 @@ exit 99
     assert.match(weak.posted, /strong model/);
     assert.match(weak.posted, /zai-coding-plan\/glm-5\.3/);
 
-    // The author's own provider is refused, read from the pull request's "Made by:" line.
-    const sameAuthor = refuse(['pr', 'normal'], '@tess-review pr provider=opencode model=opencode-go/deepseek-v4.1-flash', {
+    // The author's own provider is refused, read from the tag's attestation and checked against the PR's Made by line.
+    const sameAuthor = refuse(['pr', 'normal'], '@tess-review pr provider=opencode model=opencode-go/deepseek-v4.1-flash author=opencode', {
       ...withNumber, GH_PR_BODY: 'Made by: DeepSeek V4.1 Flash in OpenCode',
     });
     assert.match(sameAuthor.posted, /same provider/);
 
+    // This PR's own authorship shape — the template's `## Made by` heading and the sentence under it — is the case that
+    // used to slip past an empty parse. It is refused now.
+    const heading = refuse(['pr', 'normal'], '@tess-review pr provider=opencode model=opencode-go/deepseek-v4.1-flash author=opencode', {
+      ...withNumber, GH_PR_BODY: '## Made by\\n\\nDeepSeek V4.1 Flash in OpenCode\\n\\n## Checklist\\n- [x] safety',
+    });
+    assert.match(heading.posted, /same provider/);
+
+    // A tag that does not attest the author is refused even when the PR body reads perfectly: the body is text its own
+    // author can edit, so it is never a permission.
+    const unattested = refuse(['pr', 'normal'], '@tess-review pr provider=codex model=gpt-6.1-terra', {
+      ...withNumber, GH_PR_BODY: 'Made by: DeepSeek V4.1 Flash in OpenCode',
+    });
+    assert.match(unattested.posted, /author=/);
+
+    // A body that disagrees with the tag stops the review: one of the two is wrong, so neither is trusted.
+    const disagree = refuse(['pr', 'normal'], '@tess-review pr provider=codex model=gpt-6.1-terra author=codex', {
+      ...withNumber, GH_PR_BODY: 'Made by: DeepSeek V4.1 Flash in OpenCode',
+    });
+    assert.match(disagree.posted, /disagree/);
+
+    // A GitHub read that fails leaves no body to check. That never relaxes the rule: the same-provider tag is still
+    // refused, and a tag naming a different provider still runs.
+    const fetchFailedSame = refuse(['pr', 'normal'], '@tess-review pr provider=opencode model=opencode-go/deepseek-v4.1-flash author=opencode', {
+      ...withNumber, GH_API_FAIL: '1',
+    });
+    assert.match(fetchFailedSame.posted, /same provider/);
+    assert.equal(run(['pr', 'normal'], '@tess-review pr provider=codex model=gpt-6.1-terra author=opencode', {
+      ...withNumber, GH_API_FAIL: '1',
+    }), 'provider=codex\nmodel=gpt-6.1-terra\neffort=\nskipped=[]');
+
     // A window with nothing left refuses, and the comment says when it resets.
     rmSync(comments, { force: true });
-    const empty = refuse(['pr', 'normal'], '@tess-review pr provider=codex model=gpt-6.1-terra', {
+    const empty = refuse(['pr', 'normal'], '@tess-review pr provider=codex model=gpt-6.1-terra author=opencode', {
       ...withNumber, USAGE_SNAPSHOT_MAC: snapshot('codex'),
     });
     assert.match(empty.posted, /no usage left in its weekly window/);
@@ -1872,7 +1962,7 @@ exit 99
 
     // A sensitive review on GLM-5.3 through the Z.ai plan is the case that used to be blocked by Claude and Codex
     // being short of room.
-    const glm = run(['approach', 'sensitive'], '@tess-review approach provider=opencode model=zai-coding-plan/glm-5.3 effort=high', {
+    const glm = run(['approach', 'sensitive'], '@tess-review approach provider=opencode model=zai-coding-plan/glm-5.3 effort=high author=codex', {
       ...withNumber, GH_PR_BODY: 'Made by: Codex gpt-6.1-terra',
     });
     assert.match(glm, /^provider=opencode\nmodel=zai-coding-plan\/glm-5\.3/);
@@ -2235,4 +2325,193 @@ test('a held key is caught split, encoded or wrapped, and a failed reviewer neve
   assert.ok(!thrown.message.includes(key), thrown.message);
   assert.ok(!thrown.message.includes('SECRET REVIEW TEXT'), thrown.message);
   assert.match(thrown.message, /auth failed for/, 'the one line that helps is kept');
+});
+
+test('a CLI or proxy that fails unexpectedly is still a refusal a comment can carry', () => {
+  const key = `sk-live-${'Qw7'.repeat(10)}`;
+  const env = { GH_TOKEN: key, HOME: '/home/r' };
+  const codexModel = { provider: 'codex', model: 'gpt-6.1-sol' };
+  const attempt = (invoke) => {
+    try {
+      runReviewer([codexModel], 'p', '/w', {
+        usageFor: () => undefined,
+        commandAvailable: () => true,
+        sandbox: () => null,
+        caps: capsFor(config),
+        invoke,
+        env,
+      });
+      return null;
+    } catch (error) {
+      return error;
+    }
+  };
+
+  // Exit 1 with a message that is not a cap, a usage limit or a bad flag: before, this was a bare Error, so the caller
+  // posted nothing and the agent that tagged waited for a review that never came.
+  const exited = attempt(() => ({ status: 1, stderr: 'unexpected backend failure' }));
+  assert.ok(exited.refusal, 'a real failure carries a refusal, so the caller posts it');
+  assert.equal(exited.refusal.failure, true);
+  assert.equal(exited.refusal.provider, 'codex');
+  assert.equal(exited.refusal.model, 'gpt-6.1-sol');
+  assert.match(exited.refusal.reason, /unexpected backend failure/);
+
+  // The proxy is started inside the same call and can throw before any CLI runs (no address, no start). That is the same
+  // refusal rather than an unlabelled crash.
+  const proxy = attempt(() => { throw new Error('the codex review proxy did not start'); });
+  assert.ok(proxy.refusal, 'a proxy that cannot start is a refusal too');
+  assert.equal(proxy.refusal.failure, true);
+  assert.match(proxy.refusal.reason, /proxy did not start/);
+  // An invoke that returns nothing at all is a failure, not a crash on `result.timedOut`.
+  const empty = attempt(() => undefined);
+  assert.ok(empty.refusal);
+
+  // No secret reaches the comment: the one stderr line is redacted exactly as the log line is.
+  const leaky = attempt(() => ({ status: 2, stderr: `auth failed for ${key}` }));
+  assert.ok(leaky.refusal);
+  assert.ok(!leaky.refusal.reason.includes(key), 'a held key never reaches the refusal reason');
+  assert.match(leaky.refusal.reason, /\[redacted\]/);
+});
+
+test('a stopped review leaves one marker comment that says what failed', () => {
+  const body = failureComment({ reason: 'codex/gpt-6.1-sol could not review: unexpected backend failure' });
+  assert.ok(body.startsWith('<!-- tess-review-bot -->'), 'the marker keeps it from triggering another review');
+  assert.match(body, /stopped before it posted a verdict/);
+  assert.match(body, /Why: codex\/gpt-6\.1-sol could not review: unexpected backend failure\./);
+  assert.match(body, /Nothing was substituted/);
+  assert.ok(!/Verdict:/.test(body), 'a failure is not a verdict about the change');
+});
+
+test('a run that fails after the gate posts the stop comment and exits non-zero', () => {
+  const dir = temp();
+  const scriptPath = fileURLToPath(new URL('./agent-review.mjs', import.meta.url));
+  const comments = join(dir, 'comments.log');
+  // Every GitHub call fails: the run dies inside the script, where only a guard can post anything.
+  writeFileSync(join(dir, 'gh'), `#!/bin/sh
+if [ "$1" = "api" ]; then exit 1; fi
+if [ "$1" = "issue" ] && [ "$2" = "comment" ]; then
+  cat >> "$GH_COMMENT_LOG"
+  printf '\\n---\\n' >> "$GH_COMMENT_LOG"
+  exit 0
+fi
+exit 99
+`);
+  chmodSync(join(dir, 'gh'), 0o755);
+  const env = {
+    ...process.env,
+    HOME: dir,
+    PATH: `${dir}:${process.env.PATH}`,
+    GITHUB_REPOSITORY: 'Flame119052/tess-music',
+    GH_TOKEN: 'x',
+    GH_COMMENT_LOG: comments,
+  };
+  const failed = (args, extra = {}) => {
+    let error;
+    try {
+      execFileSync(process.execPath, [scriptPath, ...args], { encoding: 'utf8', stdio: 'pipe', env: { ...env, ...extra } });
+    } catch (thrown) {
+      error = thrown;
+    }
+    assert.ok(error, `${args.join(' ')} still fails`);
+    assert.equal(error.status, 1, `${args.join(' ')} exits non-zero`);
+    return existsSync(comments) ? readFileSync(comments, 'utf8') : '';
+  };
+
+  try {
+    // An unexpected crash in the review itself: the top-level guard turns it into the marker comment.
+    const crashed = failed(['pr', '101'], { RUNNER_TEMP: join(dir, 'runner-temp-pr') });
+    assert.match(crashed, /<!-- tess-review-bot -->/);
+    assert.match(crashed, /stopped before it posted a verdict/);
+    assert.match(crashed, /Why: /);
+
+    // The workflow's own failure step, which covers everything the script cannot: one command, no provider secret.
+    rmSync(comments, { force: true });
+    const runnerTemp = join(dir, 'runner-temp');
+    mkdirSync(runnerTemp, { recursive: true });
+    const stopped = failed(['stop', "installing the reviewer's CLI failed"], { REVIEW_NUMBER: '101', RUNNER_TEMP: runnerTemp });
+    assert.match(stopped, /<!-- tess-review-bot -->/);
+    assert.match(stopped, /stopped before it posted a verdict/);
+    assert.match(stopped, /Why: installing the reviewer's CLI failed/);
+
+    // One failure, one comment: a step that already posted one leaves a marker, and the failure step then says nothing.
+    rmSync(comments, { force: true });
+    failed(['stop', 'a second failure in the same job'], { REVIEW_NUMBER: '101', RUNNER_TEMP: runnerTemp });
+    assert.equal(existsSync(comments), false, 'the same failure is not commented twice');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the review step checks the tag\'s author too, and a missing attestation is refused there as well', () => {
+  const dir = temp();
+  const scriptPath = fileURLToPath(new URL('./agent-review.mjs', import.meta.url));
+  const commentOut = join(dir, 'comment');
+  const event = join(dir, 'event.json');
+  writeFileSync(join(dir, 'git'), `#!/bin/sh
+case "$*" in
+  *" rev-parse FETCH_HEAD"*) printf 'cafebabe\\n' ;;
+  *) exit 0 ;;
+esac
+`);
+  writeFileSync(join(dir, 'gh'), `#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "repos/Flame119052/tess-music/issues/101" ]; then
+  printf '{"number":101,"title":"t","html_url":"https://example.invalid/101","body":""}'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "repos/Flame119052/tess-music/pulls/101/files" ]; then
+  printf 'tools/agent-review.mjs\\n'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "repos/Flame119052/tess-music/pulls/101" ]; then
+  printf '{"number":101,"title":"t","body":"## Made by\\\\n\\\\nDeepSeek V4.1 Flash in OpenCode","head":{"sha":"cafebabe","repo":{"full_name":"Flame119052/tess-music","fork":false}}}'
+  exit 0
+fi
+if [ "$1" = "issue" ] && [ "$2" = "comment" ]; then
+  cat > '${commentOut}'
+  exit 0
+fi
+exit 99
+`);
+  chmodSync(join(dir, 'git'), 0o755);
+  chmodSync(join(dir, 'gh'), 0o755);
+  const run = (tag) => {
+    writeFileSync(event, JSON.stringify({ comment: { body: tag } }));
+    rmSync(commentOut, { force: true });
+    execFileSync(process.execPath, [scriptPath, 'pr', '101'], {
+      env: {
+        ...process.env,
+        HOME: dir,
+        PATH: `${dir}:${process.env.PATH}`,
+        GITHUB_REPOSITORY: 'Flame119052/tess-music',
+        GITHUB_EVENT_PATH: event,
+        REVIEW_HEAD_SHA: 'cafebabe',
+        REVIEW_PROVIDER: 'opencode',
+        REVIEW_MODEL: 'opencode-go/deepseek-v4.1-flash',
+        GH_TOKEN: 'x',
+      },
+      stdio: 'pipe',
+    });
+    return existsSync(commentOut) ? readFileSync(commentOut, 'utf8') : '';
+  };
+
+  try {
+    // The second door reads the same tag the pick step did: a tag without `author=` is refused here too, and the refusal
+    // names the field that is missing.
+    assert.match(run('@tess-review pr provider=opencode model=opencode-go/deepseek-v4.1-flash'), /author=/);
+    // And the tag's own author, checked against the PR's Made by line, refuses this provider.
+    assert.match(run('@tess-review pr provider=opencode model=opencode-go/deepseek-v4.1-flash author=opencode'), /same provider/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the review workflow has a failure step that comments, and it holds no provider secret', () => {
+  const review = jobBlock('review');
+  const step = stepBlock(review, 'Comment when the review stops short');
+  assert.match(step, /if: failure\(\)/, 'it runs only when an earlier step failed');
+  assert.match(step, /GH_TOKEN: \$\{\{ github\.token \}\}/, 'the job token, nothing more');
+  assert.match(step, /agent-review\.mjs stop/, 'the tested script posts the comment');
+  for (const names of Object.values(providerKeys)) {
+    for (const name of names) assert.ok(!step.includes(name), `${name} is never on the failure step`);
+  }
 });
