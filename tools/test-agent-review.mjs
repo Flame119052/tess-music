@@ -371,7 +371,7 @@ test('every reviewer runs inside bubblewrap with only the copy and its own confi
     ['--ro-bind', '--bind'].includes(arg) ? [{ mode: arg, from: args[index + 1], to: args[index + 2] }] : []);
   const work = '/scratch/tess-review-abc';
   const home = '/home/tess-runner';
-  const options = { home, exists: () => true, commandPath: '/usr/local/bin/codex' };
+  const options = { home, exists: () => true, commandPath: `${home}/.local/bin/codex`, nodePath: `${home}/.local/bin/node` };
 
   for (const provider of ['claude', 'codex', 'cursor', 'opencode']) {
     const sandbox = sandboxArgv(provider, work, ['--help'], options);
@@ -387,8 +387,8 @@ test('every reviewer runs inside bubblewrap with only the copy and its own confi
     assert.equal(sandbox.args[sandbox.args.indexOf(sandboxHome) - 1], '--tmpfs', `${provider}: a throwaway HOME`);
     assert.equal(sandbox.home, sandboxHome);
     // the binary is bound and started by its own path, because the job's PATH points at folders the sandbox does not have
-    assert.ok(binds(sandbox.args).some((bind) => bind.from === '/usr/local/bin/codex'), `${provider}: the CLI is bound`);
-    assert.equal(sandbox.args.at(-2), '/usr/local/bin/codex', `${provider}: the CLI is started by absolute path`);
+    assert.ok(binds(sandbox.args).some((bind) => bind.from === `${home}/.local/bin`), `${provider}: the CLI is bound`);
+    assert.equal(sandbox.args.at(-2), `${home}/.local/bin/codex`, `${provider}: the CLI is started by absolute path`);
     assert.ok(!sandbox.args.some((arg) => String(arg).includes('actions-runner')), `${provider}: the runner is not visible`);
     assert.ok(!sandbox.args.some((arg) => String(arg).includes('tess-signing')), `${provider}: the signing keys are not visible`);
   }
@@ -558,4 +558,29 @@ test('the config is the one place the changeable facts live', () => {
   const setup = readFileSync(new URL('./runner-setup.md', import.meta.url), 'utf8');
   assert.match(setup, /bubblewrap/, 'the runner setup asks for bubblewrap');
   assert.match(setup, /user namespaces/i, 'and shows how to check user namespaces');
+});
+
+test("an npm-installed CLI starts: its package folder and its own Node are bound", () => {
+  const dir = temp();
+  try {
+    const pkg = join(dir, 'node_modules', '@openai', 'codex');
+    const bin = join(pkg, 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'codex.js'), '#!/usr/bin/env node\n// entry point\n');
+    const nodeDir = join(dir, 'node');
+    mkdirSync(nodeDir, { recursive: true });
+    writeFileSync(join(nodeDir, 'node'), 'x');
+
+    const sandbox = sandboxArgv('codex', '/work', ['exec', '-'], {
+      home: '/home/r', commandPath: join(bin, 'codex.js'), nodePath: join(nodeDir, 'node'),
+    });
+    const binds = sandbox.args.flatMap((arg, index) =>
+      arg === '--ro-bind' ? [sandbox.args[index + 1]] : []);
+    assert.ok(binds.includes(pkg), 'the whole package is bound, not just its entry file');
+    assert.ok(binds.includes(nodeDir), "the CLI's own Node is bound, even outside /usr");
+    assert.ok(sandbox.path.startsWith(`${nodeDir}:`), 'and that Node leads PATH, because the entry asks for `node`');
+    assert.equal(sandbox.args.at(-3), join(bin, 'codex.js'), 'the entry point is still started by absolute path');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

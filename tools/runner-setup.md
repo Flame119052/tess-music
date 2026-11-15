@@ -139,7 +139,8 @@ If the last line fails with a namespace error, the kernel setting is off or the 
 Fixing it needs root, so the machine's owner does it; until then that machine only reviews with a provider that can run.
 Each sandbox gets the review copy, the CLI and its runtime, and that provider's own config folder, all read-only, plus a
 throwaway `HOME`, the network for the API call, and only its own key in the environment. `~/actions-runner`, the job's
-environment, and other providers' folders are not in it.
+environment, and other providers' folders are not in it. A Node-based CLI also gets its own `node` folder when Node was
+installed per user (nvm, for example), so an npm install works without exposing the rest of the home folder.
 
 ## Adding another reviewer provider to a runner
 

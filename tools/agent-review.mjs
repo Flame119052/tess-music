@@ -4,7 +4,7 @@
 // .github/agents.json `allowed` are accepted; sensitive work must use a `strong` model. Anything else falls back to
 // the role's defaults, and the comment says why.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -285,6 +285,28 @@ function commandLocation(command) {
   try { return realpathSync(path); } catch { return path; }
 }
 
+// An installed CLI may be one binary, or a script in an npm package that loads the rest of its folder. Binding the
+// package root is what lets it start without handing the sandbox the runner's whole home.
+export function installRoot(commandPath) {
+  const parts = commandPath.split('/');
+  const at = parts.lastIndexOf('node_modules');
+  if (at < 0) return dirname(commandPath);
+  const name = parts[at + 1]?.startsWith('@') ? 2 : 1;
+  return parts.slice(0, at + 1 + name).join('/');
+}
+
+function firstLine(path) {
+  try {
+    const fd = openSync(path, 'r');
+    const buffer = Buffer.alloc(128);
+    const read = readSync(fd, buffer, 0, buffer.length, 0);
+    closeSync(fd);
+    return buffer.subarray(0, read).toString('utf8').split('\n')[0];
+  } catch {
+    return '';
+  }
+}
+
 // The argv handed to `bwrap`. `work` is the snapshot: the only folder from the job a reviewer can read, and the only
 // place the change is visible from. The rest is the minimum to start a process and reach the provider's API.
 export function sandboxArgv(provider, work, cli, options = {}) {
@@ -292,6 +314,7 @@ export function sandboxArgv(provider, work, cli, options = {}) {
     home = homedir(),
     exists = existsSync,
     commandPath = commandLocation(providerDetails[provider]?.command || ''),
+    nodePath = commandLocation('node'),
   } = options;
   const args = ['--die-with-parent', '--unshare-all', '--share-net', '--new-session', '--proc', '/proc', '--dev', '/dev',
     '--tmpfs', '/tmp', '--tmpfs', '/home'];
@@ -300,18 +323,31 @@ export function sandboxArgv(provider, work, cli, options = {}) {
     const path = join(home, dir);
     if (exists(path)) args.push('--ro-bind', path, path);
   }
+  const bound = new Set();
+  const bindDir = (path) => {
+    if (!path || bound.has(path)) return;
+    if (sandboxRuntime.some((runtime) => path === runtime || path.startsWith(`${runtime}/`))) return;
+    args.push('--ro-bind', path, path);
+    bound.add(path);
+  };
+  let nodeDir = null;
   if (commandPath && exists(commandPath)) {
-    args.push('--ro-bind', commandPath, commandPath);
-    // Node-based CLIs load files next to their entry point, so the folder goes in too when it is not already part of the
-    // runtime (/usr, /lib*). It holds no secret: it is the same bin folder the runner's PATH already points at.
-    const dir = dirname(commandPath);
-    if (!sandboxRuntime.some((runtime) => dir === runtime || dir.startsWith(`${runtime}/`))) {
-      args.push('--ro-bind', dir, dir);
+    bindDir(installRoot(commandPath));
+    // A Node CLI's first line asks for `node`, which may live outside /usr (nvm, for example). Its folder goes in and
+    // leads PATH, so such a copy starts even when Node was installed per user.
+    if (nodePath && exists(nodePath) && /^#!.*\bnode\b/.test(firstLine(commandPath))) {
+      nodeDir = dirname(nodePath);
+      bindDir(nodeDir);
     }
   }
   args.push('--ro-bind', work, work, '--chdir', work, '--tmpfs', sandboxHome, '--',
     commandPath || providerDetails[provider].command, ...cli);
-  return { command: 'bwrap', args, home: sandboxHome };
+  return {
+    command: 'bwrap',
+    args,
+    home: sandboxHome,
+    path: [...new Set([nodeDir, ...bound, '/usr/local/bin', '/usr/bin', '/bin'].filter(Boolean))].join(':'),
+  };
 }
 
 // `--unshare-all` needs unprivileged user namespaces. The probe runs the real thing, because bubblewrap installed with
@@ -385,7 +421,7 @@ function cliInvocation(provider, model, prompt, effort, work = root, options = {
       ...reviewerEnv(process.env, provider),
       HOME: sandbox.home,
       TMPDIR: '/tmp',
-      PATH: '/usr/local/bin:/usr/bin:/bin',
+      PATH: sandbox.path,
     },
     input: provider === 'cursor' ? undefined : prompt,
     encoding: 'utf8',
