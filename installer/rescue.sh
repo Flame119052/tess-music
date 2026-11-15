@@ -132,6 +132,43 @@ case $action in
   uninstall)       cmd=(/bin/sh "$T/uninstall.sh") ;;
   *) log "rescue order $serial asks for '$action', which isn't one of Tess's rescue actions; refused"; exit 0 ;;
 esac
+# One action, under the order's limit, in a process group of its own.
+# Killing just the action's shell leaves its children behind: the patcher, ditto and curl are children, `check`, `update`,
+# `repair` and `uninstall` all start that way, and the rescue plist sets AbandonProcessGroup, so launchd would not reap what
+# the kill left either. The log could then say the order had stopped while the patcher was still changing Spotify, and the
+# next updater or rescue run could overlap that writer. So the action gets its own process group and the limit stops the
+# whole group: TERM, a grace period, then KILL. The group is a separate one from the rescue script's own, or the stop would
+# kill this script too. `/bin/sh` turns job control on for the action because zsh refuses `set -m` in a script.
+# Stop file: absent when the action finished on its own; "term" when the group went away on TERM, "kill" when it needed
+# KILL, and "lingering" when something in it would not exit even then, so the log can say exactly what happened.
+run_bounded() {  # <seconds> <log> <rc file> <stop file> <command...>
+  _secs=$1 _log=$2 _rcf=$3 _stopf=$4; shift 4
+  /bin/sh -c '
+    log=$1 secs=$2 rcf=$3 stopf=$4; shift 4
+    set -m
+    # stdin is /dev/null for the action, as it was for a background job before: one that reads must not be stopped (SIGTTIN)
+    "$@" >> "$log" 2>&1 < /dev/null &
+    pid=$!
+    waited=0
+    while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt "$secs" ]; do sleep 1; waited=$((waited + 1)); done
+    # finished on its own: nothing to stop, and the code written down is the one the action exited with
+    if ! kill -0 "$pid" 2>/dev/null; then wait "$pid"; echo $? > "$rcf"; exit 0; fi
+    kill -TERM -- "-$pid" 2>/dev/null
+    stop=term; n=0
+    while kill -0 -- "-$pid" 2>/dev/null; do
+      if [ "$n" -ge 10 ]; then stop=kill; kill -KILL -- "-$pid" 2>/dev/null; break; fi
+      sleep 1; n=$((n + 1))
+    done
+    # KILL is final, but a process stuck in the kernel can still show for a moment; the log has to say so if it does
+    if [ "$stop" = kill ]; then
+      n=0
+      while kill -0 -- "-$pid" 2>/dev/null && [ "$n" -lt 5 ]; do sleep 1; n=$((n + 1)); done
+      kill -0 -- "-$pid" 2>/dev/null && stop=lingering
+    fi
+    echo "$stop" > "$stopf"
+    wait "$pid"; echo $? > "$rcf"
+  ' _ "$_log" "$_secs" "$_rcf" "$_stopf" "$@" 2>/dev/null
+}
 log "running rescue order $serial: $action (from $got, up to ${timeout}s)"
 # Only the lines this order writes are reported, so note where the log ends now, before anything has run.
 offset=$(wc -c < "$LOG" 2>/dev/null || echo 0)
@@ -139,20 +176,13 @@ offset=$(wc -c < "$LOG" 2>/dev/null || echo 0)
 if [ -n "$TESS_TEST" ] && [ -z "$TESS_TEST_RUN" ]; then
   echo "test: would run ${cmd[*]}" >> "$LOG"; rc=0
 else
-  started=$(date +%s)
-  "${cmd[@]}" >> "$LOG" 2>&1 &
-  pid=$!
-  # The limit is enforced by a short poll rather than one long sleep, so nothing of this order is still running after it
-  # has finished. The stop is logged here rather than in the poll, because the poll is killed the moment the action dies.
-  (
-    waited=0
-    while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt "$timeout" ]; do sleep 1; waited=$((waited + 1)); done
-    kill "$pid" 2>/dev/null
-  ) &
-  watchdog=$!
-  wait "$pid"; rc=$?
-  kill "$watchdog" 2>/dev/null
-  if [ $(( $(date +%s) - started )) -ge "$timeout" ]; then log "rescue order $serial ran past ${timeout}s; stopped it"; fi
+  # This returns only once the action and everything it started are gone, so the lines below never describe a running order
+  run_bounded "$timeout" "$LOG" "$TMP/rc" "$TMP/stopped" "${cmd[@]}"
+  rc=$(cat "$TMP/rc" 2>/dev/null); rc=${rc:-1}
+  case "$(cat "$TMP/stopped" 2>/dev/null)" in
+    term|kill) log "rescue order $serial ran past ${timeout}s; stopped it" ;;
+    lingering) log "rescue order $serial ran past ${timeout}s; stopped it, but a process would not exit" ;;
+  esac
 fi
 log "rescue order $serial finished (exit $rc)"
 # tell the inbox it ran, unless reports are off. Only this order's own lines, through the one privacy filter, and only
