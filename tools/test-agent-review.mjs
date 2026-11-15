@@ -1703,13 +1703,13 @@ test('a requested reviewer that cannot run is refused by name, never replaced', 
   assert.match(capped.reason, /hit its cap/);
 });
 
-test('a provider on pace to run out before its reset is skipped, even with plenty left', () => {
+test('pace alone never blocks a review: the tagging agent weighs it, the job only enforces hard limits', () => {
   const now = Date.parse('2026-11-15T03:00:00Z');
   // Claude on the morning of 15 Nov: 84% of a week gone, 2.6 days to go. Session-only reading would have spent it dry.
-  assert.match(usageProblem({ windows: [
+  assert.equal(usageProblem({ windows: [
     { kind: 'session', usedPercent: 47, windowDurationMins: 300, resetsAt: '2026-11-15T07:50:00Z' },
     { kind: 'weekly', usedPercent: 84, windowDurationMins: 10080, resetsAt: '2026-11-17T18:00:00Z' },
-  ] }, now), /on pace to run out before its weekly reset/);
+  ] }, now), null);
   // the same provider just after its weekly reset is fine again
   assert.equal(usageProblem({ windows: [
     { kind: 'weekly', usedPercent: 0, windowDurationMins: 10080, resetsAt: '2026-11-22T18:00:00Z' },

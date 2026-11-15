@@ -166,11 +166,11 @@ export function budgetUsd(model, caps = defaultCaps) {
 
 const windowKind = (window) => window.kind || window.id || 'usage';
 
-// Why a provider is out of usage, or null when it is fine. Three rules, in order:
+// Why a provider is out of usage, or null when it is fine. Hard limits only (D-63 as amended by Krish, 15 Nov):
 //  - a window that already reads 100% used is out until it resets;
-//  - a provider on pace to use its window up before its reset is out, even with plenty left (Claude at 59% of the
-//    session but 16% of the week on 15 Nov);
 //  - the 5-hour session must keep about three reviews in hand, measured by this model's own per-review share.
+// Pace (on track to run out before the reset) is the tagging agent's judgement, not a block here: projected from a short
+// burst it reads as days of waiting, as it did on 15 Nov when a morning of Codex reviews projected the week empty.
 // A window with no numbers, and a provider with no usage file at all, count as usable: the CLI still refuses when it is
 // really out, and the posted comment names the skip when that happens.
 function windowProblem(window, now = Date.now(), cost = reviewCostPercent) {
@@ -184,16 +184,6 @@ function windowProblem(window, now = Date.now(), cost = reviewCostPercent) {
   const left = 100 - window.usedPercent;
   if (kind === 'session' && left < reviewsToKeep * cost) {
     return { reason: `fewer than ${reviewsToKeep} reviews left in its ${kind} window`, resetsAt };
-  }
-  const durationMs = typeof window.windowDurationMins === 'number' && Number.isFinite(window.windowDurationMins)
-    ? window.windowDurationMins * 60000
-    : null;
-  if (!durationMs || !resetsAtMs || !Number.isFinite(resetsAtMs)) return null;
-  const elapsedMs = durationMs - (resetsAtMs - now);
-  // Ignore the first few percent of a window: dividing by a tiny elapsed time would predict almost anything.
-  if (elapsedMs <= durationMs * 0.05) return null;
-  if ((window.usedPercent * durationMs) / elapsedMs >= 100) {
-    return { reason: `on pace to run out before its ${kind} reset`, resetsAt };
   }
   return null;
 }
