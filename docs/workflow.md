@@ -100,7 +100,7 @@ OpenCode Go plan, or the Z.ai coding plan. No per-token API key is used, ever: a
 - it names no `author=`, names one that is not a known provider, or names the reviewer's own provider;
 - the pull request's `Made by` line (in any shape: `Made by: …` or a `## Made by` heading) names a provider that
   disagrees with `author=`;
-- a usage snapshot shows that window used up, on pace to run out, or inside a `reserve`;
+- a usage snapshot shows that window used up, fewer than three reviews left in its 5-hour window, or inside a `reserve` (pace is the tagging agent's call, not a refusal);
 - the Codex plan login is missing or inside its last 12 hours.
 
 The refusal names the reason and, for usage, the exact reset time in UTC plus how far away it is, so the next tag can be
@@ -214,7 +214,7 @@ watched. Claude reports no numbers of its own, so it keeps the cautious 10%.
 **Rules.**
 - Don't use the strongest model at both stages unless the work is sensitive.
 - The reviewer must come from a different provider than the agent that wrote the change, so it doesn't share the same blind spots. The tag states the author with `author=`, and the job refuses a tag that leaves it out, names an unknown provider, names the reviewer's own, or disagrees with the PR's `Made by` line. A tag is the only place authorship counts.
-- Usage comes first: exhausted usage, a provider on pace to run out, or reserved quota is a refusal, and the comment names when there is room again.
+- Usage comes first: exhausted usage or reserved quota is a refusal; pace is weighed by the tagging agent, not enforced by the job, and the comment names when there is room again.
 - Only models listed under `allowed` in `.github/agents.json` are accepted, and that list is plans-only. Sensitive work must use one listed under `strong`. A tag that breaks a rule is refused with a comment; nothing is substituted.
 - Naming the reviewer is required. A tag without `provider=` and `model=` is refused, because the job does not choose.
 - Only allowlisted accounts can tag. Krish can use the same syntax himself.
