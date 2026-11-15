@@ -116,7 +116,7 @@ setup.
    that it has the `tess-agent` label plus `tess-primary` on the Instabox default or `tess-backup` on the VPS and
    omarchy. A job whose label no runner carries waits 24 hours and then fails.
 
-## What a runner machine has (set up 14 Nov on `omarchy` and `paperclip-vps`)
+## What a runner machine has (set up 14 Nov on `omarchy` and `paperclip-vps`, reachable via `ssh vps`)
 
 - A `tess-runner` account with no `sudo` rights. The runner lives in `~/actions-runner` and runs as the
   `actions.runner.Flame119052-tess-music.<name>` system service, as that user.
@@ -125,10 +125,9 @@ setup.
   `CLAUDE_CODE_OAUTH_TOKEN` variable. It sits in the runner's `.env` (mode 600). `config.sh` rewrites `.env` and
   `.path`, so set both again after re-registering, then restart the service. The reviewer passes only this one variable
   on from the job; `GH_TOKEN` never reaches it.
-- Krish's Mac makes the registration token and sends it over SSH standard input, so the token never sits in a file or in
+- Krish's Mac makes the registration token and sends it over SSH standard input (`ssh vps` for `paperclip-vps`), so the token never sits in a file or in
   an agent's instructions.
 
-<<<<<<< HEAD
 ## Network: the provider's API and nothing else
 
 A review reads an untrusted diff, and text in a diff can talk a model into running a shell command. bubblewrap keeps the
@@ -256,4 +255,9 @@ without the connector still reviews everything else.
   seen, cancel the run and tag again; the next check sends it to a backup.
 - The 30-minute pause counts idle time as Instabox defines it. A review that runs longer than that could be paused
   mid-job; if that is ever seen, the fix is the `timeout-minutes` failure above plus a second wake, not a longer pause.
+- **Before setting `REVIEW_WAKE_URL`:** make sure both guards are already in place so Instabox never receives an
+  unapproved fork PR or an unverified commit — (1) **"Require approval for all outside collaborators"** is turned on
+  under **Settings → Actions → General**, and (2) the `REVIEW_HEAD_SHA` check in
+  [`.github/workflows/agent-review.yml`](../.github/workflows/agent-review.yml) and
+  [`tools/agent-review.mjs`](agent-review.mjs) is merged on `main`.
 - To retire it: `instabox port unpublish tess-reviewer 8787`, remove the runner in GitHub, then `instabox rm tess-reviewer`.

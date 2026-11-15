@@ -138,5 +138,6 @@ jobs:
           REVIEW_ROLE: ${{ needs.gate.outputs.role }}
           REVIEW_NUMBER: ${{ needs.gate.outputs.number }}
           REVIEW_TIER: ${{ needs.gate.outputs.tier }}
+          REVIEW_HEAD_SHA: ${{ needs.gate.outputs.head_sha }}
           GH_TOKEN: ${{ github.token }}
         run: node tools/agent-review.mjs "$REVIEW_ROLE" "$REVIEW_NUMBER"

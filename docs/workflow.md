@@ -144,7 +144,6 @@ value of any key the job holds, `GH_TOKEN` included.
 - Leaving the choice out is fine: the defaults are the first model in that role's list that can run.
 - Only allowlisted accounts can tag. Krish can use the same syntax himself.
 
-<<<<<<< HEAD
 ### How to update this
 
 Everything below is one edit to `.github/agents.json`, then `node tools/test-agent-review.mjs`, then a PR. The test
@@ -167,7 +166,7 @@ every note stays dated.
 
 - **Who can call them.** Only GitHub accounts in the allowlist (the repo variable `AGENT_ALLOWLIST`, today just `Flame119052`). A tag from anyone else is ignored. Anyone can still open issues and PRs.
 - **Where runners may live.** Only on machines that hold no Tess keys: the Instabox box `tess-reviewer` (the default), and the VPS `paperclip-vps` and `omarchy` (backups). Instabox is a third-party host, so it gets no vault and holds no Tess keys: only the reviewer's Claude login token, its GitHub runner credentials and, during a job, that job's `GITHUB_TOKEN` (D-65). Krish's Mac keeps the signing and rescue keys, and a reviewer reading an outside diff could be tricked into printing files it can read. A Mac runner is allowed only under a separate macOS user that can't read Krish's home folder. As a second guard, the reviewer refuses to post any text that looks like a key or token.
-- **How the job reaches a machine.** Each runner machine runs a GitHub self-hosted runner labelled `tess-agent`, and the job is pinned by label: the Instabox runner is also `tess-primary`, the two backups are `tess-backup`. A `gate` step wakes the paused Instabox box through its public `/ready` page and waits up to 2 minutes for it to answer `tess-ready` (which it only does when its runner is active and idle); if it doesn't, the job is given the `tess-backup` label and GitHub gives it to whichever backup runner is online and idle. Each job checks out a fresh copy of the repo, so the machines need no extra syncing.
+- **How the job reaches a machine.** Each runner machine runs a GitHub self-hosted runner labelled `tess-agent`, and the job is pinned by label: the Instabox runner is also `tess-primary`, the two backups are `tess-backup`. A `gate` step wakes the paused Instabox box through its public `/ready` page and waits up to 2 minutes for it to answer `tess-ready` (which it only does when its runner is active and idle); if it doesn't, the job is given the `tess-backup` label and GitHub gives it to whichever backup runner is online and idle. If the box pauses (or another review takes it) between answering ready and picking the job up, cancel the run and tag again so the next check routes to a backup. Each job checks out a fresh copy of the repo, so the machines need no extra syncing.
 - **Picking the model.** `.github/agents.json` lists the reviewer models per role, default first. Each runner takes the first one that has a local CLI, enough usage (both windows and pace), no unexpired reservation, and a working `bubblewrap` sandbox, and names everything it skipped in the comment. Usage comes from the local hub; a provider with no numbers is treated as usable.
 - **Safety, because the repo is public:**
   - The workflow is triggered only by `issue_comment`, which always runs the workflow file from `main`, never from a PR.
@@ -215,7 +214,7 @@ These rules come from mistakes made while setting this up: agents started from t
 | Machine | Does | Never |
 | --- | --- | --- |
 | Krish's Mac | Holds the signing and rescue keys. Runs the real Spotify on `dev`. Krish's own commands. The T3 threads. | Hosts a GitHub runner. Holds secrets in the repo or in an external drive's `.env`. |
-| `paperclip-vps`, `omarchy` | The backup reviewer runners (`tess-agent`, `tess-backup`), used whenever Instabox isn't ready. Each job gets a fresh checkout, so nothing on them needs syncing. | Holds a Tess key. Runs the runner as root. |
+| `paperclip-vps` (reach with `ssh vps`), `omarchy` | The backup reviewer runners (`tess-agent`, `tess-backup`), used whenever Instabox isn't ready. Each job gets a fresh checkout, so nothing on them needs syncing. | Holds a Tess key. Runs the runner as root. |
 | GitHub's macOS machines | CI (`check.yml`) and every build and signature (`release.yml`). They are the only place the signing secrets are used. | Runs code from a fork PR without Krish's approval. |
 | Instabox | The default reviewer runner (`tess-agent`, `tess-primary`), made with `--no-vault` so it holds no Tess keys: only the reviewer's Claude login token, its runner credentials, and a job's `GITHUB_TOKEN` while one runs. A review wakes it through its public `/ready` page and waits up to 2 minutes before falling back to a backup. | Holds a Tess key. Builds Tess, which needs macOS. Runs the runner as root. |
 
