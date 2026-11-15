@@ -2013,13 +2013,17 @@ export function cleanReviewBody(text) {
     .trim();
 }
 
-export function formatReviewComment({ role, sha = '', tier = '', result, caps = defaultCaps }) {
+// `notes` are extra header lines a caller needs and the CLI's own report cannot give: a review that ran on a machine
+// says where, and whether it had a token cap. Nothing about the review's shape changes, so a comment from either path
+// has the same marker, the same `Reviewed:` line, and one last `Verdict:` (#105 review).
+export function formatReviewComment({ role, sha = '', tier = '', result, caps = defaultCaps, notes = [] }) {
   const verdict = verdictFor(result.text);
   const review = cleanReviewBody(result.text);
   const header = [
     marker,
     ...(role === 'pr' ? [`Reviewed: ${sha}`, `Tier: ${tier}`] : []),
     `Reviewer: ${result.provider} / ${result.model}${result.effort ? ` (${result.effort})` : ''}`,
+    ...notes.filter(Boolean),
   ].join('\n');
   return `${header}${usedLine(result, caps)}${usageNote(result)}\n\n${review}\n\nVerdict: ${verdict}`;
 }
@@ -2106,9 +2110,13 @@ export function failureSummary(result, env = process.env) {
 // this file, in the job's own scratch space that is thrown away with the machine, so the second one stays quiet.
 const commentedPath = () => join(process.env.RUNNER_TEMP || tmpdir(), 'tess-review-commented');
 
+// The one body a review with a key in it gets, from either path: the GitHub job and the machine watcher read the same
+// diffs, so they refuse the same text in the same words (#105 review).
+export const secretRefusal = `${marker}\n\nThe review was not posted: its text contained a key or token, so nothing from it is safe to show here. Krish, tag again once the diff no longer asks the reviewer to quote one.`;
+
 function postComment(repo, number, body) {
   if (looksSecret(body) || containsHeldSecret(body)) {
-    body = `${marker}\n\nThe review was not posted: its text contained a key or token, so nothing from it is safe to show here. Krish, tag again once the diff no longer asks the reviewer to quote one.`;
+    body = secretRefusal;
   }
   execFileSync('gh', ['issue', 'comment', String(number), '-R', repo, '--body-file', '-'], {
     input: body,

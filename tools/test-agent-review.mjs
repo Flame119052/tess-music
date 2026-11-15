@@ -2588,6 +2588,29 @@ test('the review comment puts Used and Usage on separate lines and prints one Ve
   }
 });
 
+test('a comment can carry the lines a machine review needs, and the key refusal is written once (#105)', () => {
+  const caps = capsFor(config);
+  const { formatReviewComment, secretRefusal, marker } = agentReview;
+  const comment = formatReviewComment({
+    role: 'pr',
+    sha: '30db62c',
+    tier: 'normal',
+    caps,
+    notes: ['Machine: mac', 'Cap: none on this path'],
+    result: { provider: 'opencode', model: 'opencode-go/deepseek-v4.1-flash', text: 'Finding.\n\nVerdict: approve' },
+  });
+  const lines = comment.split('\n');
+  assert.equal(lines[0], marker);
+  assert.deepEqual(lines.slice(0, 6), [
+    marker, 'Reviewed: 30db62c', 'Tier: normal',
+    'Reviewer: opencode / opencode-go/deepseek-v4.1-flash', 'Machine: mac', 'Cap: none on this path',
+  ]);
+  assert.equal(lines.at(-1), 'Verdict: approve');
+  // The refusal a review holding a key gets, shared by both paths so they cannot drift apart.
+  assert.ok(secretRefusal.startsWith(marker));
+  assert.match(secretRefusal, /its text contained a key or token/);
+});
+
 test('large PR diffs omit generated build outputs by name, flag sensitive omitted paths with bounded excerpts, and pass changed files inline (#103)', () => {
   const { compactDiff, buildPrContext, reviewPrompt } = agentReview;
   assert.equal(typeof compactDiff, 'function', 'compactDiff is exported');
