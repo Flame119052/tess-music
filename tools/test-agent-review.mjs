@@ -2,7 +2,9 @@
 // Usage: node tools/test-agent-review.mjs
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import http from 'node:http';
+import https from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -34,6 +36,8 @@ import {
   postVerdict,
   providerHasUsage,
   providerKeys,
+  proxiedProviders,
+  startReviewProxy,
   redactText,
   reserveProblem,
   reservationEnd,
@@ -63,6 +67,7 @@ import {
   usedLine,
   verifyPrHead,
 } from './agent-review.mjs';
+import { createReviewProxy, proxyReviewerConfig } from './review-proxy.mjs';
 
 const config = JSON.parse(readFileSync(new URL('../.github/agents.json', import.meta.url), 'utf8'));
 const agentFile = new URL('../tools/opencode-reviewer.md', import.meta.url);
@@ -441,6 +446,23 @@ test('the reviewer gets only its own provider keys, never the GitHub token', () 
   // no provider means no key at all, rather than every key
   assert.deepEqual(Object.keys(reviewerEnv(env, 'nobody')).sort(), ['HOME', 'PATH', 'TMPDIR']);
   assert.ok(looksSecret('sk-ant-oat01-' + 'a'.repeat(80)));
+
+  // Behind the proxy the key is not in the sandbox at all, under any name: the CLI gets the proxy and a token that dies
+  // with the job. This is the provider a diff *can* reach, because its tool list has no shell but its environment was
+  // one flag away from being readable.
+  const proxy = { url: 'http://127.0.0.1:9', token: 'per-review-token' };
+  for (const provider of proxiedProviders) {
+    const proxied = reviewerEnv(env, provider, proxy);
+    assert.equal(proxied.CLAUDE_CODE_OAUTH_TOKEN, undefined, 'the Claude key never enters the sandbox');
+    assert.equal(proxied.CODEX_API_KEY, undefined, 'the Codex key never enters the sandbox');
+    assert.equal(JSON.stringify(proxied).includes('sk-ant-oat01-x'), false);
+    assert.equal(JSON.stringify(proxied).includes('ck'), false);
+    assert.ok(!Object.keys(proxied).some((key) => providerKeys[provider].includes(key)));
+    assert.equal(proxied.HOME, '/home/r', 'the sandbox still gets a home and a PATH');
+  }
+  assert.equal(reviewerEnv(env, 'claude', proxy).ANTHROPIC_AUTH_TOKEN, 'per-review-token');
+  assert.equal(reviewerEnv(env, 'claude', proxy).ANTHROPIC_BASE_URL, 'http://127.0.0.1:9/claude');
+  assert.equal(reviewerEnv(env, 'codex', proxy).TESS_REVIEW_TOKEN, 'per-review-token');
 });
 
 test('the reviewer reads a throwaway copy with read-only tools only', () => {
@@ -1208,6 +1230,143 @@ test('the OpenCode agent denies everything outside reading the copy', () => {
 // Every reviewer is wrapped the same way, so the boundary is a fact about the runner, not a promise in a prompt. The
 // snapshot is the only folder from the job that is bound in; the runner's home is not, apart from the one config folder
 // the provider itself needs.
+// The review proxy, driven for real: the child process starts, the sandbox's token is what it accepts, the provider's key
+// is what it adds, and nothing else gets through. A fake upstream stands in for the provider, so this runs with no key and
+// no network.
+const httpRequest = (url, options = {}) => new Promise((resolve, reject) => {
+  const client = url.startsWith('https:') ? https : http;
+  const req = client.request(url, options, (res) => {
+    let body = '';
+    res.on('data', (chunk) => { body += chunk; });
+    res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
+  });
+  req.on('error', reject);
+  if (options.body) req.write(options.body);
+  req.end();
+});
+
+async function fakeUpstream() {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      seen.push({ method: req.method, url: req.url, headers: req.headers, body });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+  });
+  await new Promise((done) => server.listen(0, '127.0.0.1', done));
+  return { url: `http://127.0.0.1:${server.address().port}`, seen, close: () => new Promise((done) => server.close(done)) };
+}
+
+test('the review proxy adds the key and refuses everything that is not this review', async () => {
+  const upstream = await fakeUpstream();
+  const proxy = await createReviewProxy({ provider: 'claude', key: 'sk-ant-oat01-real', token: 'this-review', upstream: upstream.url });
+  try {
+    // The call the CLI would make: the token stands in the Authorization header, the path keeps its provider prefix.
+    const ok = await httpRequest(`${proxy.url}/claude/v1/messages`, {
+      method: 'POST', headers: { authorization: 'Bearer this-review', 'content-type': 'application/json' }, body: '{"a":1}',
+    });
+    assert.equal(ok.status, 200);
+    assert.equal(upstream.seen.length, 1, 'the request reached the upstream');
+    assert.equal(upstream.seen[0].url, '/v1/messages', 'the provider prefix is stripped, the path is not rewritten');
+    assert.equal(upstream.seen[0].headers.authorization, 'Bearer sk-ant-oat01-real', 'the real key is added here');
+    assert.equal(upstream.seen[0].body, '{"a":1}', 'the body is passed through untouched');
+
+    // No token, another review's token, and a route outside the provider all stop before the upstream sees anything.
+    for (const attempt of [
+      { url: `${proxy.url}/claude/v1/messages`, headers: {} },
+      { url: `${proxy.url}/claude/v1/messages`, headers: { authorization: 'Bearer someone-else' } },
+      { url: `${proxy.url}/openai/v1/responses`, headers: { authorization: 'Bearer this-review' } },
+    ]) {
+      const refused = await httpRequest(attempt.url, { headers: attempt.headers });
+      assert.ok(refused.status === 401 || refused.status === 404, `${attempt.url} → ${refused.status}`);
+      assert.ok(!refused.body.includes('sk-ant-oat01-real'), 'a refusal never quotes the key');
+    }
+    assert.equal(upstream.seen.length, 1, 'a refused call never reaches the provider');
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});
+
+test('the sandbox is pointed at the proxy, and the proxy process serves it', async () => {
+  const upstream = await fakeUpstream();
+  const dir = temp();
+  // The real child process the review starts, with the real ready file: this is the path a review takes on the runner.
+  const config = { provider: 'codex', key: 'sk-codex-real-key', token: 'codex-review-token', upstream: upstream.url };
+  const configPath = join(dir, 'proxy.json');
+  const readyPath = join(dir, 'proxy.url');
+  writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
+  const child = spawn(process.execPath, [fileURLToPath(new URL('./review-proxy.mjs', import.meta.url)),
+    '--config', configPath, '--ready', readyPath], { stdio: 'ignore' });
+  try {
+    const started = Date.now();
+    while (!existsSync(readyPath)) {
+      await new Promise((done) => setTimeout(done, 25));
+      assert.ok(Date.now() - started < 5000, 'the proxy reported its address');
+    }
+    const url = readFileSync(readyPath, 'utf8').trim();
+    assert.match(url, /^http:\/\/127\.0\.0\.1:\d+$/, 'it listens on loopback only');
+
+    // What the CLI is told: an endpoint on the proxy, and the token in place of the key. The key itself is nowhere.
+    const settings = proxyReviewerConfig('codex', url, 'codex-review-token');
+    assert.ok(!JSON.stringify(settings).includes('sk-codex-real-key'), 'the key is not in what the sandbox is given');
+    assert.ok(settings.args.some((arg) => arg.includes(`base_url="http://127.0.0.1:`)));
+    assert.ok(settings.args.some((arg) => arg === 'model_providers.tess_review_proxy.env_key="TESS_REVIEW_TOKEN"'));
+    assert.deepEqual(settings.removedKeys, ['CODEX_API_KEY', 'OPENAI_API_KEY']);
+
+    const answer = await httpRequest(`${url}/codex/v1/responses`, {
+      method: 'POST', headers: { authorization: 'Bearer codex-review-token' }, body: '{"model":"gpt-6.1-terra"}',
+    });
+    assert.equal(answer.status, 200);
+    assert.equal(upstream.seen[0].url, '/v1/responses');
+    assert.equal(upstream.seen[0].headers.authorization, 'Bearer sk-codex-real-key');
+  } finally {
+    child.kill('SIGKILL');
+    await upstream.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the review proxy is started only where a key actually has to be kept out, and the CLI is configured for it', () => {
+  const env = { PATH: '/bin', CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-real', CODEX_API_KEY: 'sk-codex-real', OPENCODE_API_KEY: 'oc' };
+  const calls = [];
+  const fakeSpawn = (command, args) => { calls.push({ command, args }); return { kill: () => {} }; };
+  const dir = temp();
+  try {
+    // OpenCode keeps its own key: its agent file denies every read outside the copy, so there is nothing to proxy it to.
+    assert.equal(startReviewProxy('opencode', { env, dir, spawnChild: fakeSpawn }), null);
+    // No key, no proxy: a review with no credential fails where the direct one would work, and nothing is leaked either way.
+    assert.equal(startReviewProxy('codex', { env: { PATH: '/bin' }, dir, spawnChild: fakeSpawn }), null);
+
+    // With a key the child is started with the config path, and a proxy that never reports an address stops the review
+    // instead of quietly running the CLI with the key in its environment.
+    assert.throws(() => startReviewProxy('claude', {
+      env, dir, spawnChild: fakeSpawn, timeoutMs: 0, sleep: () => {},
+    }), /never sees its key in the sandbox/);
+    assert.equal(calls.length, 1, 'the proxy process was started');
+
+    // The argv each CLI gets: Claude through the gateway variables, Codex through `-c` provider overrides.
+    const proxy = { url: 'http://127.0.0.1:1234', token: 'tok' };
+    const claude = cliArgs('claude', 'claude-opus-5-5', '', '/w', capsFor(config), proxy);
+    assert.ok(claude.includes('--tools') && claude.includes(claudeTools), 'the read-only tool list is unchanged');
+    const codex = cliArgs('codex', 'gpt-6.1-terra', 'high', '/w', capsFor(config), proxy);
+    assert.ok(codex.includes('model_providers.tess_review_proxy.base_url="http://127.0.0.1:1234/codex/v1"'));
+    assert.ok(codex.includes('model_provider="tess_review_proxy"'));
+    assert.ok(!JSON.stringify(codex).includes('sk-codex-real'), 'the key is not on the command line');
+    // Without a proxy the argv is exactly what it was, ten arguments shorter: the direct path still works where a proxy
+    // does not apply, and it never grew a flag nobody tested.
+    const direct = cliArgs('codex', 'gpt-6.1-terra', 'high', '/w', capsFor(config));
+    assert.ok(!JSON.stringify(direct).includes('tess_review_proxy'));
+    assert.ok(direct.includes('--skip-git-repo-check') && direct.includes('exec'));
+    assert.equal(codex.length, direct.length + 10, 'five `-c key=value` pairs are the whole proxy change');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('every reviewer runs inside bubblewrap with only the copy and its own config', () => {
   const binds = (args) => args.flatMap((arg, index) =>
     ['--ro-bind', '--bind'].includes(arg) ? [{ mode: arg, from: args[index + 1], to: args[index + 2] }] : []);

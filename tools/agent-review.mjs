@@ -3,11 +3,13 @@
 // The tag may name the reviewer: `@tess-review pr provider=codex model=gpt-6.1-sol effort=high`. Only models listed in
 // .github/agents.json `allowed` are accepted; sensitive work must use a `strong` model. Anything else falls back to
 // the role's defaults, and the comment says why.
-import { execFileSync, spawnSync } from 'node:child_process';
-import { appendFileSync, closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { appendFileSync, closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { proxyProviders, proxyReviewerConfig } from './review-proxy.mjs';
 import { machines, normalizeProviders, parseIsoTimestamp, snapshotVersion } from './usage-publish/publish.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -36,6 +38,12 @@ export const providerKeys = {
 // The providers whose CLI the review workflow installs. Cursor is optional (#71) and is not installed there, so the
 // pick step never sends a review to it; a tag that names it falls back to the role's defaults and says so.
 export const installedProviders = ['claude', 'codex', 'opencode'];
+
+// The providers whose key never enters the sandbox, because their CLI takes a gateway endpoint: the review process holds
+// a per-review token, a proxy in this process holds the key, and the proxy adds it to the request it forwards. A
+// provider absent here keeps its own key in the sandbox, which is safe only while its tool list cannot read an
+// environment (`claudeTools`, and `tools/opencode-reviewer.md` denies every read outside the copy).
+export const proxiedProviders = ['claude', 'codex'];
 
 // The OpenCode agent file decides what the OpenCode reviewer may read, so loosening it is a security change even though
 // it ends in .md. It is never a docs-only path.
@@ -400,11 +408,21 @@ function reviewPrompt(role, context) {
   return `${common}\n\nLINKED ISSUE\n${context.issue}\n\nAPPROACH\n${context.approach}\n\nPULL REQUEST DIFF\n${context.diff}`;
 }
 
-// The reviewer never sees GH_TOKEN or another provider's keys. It gets only the keys its own CLI signs in with
-// (CLAUDE_CODE_OAUTH_TOKEN is Claude's headless sign-in, made with `claude setup-token`).
-export function reviewerEnv(env = process.env, provider) {
-  const allowed = ['HOME', 'PATH', 'TMPDIR', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', ...(providerKeys[provider] || [])];
-  return Object.fromEntries(allowed.flatMap((name) => env[name] ? [[name, env[name]]] : []));
+const proxySettings = (provider, proxy) => (proxy ? proxyReviewerConfig(provider, proxy.url, proxy.token) : null);
+
+// The reviewer never sees GH_TOKEN or another provider's keys. For a proxied provider it sees neither the key nor any
+// env var it lives in: the CLI is pointed at the review proxy with a token that can spend nothing outside this job
+// (`proxiedProviders`). Any other provider gets only its own CLI's key (CLAUDE_CODE_OAUTH_TOKEN is Claude's headless
+// sign-in, made with `claude setup-token`).
+export function reviewerEnv(env = process.env, provider, proxy = null) {
+  const names = ['HOME', 'PATH', 'TMPDIR', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL'];
+  const settings = proxySettings(provider, proxy);
+  const keys = settings ? [] : (providerKeys[provider] || []);
+  const kept = Object.fromEntries([...names, ...keys].flatMap((name) => env[name] ? [[name, env[name]]] : []));
+  if (!settings) return kept;
+  const cleaned = { ...kept };
+  for (const name of settings.removedKeys) delete cleaned[name];
+  return { ...cleaned, ...settings.env };
 }
 
 // A plain copy of one commit's files (git archive): no .git folder, no remote, no credentials, deleted after the review.
@@ -445,8 +463,9 @@ export function stripAgentConfig(dir) {
 // empty, so a diff that talks the model into running a shell command finds no job files at all: not the checkout, not
 // the job's environment, not another provider's directory. Bound read-only: the copy under review, the CLI, its
 // runtime, what it needs for TLS and DNS, and its own sign-in state. Network stays on, because the API call needs it;
-// on a GitHub-hosted job the machine is a fresh disposable VM that holds only this review's one provider key and a
-// GITHUB_TOKEN that can comment on this repo, so there is nothing else on it to reach.
+// on a GitHub-hosted job the machine is a fresh disposable VM that holds only this review's token (Claude's and Codex's
+// keys stay in the review process that starts the proxy, D-69) and a GITHUB_TOKEN that can comment on this repo, so
+// there is nothing else on it to reach.
 export const sandboxRuntime = ['/usr', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/libx32', '/etc/ssl',
   '/etc/ca-certificates', '/etc/ca-certificates.conf', '/etc/resolv.conf', '/etc/hosts', '/etc/nsswitch.conf',
   '/etc/passwd', '/etc/group', '/etc/localtime', '/etc/alternatives', '/etc/ld.so.cache', '/etc/ld.so.conf',
@@ -557,15 +576,17 @@ export function sandboxProblem(options = {}) {
 // (`opencode run` has no --variant) and takes its step limit from the agent file. Claude's `--max-turns` is real but hidden
 // from `--help` in 2.1.x; `--max-budget-usd` is an estimate of API list prices, so it is a guardrail beside the turn cap.
 // Codex has no turn or budget cap at all, so its effort and auto-compaction limit are the only levers.
-export function cliArgs(provider, model, effort, work = root, caps = defaultCaps) {
+export function cliArgs(provider, model, effort, work = root, caps = defaultCaps, proxy = null) {
+  const settings = proxySettings(provider, proxy);
   if (provider === 'claude') {
     return ['-p', '--model', model, ...(effort ? ['--effort', effort] : []),
       '--max-turns', String(caps.claude.max_turns), '--max-budget-usd', String(budgetUsd({ model }, caps)),
-      '--output-format', 'json', '--restricted', '--safe-mode', '--tools', claudeTools];
+      '--output-format', 'json', '--restricted', '--safe-mode', '--tools', claudeTools, ...(settings?.args || [])];
   }
   if (provider === 'codex') {
     // The review copy is a `git archive`, so it has no `.git`: without --skip-git-repo-check Codex refuses it outright.
     return ['-c', 'project_doc_max_bytes=0', '-c', `model_auto_compact_token_limit=${caps.codex.auto_compact_token_limit}`,
+      ...(settings?.args || []),
       'exec', '--model', model, ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []),
       '--sandbox', 'read-only', '--ephemeral', '--ignore-rules', '--skip-git-repo-check', '--json', '-C', work, '-'];
   }
@@ -658,41 +679,94 @@ export function parseCodexOutput(stdout) {
   return { text: messages.length ? messages.at(-1) : String(stdout || '').trim(), usage };
 }
 
+// The review proxy, as a child process: the reviewer itself is spawned with `spawnSync`, which blocks this process's
+// event loop, so an in-process server could never answer a request while the CLI waits. The URL arrives in a file the
+// child writes once it is listening, and the wait for it is a real sleep (`Atomics.wait`) rather than a busy loop. If it
+// does not arrive, the review stops: falling back to the key in the sandbox is exactly what this exists to prevent.
+export function startReviewProxy(provider, options = {}) {
+  const {
+    env = process.env,
+    spawnChild = spawn,
+    sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms),
+    now = Date.now,
+    timeoutMs = 5000,
+    dir = process.env.RUNNER_TEMP || tmpdir(),
+    scriptPath = fileURLToPath(new URL('./review-proxy.mjs', import.meta.url)),
+    execPath = process.execPath,
+  } = options;
+  const keys = (providerKeys[provider] || []).map((name) => env[name]).filter(Boolean);
+  if (!proxiedProviders.includes(provider) || !keys.length) return null;
+  const token = randomBytes(32).toString('hex');
+  const base = join(dir, `tess-review-proxy-${process.pid}-${now()}`);
+  const configPath = `${base}.json`;
+  const readyPath = `${base}.url`;
+  const discard = () => { for (const path of [configPath, readyPath]) { try { unlinkSync(path); } catch { /* already gone */ } } };
+  // 0600, and outside the sandbox: bubblewrap gives the reviewer an empty `/tmp` and binds nothing from RUNNER_TEMP.
+  writeFileSync(configPath, JSON.stringify({ provider, key: keys[0], token, upstream: proxyProviders[provider].upstream }), { mode: 0o600 });
+  const child = spawnChild(execPath, [scriptPath, '--config', configPath, '--ready', readyPath], { stdio: 'ignore' });
+  const started = now();
+  while (!existsSync(readyPath)) {
+    if (now() - started > timeoutMs) {
+      child.kill('SIGKILL');
+      discard();
+      throw new Error(`the ${provider} review proxy did not start, so this review never sees its key in the sandbox`);
+    }
+    sleep(25);
+  }
+  let url = '';
+  try { url = readFileSync(readyPath, 'utf8').trim(); } catch { url = ''; }
+  if (!url) {
+    child.kill('SIGKILL');
+    discard();
+    throw new Error(`the ${provider} review proxy started without an address`);
+  }
+  return {
+    url,
+    token,
+    stop: () => { child.kill('SIGTERM'); discard(); },
+  };
+}
+
 function cliInvocation(provider, model, prompt, effort, work = root, options = {}) {
   const caps = options.caps || defaultCaps;
   if (provider === 'opencode') assertReviewerAgent(options.agentInstalled, options.agentSource);
-  // Cursor takes the prompt as an argument; the others read it on stdin, which has no length limit for a big diff.
-  const args = [...cliArgs(provider, model, effort, work, caps), ...(provider === 'cursor' ? [prompt] : [])];
-  const sandbox = sandboxArgv(provider, work, args, options);
-  const timeout = timeoutSeconds({ provider, model }, caps) * 1000;
-  // A review that runs past its limit is killed, not waited on. bubblewrap's --die-with-parent takes the CLI with it, so
-  // nothing keeps spending after the job moves to the next reviewer.
-  const result = spawnSync(sandbox.command, sandbox.args, {
-    cwd: work,
-    env: {
-      ...reviewerEnv(process.env, provider),
-      HOME: sandbox.home,
-      TMPDIR: '/tmp',
-      PATH: sandbox.path,
-    },
-    input: provider === 'cursor' ? undefined : prompt,
-    encoding: 'utf8',
-    timeout,
-    killSignal: 'SIGKILL',
-    maxBuffer: 30 * 1024 * 1024,
-  });
-  const timedOut = result.error?.code === 'ETIMEDOUT' || result.signal === 'SIGKILL'
-    || result.signal === 'SIGTERM';
-  const parsed = provider === 'claude' ? parseClaudeOutput(result.stdout)
-    : provider === 'codex' ? parseCodexOutput(result.stdout)
-      : { text: String(result.stdout || '').trim(), usage: null };
-  return {
-    ...result,
-    timedOut,
-    text: parsed.text,
-    usage: parsed.usage,
-    stderr: parsed.errorText ? `${result.stderr || ''}\n${parsed.errorText}`.trim() : result.stderr,
-  };
+  const proxy = options.proxy === undefined ? startReviewProxy(provider, options.proxyOptions) : options.proxy;
+  try {
+    // Cursor takes the prompt as an argument; the others read it on stdin, which has no length limit for a big diff.
+    const args = [...cliArgs(provider, model, effort, work, caps, proxy), ...(provider === 'cursor' ? [prompt] : [])];
+    const sandbox = sandboxArgv(provider, work, args, options);
+    const timeout = timeoutSeconds({ provider, model }, caps) * 1000;
+    // A review that runs past its limit is killed, not waited on. bubblewrap's --die-with-parent takes the CLI with it, so
+    // nothing keeps spending after the job moves to the next reviewer.
+    const result = spawnSync(sandbox.command, sandbox.args, {
+      cwd: work,
+      env: {
+        ...reviewerEnv(process.env, provider, proxy),
+        HOME: sandbox.home,
+        TMPDIR: '/tmp',
+        PATH: sandbox.path,
+      },
+      input: provider === 'cursor' ? undefined : prompt,
+      encoding: 'utf8',
+      timeout,
+      killSignal: 'SIGKILL',
+      maxBuffer: 30 * 1024 * 1024,
+    });
+    const timedOut = result.error?.code === 'ETIMEDOUT' || result.signal === 'SIGKILL'
+      || result.signal === 'SIGTERM';
+    const parsed = provider === 'claude' ? parseClaudeOutput(result.stdout)
+      : provider === 'codex' ? parseCodexOutput(result.stdout)
+        : { text: String(result.stdout || '').trim(), usage: null };
+    return {
+      ...result,
+      timedOut,
+      text: parsed.text,
+      usage: parsed.usage,
+      stderr: parsed.errorText ? `${result.stderr || ''}\n${parsed.errorText}`.trim() : result.stderr,
+    };
+  } finally {
+    proxy?.stop?.();
+  }
 }
 
 function usageLimitError(result) {

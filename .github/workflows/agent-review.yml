@@ -122,6 +122,9 @@ jobs:
           USAGE_SNAPSHOT_VPS: ${{ vars.USAGE_SNAPSHOT_VPS }}
           USAGE_SNAPSHOT_OMARCHY: ${{ vars.USAGE_SNAPSHOT_OMARCHY }}
           # Each entry is empty unless that provider is the one chosen: a review can only ever hold its own key.
+          # Claude's and Codex's keys stop in the review process: their CLI is pointed at tools/review-proxy.mjs with a
+          # per-review token, so the sandbox never holds them (D-69). OpenCode keeps its own, which its agent file cannot
+          # read from inside the copy.
           CLAUDE_CODE_OAUTH_TOKEN: ${{ steps.pick.outputs.provider == 'claude' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
           CODEX_API_KEY: ${{ steps.pick.outputs.provider == 'codex' && secrets.CODEX_API_KEY || '' }}
           OPENCODE_API_KEY: ${{ steps.pick.outputs.provider == 'opencode' && secrets.OPENCODE_API_KEY || '' }}

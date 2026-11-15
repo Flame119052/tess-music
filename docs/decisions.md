@@ -153,7 +153,25 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   *Why not an authenticated proxy inside the job:* it only works if each CLI can be pointed at a local base URL, and the
   endpoint list per provider cannot be checked from here; a wrong guess would silently stop every review of that provider,
   and a blocking egress allowlist has the same failure. That stays the recommended next step if a reviewer is ever given a
-  tool that can fetch a URL. (#98)
+  tool that can fetch a URL. *Amended by D-69 for Claude and Codex, whose endpoint is a single public host, so there is
+  nothing to guess.* (#98)
+- **D-69 · 15 Nov 2026 · Agent** — For **Claude and Codex, the key never enters the sandbox**. `tools/review-proxy.mjs`
+  runs as its own process, holds the real key, and listens on loopback; the CLI is pointed at it with a **per-review
+  token**: Claude through the documented gateway variables (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`), Codex through
+  `-c` provider overrides (`base_url`, `env_key`, `wire_api`). The proxy adds the provider's own `Authorization` header to
+  the request it forwards, and refuses any call that does not carry this job's token, so finding the port buys nothing.
+  Neither sandbox holds `CLAUDE_CODE_OAUTH_TOKEN` or `CODEX_API_KEY` under any name, which matters because Codex's
+  read-only sandbox still lets a shell run and a shell can print `env` — the one place in a review where a credential was
+  reachable by the very diff being read. If the proxy cannot start, the review stops: it never falls back to the key in
+  the sandbox. *Not covered:* OpenCode keeps its own key, because a review spends one connector's allowance at that
+  connector's endpoint and a wrong base URL would stop every OpenCode review; its agent file denies every read outside
+  the copy (absolute paths included, so `/proc` is out), so no tool it is given can read the key. The token the proxied
+  sandboxes hold can still be printed, but it dies with the job, opens nothing, and the posted-text guard still refuses
+  any comment containing a held key. An egress allowlist is still not part of this: the machine holds no other secret,
+  and one wrong rule would stop every review. Verified with a fake upstream (`tools/test-agent-review.mjs`): the allowed
+  call is forwarded with the key added, and a call with no token, another token, or a path outside the provider never
+  reaches the upstream. No live provider call has been made from here, so the first review of each proxied provider is
+  the live check. (#98)
 
 ## Releases and process
 
