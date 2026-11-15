@@ -40,6 +40,10 @@ jobs:
           node tools/test-rescue-control.mjs
           node tools/test-swap-recovery.mjs
           node tools/test-rescue.mjs
+      - name: Inbox and privacy filter tests (Worker driven directly; one filter in every report path)
+        run: |
+          node tools/test-inbox.mjs
+          node tools/test-redact.mjs
       - name: Dial picking tests
         run: node tools/test-dial-pick.mjs
       - name: Reviewer agent tests

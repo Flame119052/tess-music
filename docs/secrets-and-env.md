@@ -10,7 +10,7 @@ How Tess Music stores, loads, and backs up secrets across **local development**,
 | Code-signing identity | `~/.config/tess-signing/codesign.p12` + `codesign.pass` | GitHub Actions `TESS_CODESIGN_P12` + `TESS_CODESIGN_PASS` | Signs `tess-patcher`, `tess-verify`, and Tess Mini with `"Tess Music"` |
 | Mirror deploy key | *(uses local `gh` / git auth)* | GitHub Actions `TESS_MIRROR_KEY` | Pushes builds to `Flame119052/tess-releases` |
 | Rescue key (Ed25519) | `~/.config/tess-signing/rescue.pem` (**Mac only**) | **Never in GitHub / CI** | Signs emergency rescue orders via [`tools/rescue.mjs`](../tools/rescue.mjs) |
-| Inbox IP hash salt | `inbox/.dev.vars` (if running locally) | Cloudflare Worker secret `SALT` | Salts hashed IPs in [`inbox/worker.js`](../inbox/worker.js) |
+| Inbox IP hash salt | `inbox/.dev.vars` (if running locally) | Cloudflare Worker secret `SALT`, **required** (`wrangler secret put SALT`; at least 16 characters) | Salts hashed IPs in [`inbox/worker.js`](../inbox/worker.js). With no usable salt the Worker answers 503 and stores nothing, because an unsalted hash of an IPv4 address is reversible |
 | Cloudflare auth | `npx wrangler@4 login` session | Cloudflare dashboard / API | Deploys `inbox/` and reads D1/KV reports |
 | Reviewer plan logins | `~/.config/tess-codex-ci/auth.json` (Codex only) | Actions secrets `CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_AUTH_JSON`, `OPENCODE_API_KEY`, `ZHIPU_API_KEY` | The hosted AI reviewer. Every one is a subscription login; no pay-per-use API key is used (D-71, D-73). Setup and the Codex renewal step: [`tools/runner-setup.md`](../tools/runner-setup.md) |
 
