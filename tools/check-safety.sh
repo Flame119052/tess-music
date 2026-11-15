@@ -105,6 +105,12 @@ for f in $entry_points; do
     code:*) fail "$f runs code before its source/checkout guard (line ${guard_line#code:}, issue #107)" ;;
   esac
   grep -q '^# <<< tess script guard <<<$' "$f" || fail "$f's guard block never closes"
+  # The way through is the exact value 1, compared in code. A comment or a message that names it is not enough: any
+  # non-empty value, `0` and `false` included, used to let a checkout's copy act on a real Mac.
+  grep -qF '[ "${TESS_REAL_INSTALL-}" != 1 ]' "$f" || fail "$f's guard lets any TESS_REAL_INSTALL value through; it must require exactly 1"
+  if grep -qF '[ -z "${TESS_REAL_INSTALL-}" ]' "$f"; then fail "$f's guard accepts any non-empty TESS_REAL_INSTALL; it must require exactly 1"; fi
+  # The body handed to a shell (`sh -c "$(cat …)"`, `eval`) must be refused too, not only a sourced file and a checkout.
+  grep -qF '_tess_embedded' "$f" || fail "$f's guard does not refuse its text handed to a shell (sh -c, eval); issue #107"
   grep -q 'TESS_REAL_INSTALL=1' "$f" || fail "$f's guard has no TESS_REAL_INSTALL=1 way through"
 done
 guard_hashes=$(

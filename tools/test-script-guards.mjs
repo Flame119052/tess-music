@@ -103,6 +103,9 @@ const untouched = (why) => {
   assert.equal(readFileSync(join(spotify, 'Contents', 'Resources', 'Apps', 'xpui.spa'), 'utf8'), stockInterface, `${why}: Spotify's own files are unchanged`);
 };
 const noToolRan = (why) => assert.equal(existsSync(fakeLog), false, `${why}: no system tool was called`);
+// A run that is meant to get past the guard calls these tools, so the log is cleared after one before the next
+// "nothing may run" check.
+const resetToolLog = () => rmSync(fakeLog, { force: true });
 
 try {
   // 1. Sourcing does nothing, and says why. This is the accident that ran the real installer (#107).
@@ -111,6 +114,7 @@ try {
       const r = run(shell, ['-c', `. "${join(dir, 'installer', name)}"; echo TESS-AFTER-SOURCE`]);
       assert.match(r.out, /was sourced, so it did nothing/, `${name} sourced from ${where}: says why`);
       assert.match(r.out, /run it as its own command/, `${name} sourced from ${where}: says what to do instead`);
+      assert.match(r.out, /sh \.\/file or zsh \.\/file/, `${name} sourced from ${where}: names a command that actually runs the file`);
       assert.match(r.out, /TESS-AFTER-SOURCE/, `${name} sourced from ${where}: the caller keeps running`);
       untouched(`${name} sourced from ${where}`);
       noToolRan(`${name} sourced from ${where}`);
@@ -127,6 +131,47 @@ try {
     assert.match(r.out, /set TESS_REAL_INSTALL=1/, `${name} from a checkout: names the way through`);
     untouched(`${name} from a checkout`);
     noToolRan(`${name} from a checkout`);
+  }
+
+  // 2b. Handing the file's text to a shell skips the file itself: there is no source to detect and no path to walk, so
+  // `sh -c "$(cat file)"` and zsh's `eval` of that text used to start a real install. Both are refused now. The published
+  // `curl … | sh` line is a different shape (the shell reads the pipe, with no `-c` and no file) and stays allowed.
+  for (const { name, shell } of scripts) {
+    const body = readFileSync(join(checkoutDir, 'installer', name), 'utf8');
+    const dashC = run(shell, ['-c', body]);
+    assert.notEqual(dashC.status, 0, `${name} handed to ${shell} -c: refused`);
+    assert.match(dashC.out, /was handed to a shell to run/, `${name} handed to ${shell} -c: says why`);
+    assert.match(dashC.out, /sh \.\/file or zsh \.\/file/, `${name} handed to ${shell} -c: says what to do instead`);
+    untouched(`${name} handed to ${shell} -c`);
+    noToolRan(`${name} handed to ${shell} -c`);
+
+    const evaled = run('zsh', ['-c', `eval "$(cat "${join(checkoutDir, 'installer', name)}")"`]);
+    assert.notEqual(evaled.status, 0, `${name} eval'd under zsh: refused`);
+    assert.match(evaled.out, /was handed to a shell to run/, `${name} eval'd under zsh: says why`);
+    untouched(`${name} eval'd under zsh`);
+    noToolRan(`${name} eval'd under zsh`);
+  }
+
+  // The escape still lets the text run, so a sandbox run of a script handed to a shell is not refused.
+  for (const { name, shell } of scripts) {
+    const body = readFileSync(join(checkoutDir, 'installer', name), 'utf8');
+    for (const flag of ['TESS_TEST', 'TESS_REAL_INSTALL']) {
+      const allowed = run(shell, ['-c', body], { env: env({ [flag]: '1', TESS_HOME: '', TESS_CONFIG: '', TESS_SPOTIFY: '' }) });
+      assert.doesNotMatch(allowed.out, /was handed to a shell to run/, `${name} handed to ${shell} -c with ${flag}=1: not refused`);
+    }
+  }
+  resetToolLog();
+
+  // 2c. The way through is exactly 1. `0` and `false` mean off to a person, and both used to start the real installer.
+  for (const { name, shell } of scripts) {
+    for (const value of ['', '0', 'false']) {
+      const shown = value === '' ? 'empty' : value;
+      const r = run(shell, [join(checkoutDir, 'installer', name)], { cwd: box, env: env({ TESS_REAL_INSTALL: value }) });
+      assert.notEqual(r.status, 0, `${name} with TESS_REAL_INSTALL=${shown}: refused`);
+      assert.match(r.out, /is inside a git checkout/, `${name} with TESS_REAL_INSTALL=${shown}: says why`);
+      untouched(`${name} with TESS_REAL_INSTALL=${shown}`);
+      noToolRan(`${name} with TESS_REAL_INSTALL=${shown}`);
+    }
   }
 
   // 3. A worktree's .git file counts as a checkout, and so does a folder under one.
@@ -146,8 +191,12 @@ try {
 
   // 5. The published install line (`curl … | sh`) is code from a pipe, not a checkout's file, and still runs.
   const piped = run('sh', [], { cwd: checkoutDir, input: readFileSync(join(checkoutDir, 'installer', 'install.sh'), 'utf8') });
-  assert.doesNotMatch(piped.out, /was sourced|is inside a git checkout/, 'a piped install line is not refused as a checkout copy');
+  assert.doesNotMatch(piped.out, /was sourced|is inside a git checkout|was handed to a shell/, 'a piped install line is not refused');
   assert.match(piped.out, /Couldn't download Tess's signature checker/, 'a piped install line starts its own work');
+  // The uninstall line in the README is the same shape, and must stay open too.
+  const pipedUninstall = run('sh', [], { cwd: checkoutDir, input: readFileSync(join(checkoutDir, 'installer', 'uninstall.sh'), 'utf8') });
+  assert.doesNotMatch(pipedUninstall.out, /was sourced|is inside a git checkout|was handed to a shell/, 'a piped uninstall line is not refused');
+  assert.match(pipedUninstall.out, /Removing Tess Music/, 'a piped uninstall line starts its own work');
 
   // 6. The library file is the one thing that is safe to source, and it acts on nothing.
   const library = run('sh', ['-c', `. "${join(checkoutDir, 'installer', 'redact.sh')}"; type tess_redact >/dev/null 2>&1 && echo TESS-LIBRARY-READY`]);
@@ -181,9 +230,18 @@ try {
   const doctor = run('zsh', [installed('doctor.sh')], { cwd: box });
   assert.match(doctor.out, /Tess isn't installed on this Mac/, 'the installed doctor still starts its own check');
   const rescue = run('zsh', [installed('rescue.sh')], { cwd: box });
-  assert.doesNotMatch(rescue.out, /is inside a git checkout/, 'the installed rescue line is not refused');
+  assert.doesNotMatch(rescue.out, /is inside a git checkout|was handed to a shell/, 'the installed rescue line is not refused');
+  // A positive step, so a false positive in either refusal cannot pass as "not refused": launchd runs these as
+  // `/bin/zsh <file>`, with no `-c`, and the guard has to leave that alone.
+  // launchd starts these as `/bin/zsh <file>` as well, and that path must stay open. The updater only goes past its
+  // first check with the settings the installer writes, so give it the sandbox's Spotify path first.
+  mkdirSync(tess, { recursive: true });
+  writeFileSync(join(tess, 'updater.env'), `SPOTIFY=${spotify}\n`);
+  const logBefore = existsSync(fakeLog) ? readFileSync(fakeLog, 'utf8') : '';
   const updater = run('zsh', [installed('updater.sh')], { cwd: box });
-  assert.doesNotMatch(updater.out, /is inside a git checkout/, 'the installed updater is not refused');
+  const updaterCalls = (existsSync(fakeLog) ? readFileSync(fakeLog, 'utf8') : '').slice(logBefore.length);
+  assert.doesNotMatch(updater.out, /is inside a git checkout|was handed to a shell/, 'the installed updater is not refused');
+  assert.match(updaterCalls, /music\.tess\.guard/, 'the installed updater still asks launchd for its guard job');
 
   // 9. A dotfiles repository in the home folder (`git init` in ~) is not a copy of Tess: an install under it still runs.
   const dotfiles = join(box, 'dotfiles');
@@ -195,8 +253,9 @@ try {
   assert.equal(dotfilesOut.status, 0, dotfilesOut.out);
   assert.match(dotfilesOut.out, /music\.tess\.wake/, 'an install under a home folder that is a repository still runs');
 
-  console.log('script guard tests passed (8 scripts: sourcing does nothing; checkout and worktree copies refuse; '
-    + 'piped install line, TESS_TEST=1, TESS_REAL_INSTALL=1 and installed copies run)');
+  console.log('script guard tests passed (8 scripts: sourcing does nothing; a body handed to sh -c or eval is refused; '
+    + 'a checkout or worktree copy refuses, so do TESS_REAL_INSTALL=0/false; the piped install line, TESS_TEST=1, '
+    + 'TESS_REAL_INSTALL=1 and installed copies run)');
 } finally {
   rmSync(box, { recursive: true, force: true });
 }

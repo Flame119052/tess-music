@@ -111,8 +111,9 @@ A channel with no signed installer refuses to install: the forwarder checks the 
 clear message. There is no fallback to `main`; after the first promote stable carries its own signed installer.
 
 Every script that can act on a Mac — `install.sh`, `tess-install.sh`, `updater.sh`, `doctor.sh`, `rescue.sh`,
-`uninstall.sh`, `wake.sh`, `tess-command.sh` — refuses to act when it is sourced, and, outside `TESS_TEST=1`, refuses
-to run from a git checkout or worktree unless `TESS_REAL_INSTALL=1` is set (#107). The installed copies keep working:
+`uninstall.sh`, `wake.sh`, `tess-command.sh` — refuses to act when it is sourced or handed to a shell as text (`sh -c
+"$(cat …)"`, `eval`), and, outside `TESS_TEST=1`, refuses to run from a git checkout or worktree unless
+`TESS_REAL_INSTALL` is exactly `1` (#107). The installed copies keep working:
 they are not checkout files, and the published install line arrives through a pipe, which names no file. `installer/redact.sh`
 is a library, so it is the one file that is meant to be sourced.
 
