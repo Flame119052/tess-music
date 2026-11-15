@@ -365,16 +365,21 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
 - **D-86 · 15 Nov 2026 · Agent** — The folder swap runs inside the signed patcher, as `tess-patcher swap-apps <Apps>
   <staged>`, and the scripts call it instead of copying with `ditto` and renaming with `mv`. `swap-apps` uses the same
   checked `swapApps` (`apply` already does): copy beside `Apps`, check `xpui.spa`/`xpui/index.html`, two renames, and
-  restore the original on any failure or after an interrupted run. It refuses any path that is not a
-  `Contents/Resources/Apps` folder, takes no config (so it never rewrites `config-xpui.ini`), and reports macOS's
-  block as exit 3 as `can-write` does.
+  restore the original on any failure or after an interrupted run. It refuses any path that is not Spotify's own
+  interface folder — the path must end in a separator-bounded `Contents/Resources/Apps`, must still do so after its
+  symlinks are resolved (so `/var` may stand for `/private/var`, but a symlinked `Resources` is refused), and the
+  bundle around it must have `CFBundleIdentifier` `com.spotify.client` — takes no config (so it never rewrites
+  `config-xpui.ini`), and reports macOS's block as exit 3 as `can-write` does.
   *Why:* macOS App Management denied `/usr/bin/ditto`, attributed to `/bin/zsh` because launchd starts the helper that
   way, so every background theme update failed while Spotify was left intact (16:36 on 15 Nov, #108). The signed
   patcher has its own approval, so the same copy is allowed there. A shell fallback was removed rather than kept: it
-  is the path that cannot work in the background, and two swap implementations were already one place to drift.
+  is the path that cannot work in the background, and two swap implementations were already one place to drift. The
+  path check started as a plain string ending, which let `…/NotContents/Resources/Apps` and a symlinked `Resources`
+  rename another folder aside and then delete it (#110 review).
   *Trade-off:* the updater can no longer restore a theme if the patcher itself is missing; Spotify then stays exactly
-  as it was, which is the required failure. `tools/test-swap-recovery.mjs` now builds the real binary, kills it during
-  the copy and between the renames, and proves the next run restores Spotify's folder.
+  as it was, which is the required failure. The test bundles must now carry an `Info.plist` that names Spotify, so a
+  sandbox has to be shaped like a real app bundle. `tools/test-swap-recovery.mjs` now builds the real binary, kills it
+  during the copy and between the renames, and proves the next run restores Spotify's folder.
 
 ## Releases and process
 
