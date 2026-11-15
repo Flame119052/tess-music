@@ -12,10 +12,10 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const boxes = [];
 const sha = (text) => createHash('sha256').update(text).digest('hex');
 
-function sandbox({ stock = false, fresh = false, realDoctor = false } = {}) {
+function sandbox({ stock = false, fresh = false, realDoctor = false, tessName = 'Tess' } = {}) {
   const box = mkdtempSync(join(tmpdir(), 'tess-updater-test-'));
   boxes.push(box);
-  const tess = join(box, 'Tess');
+  const tess = join(box, tessName);
   const state = join(tess, 'state');
   const bin = join(box, 'fake-bin');
   const spotify = join(box, 'Spotify.app');
@@ -139,6 +139,25 @@ try {
     const guard = readFileSync(join(s.tess, 'LaunchAgents', 'music.tess.guard.plist'), 'utf8');
     assert.match(guard, /<integer>1800<\/integer>/);
     assert.match(guard, /<key>WatchPaths<\/key>/);
+  }
+
+  {
+    // A Tess folder whose name carries & and < still has to produce launchd files macOS can read (SEC-19).
+    const s = sandbox({ tessName: 'Tom & Jerry <Tess>' });
+    s.run();
+    for (const name of ['music.tess.guard.plist', 'music.tess.wake.plist']) {
+      const pl = join(s.tess, 'LaunchAgents', name);
+      assert.ok(existsSync(pl), `${name} was written for a folder name with & and <`);
+      const xml = readFileSync(pl, 'utf8');
+      assert.match(xml, /&amp;/, `${name} escapes &`);
+      assert.match(xml, /&lt;/, `${name} escapes <`);
+      execFileSync('/usr/bin/plutil', ['-lint', pl]);
+    }
+    // The same escaping for an AppleScript string, which would otherwise end the notification early.
+    const asEsc = readFileSync(join(root, 'installer', 'updater.sh'), 'utf8').match(/^as_esc\(\) \{.*\}$/m);
+    assert.ok(asEsc, 'updater defines as_esc');
+    assert.equal(execFileSync('/bin/sh', ['-c', `${asEsc[0]}\nas_esc 'Spotify 1.3.9 "beta" \\ ok'`], { encoding: 'utf8' }),
+      'Spotify 1.3.9 \\"beta\\" \\\\ ok');
   }
 
   {

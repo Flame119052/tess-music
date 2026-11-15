@@ -41,6 +41,47 @@ fail() {
 # paths under your home folder, no account details). Turn reports off before installing: touch the file below.
 # JSON string from stdin, with only what every Mac has (awk)
 jstr() { awk 'BEGIN { ORS = ""; print "\"" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, ""); gsub(/[\001-\037]/, ""); print $0 "\\n" } END { print "\"" }'; }
+# The one privacy filter every report path uses; installer/redact.sh is the copy of record and tools/check-safety.sh
+# fails if this copy drifts. Do not edit it here: edit redact.sh and copy the function across.
+tess_redact() {
+  _rh="$HOME"
+  # `|| true` because the installer runs under set -e and a missing scutil must not stop a report
+  _ru=$(id -un 2>/dev/null || true)
+  _rc=$(scutil --get ComputerName 2>/dev/null || true)
+  _rl=$(scutil --get LocalHostName 2>/dev/null || true)
+  LC_ALL=C awk -v home="$_rh" -v acct="$_ru" -v host="$_rc" -v lhost="$_rl" '
+    # Literal replacement. sed and gsub would read a path containing . or & as a pattern, or a & in the replacement.
+    function lit(s, from, to,   out, p) {
+      if (from == "") return s
+      out = ""
+      while ((p = index(s, from)) > 0) { out = out substr(s, 1, p - 1) to; s = substr(s, p + length(from)) }
+      return out s
+    }
+    # A bare account name means a person only where no letter or digit touches it, so "mac" cannot turn "macOS" into
+    # "userOS" and a file called "sam.jones.bak" is still replaced.
+    function word(s, w, to,   out, p, b, a) {
+      if (w == "") return s
+      out = ""
+      while ((p = index(s, w)) > 0) {
+        b = (p > 1) ? substr(s, p - 1, 1) : ""
+        a = substr(s, p + length(w), 1)
+        if (b ~ /[A-Za-z0-9]/ || a ~ /[A-Za-z0-9]/) { out = out substr(s, 1, p); s = substr(s, p + 1) }
+        else { out = out substr(s, 1, p - 1) to; s = substr(s, p + length(w)) }
+      }
+      return out s
+    }
+    {
+      line = $0
+      # a home folder of any account on the Mac, including one whose name starts like this one
+      while (match(line, /\/Users\/[A-Za-z0-9._-]+/)) line = substr(line, 1, RSTART - 1) "~" substr(line, RSTART + RLENGTH)
+      line = lit(line, home, "~")
+      gsub(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/, "(email)", line)
+      line = lit(line, host, "this-mac")
+      line = lit(line, lhost, "this-mac")
+      if (length(acct) >= 3) line = word(line, acct, "user")
+      print line
+    }'
+}
 report_failure() {
   [ -n "$TESS_TEST" ] || [ -f "$HOME_TESS/reports-off" ] && return 0
   mkdir -p "$HOME_TESS" 2>/dev/null
@@ -51,13 +92,25 @@ report_failure() {
     echo "== tess"; ls -la "$HOME_TESS" "$HOME/.local/state/tess-patcher/Backup" "$HOME/.local/state/spicetify/Backup" 2>&1
     grep -h "^version" "$HOME/.config/tess-patcher/config-xpui.ini" "$HOME/.config/spicetify/config-xpui.ini" 2>/dev/null
     command -v spicetify >/dev/null 2>&1 && echo "spicetify is installed"
-  } 2>&1 | sed -e "s|$HOME|~|g" -e "s|/Users/$(id -un)|~|g" | tail -c 20000 | jstr)
+  } 2>&1 | tess_redact | tail -c 20000 | jstr)
   st=$(printf '%s' "$1" | cut -c1-300 | jstr)
   printf '{"install":"%s","kind":"install","spotify":"%s","macos":"%s","status":%s,"body":%s}' \
     "$(cat "$HOME_TESS/install-id")" "${SPV:-}" "${MACOS:-}" "$st" "$body" \
     | curl -fsS --max-time 20 -H "content-type: application/json" --data-binary @- "$INBOX/v1/report" >/dev/null 2>&1 || true
 }
 ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | head -1)" = "$2" ]; }
+# Values Tess stores for a later run are quoted and escaped where they are written, so a folder called "Sam's Apps"
+# or "Tom & Jerry" is stored exactly and cannot run anything when the helper reads the file back.
+env_line() {  # KEY value -> one line a POSIX shell reads back with `.`
+  printf '%s=%s\n' "$1" "$2" | LC_ALL=C awk '{
+    eq = index($0, "="); k = substr($0, 1, eq - 1); v = substr($0, eq + 1)
+    gsub(/\047/, "\047\\\047\047", v)
+    print k "=\047" v "\047"
+  }'
+}
+xml_esc() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+# sudo needs a terminal for its prompt. A sandbox has none, and must not be given the real one.
+run_sudo() { if [ -n "$TESS_TEST" ]; then sudo "$@"; else sudo "$@" </dev/tty; fi; }
 # Playing audio makes macOS hold a sleep assertion for Spotify, usually filed by coreaudiod "Created for PID: <Spotify>".
 # pmset needs no permission (osascript would ask every user). macOS awk has no IGNORECASE, so match both cases.
 spotify_playing() {
@@ -69,7 +122,7 @@ spotify_playing() {
 }
 wait_for_idle() {
   # Someone running the install line in Terminal wants it now; background repairs wait, but at most 12 minutes, which
-  # stays under the rescue line's 15-minute watchdog so a repair order is never killed half-way.
+  # stays under a default rescue order's 30-minute limit so a repair order is not stopped half-way.
   [ -t 1 ] && return 0
   waiting=""; i=0
   while spotify_playing && [ $i -lt ${TESS_IDLE_WAIT_TRIES:-48} ]; do
@@ -99,6 +152,14 @@ if [ -z "$SPOTIFY" ]; then
   done
 fi
 [ -n "$SPOTIFY" ] || fail "Spotify isn't installed. Get the desktop app from https://www.spotify.com/download/mac/ , open it once and sign in, then run this again."
+# The path is stored for the helper to read later and written into launchd files, so it is checked before it is used:
+# absolute (a relative path means the helper reads it from wherever launchd starts), no line break (the settings file
+# holds one value per line), and a real Spotify bundle.
+case "$SPOTIFY" in /*) ;; *) fail "Tess needs Spotify's full path, and found \"$SPOTIFY\"." ;; esac
+[ "$(printf '%s' "$SPOTIFY" | wc -l | tr -d ' ')" -eq 0 ] \
+  || fail "Spotify's folder name has a line break in it, which Tess can't save. Move Spotify somewhere else and run this again."
+[ -d "$SPOTIFY/Contents/MacOS" ] && [ -f "$SPOTIFY/Contents/Info.plist" ] \
+  || fail "\"$SPOTIFY\" isn't a Spotify app, so nothing was changed."
 SPV=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$SPOTIFY/Contents/Info.plist" 2>/dev/null || echo 0)
 if ! ver_ge "$SPV" "$MIN_SPOTIFY"; then
   open -a "$SPOTIFY" 2>/dev/null || true
@@ -112,9 +173,21 @@ if [ ! -f "$HOME/Library/Application Support/Spotify/prefs" ]; then
   while [ ! -f "$HOME/Library/Application Support/Spotify/prefs" ] && [ $i -lt 60 ]; do sleep 1; i=$((i+1)); done
   [ -f "$HOME/Library/Application Support/Spotify/prefs" ] || fail "Open Spotify, sign in, then run this again."
 fi
+# The bundle Tess is about to take ownership of must be Spotify's own app. A folder called Spotify.app that is not is
+# refused: asking for a password and then running chown -R as root on an unchecked path is not something Tess does.
+spotify_is_spotifys_own() {
+  [ "$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$1/Contents/Info.plist" 2>/dev/null)" = "com.spotify.client" ] || return 1
+  codesign --verify --strict "$1" >/dev/null 2>&1 || return 1
+  codesign -dvvv "$1" 2>&1 | grep -q 'Authority=.*Spotify' || return 1
+  spctl --assess --type execute "$1" >/dev/null 2>&1
+}
 if [ ! -w "$SPOTIFY/Contents/Resources" ]; then
+  # canonicalise first, so a link or a ".." chain cannot point the chown somewhere else
+  SPOTIFY=$(cd "$SPOTIFY" && pwd -P) || fail "Spotify's folder can't be read, so nothing was changed."
+  spotify_is_spotifys_own "$SPOTIFY" \
+    || fail "The Spotify at $SPOTIFY isn't Spotify's own signed app, so Tess left it alone. Install Spotify from https://www.spotify.com/download/mac/ and run this again."
   step "Spotify belongs to another user; asking for your password to let Tess update it"
-  sudo chown -R "$(id -un)" "$SPOTIFY" </dev/tty || fail "Couldn't get permission to update Spotify."
+  run_sudo chown -R "$(id -un)" "$SPOTIFY" || fail "Couldn't get permission to update Spotify."
 fi
 
 # Spotify's interface must be here (stock, or modified by an earlier Tess), or Tess's own safety copy of it
@@ -154,6 +227,8 @@ REPAIR=$(repair_source || true)
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 step "Downloading Tess"
 CH="${TESS_CHANNEL:-${TESS_PARTS_CHANNEL:-stable}}"   # dev = internal builds (only the owner's Mac)
+# The channel is stored in the settings file and read back by sed, so only these three words are allowed.
+case "$CH" in stable|beta|dev) ;; *) fail "TESS_CHANNEL must be stable, beta or dev (got \"$CH\")." ;; esac
 getlist() {
   # TESS_DIST_BASE is for sandbox tests: a local folder server instead of GitHub.
   if [ -n "$TESS_TEST" ] && [ -n "$TESS_DIST_BASE" ]; then curl -fsSL --max-time 60 "$DIST/$CH/dist/$1" -o "$TMP/$1"; return; fi
@@ -278,7 +353,10 @@ fi
 put() { cp "$1" "$2.new" && chmod +x "$2.new" && mv -f "$2.new" "$2"; }
 # --- the updater: keeps every part of Tess current from now on, and puts Tess back after Spotify updates --------------
 put "$TMP/updater.sh" "$HOME_TESS/updater.sh"
-{ echo "SPOTIFY='$SPOTIFY'"; [ -n "$TESS_TEST" ] && echo "TESS_CONFIG='$CONF'"; [ "$CH" != stable ] && echo "TESS_PARTS_CHANNEL='$CH'"; } > "$HOME_TESS/updater.env"
+{ env_line SPOTIFY "$SPOTIFY"
+  if [ -n "$TESS_TEST" ]; then env_line TESS_CONFIG "$CONF"; fi
+  if [ "$CH" != stable ]; then env_line TESS_PARTS_CHANNEL "$CH"; fi
+} > "$HOME_TESS/updater.env" || fail "Couldn't save Tess's settings; nothing else was changed."
 mkdir -p "$HOME_TESS/state"
 OLD_MINI=$(cat "$HOME_TESS/state/mini" 2>/dev/null || true)
 for n in patcher theme updater mini doctor installer uninstall wake command; do
@@ -355,6 +433,8 @@ channel() {
 # A launchd label is per user. Under TESS_TEST, /bin/launchctl is the owner's real jobs.
 real_launchctl() { [ -n "$TESS_TEST" ] && [ "$(command -v launchctl)" = /bin/launchctl ]; }
 lctl() { real_launchctl && return 1; command launchctl "$@"; }
+# A folder name with & or < in it would otherwise produce a launchd file macOS refuses to load.
+xml_esc() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
 case "$1" in
   update) /usr/bin/env TESS_FORCE=1 /bin/zsh "$T/updater.sh" ;;
   repair) V="$T/bin/patcher/tess-verify"; [ -x "$V" ] || { echo "Tess's verifier is missing; run the install line to repair Tess."; exit 1; }; exec /usr/bin/env TESS_CHANNEL="$(channel)" TESS_VERIFY="$V" /bin/sh "$T/installer.sh" ;;
@@ -365,6 +445,12 @@ case "$1" in
     case "$2" in
       off) touch "$T/reports-off"; echo "Health reports are off." ;;
       on) rm -f "$T/reports-off"; echo "Health reports are on." ;;
+      # The id is the only thing that links this Mac's reports over time. A new one breaks the link for good.
+      new-id)
+        rm -f "$T/install-id"
+        od -An -tx1 -N16 /dev/urandom | tr -d ' \n' > "$T/install-id" || { echo "Couldn't write a new install id."; exit 1; }
+        echo "New install id: $(cat "$T/install-id")"
+        echo "Reports from this Mac can no longer be linked to the ones before it." ;;
       *) [ -f "$T/reports-off" ] && echo "Health reports are off." || echo "Health reports are on. (tess reports off)" ;;
     esac ;;
   rescue)
@@ -385,7 +471,7 @@ case "$1" in
           exit 1
         fi
         mkdir -p "$LA"
-        RESCUE_PATH=$(printf '%s' "$T/rescue/rescue.sh" | sed 's/\&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+        RESCUE_PATH=$(xml_esc "$T/rescue/rescue.sh")
         printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
           '<plist version="1.0"><dict><key>Label</key><string>music.tess.rescue</string>' \
           "<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$RESCUE_PATH</string></array>" \
@@ -471,13 +557,15 @@ fi
 # --- the helper that runs the updater -----------------------------------------------------------------------------
 step "Keeping Tess up to date, and on through Spotify updates"
 mkdir -p "$HOME/Library/LaunchAgents"
+GUARD_UPDATER=$(xml_esc "$HOME_TESS/updater.sh")
+GUARD_APPS=$(xml_esc "$SPOTIFY/Contents/Resources/Apps")
 cat > "$HOME/Library/LaunchAgents/music.tess.guard.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>music.tess.guard</string>
-<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$HOME_TESS/updater.sh</string></array>
-<key>WatchPaths</key><array><string>$SPOTIFY/Contents/Resources/Apps</string></array>
+<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$GUARD_UPDATER</string></array>
+<key>WatchPaths</key><array><string>$GUARD_APPS</string></array>
 <key>StartInterval</key><integer>1800</integer>
 <key>RunAtLoad</key><true/>
 </dict></plist>
@@ -496,12 +584,13 @@ else
 fi
 
 if [ -x "$HOME_TESS/rescue/rescue.sh" ] && [ ! -f "$HOME_TESS/rescue-off" ]; then
+RESCUE_SCRIPT=$(xml_esc "$HOME_TESS/rescue/rescue.sh")
 cat > "$HOME/Library/LaunchAgents/music.tess.rescue.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>music.tess.rescue</string>
-<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$HOME_TESS/rescue/rescue.sh</string></array>
+<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$RESCUE_SCRIPT</string></array>
 <key>StartInterval</key><integer>21600</integer>
 <key>RunAtLoad</key><true/>
 <key>AbandonProcessGroup</key><true/>
@@ -521,12 +610,13 @@ elif [ -s "$TMP/mini.zip" ] && ver_ge "$MACOS" "13.0"; then
   launchctl bootout "gui/$(id -u)/music.tess.mini" >/dev/null 2>&1 || true
   rm -rf "$HOME/Applications/Tess Mini.app"
   ditto -x -k "$TMP/mini.zip" "$HOME/Applications"
+  MINI_BIN=$(xml_esc "$HOME/Applications/Tess Mini.app/Contents/MacOS/TessMini")
   cat > "$HOME/Library/LaunchAgents/music.tess.mini.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>music.tess.mini</string>
-<key>ProgramArguments</key><array><string>$HOME/Applications/Tess Mini.app/Contents/MacOS/TessMini</string></array>
+<key>ProgramArguments</key><array><string>$MINI_BIN</string></array>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
 </dict></plist>
@@ -542,6 +632,7 @@ echo "  The first time you open the miniplayer, macOS asks to let Tess Mini cont
 echo "  To remove it: \"$HOME_TESS/tess\" uninstall      If something looks wrong: \"$HOME_TESS/tess\" doctor"
 rescue_notice
 echo "  Tess sends a small anonymous health report (versions and errors, nothing personal) so problems get fixed."
+echo "  Each Mac has a random install id; \"$HOME_TESS/tess\" report shows it. A new one any time: \"$HOME_TESS/tess\" reports new-id"
 echo "  To turn that off: \"$HOME_TESS/tess\" reports off"
 echo
 open -a "$SPOTIFY"

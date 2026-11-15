@@ -18,8 +18,12 @@ How Tess protects users (details in [`docs/architecture.md`](docs/architecture.m
   `tess rescue off` to turn it off.
 - Builds reach users only after being tried on the internal channel and promoted. A channel with no signed installer
   refuses to install; the public line never runs an installer from `main`.
-- Health reports are anonymous (no names, paths, computer names or emails) and can be turned off with
-  `tess reports off`; nothing can read them back over the web.
+- Health reports are anonymous: one filter (in every report path, checked in CI against real-looking samples) removes
+  home folders, account names, computer names and email addresses. `tess reports off` turns them off, and
+  `tess reports new-id` gives this Mac a fresh random id so later reports cannot be linked to earlier ones. Nothing can
+  read them back over the web, and the inbox refuses reports rather than store unsalted per-IP keys.
+- The one password prompt Tess can show is to let it update a Spotify that belongs to another account, and only after
+  macOS confirms the app is Spotify's own signed build; otherwise it stops and says to reinstall Spotify.
 
 ## Limits
 

@@ -30,7 +30,11 @@ report_parts_failure() {
     doctor --report
   fi
 }
-notify() { [ -n "$TESS_TEST" ] || osascript -e "display notification \"$1\" with title \"Tess Music\"" >/dev/null 2>&1; }
+# Values Tess stores or hands to another program are escaped where they are written: a folder called "Tom & Jerry"
+# still produces a launchd file macOS can read, and a Spotify version in a notification cannot end the AppleScript string.
+xml_esc() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+as_esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+notify() { [ -n "$TESS_TEST" ] || osascript -e "display notification \"$(as_esc "$1")\" with title \"Tess Music\"" >/dev/null 2>&1; }
 spotify_running() { { [ -n "$TESS_TEST" ] && [ "$TESS_TEST_SPOTIFY_RUNNING" = 1 ]; } || { [ -z "$TESS_TEST" ] && pgrep -x Spotify >/dev/null; }; }
 # Playing audio makes macOS hold a sleep assertion for Spotify, usually filed by coreaudiod "Created for PID: <Spotify>".
 # pmset needs no permission (osascript would ask every user). macOS awk has no IGNORECASE, so match both cases.
@@ -71,13 +75,14 @@ install_guard() {
   [ -n "$TESS_TEST" ] && la="$HOME_TESS/LaunchAgents"
   pl="$la/music.tess.guard.plist"
   mkdir -p "$la"
+  local updater_xml=$(xml_esc "$HOME_TESS/updater.sh") apps_xml=$(xml_esc "$SPOTIFY/Contents/Resources/Apps")
   cat > "$pl.new" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>music.tess.guard</string>
-<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$HOME_TESS/updater.sh</string></array>
-<key>WatchPaths</key><array><string>$SPOTIFY/Contents/Resources/Apps</string></array>
+<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$updater_xml</string></array>
+<key>WatchPaths</key><array><string>$apps_xml</string></array>
 <key>StartInterval</key><integer>1800</integer>
 <key>RunAtLoad</key><true/>
 </dict></plist>
@@ -126,10 +131,11 @@ install_rescue() {
   [ -n "$fresh" ] && /bin/zsh "$dst/rescue.sh" --adopt >/dev/null 2>&1
   [ -f "$pl" ] && return 0
   mkdir -p "$(dirname "$pl")"
+  local rescue_xml=$(xml_esc "$dst/rescue.sh")
   printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
     '<plist version="1.0"><dict>' '<key>Label</key><string>music.tess.rescue</string>' \
-    "<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$dst/rescue.sh</string></array>" \
+    "<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$rescue_xml</string></array>" \
     '<key>StartInterval</key><integer>21600</integer>' '<key>RunAtLoad</key><true/>' '<key>AbandonProcessGroup</key><true/>' '</dict></plist>' > "$pl"
   [ -n "$TESS_TEST" ] && { log "rescue line installed (test)"; return 0; }
   launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1

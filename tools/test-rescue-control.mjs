@@ -88,6 +88,17 @@ esac
   assert.match(out, /Wake check: stopped/);
   assert.doesNotMatch(out, /Rescue format: older/);
 
+  // The install id is the only thing that links this Mac's reports over time; a new one must break that link.
+  out = run('reports', 'new-id');
+  const firstId = readFileSync(join(tess, 'install-id'), 'utf8').trim();
+  assert.match(firstId, /^[0-9a-f]{32}$/, 'a new install id is written');
+  assert.match(out, /New install id/);
+  out = run('reports', 'new-id');
+  const secondId = readFileSync(join(tess, 'install-id'), 'utf8').trim();
+  assert.match(secondId, /^[0-9a-f]{32}$/);
+  assert.notEqual(secondId, firstId, 'the next id is different');
+  assert.match(out, /can no longer be linked/);
+
   out = run('rescue', 'off');
   assert.match(out, /rescue line is off/i);
   assert.ok(existsSync(join(tess, 'rescue-off')), 'off marker written');
@@ -191,7 +202,7 @@ if ! real_launchctl && launchctl print "gui/1/music.tess.rescue"; then echo CALL
   assert.match(called, /print gui\/1\/music.tess.rescue/, 'a fake launchctl is still used in the sandbox');
   assert.match(called, /CALLED/);
 
-  console.log('rescue control tests passed (notice, off/on persistence, status fingerprint, loaded-while-off, sandbox launchctl)');
+  console.log('rescue control tests passed (notice, off/on persistence, status fingerprint, loaded-while-off, sandbox launchctl, reports new-id)');
 } finally {
   rmSync(box, { recursive: true, force: true });
 }

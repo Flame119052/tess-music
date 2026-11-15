@@ -11,7 +11,7 @@ if grep -nE 'rm -rf "?\$(APPS|A0)"?( |;|$)' installer/*.sh; then fail "a script 
 if grep -rn 'RemoveAll(appDestPath)' patcher/src; then fail "the patcher deletes Spotify's interface folder directly; use swapApps"; fi
 
 # 2. every script parses
-for f in installer/install.sh installer/tess-install.sh installer/uninstall.sh installer/tess-command.sh; do sh -n "$f" || fail "$f does not parse"; done
+for f in installer/install.sh installer/tess-install.sh installer/uninstall.sh installer/tess-command.sh installer/redact.sh; do sh -n "$f" || fail "$f does not parse"; done
 for f in installer/updater.sh installer/doctor.sh installer/rescue.sh installer/wake.sh; do zsh -n "$f" || fail "$f does not parse"; done
 node --check theme/loader/loader.js || fail "theme/loader/loader.js does not parse"
 
@@ -22,8 +22,24 @@ if grep -nE '(^|[^#])\b(python3?|node|ruby|perl) ' installer/*.sh | grep -v '^\s
 if grep -nE '^[A-Za-z_]+=\$\((cat|grep|awk|find|ls) [^)]*\)$' installer/tess-install.sh | grep -v '|| true'; then fail "an assignment in tess-install.sh can stop it under set -e; add || true"; fi
 
 # 5. the folder swap itself: Spotify untouched when copying fails, the result is incomplete, macOS blocks writing,
-#    or an earlier run stopped halfway
-(cd patcher && go test ./src/cmd/ -run Swap -count=1) || fail "swapApps tests"
+#    or an earlier run stopped halfway. can-write probes without touching a file that is already there.
+(cd patcher && go test ./src/cmd/ -run 'Swap|CanWrite' -count=1) || fail "swapApps and can-write tests"
+
+# 5b. one privacy filter and one plist escape. Every report path carries the same filter byte for byte (SEC-10: the
+#     installer leaked the account name while the doctor removed it), and every plist is escaped the same way, so a
+#     folder name with & or < cannot make one launchd file unreadable and another fine.
+redact_hashes=$(
+  for f in installer/redact.sh installer/tess-install.sh installer/doctor.sh installer/rescue.sh; do
+    awk '/^tess_redact\(\) \{/{copy=1} copy{print} copy && /^\}/{exit}' "$f" | shasum -a 256 | cut -d' ' -f1
+  done | sort -u | wc -l | tr -d ' '
+)
+[ "$redact_hashes" = 1 ] || fail "the report privacy filter differs between scripts; edit installer/redact.sh and copy it"
+for f in installer/tess-install.sh installer/doctor.sh installer/rescue.sh; do
+  grep -q 'tess_redact' "$f" || fail "$f reports to the inbox without the shared privacy filter"
+done
+esc_lines=$(grep -h '^xml_esc() {' installer/tess-install.sh installer/updater.sh installer/wake.sh installer/tess-command.sh | sort -u | wc -l | tr -d ' ')
+esc_files=$(grep -l '^xml_esc() {' installer/tess-install.sh installer/updater.sh installer/wake.sh installer/tess-command.sh | wc -l | tr -d ' ')
+[ "$esc_lines" = 1 ] && [ "$esc_files" = 4 ] || fail "the plist escape differs between scripts or is missing from one"
 
 # 6. installed code reads promoted channels only. The public stub may live on main, but nothing it installs may read it.
 installed="installer/tess-install.sh installer/updater.sh installer/doctor.sh installer/rescue.sh installer/uninstall.sh installer/wake.sh installer/tess-command.sh theme/loader/loader.js"
