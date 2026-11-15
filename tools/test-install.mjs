@@ -180,10 +180,19 @@ try {
   const bin = join(box, 'bin');
   mkdirSync(bin, { recursive: true });
   const chownLog = join(box, 'chown.log');
+  // A stand-in that prints what codesign prints, in its order, including the Executable line a loose grep could be
+  // fooled by. FAKE_TEAM is the team in the signature; the bundle's own path is never asked.
   writeFileSync(join(bin, 'codesign'), `#!/bin/sh
 case "$1" in
   --verify) [ "$FAKE_CODESIGN_BAD" = 1 ] && exit 1; exit 0 ;;
-  -dvvv) echo "Authority=Developer ID Application: Spotify AB (5N7G3VZ6Q4)"; exit 0 ;;
+  -dvvv) {
+    echo "Executable=$2/Contents/MacOS/Spotify" >&2
+    echo "Identifier=com.spotify.client" >&2
+    echo "Authority=Developer ID Application: ${'$'}{FAKE_AUTHORITY:-Spotify (2FNC3A47ZF)}" >&2
+    echo "Authority=Developer ID Certification Authority" >&2
+    echo "Authority=Apple Root CA" >&2
+    echo "TeamIdentifier=${'$'}{FAKE_TEAM:-2FNC3A47ZF}" >&2
+    exit 0; } ;;
 esac
 exit 0
 `);
@@ -207,6 +216,18 @@ exit 0
   assert.equal(existsSync(chownLog), false, 'no password was asked for');
   assert.equal(statSync(join(locked, 'Contents/Resources')).mode & 0o777, 0o555, 'ownership was not changed');
   assert.equal(installedAt(locked), false, 'Spotify was not touched');
+
+  // 4b. ownership is refused for a notarized app that is not Spotify's own team, even when its folder name claims to be:
+  // codesign -dvvv prints Executable=<path>, so text in the path must not be able to stand in for the signature
+  const impostor = join(box, 'Authority=Spotify (2FNC3A47ZF).app');
+  makeSpotify(impostor);
+  chmodSync(join(impostor, 'Contents/Resources'), 0o555);
+  const notSpotify = await install({ TESS_SPOTIFY: impostor, TESS_HOME: join(box, 'tess-impostor'), PATH: `${bin}:${process.env.PATH}`, FAKE_TEAM: '5N7G3VZ6Q4', FAKE_AUTHORITY: 'Developer ID Application: Some Other Developer (5N7G3VZ6Q4)' });
+  assert.notEqual(notSpotify.status, 0, 'a notarized app from another team is refused');
+  assert.match(notSpotify.stdout, /isn't Spotify's own signed app/, 'the refusal says what is wrong');
+  assert.equal(existsSync(chownLog), false, 'no password was asked for');
+  assert.equal(statSync(join(impostor, 'Contents/Resources')).mode & 0o777, 0o555, 'ownership was not changed');
+  assert.equal(installedAt(impostor), false, 'Spotify was not touched');
 
   const okOwn = await install({ TESS_SPOTIFY: locked, TESS_HOME: join(box, 'tess-locked'), PATH: `${bin}:${process.env.PATH}` });
   assert.equal(okOwn.status, 0, okOwn.stdout + okOwn.stderr);
@@ -234,8 +255,11 @@ exit 0
   assert.equal(await readBack2('SPOTIFY'), moved, 'the doctor stores a folder name with a quote and an & exactly');
   assert.equal(await readBack2('TESS_PARTS_CHANNEL'), 'beta', 'and does not disturb the rest of the file');
 
-  console.log('install tests passed (signed list first; lower and pre-rev refusal; fresh pre-rev; bad verifier stops before the patcher; quoted path; line break refused; verified ownership only; doctor adoption)');
+  console.log('install tests passed (signed list first; lower and pre-rev refusal; fresh pre-rev; bad verifier stops before the patcher; quoted path; line break refused; verified ownership only, by team id and not by folder name; doctor adoption)');
 } finally {
   await new Promise((r) => server.close(r));
+  // a refused bundle keeps the read-only settings it was given, and a sandbox that cannot be removed would hide the
+  // real failure, so make the copy writable again before deleting it
+  execFileSync('chmod', ['-R', 'u+w', box]);
   rmSync(box, { recursive: true, force: true });
 }

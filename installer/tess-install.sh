@@ -178,7 +178,10 @@ fi
 spotify_is_spotifys_own() {
   [ "$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$1/Contents/Info.plist" 2>/dev/null)" = "com.spotify.client" ] || return 1
   codesign --verify --strict "$1" >/dev/null 2>&1 || return 1
-  codesign -dvvv "$1" 2>&1 | grep -q 'Authority=.*Spotify' || return 1
+  # The team is read from the signature, as an exact line, not from any text a folder name could supply: codesign -dvvv
+  # also prints `Executable=<path>`, so a bundle in a folder called "...Authority=Spotify" used to satisfy a loose grep.
+  # 2FNC3A47ZF is Spotify AB's team; spctl accepts any notarized app, so this is the check that names Spotify.
+  codesign -dvvv "$1" 2>&1 | grep -qx 'TeamIdentifier=2FNC3A47ZF' || return 1
   spctl --assess --type execute "$1" >/dev/null 2>&1
 }
 if [ ! -w "$SPOTIFY/Contents/Resources" ]; then
