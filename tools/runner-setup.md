@@ -364,11 +364,14 @@ just to make the queue move.
 Two cases clean themselves up. A tag that finds every slot taken waits for `TESS_AGENT_SLOT_WAIT_MINUTES` (an hour by
 default) and then answers "slots busy", so a stuck slot cannot leave the tag unanswered. A slot held by a job that
 cannot still exist — GitHub kills a dispatch job after 360 minutes and a killed job keeps its slot — is reclaimed
-once it is more than seven hours old, and the reclaim is written into the job log. A thread that outlives its job is
-still running at that point only if something is badly wrong; if you see a reclaim logged while you know a thread is
-live, reconcile it in T3 and raise this in the issue.
+under `reclaim.lock` once it is more than seven hours old, unless its `owner.json` is marked `retained: true` for
+manual reconciliation, and the reclaim is written into the job log. A thread that outlives its job is still running at
+that point only if something is badly wrong; if you see a reclaim logged while you know a thread is live, reconcile it
+in T3 and raise this in the issue.
 
-When dispatch refuses a request, the person who wrote the tag is told on the issue or pull request: a fixed reason
-plus a link to the run. The text comes from `refusalReasons` in `tools/agent-dispatch.mjs`, never from an error
-message, so nothing the runner learned can be published. A tag from an account outside `AGENT_ALLOWLIST` stays
-silent on purpose.
+When dispatch refuses a request (or a started thread ends without completing), the person who wrote the tag is told on
+the issue or pull request: a fixed reason plus a link to the run. The text comes from `refusalReasons` in
+`tools/agent-dispatch.mjs`, never from an error message, so nothing the runner learned can be published. Public job
+logs print only the refusal code and thread ID; full error details are written to `last-error.log` (mode 600) inside
+`TESS_AGENT_SLOT_DIR` so the private endpoint never appears in public logs. A tag from an account outside
+`AGENT_ALLOWLIST` stays silent on purpose.

@@ -200,22 +200,25 @@ and `approach` run in plan mode. `fix` starts from `origin/main`, or from the sa
 PR. Every thread reads this workflow and `AGENTS.md`, posts a marked result comment, and never merges.
 
 A refused request is answered on the issue or PR with a fixed reason and a link to the run: a bad option, an
-unreachable machine, a fork PR, CI that hasn't passed, a full queue, or a sign-in that needs renewing. An account
-outside the allowlist is ignored in silence.
+unreachable machine, a fork PR, CI that hasn't passed, a full queue, or a sign-in that needs renewing; a thread that
+started and ended without completing is answered separately (`thread-failed`). An account outside the allowlist is
+ignored in silence.
 
 Two dedicated dispatcher runner instances and the same number of durable local slots cap this lane at two live
 threads (`TESS_AGENT_SLOTS` changes the slot count, default 2). Extra GitHub jobs wait their turn for up to an hour
 (`TESS_AGENT_SLOT_WAIT_MINUTES`, default 60), then the tag is answered "slots busy" instead of being left to the
 job's six-hour cancellation, which posts nothing. A slot is removed only after T3 confirms the thread and all
-delegated work settled. If a launch or wait reply is lost, its slot remains occupied until a person reconciles it;
-automatically freeing an uncertain slot could start a third thread. A slot no job can still be holding — the
-workflow's own limit is 360 minutes — is reclaimed, and the reclaim is logged. A wait returns before Node's
-five-minute fetch limit and re-waits, so a thread that runs for hours keeps its slot and its session reconnects once
-it expires.
+delegated work settled. If a launch or wait reply is lost, its slot is marked retained and remains occupied until a
+person reconciles it; automatically freeing an uncertain slot could start a third thread, so retained slots are never
+reclaimed by age. A slot left by a job killed past the workflow's 360-minute limit (and not marked retained) is
+reclaimed under a lock, and the reclaim is logged. A wait returns before Node's five-minute fetch limit and re-waits,
+and an expired MCP session reconnects both after a slot wait and during long waits.
 
 The dispatcher's credential is not readable by any other job. It lives in a file only the `tess-dispatch` user can
 read, and that runner's job-started hook refuses every job that is not an `issue_comment` run of this workflow from
-`main` — including a workflow another branch adds. See `tools/runner-setup.md`.
+`main` — including a workflow another branch adds. Public job logs print only the thread ID and fixed refusal code,
+while full failure details stay in `last-error.log` (mode 600) in the slot directory so private endpoints never appear
+in GitHub logs. See `tools/runner-setup.md` and D-66/D-67.
 
 ## Where work happens: branches, worktrees and machines
 

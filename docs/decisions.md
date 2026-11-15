@@ -159,17 +159,24 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
 - **D-66 · 14 Nov 2026 · Owner** — An allowlisted `@tess-agent` GitHub comment starts a T3 Code thread through the
   Mac's outside-agent OAuth MCP endpoint. With no named machine it tries Instabox, then `omarchy`; the Mac and
   `paperclip-vps` run only when the tag names them, because the Mac holds the signing and rescue keys and the VPS runs
-  Paperclip first. A pull request from a fork is refused for every task. At most two dispatched threads run
-  (`TESS_AGENT_SLOTS`), and an uncertain lost reply keeps its slot occupied. A tag that finds every slot taken waits
-  up to `TESS_AGENT_SLOT_WAIT_MINUTES` (an hour), then is answered "slots busy" instead of being left to the job's
-  six-hour cancellation; a slot no job can still be holding, older than that 360-minute limit, is reclaimed and the
-  reclaim is logged. VPS prompts put Paperclip first and forbid access to Paperclip, its data and its services,
-  builds and long tests, and require worktree cleanup. The dispatcher is its own user with its own credential file,
-  and its runner's job-started hook admits only this workflow from `main`.
+  Paperclip first. A pull request from a fork is refused for every task. At most two dispatched threads run, and an
+  uncertain lost reply keeps its slot occupied. VPS prompts put Paperclip first and forbid access to Paperclip, its
+  data and its services, builds and long tests, and require worktree cleanup.
   *The owner wants every T3 provider available from GitHub and made this the latest machine policy for #88.* Trade-off:
-  the VPS boundary is a prompt policy rather than an OS sandbox, a reclaimed slot is judged by age rather than by a
-  confirmed dead thread, and a tag can no longer reach the Mac or the VPS by falling through the default order.
-  Revisit when T3 on the VPS runs as a normal account.
+  the VPS boundary is a prompt policy rather than an OS sandbox, a stuck slot needs manual reconciliation, and a tag
+  can no longer reach the Mac or the VPS by falling through the default order. Revisit when T3 on the VPS runs as a
+  normal account.
+- **D-67 · 14–15 Nov 2026 · Agent** — Dispatcher isolation, queue limits, and log redaction for `#88`: the dispatcher
+  runs as its own `tess-dispatch` user with a mode-600 credential file and a job-started hook admitting only
+  `issue_comment` runs of `agent-dispatch.yml` from `main`. `TESS_AGENT_SLOTS` defaults to 2; a tag finding all slots
+  taken waits up to `TESS_AGENT_SLOT_WAIT_MINUTES` (default 60) before answering `slots-busy`. Slots left by killed
+  jobs (older than 7 hours, beyond the workflow's 360-minute limit) are reclaimed under `reclaim.lock`, while slots
+  marked `retained: true` after an uncertain launch/wait reply are never reclaimed by age. Default routing refuses any
+  default machine whose configured environment ID matches the Mac or VPS, sessions reconnect on 404 after a slot wait
+  or during 4-minute wait slices, public job logs print only the thread ID and fixed code (full error details go to a
+  mode-600 `last-error.log` in the slot directory), and a settled non-completed thread reports `thread-failed`.
+  *Keeps private endpoints out of public logs, prevents lost-reply slots from reopening automatically, and avoids
+  serialized race double-claims.* Trade-off: killed-job reclaim is judged by age rather than a confirmed dead thread.
 
 ## Design and performance
 

@@ -4,7 +4,7 @@
 //        node tools/agent-dispatch.mjs reason   print the refusal code a failed dispatch recorded, for the job output
 //        node tools/agent-dispatch.mjs refuse   post the fixed refusal text for that code on the issue or pull request
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 
@@ -45,12 +45,14 @@ export const refusalReasons = {
   'sign-in': 'the dispatcher could not sign in to the Mac\'s T3 MCP endpoint. Krish has to renew the outside-agent sign-in (see tools/runner-setup.md). No thread was started.',
   'fork-pr': 'this pull request comes from a fork, so nothing on it starts an agent. Only text someone chose to act on reaches a T3 machine; ask Krish if this should run.',
   'ci-not-passed': 'CI has not passed on this pull request\'s head commit yet. An agent runs only on the exact commit CI passed.',
+  'thread-failed': 'the T3 thread started, ran, and ended without completing. Read the run log or T3 thread before retrying.',
   'dispatch-failed': 'the dispatcher failed while starting or following a thread, and a thread may already have run. Read the run log below before retrying.',
 };
 
 export function refusalComment(code, runUrl) {
   const reason = Object.hasOwn(refusalReasons, code) ? refusalReasons[code] : refusalReasons['dispatch-failed'];
-  return `${marker}\n\n@tess-agent did not run: ${reason}\n\nRun: ${runUrl}`;
+  const prefix = code === 'thread-failed' ? '@tess-agent did not finish' : '@tess-agent did not run';
+  return `${marker}\n\n${prefix}: ${reason}\n\nRun: ${runUrl}`;
 }
 
 function refused(code, message) {
@@ -173,6 +175,12 @@ function machineTarget(config, links, machine) {
   return { machine, projectId, environmentId };
 }
 
+function restrictedEnvironmentIds(config, linkResult) {
+  return new Set(
+    [linkResult.environmentId, config.environments.mac, config.environments.vps].filter(Boolean),
+  );
+}
+
 export function resolveMachine(config, linkResult, requested) {
   const reachable = new Set(
     (linkResult.links || [])
@@ -180,12 +188,17 @@ export function resolveMachine(config, linkResult, requested) {
       .map((link) => link.environmentId),
   );
   reachable.add(linkResult.environmentId);
+  const restricted = restrictedEnvironmentIds(config, linkResult);
   const candidates = requested ? [requested] : defaultMachineOrder;
   const unavailable = [];
   for (const machine of candidates) {
     const { projectId, environmentId } = machineTarget(config, linkResult, machine);
     if (!projectId || !environmentId) {
       unavailable.push(`${machine} is not configured`);
+      continue;
+    }
+    if (!requested && restricted.has(environmentId)) {
+      unavailable.push(`${machine} points at a restricted environment`);
       continue;
     }
     if (!reachable.has(environmentId)) {
@@ -385,7 +398,7 @@ export async function claimSlot(directory, owner, options = {}) {
     for (let index = 1; index <= slots; index += 1) {
       const path = `${directory}/slot-${index}`;
       // A slot whose job is gone (killed at the timeout, or a machine that died) would block this lane for good.
-      if (!occupy(path) && !(expireStaleSlot(path, staleAfterMs, now) && occupy(path))) continue;
+      if (!occupy(path) && !reclaimLocked(directory, path, staleAfterMs, now)) continue;
       try {
         write(path, owner);
       } catch (error) {
@@ -410,6 +423,16 @@ function occupy(path) {
   }
 }
 
+function reclaimLocked(directory, path, staleAfterMs, now) {
+  const lock = `${directory}/reclaim.lock`;
+  if (!occupy(lock)) return false;
+  try {
+    return expireStaleSlot(path, staleAfterMs, now) && occupy(path);
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
+  }
+}
+
 // The age comes from `owner.json`, or from the directory when that record is missing or unreadable. The directory is
 // created before the record, so a claim in progress looks like a slot a few milliseconds old, never an expired one.
 function slotClaimedAt(path) {
@@ -427,6 +450,11 @@ function slotClaimedAt(path) {
 }
 
 function expireStaleSlot(path, staleAfterMs, now) {
+  try {
+    if (JSON.parse(readFileSync(`${path}/owner.json`, 'utf8')).retained) return false;
+  } catch {
+    // No readable record: judged by age below.
+  }
   const claimedAt = slotClaimedAt(path);
   if (claimedAt === undefined || now() - claimedAt < staleAfterMs) return false;
   try {
@@ -521,6 +549,7 @@ export async function run(env = process.env, fetchImplementation = fetch, option
     } catch (error) {
       throw refused('sign-in', `T3 MCP sign-in failed: ${error.message}`);
     }
+    const connectedAt = Date.now();
     const clientRequestId = `github:${context.repository}:${context.commentId}`;
     slot = await claimSlot(config.slotDir, {
       claimedAt: new Date().toISOString(),
@@ -531,8 +560,26 @@ export async function run(env = process.env, fetchImplementation = fetch, option
       clientRequestId,
     }, { slots: config.slots, waitBudgetMs: config.slotWaitMs, ...options });
     // Read reachability only after the slot is held: waiting for a free slot can take minutes, and a machine that
-    // answered then may be gone now.
-    const links = await client.callTool('t3_environment_links', {});
+    // answered then may be gone now. Reconnect if the wait could have outlasted the first MCP session, or on 404.
+    if (Date.now() - connectedAt > 30_000) {
+      try {
+        await client.connect();
+      } catch (error) {
+        throw refused('sign-in', `T3 MCP sign-in failed after the slot wait: ${error.message}`);
+      }
+    }
+    let links;
+    try {
+      links = await client.callTool('t3_environment_links', {});
+    } catch (error) {
+      if (!(error instanceof McpHttpError && error.status === 404)) throw error;
+      try {
+        await client.connect();
+      } catch (connectError) {
+        throw refused('sign-in', `T3 MCP sign-in failed after the slot wait: ${connectError.message}`);
+      }
+      links = await client.callTool('t3_environment_links', {});
+    }
     const target = resolveMachine(config, links, request.machine);
     try {
       writeOwner(slot, {
@@ -559,8 +606,10 @@ export async function run(env = process.env, fetchImplementation = fetch, option
     });
     releaseSlot(slot);
     slot = undefined;
-    console.log(`T3 thread ${result.link || result.threadId} settled with status ${final.status}`);
-    if (final.status !== 'completed') throw new Error(`T3 thread ended with status ${final.status}`);
+    console.log(`T3 thread ${result.threadId} settled with status ${final.status}`);
+    if (final.status !== 'completed') {
+      throw refused('thread-failed', `T3 thread ended with status ${final.status}`);
+    }
   } catch (error) {
     recordRefusal(refusalFile, error.refusal);
     // Release only when no thread can exist: before the launch call, or when T3 itself refused it. A lost reply is
@@ -571,6 +620,13 @@ export async function run(env = process.env, fetchImplementation = fetch, option
       slot = undefined;
     }
     if (slot) {
+      try {
+        const ownerPath = `${slot}/owner.json`;
+        const owner = JSON.parse(readFileSync(ownerPath, 'utf8'));
+        writeFileSync(ownerPath, `${JSON.stringify({ ...owner, retained: true, retainedAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 });
+      } catch {
+        // An unmarked slot can still be reclaimed by age; log it so a person reconciles it first.
+      }
       console.error(`Slot retained at ${slot}; reconcile the thread before removing it.`);
     }
     throw error;
@@ -590,11 +646,17 @@ export async function check(env = process.env, fetchImplementation = fetch, log 
       (links.links || []).filter((link) => link.status === 'reachable').map((link) => link.environmentId),
     );
     reachable.add(links.environmentId);
+    const restricted = restrictedEnvironmentIds(config, links);
     const lines = [];
     for (const machine of machineOrder) {
       const { projectId, environmentId } = machineTarget(config, links, machine);
-      const state = !projectId || !environmentId ? 'not configured' : reachable.has(environmentId) ? 'ready' : 'unreachable';
-      const chosen = defaultMachineOrder.includes(machine) ? ' (default)' : ' (only when named)';
+      const isDefault = defaultMachineOrder.includes(machine);
+      const state = !projectId || !environmentId
+        ? 'not configured'
+        : isDefault && restricted.has(environmentId)
+          ? 'misconfigured (points at a restricted environment)'
+          : reachable.has(environmentId) ? 'ready' : 'unreachable';
+      const chosen = isDefault ? ' (default)' : ' (only when named)';
       lines.push(`${machine}: ${state}${chosen}`);
     }
     mkdirSync(config.slotDir, { recursive: true, mode: 0o700 });
@@ -630,10 +692,33 @@ function printReason(env = process.env) {
   console.log(reason);
 }
 
+function writePrivateErrorLog(env, error) {
+  try {
+    const dir = slotDirectory(env);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const logPath = `${dir}/last-error.log`;
+    const detail = `${new Date().toISOString()} [${error?.refusal || 'dispatch-failed'}] ${error?.stack || error?.message || String(error)}\n`;
+    writeFileSync(logPath, detail, { mode: 0o600 });
+    chmodSync(logPath, 0o600);
+  } catch {
+    // Never mask the refusal output when the private log directory is missing.
+  }
+}
+
+export async function runCli(env = process.env, fetchImplementation = fetch, logError = console.error) {
+  try {
+    await run(env, fetchImplementation);
+  } catch (error) {
+    writePrivateErrorLog(env, error);
+    logError(`tess-agent dispatch stopped: ${error?.refusal || 'dispatch-failed'} (details in the dispatcher's private log)`);
+    process.exitCode = 1;
+  }
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
   const command = process.argv[2] || 'dispatch';
   if (command === 'check') await check();
   else if (command === 'reason') printReason();
   else if (command === 'refuse') postRefusal();
-  else await run();
+  else await runCli();
 }
