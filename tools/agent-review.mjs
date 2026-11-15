@@ -664,7 +664,7 @@ export function queuedComment({ machine, provider = '', model = '' }) {
     '',
     `Review queued for \`${machine}\`${reviewer}.`,
     '',
-    `A watcher on that machine picks the tag up within a couple of minutes and opens a T3 thread, where you can watch or steer it. It posts its own review here. Nothing runs on GitHub's machines for this tag.`,
+    `A watcher on that machine picks the tag up within a couple of minutes and opens a T3 thread, where you can watch or steer it. The thread answers with its review, and the watcher posts it here. Nothing runs on GitHub's machines for this tag.`,
   ].join('\n');
 }
 

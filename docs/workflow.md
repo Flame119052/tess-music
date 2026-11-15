@@ -70,7 +70,8 @@ GLM-5.3 on the Z.ai plan: 71% of its week left, resets Tuesday, and the change w
 The tag also says **where** the review runs, and may add **what to look at**:
 
 ```
-@tess-review pr provider=codex model=gpt-6.1-sol effort=high author=opencode machine=mac prompt="focus on the installer fallback"
+@tess-review pr provider=codex model=gpt-6.1-sol effort=high author=opencode
+@tess-review pr provider=opencode model=opencode-go/deepseek-v4.1-flash author=codex machine=mac prompt="focus on the installer fallback"
 ```
 
 | Option | What it means |
@@ -87,19 +88,36 @@ The tag also says **where** the review runs, and may add **what to look at**:
 - **`machine=mac` / `machine=omarchy`**: the review opens as a **T3 thread on that machine**, so Krish can watch or
   steer it while it runs. GitHub's job reads the tag, checks it, and stops after posting `Review queued for mac`; a small
   watcher on the machine polls for tags that name it, checks them with the same rules, and starts the thread with
-  `t3 thread start`. The thread posts its own review with the marker, the commit it read and a verdict, exactly like the
-  hosted one. Setup, the timer and its one-time check are in [`tools/review-watch/README.md`](../tools/review-watch/README.md);
-  installing it is Krish's step, not a merge.
+  `t3 thread start`. The thread answers with the review as its last message and **the watcher posts it**, with the
+  marker, the commit it read and a verdict, after confirming the pull request still points at that commit. Setup, the
+  timer and its one-time check are in [`tools/review-watch/README.md`](../tools/review-watch/README.md); installing it is
+  Krish's step, not a merge.
 - **`machine=vps`** is refused, in fixed words: T3 on `paperclip-vps` runs as root beside Paperclip, so Tess agents do
   not run there through T3 (see "Which machine does what").
 
-Two things the machine path is not. It is not a sandbox: a T3 thread runs with that machine's own permissions, so its
-prompt tells it to stay read-only and it is visible in T3, but the bubblewrap boundary only exists on GitHub's machines;
-that is why `machine=github` stays the default and the Mac is named only when Krish wants to watch. And it is not a
-second set of rules: the allowlist, the fork refusal, CI green on the exact head, the tier, the plans-only list, the
-author rule, usage and reserve are all decided by the same `tools/agent-review.mjs`, so a tag cannot be refused on one
-path and allowed on the other. A refusal on a machine is posted as a comment too, in the same fixed words or the same
-rule comment.
+What the machine path enforces, before any pull-request text reaches a thread (D-77):
+
+- **The thread's runtime mode.** The watcher opens the thread with one fixed line that contains nothing from the pull
+  request, reads the mode T3 reports back, and only sends the diff, the issue and the focus when it is
+  `approval-required` — T3's strictest setting, which is a real read-only, no-network sandbox for Codex and a per-tool
+  approval for Claude. A project left at any wider mode is refused with a comment naming the setting, never reviewed. The
+  project's default runtime mode is set to `approval-required` once, when the watcher is installed.
+- **Who posts.** The thread has no way to write: it is never told how to comment or merge, `gh` is not part of its job,
+  and its answer is read, checked for the marker, the commit and one verdict line, and posted by the watcher. A hijacked
+  thread can produce a bad review; it cannot comment, push, merge or release in Krish's name.
+- **The same rules as GitHub.** The allowlist, the fork refusal, CI green on the exact head, the tier, the plans-only
+  list, the author rule, usage and reserve are decided by the same `tools/agent-review.mjs`, so a tag cannot be refused
+  on one path and allowed on the other. A refusal on a machine is posted as a comment too, in the same fixed words or
+  the same rule comment.
+- **The tag as it reads now.** Every tag is fetched again by id right before it runs: one deleted after it was queued
+  does nothing, and one edited after it was queued is judged on its new words. A launch is recorded before and after
+  `t3 thread start` and keyed to the comment, so a tick that dies half-way adopts its thread instead of making a second.
+
+Two things the machine path still is not. It is not a second sandbox around the owner's account: a T3 thread runs as
+Krish's user, the read-only sandbox has no network and no writes, and files outside the worktree stay readable — which is
+why `machine=github` stays the default and the Mac is named only when he wants to watch. And `effort=` cannot be passed
+to a thread, so a tag that names one is refused on those machines rather than run at an effort nobody chose (leave it
+out, or use `machine=github`).
 
 **Plans only.** Every model on the list runs on one of Krish's subscriptions — the Claude plan, the ChatGPT plan, the
 OpenCode Go plan, or the Z.ai coding plan. No per-token API key is used, ever: a review must never bill by the token.
@@ -138,7 +156,9 @@ OpenCode Go plan, or the Z.ai coding plan. No per-token API key is used, ever: a
 - the Codex plan login is missing or inside its last 12 hours;
 - the tag names a machine that is not `github`, `mac` or `omarchy` — including `vps`, which is refused with its reason;
 - a `prompt=` is longer than 400 characters, empty, or the tag has an option a tag does not take (`tier=`, `machine=pc`),
-  or a quote that is never closed.
+  or a quote that is never closed;
+- a tag for `mac` or `omarchy` names an `effort=`, which `t3 thread start` cannot carry — the same tag without it runs at
+  the model's own default, and `machine=github` passes the effort to the reviewer's CLI.
 
 The refusal names the reason and, for usage, the exact reset time in UTC plus how far away it is, so the next tag can be
 a good one. **Nothing is substituted.** A review that does not run is better than a review by a model nobody chose, so

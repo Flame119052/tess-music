@@ -242,14 +242,28 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   today's GitHub-hosted review, so no existing tag changes meaning; `prompt=` becomes the reviewer's focus, capped at 400
   characters and framed as extra attention, never permission. A tag for `mac` or `omarchy` is checked by the workflow,
   answered with `Review queued for <machine>`, and run by a watcher **on that machine**, which polls GitHub and opens the
-  review with that machine's own `t3 thread start`; the thread posts its own review with the marker and the commit it
-  read. `machine=vps` is refused with its reason. *Why:* GitHub-hosted jobs cannot reach Krish's machines and the
-  self-hosted runners are gone (D-66), so a pull model is the only way to get a review into T3 where he can watch or
-  steer it — with no inbound access and no T3 credential on GitHub. *Trade-off:* the machine path is not a sandbox (a T3
-  thread has that machine's own permissions), so GitHub stays the default and the Mac is named only when he wants to
-  watch; the queue notice and the watcher's comment are an extra step before a review appears. Reuses the two-slot cap,
-  the fixed refusal codes and the CRLF-safe parser from #90, whose dispatcher needed a runner and a stored T3 sign-in;
-  that PR is closed in favour of this. (#71)
+  review with that machine's own `t3 thread start`. `machine=vps` is refused with its reason. *Why:* GitHub-hosted jobs
+  cannot reach Krish's machines and the self-hosted runners are gone (D-66), so a pull model is the only way to get a
+  review into T3 where he can watch or steer it — with no inbound access and no T3 credential on GitHub. *Trade-off:* an
+  extra step before a review appears, and a tag for a machine cannot carry `effort=`. Reuses the two-slot cap, the fixed
+  refusal codes and the CRLF-safe parser from #90, whose dispatcher needed a runner and a stored T3 sign-in; that PR is
+  closed in favour of this. (#71)
+
+- **D-77 · 15 Nov 2026 · Owner** — A machine review is **sent only to a thread T3 reports at `approval-required`**, and
+  the thread never posts it. The watcher opens the thread with a fixed first line that holds nothing from the pull
+  request, reads the thread's runtime mode back from the local T3 server, and only then sends the diff, the issue and the
+  focus; a wider mode is refused with a comment naming the setting. The thread answers with the review as its last
+  message, and the watcher — plain code, no model — checks the marker, the commit and the verdict line and posts it after
+  confirming the head has not moved. A tag is fetched again by id before it runs, so a deleted or edited tag cannot
+  launch from the copy in the state file; a launch is recorded before and after `t3 thread start` and keyed to the comment
+  id in the thread title, so a tick that dies half-way adopts its thread. A slot is held while its thread exists and
+  reclaimed only when the thread is gone or a tick died before starting one, never on a timer. *Why:* a T3 thread runs
+  with Krish's own permissions, and #105's review found that a prompt saying "stay read-only" is not a boundary, that a
+  queued tag could run after deletion, that a live review's slot expired under a two-hour timer, that a crash could
+  start a second thread, and that `effort=` was silently dropped. *Trade-off:* a review takes two messages (the gate,
+  then the review) and its comment appears one tick after the thread settles; the read-only promise is still bounded by
+  T3's own mapping (Codex: OS read-only, no network; Claude: per-tool approval), and files outside the worktree stay
+  readable by the owner's own account, so the Mac stays opt-in per tag and GitHub stays the default. (#71, #105)
 
 ## Releases and process
 
