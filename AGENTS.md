@@ -110,7 +110,10 @@ nothing; Krish using the Mac adds noise, so alternate with/without and repeat (t
 - Work follows [`docs/workflow.md`](docs/workflow.md): issue → approach comment → PR into `main` → dev → beta (Krish
   declares a release) → stable (Krish promotes). Opening a PR is the normal path in this repo (D-63). Tag `@tess-review
   approach` or `@tess-review pr` to call a reviewer agent; the tier (docs / normal / sensitive) decides which reviews a
-  change needs. Small, focused commits; the message says what changed for the user and why, and ends with the issue number, e.g. `(#30)`.
+  change needs. Name the reviewer you chose in the tag — `provider=… model=… effort=…` plus one line saying why —
+  because the job runs that model or refuses with a comment; it never picks one for you (docs/workflow.md → Choosing a
+  reviewer). Small, focused commits; the message says what changed for the user and why, and ends with the issue number,
+  e.g. `(#30)`.
 - Update `docs/status.md` when something user-visible changes state.
 
 ## Communicating with Krish

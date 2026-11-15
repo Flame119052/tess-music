@@ -23,12 +23,23 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Where each provider's calls really go, and how its credential is spelled on the wire. Only providers whose endpoint is
-// a single public host are listed: an OpenCode review spends one connector's allowance at that connector's own endpoint,
+// Where each provider's calls really go, and how its login is spelled on the wire. Only providers whose endpoint is a
+// single public host are listed: an OpenCode review spends one connector's allowance at that connector's own endpoint,
 // so there is nothing here to point it at, and it keeps its own key (its agent file denies every read outside the copy).
+//
+// Codex is the ChatGPT plan, not the OpenAI API. That backend lives under `/backend-api/codex` on chatgpt.com and wants
+// the account id beside the bearer token, so the proxy adds both from the stored `auth.json` (CODEX_AUTH_JSON).
 export const proxyProviders = {
   claude: { upstream: 'https://api.anthropic.com', header: 'authorization', scheme: 'Bearer ' },
-  codex: { upstream: 'https://api.openai.com', header: 'authorization', scheme: 'Bearer ' },
+  codex: {
+    upstream: 'https://chatgpt.com/backend-api/codex',
+    header: 'authorization',
+    scheme: 'Bearer ',
+    accountHeader: 'chatgpt-account-id',
+    // The ChatGPT backend expects an originator; the CLI's own plan login sends this one, and the backend answered a real
+    // plan request with it and nothing else proprietary present.
+    extraHeaders: { originator: 'codex_cli_rs' },
+  },
 };
 
 // The path prefix keeps one proxy's routes apart from another's (`/claude/v1/messages` → `https://api.anthropic.com/v1/…`),
@@ -38,12 +49,16 @@ export const proxyPath = (provider) => `/${provider}`;
 // The exact requests a review's CLI makes, and nothing else. Confirmed by running both pinned CLIs against a local
 // upstream that logged every method and path: Claude Code 2.1.325 in the review's print mode (restricted, safe mode,
 // Read/Grep/Glob) sends only `POST /v1/messages?beta=true`, and Codex 0.169.0 with `wire_api = "responses"` sends only
-// `POST /v1/responses`. The key can also list, download and delete files and batches; none of that is on this list, so
-// the proxy never carries the key to it. A route is a method, a literal path, and the only query keys the CLI was seen
-// to send (an empty list means no query at all).
+// `POST /v1/responses`. On the ChatGPT plan the same `POST …/responses` lands on `chatgpt.com/backend-api/codex/responses`,
+// which is what the upstream above plus this `/responses` route forwards to: a real `codex exec` was pointed at a local
+// proxy that logged the request and forwarded it there, and the backend answered it as a plan request (a usage-limit
+// answer for an account with no weekly room left, not a 401 or a 404), with `authorization` and `chatgpt-account-id` the
+// only credential headers it received. The login can also list and delete files on the API; none of that is on this list,
+// so the proxy never carries the login to it. A route is a method, a literal path, and the only query keys the CLI was
+// seen to send (an empty list means no query at all).
 export const proxyRoutes = {
   claude: [{ method: 'POST', path: '/v1/messages', query: ['beta'] }],
-  codex: [{ method: 'POST', path: '/v1/responses', query: [] }],
+  codex: [{ method: 'POST', path: '/responses', query: [] }],
 };
 
 // A review body is a diff and a prompt; 10 MB is far above the largest real one and below anything that could be used
@@ -96,7 +111,7 @@ const refusal = (res, status, message) => {
   res.end(JSON.stringify({ error: `tess review proxy: ${message}` }));
 };
 
-export function createReviewProxy({ provider, key, token, upstream }) {
+export function createReviewProxy({ provider, key, token, upstream, accountId }) {
   const target = new URL(upstream || proxyProviders[provider]?.upstream || '');
   if (!/^https?:$/.test(target.protocol) || target.username || target.password) {
     throw new Error('the review proxy needs a plain http(s) upstream with no credentials in it');
@@ -137,6 +152,9 @@ export function createReviewProxy({ provider, key, token, upstream }) {
     delete headers['x-api-key'];
     delete headers['proxy-authorization'];
     headers[proxyProviders[provider]?.header || 'authorization'] = `${proxyProviders[provider]?.scheme || 'Bearer '}${key}`;
+    const accountHeader = proxyProviders[provider]?.accountHeader;
+    if (accountHeader && accountId) headers[accountHeader] = accountId;
+    Object.assign(headers, proxyProviders[provider]?.extraHeaders || {});
     headers.host = target.host;
     const up = forward({
       hostname: target.hostname,
@@ -205,18 +223,20 @@ export function proxyReviewerConfig(provider, url, token) {
   if (provider === 'codex') {
     // Codex takes its provider from `-c` overrides, so no config file is written into the sandbox: a file is one more
     // thing a diff could ask the model to read, and the values here hold nothing worth reading. The provider id is
-    // underscores because a `-c` key is a dotted TOML path, where a bare key may not contain a hyphen.
+    // underscores because a `-c` key is a dotted TOML path, where a bare key may not contain a hyphen. The base URL is
+    // the proxy root with no `/v1`: on the ChatGPT plan the CLI appends `/responses` to whatever it is given, and the
+    // proxy's only route is that path, forwarded to the plan backend's own `/responses`.
     const quote = (value) => JSON.stringify(value);
     return {
       env: { TESS_REVIEW_TOKEN: token },
       args: [
         '-c', `model_provider=${quote('tess_review_proxy')}`,
         '-c', `model_providers.tess_review_proxy.name=${quote('tess review proxy')}`,
-        '-c', `model_providers.tess_review_proxy.base_url=${quote(`${base}/v1`)}`,
+        '-c', `model_providers.tess_review_proxy.base_url=${quote(base)}`,
         '-c', `model_providers.tess_review_proxy.env_key=${quote('TESS_REVIEW_TOKEN')}`,
         '-c', `model_providers.tess_review_proxy.wire_api=${quote('responses')}`,
       ],
-      removedKeys: ['CODEX_API_KEY', 'OPENAI_API_KEY'],
+      removedKeys: ['CODEX_AUTH_JSON', 'CODEX_API_KEY', 'OPENAI_API_KEY'],
     };
   }
   return { env: {}, args: [], removedKeys: [] };

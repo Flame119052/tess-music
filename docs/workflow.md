@@ -43,56 +43,78 @@ The tier comes from the paths the PR touches. `tools/agent-review.mjs` works it 
 
 So no change runs the strongest model twice unless it can break someone's Mac.
 
-## Choosing a reviewer (the agent asking does this)
+## Choosing a reviewer (the agent that tags does this)
 
-The agent that writes the approach comment or opens the PR picks who reviews it, and puts the choice in the tag:
+**The agent decides; the job only checks and runs.** The agent that writes the approach comment, or that opens a pull
+request, looks at usage, weighs it, and names the reviewer in the tag. The hosted job installs that one CLI, checks the
+choice against the hard rules, and refuses loudly rather than quietly using a different model. There is no default and
+no fallback: a review runs the model that was asked for, or it does not run.
 
 ```
-@tess-review approach provider=claude model=claude-opus-5-5 effort=high
+@tess-review approach provider=opencode model=zai-coding-plan/glm-5.3 effort=high
 @tess-review pr provider=codex model=gpt-6.1-terra effort=medium
 ```
 
-**One file holds what changes.** [`.github/agents.json`](../.github/agents.json) is the only place with model names,
-their order per role, what a tag may ask for, what one review costs, and any quota kept back. This page explains how to
-read it and when to change it; it does not repeat the values.
+The line after the tag says why, in one sentence, so a reader can see the reasoning without opening a dashboard:
+
+```
+@tess-review pr provider=opencode model=zai-coding-plan/glm-5.3 effort=high
+GLM-5.3 on the Z.ai plan: 71% of its week left, resets Tuesday, and the change was written by DeepSeek.
+```
+
+**Plans only.** Every model on the list runs on one of Krish's subscriptions — the Claude plan, the ChatGPT plan, the
+OpenCode Go plan, or the Z.ai coding plan. No per-token API key is used, ever: a review must never bill by the token.
+
+**What the agent checks before tagging:**
+1. **Usage on its own machine.** `provider_usage` and `provider_pick` in the T3 usage tool, or `~/.local/bin/tess-usage`
+   on Krish's machines. They show the **session (5-hour)** and **weekly** windows, the share left in each, the pace, and
+   when each renews. Those numbers are the same ones the job later reads from the quota-only snapshots.
+2. **The plan the model bills.** `opencode/*` splits into two separate allowances: `opencode-go/*` and
+   `zai-coding-plan/*`. One can be empty while the other is full, so name the connector in the model, as the examples do.
+3. **The weight.** `caps.per_review_pct` in [`agents.json`](../.github/agents.json) is the share of a 5-hour window one
+   review of that model takes: 0.1 for DeepSeek V4.1 Flash, 0.2 for GLM-5.3-Flash, 1 for GLM-5.3 on Z.ai, 3 for
+   `gpt-6.1-terra`, 7 for `gpt-6.1-sol`, and a cautious 10 for Claude, which reports no numbers of its own.
+4. **Pace, not just what is left.** On the morning of 15 Nov, Claude had 59% of its session left but only 16% of its
+   week, with two days to run; Codex had 93% of its session and 89% of its week. Only one was safe to spend that morning,
+   and the session number alone would have picked the wrong one. Skip a provider on pace to run out before its reset.
+5. **Time to reset.** A window that resets in an hour is cheaper to spend than one that resets in three days. When two
+   choices are otherwise equal, take the one whose window is about to refresh.
+6. **Krish's reserves.** `reserve` in `agents.json` holds quota back per provider, with a plain `note` and an optional
+   `until` date. A provider inside its reserve is not a candidate until the date passes.
+7. **The strength the tier needs.** A sensitive change needs a model in `strong`: GLM-5.3 on the Z.ai plan,
+   `gpt-6.1-sol` on the ChatGPT plan, or Claude Opus. Everything else may use a cheaper model.
+8. **A different provider from the author.** DeepSeek writes most of the fixes here. A reviewer from the same provider
+   shares the author's blind spots, so read the PR's `Made by:` line and skip that provider.
+
+**What the job checks, and what it refuses.** A tag is refused, with a marker comment on the pull request, when:
+- it names no `provider=` and `model=` (the comment says which shape to use);
+- the model is not in `allowed` — which is the plans-only list, so an API-key model cannot be reached;
+- the job does not install that CLI;
+- the change is sensitive and the model is not in `strong`;
+- the `Made by:` line names the same provider as the reviewer;
+- a usage snapshot shows that window used up, on pace to run out, or inside a `reserve`;
+- the Codex plan login is missing or inside its last 12 hours.
+
+The refusal names the reason and, for usage, the exact reset time in UTC plus how far away it is, so the next tag can be
+a good one. **Nothing is substituted.** A review that does not run is better than a review by a model nobody chose, so
+the tagging agent re-tags after reading the refusal. A reviewer that fails mid-run (a cap, a usage limit, a timeout) is
+reported the same way, in a comment, and the job stops there.
+
+**One file holds the rules.** [`.github/agents.json`](../.github/agents.json) is the only place with model names, the
+plans-only list, what one review costs, the hard caps, and any quota kept back. Its role lists (`approach`, `pr_normal`,
+`pr_sensitive`) are **pools, not a priority**: they say which models a role may use, and the order means nothing. This
+page explains how to read it and when to change it; it does not repeat the values.
 
 | Field | What it decides |
 | --- | --- |
-| `approach`, `pr_normal`, `pr_sensitive` | the models tried for that role, first to last |
-| `allowed` | every model a tag may name |
+| `approach`, `pr_normal`, `pr_sensitive` | the models a role may use; the order says nothing |
+| `allowed` | every model a tag may name; the plans-only list |
 | `strong` | the models sensitive work may use |
 | `efforts` | the effort words a tag may ask for |
 | `cost` | what one review costs: `light` (pennies), `medium` (worth a thought), `heavy` (a visible bite out of a weekly pool) |
 | `caps` | the hard limit on one review: wall clock, turns, dollars, steps, and the share of a 5-hour window each model is assumed to use |
 | `reserve` | quota kept back per provider, as the % left per window kind, with a plain `note` and an optional `until` date |
 | `notes` | dated, temporary facts, such as a model with its own pool; not rules |
-
-**The job picks by itself.** It walks the role's list from the top and skips a candidate, naming it and the reason in
-the posted comment, when:
-- the job does not install its CLI (Cursor today; the review job installs one provider's CLI, the one it picked);
-- a usage window is already used up (a window that has reset no longer counts);
-- it is **on pace to run out before its reset**, even with usage left — Claude at 84% of a week with two days to go;
-- fewer than three reviews are left in its 5-hour window (each model has its own per-review share in `caps`, so a cheap
-  model still runs when a heavy one would not);
-- it is inside a `reserve` amount that has not expired;
-- the machine has no working `bubblewrap` sandbox (see below).
-
-A requested reviewer that is filtered out is named in the comment too, never silently replaced. Usage the job has no
-numbers for is treated as usable, and the CLI's own error then moves the job on, which the comment also names.
-
-**What the agent still checks by hand, before tagging.** The job knows usage; it does not know what the change is
-worth.
-1. **Open `provider_usage` in T3** — the tool that reads the same hub the snapshots come from. It shows the **session (5-hour)**
-   and **weekly** windows, the share left in each, and when each renews.
-2. **Read the pace, not just what is left.** On the morning of 15 Nov, Claude had 59% of its session left but only 16% of
-   its week, with two days to run; Codex had 93% of its session and 89% of its week. Only one was safe to spend that
-   morning, and the session numbers alone would have picked the wrong one.
-3. **Spend to the size of the change.** One review per stage, and a second only after a fix changed something a reviewer
-   would read differently. `caps` and `cost` say what a review takes, and every review now has a hard cap (below).
-4. **Then pick from the role's list**, skipping anything you just ruled out.
-
-Some pools are separate, and a provider's `notes` in the config say which: a model with its own weekly pool leaves the
-shared pool alone, and a connector that bills on top of a subscription costs more than the weight alone suggests.
 
 Which model is good at what comes from the providers' own docs, review benchmarks, and what developers said on X,
 Hacker News and Reddit in Sep–Nov 2026. Sources are in [`docs/research/reviewer-models-2026-11.md`](research/reviewer-models-2026-11.md).
@@ -104,7 +126,13 @@ Hacker News and Reddit in Sep–Nov 2026. Sources are in [`docs/research/reviewe
 - **ZCode:** starts with every permission on when run without a person.
 - **Cline:** can't block shell commands without a hook.
 - **Copilot:** possible later.
-- **Antigravity:** can't sign in on a server yet.
+- **Cursor:** its own models come from a weekly pool, but a Claude or GPT model inside Cursor bills prepaid credit at
+  API list price from the first request. Leaving it out keeps the plans-only rule true without a footnote.
+- **Antigravity (`agy`):** it runs here and lists models (`gemini-4-hydrogen`, `gemini-4-argon`, `gemini-3.8-flash`), so
+  it was checked properly on 15 Nov. It keeps its account token in the OS keyring (`keyringAuth`, "secret not found in
+  keyring") and has no login subcommand or headless credential file for its own account, so a GitHub Linux VM cannot
+  sign in on the plan. Its `--mode plan` and `--sandbox` flags are the right shape, and it can be added later if it grows
+  a credential-file login.
 
 Every reviewer runs inside a real boundary, whichever provider it is. Each CLI starts inside **bubblewrap** (`bwrap`,
 unprivileged, with `--unshare-all --share-net --die-with-parent`) in an empty filesystem where only these are bound,
@@ -158,36 +186,39 @@ A review must never take a large share of an allowance, so each one is bounded b
 | --- | --- | --- |
 | Claude | `--max-turns 12`, `--max-budget-usd` (60 cents for Opus, 30 for Sonnet), `--output-format json` | `--max-turns` is real but hidden from `--help` in 2.1.x. The dollar figure is a client-side estimate of API list prices, not the plan's own meter, so it is a guardrail beside the turn cap. The JSON result is what lets the comment say the turns, dollars and tokens a review used. |
 | Codex | `-c model_reasoning_effort=…`, `-c model_auto_compact_token_limit=180000`, `--json` | Codex has no turn or budget cap in `exec` mode. Compaction at 180k tokens keeps one review inside the context it started with, and `--json` reports the tokens used, which the comment then states. |
-| Cursor | the 480 s timeout, `--mode ask`, `--sandbox enabled` | Cursor offers no cap it can be told about, so time is the only limit. Only Cursor's own models (Composer) are allowed: a Claude or GPT model inside Cursor bills prepaid credit from the first request. |
+| Cursor | the 480 s timeout, `--mode ask`, `--sandbox enabled` | Not offered today (see "Left out on purpose"). Only Cursor's own models (Composer) would be allowed, because a Claude or GPT model inside Cursor bills prepaid credit from the first request. |
 | OpenCode | `steps: 12` in the `tess-reviewer` agent file | On the last step OpenCode drops the tools and asks for a summary, which is the review. The agent file must match `tools/opencode-reviewer.md` exactly, and the test keeps its number equal to `caps.opencode.steps`. |
-| **All of them** | a 600 s wall clock (480 s for `gpt-6.1-terra` and Cursor) | The process is killed at the limit, bubblewrap takes its children with it, and the posted comment names it: `Skipped: codex/gpt-6.1-sol (timed out after 600s)`. |
+| **All of them** | a 600 s wall clock (480 s for `gpt-6.1-terra` and GLM-5.3-Flash) | The process is killed at the limit, bubblewrap takes its children with it, and the posted comment says so: `codex/gpt-6.1-sol timed out after 600s`. The job then stops instead of running a different model. |
 
 A review's wall clock and its share of a window are different things: the timeout stops a stuck or runaway run, while
 `caps.per_review_pct` decides whether there is enough left to start one (three reviews kept in hand). A CLI that stops
-because of one of these caps is a skip like any other: the next reviewer runs and the comment says `hit its cap`, because
-a review that ran out of turns says nothing about the change.
-Measured so far,
-as a share of a 5-hour window: `gpt-6.1-sol` 7, `gpt-6.1-terra` 3, `opencode-go/glm-5.3` 4,
-`opencode-go/glm-5.3-flash` 0.2, `opencode-go/deepseek-v4.1-flash` 0.1. Claude reports no numbers of its own, so it keeps
-the cautious 10% fallback. A model with no figure therefore behaves exactly as before.
+because of one of these caps is reported in a comment and the job stops there, because a review that ran out of turns
+says nothing about the change and the agent that chose the reviewer has to choose again.
+
+The measured shares, as a share of a 5-hour window: `gpt-6.1-sol` 7, `gpt-6.1-terra` 3, `opencode-go/glm-5.3` 4,
+`opencode-go/glm-5.3-flash` 0.2, `opencode-go/deepseek-v4.1-flash` 0.1, and a cautious 1 for `zai-coding-plan/glm-5.3`
+and 0.2 for `zai-coding-plan/glm-5.3-flash` carried over from the OpenCode Go measurements until a Z.ai window has been
+watched. Claude reports no numbers of its own, so it keeps the cautious 10%.
 
 **Rules.**
 - Don't use the strongest model at both stages unless the work is sensitive.
-- The reviewer should come from a different provider than the agent that wrote the change, so it doesn't share the same blind spots.
-- Usage comes before preference, and the job applies it: exhausted usage, a provider on pace to run out, or reserved quota all skip it before it starts.
-- Only models listed under `allowed` in `.github/agents.json` are accepted. Sensitive work must use one listed under `strong`. If the request breaks a rule, the job falls back to the defaults for that role and says so in its comment.
-- Leaving the choice out is fine: the defaults are the first model in that role's list that can run.
+- The reviewer must come from a different provider than the agent that wrote the change, so it doesn't share the same blind spots. The job refuses a tag that breaks this.
+- Usage comes first: exhausted usage, a provider on pace to run out, or reserved quota is a refusal, and the comment names when there is room again.
+- Only models listed under `allowed` in `.github/agents.json` are accepted, and that list is plans-only. Sensitive work must use one listed under `strong`. A tag that breaks a rule is refused with a comment; nothing is substituted.
+- Naming the reviewer is required. A tag without `provider=` and `model=` is refused, because the job does not choose.
 - Only allowlisted accounts can tag. Krish can use the same syntax himself.
 
 ### How to update this
 
 Everything below is one edit to `.github/agents.json`, then `node tools/test-agent-review.mjs`, then a PR. The test
-checks that every allowed model has a cost weight, that every default is an allowed model with a valid effort, that the
-caps name allowed models, that the OpenCode step cap matches the agent file, and that every note stays dated.
+checks that every allowed model has a cost weight and a plan, that every role pool names an allowed model with a valid
+effort, that `strong` names allowed models, that the caps name allowed models, that the OpenCode step cap matches the
+agent file, that no retired API-key secret is used anywhere, and that every note stays dated.
 
 - **A new model came out.** Add it to `allowed` for its provider, give it a `cost` and, once measured, a
-  `caps.per_review_pct`, then put it where it should be tried: a role list, or nowhere (allowed by tag only). Add it to
-  `strong` only if sensitive work may use it.
+  `caps.per_review_pct`, then put it in the role pools where it may be used, or nowhere (allowed by tag only). Add it to
+  `strong` only if sensitive work may use it. **Only if it bills a subscription:** a model reached with a per-token key
+  does not go in this file at all.
 - **A provider changed its limits.** Nothing to edit: the usage hub reads the limits by itself. The share of a 5-hour
   window one review is assumed to take is `caps.per_review_pct`, per model, in `.github/agents.json`; a model with no
   entry falls back to a cautious 10% in `tools/agent-review.mjs`, changed only with a measured cost per review to point
@@ -202,16 +233,16 @@ caps name allowed models, that the OpenCode step cap matches the agent file, and
   `"claude": { "weekly": 30, "note": "Krish's own work", "until": "2026-11-20" }`. The provider counts as out of usage
   once its % left falls to that number, and the reservation lifts by itself after the `until` day. Delete the entry, or
   the whole block, to reserve nothing.
-- **Stop using a model.** Remove it from the role lists and from `allowed`, and drop its `caps.per_review_pct` and its
-  `cost`, unless you are keeping both as the measured record of why it is out. Sensitive work must keep at least the two
-  strong models in `approach` and `pr_sensitive`.
+- **Stop using a model.** Remove it from the role pools and from `allowed`, and drop its `caps.per_review_pct` and its
+  `cost`, unless you are keeping both as the measured record of why it is out. Sensitive work must keep at least two
+  strong models across `approach` and `pr_sensitive`, so a tier is never left with one reviewer.
 
 ## Reviewer agents on GitHub's machines
 
 - **Who can call them.** Only GitHub accounts in the allowlist (the repo variable `AGENT_ALLOWLIST`, today just `Flame119052`). A tag from anyone else is ignored. Anyone can still open issues and PRs.
 - **Where they run.** A standard GitHub Actions job on `ubuntu-latest`: one fresh virtual machine per review, deleted when the job ends. GitHub-hosted Linux machines are free and unlimited for this public repository, so there is no runner to keep online, no box to wake, and no machine of Krish's in the path (D-66). Nothing of Krish's is on the VM: no signing or rescue keys, no Paperclip, no other job's secrets.
-- **What the VM holds.** Only the chosen reviewer's key and a `GITHUB_TOKEN` that can comment on this repository. The reviewer is chosen first (`node tools/agent-review.mjs pick ...`), then that one provider's CLI is installed at a pinned version, and only that provider's secret is given to the step. A review can never hold a second provider's key. For Claude and Codex the key stays in the review process and the sandbox gets a per-review token instead (`tools/review-proxy.mjs`, D-69); that proxy forwards only the one inference route its pinned CLI was measured to call and answers everything else with a 403, so the token is not a way to reach the rest of what the key can do. OpenCode keeps its own key, which its agent file cannot read. `GH_TOKEN` is on the step so the review can be posted, and the script removes it before the reviewer process starts.
-- **Picking the model.** `.github/agents.json` lists the reviewer models per role, default first. The pick takes the first one that the job can install, with enough usage (both windows and pace) and no unexpired reservation, and names everything it skipped in the comment. The review then refuses a provider whose `bubblewrap` sandbox cannot start, and names that too. Usage comes from [#93](https://github.com/Flame119052/tess-music/issues/93)'s quota-only snapshots, one repository variable per machine (`USAGE_SNAPSHOT_MAC`, `_VPS`, `_OMARCHY`): the freshest under 30 minutes wins, and the comment names the machine and age; with none fresh, "no numbers" counts as usable, as before.
+- **What the VM holds.** Only the chosen reviewer's plan login and a `GITHUB_TOKEN` that can comment on this repository. The tag's choice is checked first (`node tools/agent-review.mjs pick ...`), then that one provider's CLI is installed at a pinned version, and only that provider's login is given to the step. A review can never hold a second provider's login. For Claude and Codex the login stays in the review process and the sandbox gets a per-review token instead (`tools/review-proxy.mjs`, D-69, D-73); that proxy forwards only the one inference route its pinned CLI was measured to call and answers everything else with a 403, so the token is not a way to reach the rest of what the login can do. OpenCode keeps its own key, which its agent file cannot read. `GH_TOKEN` is on the step so the review can be posted, and the script removes it before the reviewer process starts.
+- **Which model runs.** The tag says. The pick step only checks the choice — plans-only list, the job's installed CLIs, `strong` for a sensitive change, a different provider from the author, usage and any reserve — and refuses anything that breaks a rule with a comment on the pull request. Usage comes from [#93](https://github.com/Flame119052/tess-music/issues/93)'s quota-only snapshots, one repository variable per machine (`USAGE_SNAPSHOT_MAC`, `_VPS`, `_OMARCHY`): the freshest under 30 minutes wins, and it is read beside the local hub; with none fresh, "no numbers" counts as usable, and the CLI's own refusal is reported in a comment. Those numbers are a check on the agent's choice, never a way for the job to pick for it.
 - **Safety, because the repo is public:**
   - The workflow is triggered only by `issue_comment`, which always runs the workflow file from `main`, never from a PR.
   - The first job runs on GitHub's own machine. It checks the commenter against the allowlist and checks that CI passed on the PR's exact commit. Only then does the review job start.

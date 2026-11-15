@@ -1,7 +1,7 @@
 # Status
 
 What's true right now, what's open, and what's waiting on whom. Update this when something user-visible changes.
-Last updated: 14 Nov 2026.
+Last updated: 15 Nov 2026.
 
 ## Releases
 
@@ -24,7 +24,7 @@ helper blanked its Spotify).
 | #68 | `P1` | `installer`, `release-ci` | Rescue line: start a new order within a minute instead of waiting up to six hours | Shipped to every Mac as the 5-minute wake check (D-63, #75): it reads two public files and starts the updater or the rescue line, which can only run its five actions (#69). Users can turn the rescue line off with `tess rescue off` (#53). |
 | #53 | `P1` | `installer` | Tell users about the rescue line; `tess rescue off`, `tess status` | PR #75 review fixes implemented; sandbox checks cover persistent opt-out, older channel installs, separate wake reads, and the older-script notice. Awaiting CI and reviewer acceptance; not released. |
 | #54 | `P1` | `docs`, `release-ci` | Purge old issue revisions and commit messages with personal details | Waiting on Krish (Phase 1). |
-| #71 | `P1` | `installer`, `release-ci` | Issue → approach → PR → dev → beta → stable, with reviewer agents | Parts B–C implemented. Reviews now run on a fresh GitHub-hosted `ubuntu-latest` VM per review (D-66): only the chosen CLI is installed, only that provider's secret reaches the step, and bubblewrap still refuses to run bare. Waiting on Krish to add the provider secrets and retire the old runners. |
+| #71 | `P1` | `installer`, `release-ci` | Issue → approach → PR → dev → beta → stable, with reviewer agents | Parts B–C implemented. Reviews run on a fresh GitHub-hosted `ubuntu-latest` VM per review (D-66): only the tagged reviewer's CLI is installed, only its own plan login reaches the step, and bubblewrap still refuses to run bare. Plans only, with the tagging agent choosing the model and the job refusing anything that breaks a rule (D-71, D-72). Waiting on Krish: add `CODEX_AUTH_JSON` (`node tools/codex-ci-login.mjs`) and retire the old runners. |
 | #62 | `P1` | `docs`, `release-ci` | Update docs & release flow for PRs → `dev` → `beta` → `stable` (approvers TBD) | Waiting on Krish (Phase 1). |
 | #28 | `P1` | `installer`, `patcher` | macOS App Management: ask once, never loop, approval survives updates | Shipped; `status: verify` on a real blocked Mac at next Spotify update. |
 | #7 | `P1` | `patcher`, `installer` | Survive Spotify updates | Done; waiting on Krish to confirm and close. |

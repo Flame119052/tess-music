@@ -18,13 +18,12 @@ import {
   cliArgs,
   capsFor,
   containsHeldSecret,
-  earliestReset,
   eligibleModels,
-  extraSkipped,
   failureSummary,
-  forkProblem,
-  formatRelativeTime,
   formatUtcTime,
+  formatRelativeTime,
+  earliestReset,
+  forkProblem,
   freshestSnapshot,
   headAnswer,
   headFacts,
@@ -46,7 +45,12 @@ import {
   redactText,
   reserveProblem,
   reservationEnd,
-  resolveReviewers,
+  requestProblem,
+  refusalComment,
+  authorProvider,
+  codexAuth,
+  credentialProblem,
+  retiredKeyNames,
   reviewerEnv,
   readSnapshots,
   reviewerCandidates,
@@ -59,7 +63,6 @@ import {
   sandboxProblem,
   sanitizeLine,
   skipReason,
-  skippedLine,
   snapshot,
   snapshotUsage,
   stripAgentConfig,
@@ -72,7 +75,8 @@ import {
   usedLine,
   verifyPrHead,
 } from './agent-review.mjs';
-import { createReviewProxy, maxProxyBodyBytes, matchProxyRoute, proxyRoutes, proxyReviewerConfig } from './review-proxy.mjs';
+import { proxyProviders, proxyRoutes } from './review-proxy.mjs';
+import { createReviewProxy, maxProxyBodyBytes, matchProxyRoute, proxyReviewerConfig } from './review-proxy.mjs';
 
 const config = JSON.parse(readFileSync(new URL('../.github/agents.json', import.meta.url), 'utf8'));
 const agentFile = new URL('../tools/opencode-reviewer.md', import.meta.url);
@@ -286,31 +290,37 @@ exit 99
     }
     assert.ok(error, 'the run has to stop somewhere');
     const output = `${error.stderr || ''}${error.stdout || ''}${error.message || ''}`;
-    assert.match(output, /no reviewer could run/, 'it stopped after making the review copy, not before');
+    assert.match(output, /names no reviewer/, 'it stopped after making the review copy, not before');
     assert.ok(!/is not a function/.test(output), 'the usage snapshot never shadows snapshot()');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('review roles keep the requested model order', () => {
-  assert.deepEqual(config.approach, [
-    { provider: 'claude', model: 'claude-opus-5-5', effort: 'high' },
-    { provider: 'codex', model: 'gpt-6.1-sol', effort: 'high' },
-  ]);
-  assert.deepEqual(config.pr_normal.map((m) => `${m.provider}/${m.model}`), [
-    'codex/gpt-6.1-terra',
-    'claude/claude-sonnet-5-5',
-    'opencode/opencode-go/deepseek-v4.1-flash',
-  ], 'normal PRs default to the cheap OpenCode model; GLM-5.3 on OpenCode Go uses that quota up fast');
-  assert.ok(config.allowed.opencode.includes('zai-coding-plan/glm-5.3'), 'GLM on the Z.ai coding plan is allowed by tag');
-  assert.deepEqual(config.pr_sensitive, config.approach);
+test('the role pools say what may be used, not what wins, and every model is on a plan', () => {
+  // The order means nothing: the tag chooses. What matters is that each pool holds only allowed models, and that every
+  // allowed model can be reached only through a subscription login.
   for (const role of ['approach', 'pr_normal', 'pr_sensitive']) {
+    assert.ok(config[role].length >= 2, `${role} offers a choice`);
     for (const m of config[role]) {
       assert.ok(config.allowed[m.provider].includes(m.model), `${role}: ${m.model} is allowed`);
       assert.ok(!m.effort || config.efforts.includes(m.effort), `${role}: ${m.effort} is one of ${config.efforts}`);
+      assert.ok(config.cost[`${m.provider}/${m.model}`], `${role}: ${m.model} has a cost weight`);
     }
   }
+  // Sensitive work has GLM-5.3 on the Z.ai plan, Codex sol on the ChatGPT plan, and Claude Opus to choose from.
+  for (const strong of ['zai-coding-plan/glm-5.3', 'gpt-6.1-sol', 'claude-opus-5-5']) {
+    assert.ok(config.strong.includes(strong), `${strong} is strong`);
+  }
+  for (const role of ['approach', 'pr_sensitive']) {
+    assert.ok(config[role].some((m) => config.strong.includes(m.model)), `${role} can use a strong model`);
+  }
+  // The cheap end is still offered for ordinary work, including both GLM routes that live on separate plans.
+  const normal = config.pr_normal.map((m) => `${m.provider}/${m.model}`);
+  for (const cheap of ['opencode/opencode-go/deepseek-v4.1-flash', 'opencode/zai-coding-plan/glm-5.3-flash']) {
+    assert.ok(normal.includes(cheap), `${cheap} is offered for a normal change`);
+  }
+  assert.ok(!normal.includes('claude/claude-opus-5-5'), 'normal work does not default to the heaviest Claude model');
 });
 
 test('docs-only paths use CI review', () => {
@@ -356,48 +366,126 @@ test('unknown usage is eligible and any exhausted window blocks a provider', () 
   assert.equal(providerHasUsage({ windows: [{ usedPercent: 100, resetsAt: '2020-01-01T00:00:00Z' }] }), true);
 });
 
-test('model order follows config and falls through exhausted or missing providers', () => {
-  const allCommands = () => true;
-  const first = eligibleModels(config.approach, {
-    claude: available(20),
-    codex: available(10),
-  }, allCommands);
-  assert.deepEqual(first.map(({ provider, model }) => [provider, model]), [
-    ['claude', 'claude-opus-5-5'],
-    ['codex', 'gpt-6.1-sol'],
-  ]);
+test('a tag names the reviewer, and only a hard rule can refuse it', () => {
+  const now = Date.parse('2026-11-15T06:30:00Z');
+  const honoured = requestProblem(config, { provider: 'codex', model: 'gpt-6.1-terra', effort: 'high' }, { now });
+  assert.deepEqual(honoured.model, { provider: 'codex', model: 'gpt-6.1-terra', effort: 'high' }, 'the job runs what the tag named');
 
-  const fallback = eligibleModels(config.approach, {
-    claude: available(100),
-    codex: available(10),
-  }, allCommands);
-  assert.deepEqual(fallback.map(({ provider, model }) => [provider, model]), [
-    ['codex', 'gpt-6.1-sol'],
-  ]);
+  // A sensitive change needs a strong model, and GLM-5.3 on the Z.ai plan is one: this is the case that used to be
+  // blocked by Claude and Codex being short of room.
+  assert.match(requestProblem(config, { provider: 'claude', model: 'claude-sonnet-5-5' }, { tier: 'sensitive' }).reason, /strong model/);
+  assert.ok(requestProblem(config, { provider: 'opencode', model: 'zai-coding-plan/glm-5.3' }, { tier: 'sensitive' }).model);
 
-  const normalFallback = eligibleModels(config.pr_normal, {
-    codex: available(100),
-    claude: available(5),
-  }, (command) => command === 'claude');
-  assert.deepEqual(normalFallback.map(({ provider, model }) => [provider, model]), [
-    ['claude', 'claude-sonnet-5-5'],
-  ]);
+  // No model named: refused, because the job does not choose.
+  assert.match(requestProblem(config, {}, {}).reason, /names no reviewer/);
+  assert.match(requestProblem(config, { provider: 'codex' }, {}).reason, /names no reviewer/);
+
+  // Not on the plans-only list, including anything reached with an API key.
+  assert.match(requestProblem(config, { provider: 'codex', model: 'gpt-9' }, {}).reason, /plans-only list/);
+  assert.match(requestProblem(config, { provider: 'cursor', model: 'composer-2.5' }, {}).reason, /plans-only list/);
+  for (const retired of retiredKeyNames) assert.ok(!Object.keys(providerKeys).some((p) => providerKeys[p].includes(retired)), retired);
+  for (const provider of Object.keys(config.allowed)) {
+    assert.ok(config.plans[provider], `${provider} names the plan it bills`);
+  }
+
+  // A CLI this job does not install, an effort word it does not know.
+  assert.match(requestProblem(config, { provider: 'codex', model: 'gpt-6.1-sol' }, { installed: ['claude'] }).reason, /does not install/);
+  assert.match(requestProblem(config, { provider: 'codex', model: 'gpt-6.1-terra', effort: 'ultra' }, {}).reason, /effort must be/);
+
+  // The author's own provider, read from the pull request, is refused.
+  assert.match(requestProblem(config, { provider: 'opencode', model: 'opencode-go/deepseek-v4.1-flash' }, { author: 'opencode' }).reason, /same provider/);
+
+  // A window with nothing left, and a reserved one, are refusals that carry the moment there is room again.
+  const empty = requestProblem(config, { provider: 'codex', model: 'gpt-6.1-sol' }, {
+    now,
+    usage: { windows: [{ kind: 'weekly', usedPercent: 100, resetsAt: '2026-11-16T09:00:00Z' }] },
+  });
+  assert.match(empty.reason, /no usage left/);
+  assert.equal(empty.resetsAt, Date.parse('2026-11-16T09:00:00Z'));
+  const reserved = requestProblem(config, { provider: 'claude', model: 'claude-opus-5-5' }, {
+    now,
+    reserve: { weekly: 30, note: "Krish's own work" },
+    usage: { windows: [{ kind: 'weekly', usedPercent: 85, resetsAt: '2026-11-17T09:00:00Z' }] },
+  });
+  assert.match(reserved.reason, /reserved for Krish's own work/);
+  assert.equal(reserved.resetsAt, Date.parse('2026-11-17T09:00:00Z'));
+
+  // A Codex login that cannot last a review is a refusal like any other.
+  assert.match(requestProblem(config, { provider: 'codex', model: 'gpt-6.1-sol' }, { credential: 'the stored Codex login expired' }).reason, /expired/);
 });
 
-test('a tag can name the reviewer, within the rules', () => {
-  const req = parseRequest('Plan below.\n@tess-review pr provider=codex model=gpt-6.1-terra effort=high\nthanks');
-  assert.deepEqual(req, { provider: 'codex', model: 'gpt-6.1-terra', effort: 'high' });
-  const normal = resolveReviewers(config, config.pr_normal, req, 'normal');
-  assert.deepEqual(normal.models[0], { provider: 'codex', model: 'gpt-6.1-terra', effort: 'high' });
-  assert.equal(normal.note, '');
-  // sensitive work refuses a lighter model and falls back to the strong defaults
-  const sensitive = resolveReviewers(config, config.pr_sensitive, req, 'sensitive');
-  assert.deepEqual(sensitive.models, config.pr_sensitive); assert.match(sensitive.note, /sensitive work needs/);
-  // unknown models and odd values are refused
-  assert.match(resolveReviewers(config, config.pr_normal, { provider: 'codex', model: 'gpt-9' }, 'normal').note, /not in/);
-  assert.match(resolveReviewers(config, config.pr_normal, { provider: 'claude', model: 'claude-opus-5-5', effort: 'ultra' }, 'normal').note, /effort/);
-  assert.deepEqual(parseRequest('@tess-review pr model=$(touch x)'), {});
-  assert.deepEqual(resolveReviewers(config, config.pr_normal, {}, 'normal').models, config.pr_normal);
+test('a refusal is said in a comment, and never becomes another model', () => {
+  const now = Date.parse('2026-11-15T06:30:00Z');
+  const resetsAt = Date.parse('2026-11-15T09:10:00Z');
+  const body = refusalComment({ reason: 'codex/gpt-6.1-sol has no usage left in its weekly window', provider: 'codex', model: 'gpt-6.1-sol', resetsAt, now });
+  assert.ok(body.startsWith('<!-- tess-review-bot -->'), 'the marker keeps it from triggering another review');
+  assert.match(body, /codex \/ gpt-6\.1-sol was refused/);
+  assert.match(body, /Why: codex\/gpt-6\.1-sol has no usage left/);
+  assert.match(body, /2026-11-15 09:10 UTC/, 'the reset time is UTC and exact');
+  assert.match(body, /in 2h 40m/, 'and how far away it is');
+  assert.match(body, /does not substitute another model/);
+  // Without a reset time it still refuses, and says nothing it cannot know.
+  const bare = refusalComment({ reason: 'no model named', provider: '', model: '', resetsAt: null, now });
+  assert.match(bare, /Review not run\./);
+  assert.ok(!/resets at/.test(bare));
+});
+
+test('the Codex plan login is refused when it is missing or near its expiry', () => {
+  const now = Date.parse('2026-11-15T06:00:00Z');
+  const jwt = (exp) => `x.${Buffer.from(JSON.stringify({ exp })).toString('base64url')}.y`;
+  const login = (accessToken, accountId = 'acct-1') => JSON.stringify({
+    auth_mode: 'chatgpt',
+    tokens: { access_token: accessToken, account_id: accountId, refresh_token: 'r' },
+    last_refresh: '2026-11-14T00:00:00Z',
+  });
+  const hours = (n) => now + n * 60 * 60 * 1000;
+
+  // Good: ten days of access token, which is what a plan login really carries.
+  const good = codexAuth(login(jwt(Math.floor(hours(240) / 1000))), now);
+  assert.equal(good.accessToken, jwt(Math.floor(hours(240) / 1000)));
+  assert.equal(good.accountId, 'acct-1');
+  assert.equal(credentialProblem('codex', { CODEX_AUTH_JSON: login(jwt(Math.floor(hours(240) / 1000))) }), null);
+
+  // Inside the 12-hour margin the review would be racing the expiry, so it refuses now with a reason that says what to do.
+  const near = codexAuth(login(jwt(Math.floor(hours(6) / 1000))), now);
+  assert.match(near.problem, /expires in about 6h/);
+  assert.match(near.problem, /codex-ci-login/);
+  const expired = codexAuth(login(jwt(Math.floor(hours(-1) / 1000))), now);
+  assert.match(expired.problem, /expired at/);
+
+  // Missing, malformed, an API key instead of a plan login, an opaque token, and a login with no account id all refuse.
+  assert.match(codexAuth('', now).problem, /CODEX_AUTH_JSON is empty/);
+  assert.match(codexAuth('{not json', now).problem, /not readable JSON/);
+  assert.match(codexAuth(JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: 'sk-x' }), now).problem, /no access token/);
+  assert.match(codexAuth(login('not-a-jwt'), now).problem, /no readable expiry/);
+  assert.match(codexAuth(login(jwt(Math.floor(hours(240) / 1000)), ''), now).problem, /no account id/);
+  // Only Codex has a login that can expire; the other providers answer with their own CLI.
+  assert.equal(credentialProblem('claude', {}), null);
+});
+
+test('a no-room comment names the reset time in UTC and in plain time', () => {
+  const now = Date.parse('2026-11-15T06:30:00Z');
+  const resetsAt = Date.parse('2026-11-15T09:10:00Z');
+  const body = noRoomComment({ reasons: ['codex/gpt-6.1-sol (no usage left in its weekly window)'], earliestResetMs: resetsAt, now });
+  assert.ok(body.startsWith('<!-- tess-review-bot -->'));
+  assert.match(body, /No reviewer had room to run\./);
+  assert.match(body, /codex\/gpt-6\.1-sol \(no usage left/);
+  assert.match(body, /Earliest window reset: 2026-11-15 09:10 UTC \(in 2h 40m\)/);
+  assert.match(body, /Tag again after that time\./);
+  assert.equal(formatUtcTime(resetsAt), '2026-11-15 09:10 UTC');
+  assert.equal(formatRelativeTime(resetsAt, now), 'in 2h 40m');
+  assert.equal(earliestReset([{ resetsAt: '2026-11-15T09:10:00Z' }, { resetsAt: '2026-11-15T07:45:00Z' }], now),
+    Date.parse('2026-11-15T07:45:00Z'));
+  assert.match(noRoomComment({ reasons: [], now }), /Tag again once a reviewer has usage available\./);
+});
+
+test('the author is read from the pull request. and the same provider is skipped', () => {
+  assert.equal(authorProvider('Made by: DeepSeek V4.1 Flash in OpenCode\n\nbody'), 'opencode');
+  assert.equal(authorProvider('Made by: Claude Opus 5.5'), 'claude');
+  assert.equal(authorProvider('Made by: Codex gpt-6.1-terra'), 'codex');
+  assert.equal(authorProvider('Made by: Gemini 4 in Antigravity'), 'antigravity');
+  assert.equal(authorProvider('no line at all'), '');
+  assert.equal(authorProvider(''), '');
 });
 
 test('review text that looks like a key or token is never posted', () => {
@@ -411,13 +499,12 @@ test('a review that quotes a key the job holds is never posted', () => {
   const env = {
     GH_TOKEN: 'ghs_' + 'a'.repeat(36),
     CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-' + 'b'.repeat(40),
-    CODEX_API_KEY: 'codex-key-' + 'c'.repeat(20),
-    CURSOR_API_KEY: 'cursor-key-' + 'd'.repeat(20),
+    CODEX_AUTH_JSON: JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'codex-access-' + 'c'.repeat(20) } }),
     OPENCODE_API_KEY: 'opencode-key-' + 'e'.repeat(20),
     ZHIPU_API_KEY: 'zhipu-key-' + 'f'.repeat(20),
     HOME: '/home/r',
   };
-  for (const name of ['GH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_API_KEY', 'CURSOR_API_KEY', 'OPENCODE_API_KEY', 'ZHIPU_API_KEY']) {
+  for (const name of ['GH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_AUTH_JSON', 'OPENCODE_API_KEY', 'ZHIPU_API_KEY']) {
     assert.ok(containsHeldSecret(`the environment had ${env[name]} in it`, env), name);
   }
   assert.ok(!containsHeldSecret('Looks fine. The swap keeps a checked copy.', env));
@@ -431,18 +518,21 @@ test('a review that quotes a key the job holds is never posted', () => {
 test('the reviewer gets only its own provider keys, never the GitHub token', () => {
   const env = {
     HOME: '/home/r', PATH: '/bin', TMPDIR: '/tmp', GH_TOKEN: 'ghs_x', GITHUB_TOKEN: 'ghs_y',
-    CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-x', CODEX_API_KEY: 'ck', CURSOR_API_KEY: 'cu',
+    CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-x', CODEX_AUTH_JSON: '{"tokens":{"access_token":"ck"}}',
     OPENCODE_API_KEY: 'oc', ZHIPU_API_KEY: 'zp', OTHER: '1',
   };
   assert.deepEqual(Object.keys(reviewerEnv(env, 'claude')).sort(), ['CLAUDE_CODE_OAUTH_TOKEN', 'HOME', 'PATH', 'TMPDIR']);
   assert.deepEqual(Object.keys(reviewerEnv(env, 'opencode')).sort(),
     ['HOME', 'OPENCODE_API_KEY', 'PATH', 'TMPDIR', 'ZHIPU_API_KEY']);
-  for (const provider of ['claude', 'codex', 'cursor', 'opencode']) {
+  for (const provider of ['claude', 'codex', 'opencode']) {
     const keys = Object.keys(reviewerEnv(env, provider));
     assert.ok(!keys.includes('GH_TOKEN') && !keys.includes('GITHUB_TOKEN'), `${provider} gets no GitHub token`);
-    // Exactly this provider's keys, and no other provider's. OpenCode has two signed-in connectors of its own.
-    assert.deepEqual(keys.filter((key) => key.endsWith('_TOKEN') || key.endsWith('_KEY')).sort(),
-      [...providerKeys[provider]].sort(), `${provider} gets only its own keys`);
+    // Exactly this provider's keys, and no other provider's. OpenCode has two signed-in connectors of its own. A proxied
+    // provider is checked below: its login never enters the sandbox at all.
+    if (!proxiedProviders.includes(provider)) {
+      assert.deepEqual(keys.filter((key) => key.endsWith('_TOKEN') || key.endsWith('_KEY')).sort(),
+        [...providerKeys[provider]].sort(), `${provider} gets only its own keys`);
+    }
     for (const [other, otherKeys] of Object.entries(providerKeys)) {
       if (other === provider) continue;
       for (const key of otherKeys) assert.ok(!keys.includes(key), `${provider} never gets ${other}'s ${key}`);
@@ -459,7 +549,7 @@ test('the reviewer gets only its own provider keys, never the GitHub token', () 
   for (const provider of proxiedProviders) {
     const proxied = reviewerEnv(env, provider, proxy);
     assert.equal(proxied.CLAUDE_CODE_OAUTH_TOKEN, undefined, 'the Claude key never enters the sandbox');
-    assert.equal(proxied.CODEX_API_KEY, undefined, 'the Codex key never enters the sandbox');
+    assert.equal(proxied.CODEX_AUTH_JSON, undefined, 'the Codex plan login never enters the sandbox');
     assert.equal(JSON.stringify(proxied).includes('sk-ant-oat01-x'), false);
     assert.equal(JSON.stringify(proxied).includes('ck'), false);
     assert.ok(!Object.keys(proxied).some((key) => providerKeys[provider].includes(key)));
@@ -591,9 +681,9 @@ test('every review carries a hard cap, spelled the way its CLI takes it', () => 
   assert.ok(codex.includes('--json'), 'Codex reports the tokens a review used');
   assert.ok(codex.includes('--skip-git-repo-check'), 'the review copy has no .git, so Codex has to be told that');
 
-  // Cursor has no cap it can be told about, so the timeout is its only limit and only its own models are allowed.
-  assert.deepEqual(config.allowed.cursor, ['composer-2.5'], 'a GPT or Claude model inside Cursor bills prepaid credit');
-  assert.equal(flag(cliArgs('cursor', 'composer-2.5', undefined, '/w', caps), '--mode'), 'ask');
+  // Cursor is not offered: a Claude or GPT model inside it bills prepaid credit from the first request, which breaks the
+  // plans-only rule, and the job installs no Cursor CLI anyway.
+  assert.equal(config.allowed.cursor, undefined, 'Cursor is not on the plans-only list');
 
   // OpenCode takes its step limit from its agent file, which the runner must copy exactly, so the two numbers must agree.
   const agent = readFileSync(new URL('./opencode-reviewer.md', import.meta.url), 'utf8');
@@ -606,46 +696,48 @@ test('every review carries a hard cap, spelled the way its CLI takes it', () => 
   assert.equal(capsFor({ caps: { timeout_s: 90 } }).timeout_s, 90);
 });
 
-test('a review that runs past its wall clock is killed, named, and the next reviewer runs', () => {
+test('a review that runs past its wall clock is killed, named, and never rerouted', () => {
   const caps = capsFor(config);
   assert.equal(timeoutSeconds({ provider: 'codex', model: 'gpt-6.1-sol' }, caps), 600, 'the default is 10 minutes');
   assert.equal(timeoutSeconds({ provider: 'codex', model: 'gpt-6.1-terra' }, caps), 480, 'terra answers in less');
-  assert.equal(timeoutSeconds({ provider: 'cursor', model: 'composer-2.5' }, caps), 480);
+  assert.equal(timeoutSeconds({ provider: 'opencode', model: 'zai-coding-plan/glm-5.3-flash' }, caps), 480);
   assert.equal(timeoutSeconds({ provider: 'claude', model: 'claude-opus-5-5' }, caps), 600);
 
-  const models = [{ provider: 'codex', model: 'gpt-6.1-sol' }, { provider: 'claude', model: 'claude-opus-5-5' }];
+  // One named reviewer, and only that one. A timeout kills it and stops the review with a reason a comment can carry;
+  // it does not quietly start a second model that nobody chose.
   const called = [];
-  const result = runReviewer(models, 'prompt', '/w', {
-    usageFor: () => undefined,
-    commandAvailable: () => true,
-    sandbox: () => null,
-    caps,
-    invoke: (provider) => {
-      called.push(provider);
-      return provider === 'codex'
-        ? { status: null, stdout: '', stderr: '', timedOut: true }
-        : { status: 0, text: 'Looks right.\nVerdict: approve', usage: { turns: 4, costUsd: 0.0521, input: 20400, output: 1300 } };
-    },
-  });
-  assert.deepEqual(called, ['codex', 'claude'], 'the killed reviewer did not stop the review');
-  assert.equal(result.provider, 'claude');
-  assert.match(skippedLine(result), /codex\/gpt-6\.1-sol \(timed out after 600s\)/,
-    'the comment says the review hit its limit');
-  assert.match(usedLine(result, caps), /\$0\.0521 of its \$0\.6 cap/, 'and what the review that ran actually used');
-  assert.match(usedLine(result, caps), /4 turns/);
-  assert.match(usedLine(result, caps), /21,700 tokens \(20,400 in, 1,300 out\)/);
+  let refusal;
+  try {
+    runReviewer([{ provider: 'codex', model: 'gpt-6.1-sol' }], 'prompt', '/w', {
+      usageFor: () => undefined,
+      commandAvailable: () => true,
+      sandbox: () => null,
+      caps,
+      invoke: (provider) => { called.push(provider); return { status: null, stdout: '', stderr: '', timedOut: true }; },
+    });
+  } catch (error) {
+    refusal = error;
+  }
+  assert.deepEqual(called, ['codex'], 'no other model ran');
+  assert.match(refusal.message, /timed out after 600s/);
+  assert.equal(refusal.refusal.provider, 'codex');
+  assert.match(refusal.refusal.reason, /timed out after 600s/);
 
-  // Every reviewer out of time stops the review with the reason, instead of waiting forever.
-  assert.throws(() => runReviewer(models, 'prompt', '/w', {
+  // A review that runs reports what it used, and that line is the only extra detail the comment adds.
+  const done = runReviewer([{ provider: 'claude', model: 'claude-opus-5-5' }], 'prompt', '/w', {
     usageFor: () => undefined,
     commandAvailable: () => true,
     sandbox: () => null,
     caps,
-    invoke: () => ({ timedOut: true }),
-  }), /every configured reviewer was skipped: .*timed out after/);
+    invoke: () => ({ status: 0, text: 'Looks right.\nVerdict: approve', usage: { turns: 4, costUsd: 0.0521, input: 20400, output: 1300 } }),
+  });
+  assert.equal(done.provider, 'claude');
+  assert.match(usedLine(done, caps), /\$0\.0521 of its \$0\.6 cap/, 'what the review that ran actually used');
+  assert.match(usedLine(done, caps), /4 turns/);
+  assert.match(usedLine(done, caps), /21,700 tokens \(20,400 in, 1,300 out\)/);
 
   // A reviewer that reports nothing about its usage adds no line rather than a guess.
-  assert.equal(usedLine({ provider: 'cursor', model: 'composer-2.5', usage: null }, caps), '');
+  assert.equal(usedLine({ provider: 'opencode', model: 'opencode-go/deepseek-v4.1-flash', usage: null }, caps), '');
 });
 
 test('a review is priced per model, so a cheap one can run on a nearly empty window', () => {
@@ -740,22 +832,22 @@ test('the freshest snapshot from any machine decides, and one older than half an
 
   // 5% left in a 5-hour window is fewer than three reviews for a 7%-a-review model, so it is skipped by name and the
   // fallback reviewer runs. The comment names the machine and the age, so nobody has to guess where the numbers came from.
-  const models = [{ provider: 'codex', model: 'gpt-6.1-sol' }, { provider: 'claude', model: 'claude-sonnet-5-5' }];
-  const called = [];
-  const result = runReviewer(models, 'prompt', '/w', {
+  // 5% left in a 5-hour window is fewer than three reviews for a 7%-a-review model, so the named model is refused and
+  // the refusal carries the window that empties it.
+  const sol = { provider: 'codex', model: 'gpt-6.1-sol' };
+  const refused = requestProblem(config, sol, { usage: snapshotUsage(fresh, sol), caps: capsFor(config), now });
+  assert.match(refused.reason, /fewer than 3 reviews left in its session window/);
+
+  // A model the snapshot has room for runs, and the comment cites the machine and the age it read.
+  const result = runReviewer([{ provider: 'claude', model: 'claude-sonnet-5-5' }], 'prompt', '/w', {
     usageFor: () => undefined,
     commandAvailable: () => true,
     sandbox: () => null,
     caps: capsFor(config),
     snapshot: fresh,
     now,
-    invoke: (provider) => {
-      called.push(provider);
-      return { status: 0, text: 'Looks right.\nVerdict: approve' };
-    },
+    invoke: () => ({ status: 0, text: 'Looks right.\nVerdict: approve' }),
   });
-  assert.deepEqual(called, ['claude']);
-  assert.match(skippedLine(result), /codex\/gpt-6\.1-sol \(fewer than 3 reviews left in its session window\)/);
   assert.equal(usageNote(result), '\nUsage: vps, 5 min old');
 
   // Nothing fresh: no snapshot at all, so the local hub decides exactly as before.
@@ -951,23 +1043,14 @@ test('one bad window plus one good window ignores the snapshot for that provider
   assert.equal(parseSnapshot('USAGE_SNAPSHOT_MAC', JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: codexOnlyPartial.providers }), now), null);
   assert.equal(snapshotUsage(codexOnlyPartial, codexModel), undefined);
 
-  const models = [codexModel, claudeModel];
-  const called = [];
-  const result = runReviewer(models, 'prompt', '/w', {
-    usageFor: (provider) => (provider === 'codex' ? { windows: [{ kind: 'weekly', usedPercent: 100 }] } : undefined),
-    commandAvailable: () => true,
-    sandbox: () => null,
-    caps: capsFor(config),
+  // The local hub's exhausted weekly window refuses the named model, and the partially malformed snapshot is never cited.
+  const refused = requestProblem(config, codexModel, {
+    usage: { windows: [{ kind: 'weekly', usedPercent: 100 }] },
     snapshot: codexOnlyPartial,
     now,
-    invoke: (provider) => {
-      called.push(provider);
-      return { status: 0, text: 'Looks right.\nVerdict: approve' };
-    },
   });
-  assert.deepEqual(called, ['claude'], 'exhausted local codex is still skipped');
-  assert.match(skippedLine(result), /codex\/gpt-6\.1-sol \(no usage left in its weekly window\)/);
-  assert.equal(usageNote(result), '', 'partially malformed snapshot is not cited');
+  assert.match(refused.reason, /no usage left in its weekly window/);
+  assert.equal(usageNote({ snapshot: null }), '', 'partially malformed snapshot is not cited');
 
   // Without a local reading, a partial malformed snapshot (e.g. 0% left good window + broken window) is still ignored.
   const emptyGoodPlusBad = {
@@ -1001,150 +1084,92 @@ test('one bad window plus one good window ignores the snapshot for that provider
   assert.deepEqual(noLocalCalls, ['codex'], 'with no local reading, a bad+good snapshot falls back to today behaviour');
 });
 
+// What happens to one named model: it runs, or it is refused with a reason a comment can carry. The job has no third
+// option, so every test below reads it this way.
+const outcome = (model, deps = {}) => {
+  try {
+    const result = runReviewer([model], 'prompt', '/w', {
+      usageFor: () => undefined,
+      commandAvailable: () => true,
+      sandbox: () => null,
+      caps: capsFor(config),
+      invoke: () => ({ status: 0, text: 'Looks right.\nVerdict: approve' }),
+      ...deps,
+    });
+    return { ran: true, result };
+  } catch (error) {
+    return { ran: false, reason: error.refusal?.reason || error.message };
+  }
+};
+
 test('a snapshot can never loosen a limit and an exhausted local reading always wins', () => {
   const now = Date.parse('2026-11-15T04:40:00Z');
   const codexModel = { provider: 'codex', model: 'gpt-6.1-sol' };
-  const claudeModel = { provider: 'claude', model: 'claude-sonnet-5-5' };
-  const models = [codexModel, claudeModel];
   const healthySnapshot = (windows) => ({
     source: 'mac',
     takenAt: now - 60000,
     ageMs: 60000,
     providers: [{ provider: 'codex', instance: 'codex', windows }],
   });
+  const healthy = healthySnapshot([{ kind: 'session', leftPercent: 100, resetsAt: '2099-01-01T00:00:00Z' }]);
 
-  // 1. Exhausted local reading on the same window kind + healthy snapshot => skipped.
-  const sameKindCalled = [];
-  const sameKindResult = runReviewer(models, 'prompt', '/w', {
-    usageFor: (provider) => (provider === 'codex' ? { windows: [{ kind: 'session', usedPercent: 100 }] } : undefined),
-    commandAvailable: () => true,
-    sandbox: () => null,
-    caps: capsFor(config),
-    snapshot: healthySnapshot([{ kind: 'session', leftPercent: 100, resetsAt: '2099-01-01T00:00:00Z' }]),
-    now,
-    invoke: (provider) => {
-      sameKindCalled.push(provider);
-      return { status: 0, text: 'Looks right.\nVerdict: approve' };
-    },
-  });
-  assert.deepEqual(sameKindCalled, ['claude']);
-  assert.match(skippedLine(sameKindResult), /codex\/gpt-6\.1-sol \(no usage left in its session window\)/);
-
-  // 2. Exhausted local reading on a different window kind + healthy snapshot => skipped.
-  const diffKindCalled = [];
-  const diffKindResult = runReviewer(models, 'prompt', '/w', {
-    usageFor: (provider) => (provider === 'codex' ? { windows: [{ kind: 'weekly', usedPercent: 100 }] } : undefined),
-    commandAvailable: () => true,
-    sandbox: () => null,
-    caps: capsFor(config),
-    snapshot: healthySnapshot([{ kind: 'session', leftPercent: 100, resetsAt: '2099-01-01T00:00:00Z' }]),
-    now,
-    invoke: (provider) => {
-      diffKindCalled.push(provider);
-      return { status: 0, text: 'Looks right.\nVerdict: approve' };
-    },
-  });
-  assert.deepEqual(diffKindCalled, ['claude']);
-  assert.match(skippedLine(diffKindResult), /codex\/gpt-6\.1-sol \(no usage left in its weekly window\)/);
-
-  // 3. Same window kind in both: lower % left wins (tighter local beats looser snapshot, and tighter snapshot beats looser local).
-  const tighterLocal = reviewerCandidates([codexModel], {
-    usageByProvider: { codex: { windows: [{ kind: 'session', usedPercent: 85 }] } }, // 15% left (< 21% floor for gpt-6.1-sol)
-    usageByModel: { 'codex/gpt-6.1-sol': { windows: [{ kind: 'session', usedPercent: 10 }] } }, // 90% left
-    caps: capsFor(config),
+  // The local hub says the session is gone while the snapshot says it is full: the tighter reading wins.
+  const sameKind = outcome(codexModel, {
+    usageFor: () => ({ windows: [{ kind: 'session', usedPercent: 100 }] }),
+    snapshot: healthy,
     now,
   });
-  assert.deepEqual(tighterLocal.candidates, []);
-  assert.match(tighterLocal.skipped[0].reason, /fewer than 3 reviews left in its session window/);
+  assert.equal(sameKind.ran, false);
+  assert.match(sameKind.reason, /no usage left in its session window/);
 
-  const tighterSnapshot = reviewerCandidates([codexModel], {
-    usageByProvider: { codex: { windows: [{ kind: 'session', usedPercent: 10 }] } }, // 90% left
-    usageByModel: { 'codex/gpt-6.1-sol': { windows: [{ kind: 'session', usedPercent: 85 }] } }, // 15% left
-    caps: capsFor(config),
+  // The same, with the exhausted window on a different kind from the snapshot's: still refused.
+  const diffKind = outcome(codexModel, {
+    usageFor: () => ({ windows: [{ kind: 'weekly', usedPercent: 100 }] }),
+    snapshot: healthy,
     now,
   });
-  assert.deepEqual(tighterSnapshot.candidates, []);
-  assert.match(tighterSnapshot.skipped[0].reason, /fewer than 3 reviews left in its session window/);
+  assert.equal(diffKind.ran, false);
+  assert.match(diffKind.reason, /no usage left in its weekly window/);
 
-  // 4. An already-reset local window does not block when the active snapshot is healthy.
-  const expiredLocal = reviewerCandidates([codexModel], {
-    usageByProvider: { codex: { windows: [{ kind: 'session', usedPercent: 100, resetsAt: '2020-01-01T00:00:00Z' }] } },
-    usageByModel: { 'codex/gpt-6.1-sol': { windows: [{ kind: 'session', usedPercent: 20, resetsAt: '2099-01-01T00:00:00Z' }] } },
-    caps: capsFor(config),
+  // A healthy local reading and an exhausted snapshot is refused too: a snapshot in use is never a way past a limit.
+  const snapshotOnly = outcome(codexModel, {
+    usageFor: () => undefined,
+    snapshot: healthySnapshot([{ kind: 'session', leftPercent: 0, resetsAt: '2026-11-15T09:00:00Z' }]),
     now,
   });
-  assert.deepEqual(expiredLocal.candidates, [codexModel]);
+  assert.equal(snapshotOnly.ran, false);
+  assert.match(snapshotOnly.reason, /no usage left in its session window/);
 });
 
-test('malformed or empty snapshot data never crashes selection and falls back to the local hub', () => {
+test('malformed or empty snapshot data never crashes a check and falls back to the local hub', () => {
   const now = Date.parse('2026-11-15T04:40:00Z');
-  const takenAt = new Date(now - 60000).toISOString();
   const codexModel = { provider: 'codex', model: 'gpt-6.1-sol' };
-
-  // Empty, malformed JSON, wrong top-level types, missing windows, and empty providers all yield null.
-  for (const raw of [
-    '',
-    '   ',
-    '{not json',
-    'null',
-    '[]',
-    '"hello"',
-    '123',
-    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: 'nope' }),
-    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: [] }),
-    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: [null] }),
-    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: [{ provider: 'codex', instance: 'codex' }] }),
-    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: [{ provider: 'codex', instance: 'codex', windows: 'bad' }] }),
-    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: [{ provider: 'codex', instance: 'codex', windows: [] }] }),
-    JSON.stringify({ version: 1, machine: 'mac', takenAt, providers: [{ provider: 'codex', instance: 'codex', windows: [null, { kind: 'session', leftPercent: '100' }] }] }),
-  ]) {
-    assert.equal(parseSnapshot('USAGE_SNAPSHOT_MAC', raw, now), null, `rejected: ${raw}`);
-    assert.equal(freshestSnapshot({ USAGE_SNAPSHOT_MAC: raw }, now), null);
-  }
-
-  // Exported snapshotUsage must also reject malformed/empty entries without crashing or bypassing the local hub.
-  for (const bad of [
-    null,
-    {},
-    { providers: 'bad' },
-    { providers: [null] },
-    { providers: [{ provider: 'codex', instance: 'codex' }] },
-    { providers: [{ provider: 'codex', instance: 'codex', windows: 'bad' }] },
-    { providers: [{ provider: 'codex', instance: 'codex', windows: [] }] },
-    { providers: [{ provider: 'codex', instance: 'codex', windows: [null] }] },
-    { providers: [{ provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: '100' }] }] },
-    { providers: [{ provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: Number.NaN }] }] },
-    { providers: [{ provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: 50, resetsAt: 'not-a-date' }] }] },
-  ]) {
-    assert.equal(snapshotUsage(bad, codexModel), undefined);
-  }
-
-  // Regression: a fresh snapshot with providers: [null] or empty windows must NOT bypass an exhausted local hub.
-  const models = [codexModel, { provider: 'claude', model: 'claude-sonnet-5-5' }];
+  // Nothing in these snapshots is usable, so each one is dropped and the local reading decides.
   for (const badProviders of [
     [null],
     [{ provider: 'codex', instance: 'codex', windows: [] }],
     [{ provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: 'bad' }] }],
   ]) {
-    const called = [];
-    const result = runReviewer(models, 'prompt', '/w', {
-      usageFor: (provider) => (provider === 'codex' ? { windows: [{ kind: 'session', usedPercent: 100 }] } : undefined),
-      commandAvailable: () => true,
-      sandbox: () => null,
-      caps: capsFor(config),
+    assert.equal(snapshotUsage({ providers: badProviders }, codexModel), undefined);
+    const refused = outcome(codexModel, {
+      usageFor: () => ({ windows: [{ kind: 'session', usedPercent: 100 }] }),
       snapshot: { source: 'mac', takenAt: now - 60000, ageMs: 60000, providers: badProviders },
       now,
-      invoke: (provider) => {
-        called.push(provider);
-        return { status: 0, text: 'Looks right.\nVerdict: approve' };
-      },
     });
-    assert.deepEqual(called, ['claude'], 'exhausted local codex is still skipped');
-    assert.match(skippedLine(result), /codex\/gpt-6\.1-sol \(no usage left in its session window\)/);
-    assert.equal(usageNote(result), '', 'invalid snapshot is not cited in the comment');
+    assert.equal(refused.ran, false, 'an exhausted local hub still refuses');
+    assert.match(refused.reason, /no usage left in its session window/);
   }
 
-  // Direct usageProblem / reserveProblem also tolerate malformed window arrays without crashing.
+  // With no local reading and an unusable snapshot, the model is usable: no numbers counts as usable, as before.
+  const unknown = outcome(codexModel, {
+    usageFor: () => undefined,
+    snapshot: { source: 'mac', takenAt: now - 60000, ageMs: 60000, providers: [null] },
+    now,
+  });
+  assert.equal(unknown.ran, true);
+  assert.equal(usageNote(unknown.result), '', 'invalid snapshot is not cited in the comment');
+
+  // The rules themselves tolerate malformed windows instead of throwing.
   assert.equal(usageProblem({ windows: [null, { usedPercent: Number.NaN }] }, now), null);
   assert.equal(reserveProblem({ windows: [null] }, { session: 10 }, now), null);
 });
@@ -1158,7 +1183,7 @@ test('an unknown flag or variant tries the next reviewer instead of failing the 
   assert.ok(!retries({ status: 0, stdout: 'Verdict: approve' }));
 });
 
-test('a real failure is not mistaken for a bad flag, and a skip is never silent', () => {
+test('a real failure is not mistaken for a bad flag, and a refusal is never silent', () => {
   // stdout carries the review text: a crash message quoted there is not the CLI complaining about our flags
   assert.ok(!retries({ status: 1, stdout: 'the author writes: invalid variant: high', stderr: '' }));
   // a Node spawn error (EINVAL) used to match "invalid argument" and quietly skip a reviewer
@@ -1187,14 +1212,14 @@ test('a real failure is not mistaken for a bad flag, and a skip is never silent'
   assert.match(capped.errorText, /error_max_turns/);
   assert.equal(capped.usage.turns, 12);
 
-  // the comment says what was skipped, so a dropped flag cannot move every review to the second model unnoticed
-  assert.equal(skippedLine({ skipped: [] }), '');
-  assert.equal(skippedLine({}), '');
-  assert.equal(skippedLine({ skipped: ['opencode/opencode-go/glm-5.3 (rejected a flag)'] }),
-    '\nSkipped: opencode/opencode-go/glm-5.3 (rejected a flag)');
+  // A refusal is the only way a review that did not happen is reported, and it is always a comment with the reason.
+  const refusedBody = refusalComment({ reason: 'codex/gpt-6.1-sol hit its cap', provider: 'codex', model: 'gpt-6.1-sol' });
+  assert.ok(refusedBody.startsWith('<!-- tess-review-bot -->'));
+  assert.match(refusedBody, /hit its cap/);
   const source = readFileSync(new URL('./agent-review.mjs', import.meta.url), 'utf8');
-  assert.equal((source.match(/\$\{skippedLine\(result\)\}/g) || []).length, 2, 'both comment paths report a skip');
+  assert.equal((source.match(/postRefusal\(/g) || []).length >= 4, true, 'pick and review both announce a refusal');
 });
+
 
 test('the effort a tag asks for rides the way the provider accepts it', () => {
   // OpenCode 2.2.6: `--model provider/model#variant`, and the variant list comes from the model (glm-5.3 and
@@ -1315,8 +1340,45 @@ const rawRequest = (port, requestLine, extraHeaders = '') => new Promise((resolv
 // The route list is not a guess: it is what the pinned CLIs were seen to send, measured against a logging upstream.
 test('the proxy allows only the requests the pinned CLIs were measured to make', () => {
   assert.deepEqual(proxyRoutes.claude, [{ method: 'POST', path: '/v1/messages', query: ['beta'] }]);
-  assert.deepEqual(proxyRoutes.codex, [{ method: 'POST', path: '/v1/responses', query: [] }]);
+  // On the ChatGPT plan the CLI appends `/responses` to the base URL it is given, and the proxy sends that to
+  // chatgpt.com/backend-api/codex/responses: the plan backend, not the API. Verified against the real backend.
+  assert.deepEqual(proxyRoutes.codex, [{ method: 'POST', path: '/responses', query: [] }]);
+  assert.equal(proxyProviders.codex.upstream, 'https://chatgpt.com/backend-api/codex');
+  assert.equal(proxyProviders.codex.accountHeader, 'chatgpt-account-id');
   assert.equal(maxProxyBodyBytes, 10 * 1024 * 1024, 'a review body is capped at 10 MB');
+});
+
+// Codex on the ChatGPT plan: the proxy carries the access token and the account id, and nothing else of the login.
+test('a Codex plan review reaches the plan backend with the account id, and no other route', async () => {
+  const upstream = await fakeUpstream();
+  const proxy = await createReviewProxy({
+    provider: 'codex', key: 'chatgpt-access-token', token: 'this-review', upstream: upstream.url, accountId: 'acct-123',
+  });
+  try {
+    const answer = await httpRequest(`${proxy.url}/codex/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer this-review',
+        'chatgpt-account-id': 'a-different-account',
+        'content-type': 'application/json',
+      },
+      body: '{"model":"gpt-6.1-sol"}',
+    });
+    assert.equal(answer.status, 200);
+    assert.equal(upstream.seen[0].url, '/responses', 'the plan backend path, not the API');
+    assert.equal(upstream.seen[0].headers.authorization, 'Bearer chatgpt-access-token', 'the real access token is added here');
+    assert.equal(upstream.seen[0].headers['chatgpt-account-id'], 'acct-123', 'the account id comes from the login, not the client');
+    assert.equal(upstream.seen[0].headers.originator, 'codex_cli_rs', 'the backend wants an originator');
+    // Everything else the login could do - list files, delete a response, the account route - is refused.
+    for (const url of [`${proxy.url}/codex/responses/delete`, `${proxy.url}/codex/files`, `${proxy.url}/codex/wham/accounts/check`]) {
+      const refused = await httpRequest(url, { method: 'POST', headers: { authorization: 'Bearer this-review' }, body: '{}' });
+      assert.equal(refused.status, 403, url);
+    }
+    assert.equal(upstream.seen.length, 1, 'no refused call reached the backend');
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
 });
 
 // The reviewer's token is a way to make one inference call, not a way to use everything the provider's key can reach.
@@ -1423,13 +1485,13 @@ test('the sandbox is pointed at the proxy, and the proxy process serves it', asy
     assert.ok(!JSON.stringify(settings).includes('sk-codex-real-key'), 'the key is not in what the sandbox is given');
     assert.ok(settings.args.some((arg) => arg.includes(`base_url="http://127.0.0.1:`)));
     assert.ok(settings.args.some((arg) => arg === 'model_providers.tess_review_proxy.env_key="TESS_REVIEW_TOKEN"'));
-    assert.deepEqual(settings.removedKeys, ['CODEX_API_KEY', 'OPENAI_API_KEY']);
+    assert.deepEqual(settings.removedKeys, ['CODEX_AUTH_JSON', 'CODEX_API_KEY', 'OPENAI_API_KEY']);
 
-    const answer = await httpRequest(`${url}/codex/v1/responses`, {
+    const answer = await httpRequest(`${url}/codex/responses`, {
       method: 'POST', headers: { authorization: 'Bearer codex-review-token' }, body: '{"model":"gpt-6.1-terra"}',
     });
     assert.equal(answer.status, 200);
-    assert.equal(upstream.seen[0].url, '/v1/responses');
+    assert.equal(upstream.seen[0].url, '/responses');
     assert.equal(upstream.seen[0].headers.authorization, 'Bearer sk-codex-real-key');
   } finally {
     child.kill('SIGKILL');
@@ -1461,7 +1523,7 @@ test('the review proxy is started only where a key actually has to be kept out, 
     const claude = cliArgs('claude', 'claude-opus-5-5', '', '/w', capsFor(config), proxy);
     assert.ok(claude.includes('--tools') && claude.includes(claudeTools), 'the read-only tool list is unchanged');
     const codex = cliArgs('codex', 'gpt-6.1-terra', 'high', '/w', capsFor(config), proxy);
-    assert.ok(codex.includes('model_providers.tess_review_proxy.base_url="http://127.0.0.1:1234/codex/v1"'));
+    assert.ok(codex.includes('model_providers.tess_review_proxy.base_url="http://127.0.0.1:1234/codex"'));
     assert.ok(codex.includes('model_provider="tess_review_proxy"'));
     assert.ok(!JSON.stringify(codex).includes('sk-codex-real'), 'the key is not on the command line');
     // Without a proxy the argv is exactly what it was, ten arguments shorter: the direct path still works where a proxy
@@ -1548,59 +1610,38 @@ test('a runner without user namespaces refuses every provider instead of running
   assert.equal(sandboxProblem({ bwrapAvailable: true, probe: null }), null);
 });
 
-test('a provider bubblewrap cannot run is skipped, named, and the next reviewer reviews', () => {
+test('a provider whose sandbox cannot start is refused, and nothing ever runs bare', () => {
   const calls = [];
-  const models = [
-    { provider: 'codex', model: 'gpt-6.1-terra' },
-    { provider: 'claude', model: 'claude-sonnet-5-5' },
-  ];
-  const result = runReviewer(models, 'prompt', '/w', {
+  const refused = outcome({ provider: 'codex', model: 'gpt-6.1-terra' }, {
     usageFor: () => undefined,
-    commandAvailable: () => true,
-    sandbox: (provider) => (provider === 'codex' ? 'bubblewrap is not installed (tools/runner-setup.md)' : null),
+    sandbox: () => 'bubblewrap is not installed (tools/runner-setup.md)',
     invoke: (provider, model) => { calls.push(`${provider}/${model}`); return { status: 0, stdout: 'fine' }; },
   });
-  assert.deepEqual(calls, ['claude/claude-sonnet-5-5'], 'the unsandboxed provider never starts');
-  assert.equal(result.provider, 'claude');
-  assert.match(skippedLine(result), /codex\/gpt-6.1-terra \(bubblewrap is not installed/,
-    'the comment names the provider that could not run');
-
-  // if no provider has a usable sandbox, the review stops loudly and nothing runs bare
-  const bare = [];
-  assert.throws(() => runReviewer(models, 'prompt', '/w', {
-    usageFor: () => undefined,
-    commandAvailable: () => true,
-    sandbox: () => 'bubblewrap is not installed (tools/runner-setup.md)',
-    invoke: (provider) => { bare.push(provider); return { status: 0, stdout: 'x' }; },
-  }), /no reviewer could run: codex\/gpt-6.1-terra \(bubblewrap/);
-  assert.deepEqual(bare, [], 'no provider ran outside the sandbox');
+  assert.deepEqual(calls, [], 'the unsandboxed provider never starts');
+  assert.equal(refused.ran, false);
+  assert.match(refused.reason, /bubblewrap is not installed/, 'the refusal names what is missing');
+  // There is no path where a reviewer starts outside the sandbox and no path where another model steps in.
+  assert.equal(sandboxProblem({ bwrapAvailable: false }), 'bubblewrap is not installed (tools/runner-setup.md)');
 });
 
-test('a requested reviewer that is filtered out is named, not silently replaced', () => {
-  const pick = resolveReviewers(config, config.pr_normal, { provider: 'codex', model: 'gpt-6.1-terra' }, 'normal');
-  assert.equal(pick.models[0].provider, 'codex', 'the request comes first');
-
-  const exhausted = runReviewer(pick.models, 'p', '/w', {
-    usageFor: (provider) => (provider === 'codex'
-      ? { windows: [{ kind: 'session', usedPercent: 100, resetsAt: '2099-01-01T00:00:00Z' }] }
-      : undefined),
-    commandAvailable: () => true,
-    sandbox: () => null,
-    invoke: () => ({ status: 0, stdout: 'review text' }),
+test('a requested reviewer that cannot run is refused by name, never replaced', () => {
+  const named = { provider: 'codex', model: 'gpt-6.1-terra' };
+  const exhausted = outcome(named, {
+    usageFor: () => ({ windows: [{ kind: 'session', usedPercent: 100, resetsAt: '2099-01-01T00:00:00Z' }] }),
   });
-  assert.equal(exhausted.provider, 'claude', 'the defaults still review');
-  assert.match(skippedLine(exhausted), /codex\/gpt-6.1-terra \(no usage left in its session window\)/);
+  assert.equal(exhausted.ran, false, 'the default does not review in its place');
+  assert.match(exhausted.reason, /no usage left in its session window/);
 
-  const missing = runReviewer(pick.models, 'p', '/w', {
-    usageFor: () => undefined,
-    commandAvailable: (command) => command !== 'codex',
-    sandbox: () => null,
-    invoke: () => ({ status: 0, stdout: 'review text' }),
+  const missing = outcome(named, { commandAvailable: (command) => command !== 'codex' });
+  assert.equal(missing.ran, false);
+  assert.match(missing.reason, /no local CLI/);
+
+  // A refusal from the CLI itself is refused too, and it names the model that was asked for.
+  const capped = outcome({ provider: 'claude', model: 'claude-opus-5-5' }, {
+    invoke: () => ({ status: 1, stderr: 'Error: Exceeded USD budget (0.6)' }),
   });
-  assert.match(skippedLine(missing), /codex\/gpt-6.1-terra \(no local CLI\)/);
-  // both comment paths print it
-  const source = readFileSync(new URL('./agent-review.mjs', import.meta.url), 'utf8');
-  assert.equal((source.match(/\$\{skippedLine\(result\)\}/g) || []).length, 2);
+  assert.equal(capped.ran, false);
+  assert.match(capped.reason, /hit its cap/);
 });
 
 test('a provider on pace to run out before its reset is skipped, even with plenty left', () => {
@@ -1660,8 +1701,11 @@ test('reserved quota holds a provider back until its date, and no block means no
     reserve: { claude: { weekly: 30, note: "Krish's own work" } },
     now,
   });
-  assert.deepEqual(candidates.map(({ provider }) => provider), ['codex']);
-  assert.match(skipped[0].reason, /reserved for Krish's own work/);
+  const providers = candidates.map(({ provider }) => provider);
+  assert.ok(!providers.includes('claude'), 'a reserved provider is not a candidate');
+  assert.ok(providers.includes('codex'), 'the one with room still is');
+  assert.ok(skipped.some(({ provider, reason }) => provider === 'claude' && /reserved for Krish's own work/.test(reason)),
+    'and the reservation is named, not silent');
 });
 
 test('the config is the one place the changeable facts live', () => {
@@ -1691,9 +1735,18 @@ test('the config is the one place the changeable facts live', () => {
   assert.match(workflow, /Every review has a hard cap/, 'the docs explain the caps');
   assert.match(workflow, /600 s wall clock/, 'the docs name the wall clock');
   assert.match(workflow, /Change what one review may spend/, 'and how to change a cap');
+  // The two rules a reader must not have to guess: plans only, and the tagging agent chooses.
+  assert.match(workflow, /Plans only\./, 'the docs say every reviewer runs on a plan');
+  assert.match(workflow, /The agent decides; the job only checks and runs/, 'the docs say who chooses');
+  assert.match(workflow, /Nothing is substituted/, 'and that a refusal never becomes another model');
+  assert.equal((workflow.match(/default first|falls back to the defaults/g) || []).length, 0,
+    'no leftover text about a fixed order or defaults');
+  assert.match(workflow, /Antigravity/, 'the docs say why Antigravity is not a reviewer');
   const caps = capsFor(config);
   for (const [key, pct] of Object.entries(caps.per_review_pct)) {
-    assert.ok(config.cost?.[key], `${key} with a per-review cost is a model the config knows`);
+    // A model kept only as the measured record of why it is out has no cost weight, but the config still names it.
+    assert.ok(config.cost?.[key] || config.notes.some((note) => note.note.includes(key.split('/').at(-1))),
+      `${key} with a per-review cost is a model the config knows`);
     assert.ok(typeof pct === 'number' && pct > 0, `${key} has a positive per-review cost`);
   }
   for (const [key, seconds] of Object.entries(caps.timeout_s_by_model)) {
@@ -1709,6 +1762,17 @@ test('the config is the one place the changeable facts live', () => {
   const setup = readFileSync(new URL('./runner-setup.md', import.meta.url), 'utf8');
   assert.match(setup, /bubblewrap/, 'the runner setup asks for bubblewrap');
   assert.match(setup, /user namespaces/i, 'and shows how to check user namespaces');
+  // Plans only, in every place a secret could be named: the config, the workflow and the setup page.
+  const workflowFile = readFileSync(new URL('../.github/workflows/agent-review.yml', import.meta.url), 'utf8');
+  assert.match(workflowFile, /CODEX_AUTH_JSON/);
+  assert.match(setup, /CODEX_AUTH_JSON/);
+  for (const retired of retiredKeyNames) {
+    assert.ok(!workflowFile.includes(retired), `${retired} is not in the review workflow`);
+  }
+  // every allowed provider is a subscription the config names
+  for (const provider of Object.keys(config.allowed)) {
+    assert.ok(config.plans?.[provider], `${provider} has a plan`);
+  }
 });
 
 test('the review runs exactly the reviewer whose CLI the job installed', () => {
@@ -1722,22 +1786,43 @@ test('the review runs exactly the reviewer whose CLI the job installed', () => {
   assert.throws(() => pinnedReviewer(config, { REVIEW_PROVIDER: 'nobody', REVIEW_MODEL: 'x' }), /not in/);
 });
 
-test('the pick step chooses one provider and names the ones it skipped', () => {
+test('the pick step runs the model the tag named, and refuses anything the rules do not allow', () => {
   const dir = temp();
   const scriptPath = fileURLToPath(new URL('./agent-review.mjs', import.meta.url));
+  const comments = join(dir, 'comments.log');
+  // A fake `gh`: the pick step only reads the pull request and posts a refusal. Every posted comment lands in a file so
+  // the test can read exactly what a maintainer would see.
+  writeFileSync(join(dir, 'gh'), `#!/bin/sh
+if [ "$1" = "api" ]; then
+  printf '{"number":1,"title":"t","body":"%s","html_url":"https://example.invalid/1"}' "$GH_PR_BODY"
+  exit 0
+fi
+if [ "$1" = "issue" ] && [ "$2" = "comment" ]; then
+  cat >> "$GH_COMMENT_LOG"
+  printf '\\n---\\n' >> "$GH_COMMENT_LOG"
+  exit 0
+fi
+exit 99
+`);
+  chmodSync(join(dir, 'gh'), 0o755);
   const run = (args, body, extra = {}) => execFileSync(process.execPath, [scriptPath, 'pick', ...args], {
     input: body,
     encoding: 'utf8',
-    env: {
-      ...process.env,
-      // An empty HOME keeps this machine's real usage hub out of the test.
-      HOME: dir,
-      GITHUB_OUTPUT: '',
-      ...extra,
-    },
+    // An empty HOME keeps this machine's real usage hub out of the test.
+    env: { ...process.env, HOME: dir, GITHUB_OUTPUT: '', PATH: `${dir}:${process.env.PATH}`, ...extra },
   }).trim();
-  // #93's snapshot shape: one entry per provider instance, `leftPercent` rather than `usedPercent`.
-  const exhausted = (...entries) => JSON.stringify({
+  const refuse = (args, body, extra = {}) => {
+    let error;
+    try {
+      run(args, body, extra);
+    } catch (thrown) {
+      error = thrown;
+    }
+    assert.ok(error, 'a refused tag stops the job');
+    assert.equal(error.status, 1);
+    return { output: `${error.stderr || ''}${error.stdout || ''}`, posted: existsSync(comments) ? readFileSync(comments, 'utf8') : '' };
+  };
+  const snapshot = (...entries) => JSON.stringify({
     version: 1,
     machine: 'mac',
     takenAt: new Date().toISOString(),
@@ -1745,274 +1830,58 @@ test('the pick step chooses one provider and names the ones it skipped', () => {
       ? { provider: entry, instance: entry, windows: [{ kind: 'weekly', leftPercent: 0, resetsAt: '2099-01-01T00:00:00Z' }] }
       : entry)),
   });
-  const claude = { provider: 'claude', instance: 'claudeAgent', windows: [{ kind: 'weekly', leftPercent: 0, resetsAt: '2099-01-01T00:00:00Z' }] };
+  const withNumber = { REVIEW_NUMBER: '1', GITHUB_REPOSITORY: 'Flame119052/tess-music', GH_TOKEN: 'x', GH_COMMENT_LOG: comments };
+
   try {
-    // With no numbers the first default is chosen, as before.
-    assert.equal(run(['pr', 'normal'], '@tess-review pr'), 'provider=codex\nmodel=gpt-6.1-terra\neffort=medium\nskipped=[]');
-    // A snapshot can move the choice to the next provider, and the skip is reported.
-    const moved = run(['pr', 'normal'], '@tess-review pr', { USAGE_SNAPSHOT_MAC: exhausted('codex') });
-    assert.match(moved, /^provider=claude\nmodel=claude-sonnet-5-5/);
-    assert.match(moved, /codex\/gpt-6\.1-terra \(no usage left in its weekly window\)/);
-    // The tag still decides when it names an allowed reviewer.
-    assert.match(run(['approach', 'sensitive'], '@tess-review approach provider=codex model=gpt-6.1-sol'),
-      /^provider=codex\nmodel=gpt-6\.1-sol/);
-    // Cursor is optional and its CLI is not installed in the job, so a tag naming it falls back and says why.
-    const cursorModel = config.allowed.cursor[0];
-    const cursor = run(['pr', 'normal'], `@tess-review pr provider=cursor model=${cursorModel}`);
-    assert.match(cursor, /^provider=codex/);
-    assert.ok(cursor.includes(`cursor/${cursorModel} (its CLI is not installed in this job)`), cursor);
+    // The tag names the reviewer: that is the model the job installs and runs. Nothing else is consulted.
+    assert.equal(run(['pr', 'normal'], '@tess-review pr provider=codex model=gpt-6.1-terra effort=high'),
+      'provider=codex\nmodel=gpt-6.1-terra\neffort=high\nskipped=[]');
+
+    // No model named: refused with a comment that says what to write. The job does not choose.
+    const unnamed = refuse(['pr', 'normal'], '@tess-review pr', withNumber);
+    assert.match(unnamed.posted, /<!-- tess-review-bot -->/);
+    assert.match(unnamed.posted, /Why: the tag names no reviewer/);
+    assert.match(unnamed.posted, /does not substitute another model/);
+
+    // A model that is not on the plans-only list is refused, not rerouted to a default.
+    rmSync(comments, { force: true });
+    const notAllowed = refuse(['pr', 'normal'], '@tess-review pr provider=cursor model=composer-2.5', withNumber);
+    assert.match(notAllowed.posted, /plans-only list/);
+    assert.ok(!/provider=codex/.test(notAllowed.output), 'no substitute was reported as the choice');
+
+    // A sensitive change with a light model is refused, and the comment names what is strong enough.
+    const weak = refuse(['pr', 'sensitive'], '@tess-review pr provider=claude model=claude-sonnet-5-5', withNumber);
+    assert.match(weak.posted, /strong model/);
+    assert.match(weak.posted, /zai-coding-plan\/glm-5\.3/);
+
+    // The author's own provider is refused, read from the pull request's "Made by:" line.
+    const sameAuthor = refuse(['pr', 'normal'], '@tess-review pr provider=opencode model=opencode-go/deepseek-v4.1-flash', {
+      ...withNumber, GH_PR_BODY: 'Made by: DeepSeek V4.1 Flash in OpenCode',
+    });
+    assert.match(sameAuthor.posted, /same provider/);
+
+    // A window with nothing left refuses, and the comment says when it resets.
+    rmSync(comments, { force: true });
+    const empty = refuse(['pr', 'normal'], '@tess-review pr provider=codex model=gpt-6.1-terra', {
+      ...withNumber, USAGE_SNAPSHOT_MAC: snapshot('codex'),
+    });
+    assert.match(empty.posted, /no usage left in its weekly window/);
+    // A usage refusal reuses #100's no-room comment: it says when the window clears, in UTC and in plain time.
+    assert.match(empty.posted, /No reviewer had room to run\./);
+    assert.match(empty.posted, /Earliest window reset: 2099-01-01 00:00 UTC/);
+
+    // A sensitive review on GLM-5.3 through the Z.ai plan is the case that used to be blocked by Claude and Codex
+    // being short of room.
+    const glm = run(['approach', 'sensitive'], '@tess-review approach provider=opencode model=zai-coding-plan/glm-5.3 effort=high', {
+      ...withNumber, GH_PR_BODY: 'Made by: Codex gpt-6.1-terra',
+    });
+    assert.match(glm, /^provider=opencode\nmodel=zai-coding-plan\/glm-5\.3/);
+
     // Docs-only needs no CLI at all.
     assert.match(run(['pr', 'docs'], '@tess-review pr'), /^provider=none/);
-    // When every candidate is out, the job stops before installing or running anything.
-    assert.throws(() => run(['approach', 'sensitive'], '@tess-review approach', {
-      USAGE_SNAPSHOT_MAC: exhausted(claude, 'codex'),
-    }), /no reviewer could run/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-});
-
-test('earliest reset time comes only from skipped windows and formats UTC plus relative time', () => {
-  const now = Date.parse('2026-11-15T06:30:00Z');
-  const models = config.approach; // claude-opus-5-5, gpt-6.1-sol
-  const caps = capsFor(config);
-
-  // Claude is blocked by its session window (resets 07:45 UTC) while its weekly window is healthy (resets Nov 20).
-  // Codex is blocked by its session window (resets 09:10 UTC). Earliest reset must be 07:45 UTC, never Nov 20 or 09:10.
-  const snap = {
-    source: 'mac',
-    takenAt: now - 3 * 60000,
-    ageMs: 3 * 60000,
-    providers: [
-      {
-        provider: 'claude',
-        instance: 'claudeAgent',
-        windows: [
-          { kind: 'session', leftPercent: 20, resetsAt: '2026-11-15T07:45:00Z' },
-          { kind: 'weekly', leftPercent: 80, resetsAt: '2026-11-20T18:00:00Z' },
-        ],
-      },
-      {
-        provider: 'codex',
-        instance: 'codex',
-        windows: [
-          { kind: 'session', leftPercent: 0, resetsAt: '2026-11-15T09:10:00Z' },
-          { kind: 'weekly', leftPercent: 60, resetsAt: '2026-11-17T06:30:00Z' },
-        ],
-      },
-    ],
-  };
-  const usageByModel = Object.fromEntries(models.map((m) => [
-    `${m.provider}/${m.model}`,
-    snapshotUsage(snap, m),
-  ]));
-  const { candidates, skipped } = reviewerCandidates(models, { usageByModel, caps, now });
-  assert.equal(candidates.length, 0);
-  assert.equal(skipped.length, 2);
-  assert.equal(earliestReset(skipped, now), Date.parse('2026-11-15T07:45:00Z'));
-
-  // Healthy session window (07:45) + exhausted weekly window (Nov 20) on Claude, plus exhausted session on Codex (09:10):
-  // Claude's healthy session reset must NOT be chosen; Codex's 09:10 UTC is the earliest skipped window that clears.
-  const weeklyBlockedSnap = {
-    ...snap,
-    providers: [
-      {
-        provider: 'claude',
-        instance: 'claudeAgent',
-        windows: [
-          { kind: 'session', leftPercent: 90, resetsAt: '2026-11-15T07:45:00Z' },
-          { kind: 'weekly', leftPercent: 0, resetsAt: '2026-11-20T18:00:00Z' },
-        ],
-      },
-      snap.providers[1],
-    ],
-  };
-  const weeklyBlockedUsage = Object.fromEntries(models.map((m) => [
-    `${m.provider}/${m.model}`,
-    snapshotUsage(weeklyBlockedSnap, m),
-  ]));
-  const second = reviewerCandidates(models, { usageByModel: weeklyBlockedUsage, caps, now });
-  assert.equal(earliestReset(second.skipped, now), Date.parse('2026-11-15T09:10:00Z'));
-
-  // Local window without resetsAt + snapshot window with resetsAt still captures the snapshot's resetsAt.
-  const mixed = reviewerCandidates([models[1]], {
-    usageByProvider: { codex: { windows: [{ kind: 'session', usedPercent: 100 }] } },
-    usageByModel: { [ `${models[1].provider}/${models[1].model}` ]: usageByModel[`${models[1].provider}/${models[1].model}`] },
-    caps,
-    now,
-  });
-  assert.equal(earliestReset(mixed.skipped, now), Date.parse('2026-11-15T09:10:00Z'));
-
-  assert.equal(formatUtcTime(Date.parse('2026-11-15T07:45:00Z')), '2026-11-15 07:45 UTC');
-  assert.equal(formatUtcTime(Date.parse('2026-11-15T07:45:30Z')), '2026-11-15 07:45:30 UTC');
-  assert.equal(formatRelativeTime(Date.parse('2026-11-15T07:45:00Z'), now), 'in 1h 15m');
-  assert.equal(formatRelativeTime(Date.parse('2026-11-15T06:30:30Z'), now), 'in under a minute');
-  assert.equal(formatRelativeTime(Date.parse('2026-11-17T09:30:00Z'), now), 'in 2d 3h');
-
-  const body = noRoomComment({
-    reasons: skipped.map(({ provider, model, reason }) => `${provider}/${model} (${reason})`),
-    earliestResetMs: earliestReset(skipped, now),
-    snapshot: snap,
-    now,
-  });
-  assert.match(body, /^<!-- tess-review-bot -->/);
-  assert.match(body, /no reviewer had room/i);
-  assert.match(body, /claude\/claude-opus-5-5 \(fewer than 3 reviews left in its session window\)/);
-  assert.match(body, /codex\/gpt-6\.1-sol \(no usage left in its session window\)/);
-  assert.match(body, /2026-11-15 07:45 UTC \(in 1h 15m\)/);
-  assert.match(body, /tag again after that time/i);
-
-  const withoutReset = noRoomComment({
-    reasons: ['claude/claude-opus-5-5 (no usage left in its session window)'],
-    earliestResetMs: null,
-    now,
-  });
-  assert.match(withoutReset, /^<!-- tess-review-bot -->/);
-  assert.match(withoutReset, /no reviewer had room/i);
-  assert.ok(!/NaN|Invalid Date/.test(withoutReset));
-  assert.match(withoutReset, /tag again/i);
-});
-
-test('when no reviewer has room, pick posts a marker comment with skipped reasons and earliest reset time', () => {
-  const review = jobBlock('review');
-  const pickStep = stepBlock(review, 'Pick the reviewer');
-  assert.match(pickStep, /REVIEW_NUMBER: \$\{\{ needs\.gate\.outputs\.number \}\}/);
-  assert.match(pickStep, /GH_TOKEN: \$\{\{ github\.token \}\}/);
-  for (const names of Object.values(providerKeys)) {
-    for (const name of names) {
-      assert.ok(!pickStep.includes(`${name}:`), `Pick the reviewer never receives ${name}`);
-    }
-  }
-
-  const dir = temp();
-  const scriptPath = fileURLToPath(new URL('./agent-review.mjs', import.meta.url));
-  const commentOut = join(dir, 'comment');
-  const now = Date.now();
-  const claudeResetMs = Math.floor(now / 60000) * 60000 + 75 * 60000;
-  const codexResetMs = Math.floor(now / 60000) * 60000 + 180 * 60000;
-  const healthyWeeklyMs = Math.floor(now / 60000) * 60000 + 3 * 24 * 3600000;
-  const snap = JSON.stringify({
-    version: 1,
-    machine: 'mac',
-    takenAt: new Date(now - 2 * 60000).toISOString(),
-    providers: [
-      {
-        provider: 'claude',
-        instance: 'claudeAgent',
-        windows: [
-          { kind: 'session', leftPercent: 20, resetsAt: new Date(claudeResetMs).toISOString() },
-          { kind: 'weekly', leftPercent: 80, resetsAt: new Date(healthyWeeklyMs).toISOString() },
-        ],
-      },
-      {
-        provider: 'codex',
-        instance: 'codex',
-        windows: [
-          { kind: 'session', leftPercent: 0, resetsAt: new Date(codexResetMs).toISOString() },
-        ],
-      },
-    ],
-  });
-  const fakeToken = 'ghs_fake_test_token_1234567890123456';
-  try {
-    writeFileSync(join(dir, 'gh'), `#!/bin/sh
-if [ "$1" = "issue" ] && [ "$2" = "comment" ] && [ "$3" = "99" ]; then
-  cat > '${commentOut}'
-  exit 0
-fi
-exit 99
-`);
-    chmodSync(join(dir, 'gh'), 0o755);
-    let thrown;
-    try {
-      execFileSync(process.execPath, [scriptPath, 'pick', 'approach', 'sensitive'], {
-        input: '@tess-review approach',
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          HOME: dir,
-          PATH: `${dir}:${process.env.PATH}`,
-          GITHUB_OUTPUT: '',
-          REVIEW_NUMBER: '99',
-          GH_TOKEN: fakeToken,
-          USAGE_SNAPSHOT_MAC: snap,
-        },
-      });
-    } catch (error) {
-      thrown = error;
-    }
-    assert.ok(thrown, 'pick still exits non-zero so installs and review do not run');
-    assert.equal(thrown.status, 1);
-    const logs = `${thrown.stdout || ''}\n${thrown.stderr || ''}`;
-    assert.match(logs, /no reviewer could run:/);
-    assert.ok(!logs.includes(fakeToken), 'pick never prints GH_TOKEN');
-
-    assert.ok(existsSync(commentOut), 'a comment was posted to the PR/issue');
-    const posted = readFileSync(commentOut, 'utf8');
-    assert.ok(posted.includes('<!-- tess-review-bot -->'), 'carries the reviewer marker');
-    assert.match(posted, /no reviewer had room/i);
-    assert.match(posted, /claude\/claude-opus-5-5 \(fewer than 3 reviews left in its session window\)/);
-    assert.match(posted, /codex\/gpt-6\.1-sol \(no usage left in its session window\)/);
-    assert.ok(posted.includes(formatUtcTime(claudeResetMs)), `shows earliest reset in UTC: ${posted}`);
-    assert.ok(!posted.includes(formatUtcTime(codexResetMs)), 'does not use the later reset time');
-    assert.match(posted, /\(in 1h 1[45]m\)/, 'shows relative time');
-    assert.match(posted, /tag again after that time/i);
-    assert.ok(!posted.includes(fakeToken), 'comment never leaks GH_TOKEN');
-
-    // Also verify `pr normal` when all three defaults (codex, claude, opencode) are out of room.
-    rmSync(commentOut, { force: true });
-    const normalSnap = JSON.stringify({
-      version: 1,
-      machine: 'mac',
-      takenAt: new Date(now - 2 * 60000).toISOString(),
-      providers: [
-        { provider: 'codex', instance: 'codex', windows: [{ kind: 'session', leftPercent: 0, resetsAt: new Date(codexResetMs).toISOString() }] },
-        { provider: 'claude', instance: 'claudeAgent', windows: [{ kind: 'session', leftPercent: 20, resetsAt: new Date(claudeResetMs).toISOString() }] },
-        { provider: 'opencode', instance: 'opencode-go', windows: [{ kind: 'weekly', leftPercent: 0, resetsAt: new Date(healthyWeeklyMs).toISOString() }] },
-      ],
-    });
-    let normalErr;
-    try {
-      execFileSync(process.execPath, [scriptPath, 'pick', 'pr', 'normal'], {
-        input: '@tess-review pr',
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          HOME: dir,
-          PATH: `${dir}:${process.env.PATH}`,
-          GITHUB_OUTPUT: '',
-          REVIEW_NUMBER: '99',
-          GH_TOKEN: fakeToken,
-          USAGE_SNAPSHOT_MAC: normalSnap,
-        },
-      });
-    } catch (error) {
-      normalErr = error;
-    }
-    assert.equal(normalErr?.status, 1);
-    const normalPosted = readFileSync(commentOut, 'utf8');
-    assert.match(normalPosted, /codex\/gpt-6\.1-terra \(no usage left in its session window\)/);
-    assert.match(normalPosted, /claude\/claude-sonnet-5-5 \(fewer than 3 reviews left in its session window\)/);
-    assert.match(normalPosted, /opencode\/opencode-go\/deepseek-v4\.1-flash \(no usage left in its weekly window\)/);
-    assert.ok(normalPosted.includes(formatUtcTime(claudeResetMs)));
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('the reasons the pick step skipped a reviewer reach the posted comment', () => {
-  assert.deepEqual(extraSkipped({ REVIEW_SKIPPED: JSON.stringify(['codex/gpt-6.1-terra (no usage left)']) }),
-    ['codex/gpt-6.1-terra (no usage left)']);
-  assert.deepEqual(extraSkipped({}), []);
-  assert.deepEqual(extraSkipped({ REVIEW_SKIPPED: 'not json' }), []);
-  const result = runReviewer([{ provider: 'claude', model: 'claude-sonnet-5-5' }], 'p', '/w', {
-    usageFor: () => undefined,
-    commandAvailable: () => true,
-    sandbox: () => null,
-    skipped: ['codex/gpt-6.1-terra (no usage left in its weekly window)'],
-    invoke: () => ({ status: 0, stdout: 'fine' }),
-  });
-  assert.match(skippedLine(result), /codex\/gpt-6\.1-terra \(no usage left/);
 });
 
 test("an npm-installed CLI starts: the packages it loads and its own Node are bound", () => {
