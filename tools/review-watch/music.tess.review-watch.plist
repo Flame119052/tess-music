@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Watches GitHub for review tags that name this Mac and opens each one as a T3 thread. Install as
+     ~/Library/LaunchAgents/music.tess.review-watch.plist; see README.md in this folder. A login shell is used on purpose:
+     node, gh and t3 are often installed per user, and a LaunchAgent starts with a bare PATH. One summary line per tick,
+     and no key anywhere in it. Nothing is started on install except this timer. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>music.tess.review-watch</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-lc</string>
+    <string>cd "$HOME/.local/share/tess-review-watch/src" &amp;&amp; exec node tools/review-watch/watch.mjs</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>120</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>Nice</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE_ME/Library/Logs/tess-review-watch.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE_ME/Library/Logs/tess-review-watch.log</string>
+</dict>
+</plist>

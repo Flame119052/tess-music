@@ -237,6 +237,66 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   a tag now carries one more field, and the tagging agent has to state something the job cannot verify by itself.
   *Guard, not permission:* no wording anywhere can make a review run that a rule would refuse.
 
+- **D-76 · 15 Nov 2026 · Owner** — One review tag names the model, the **machine** and an optional focus:
+  `@tess-review pr provider=… model=… effort=… author=… machine=github|mac|omarchy prompt="…"`. `machine=` omitted means
+  today's GitHub-hosted review, so no existing tag changes meaning; `prompt=` becomes the reviewer's focus, capped at 400
+  characters and framed as extra attention, never permission. A tag for `mac` or `omarchy` is checked by the workflow,
+  answered with `Review queued for <machine>`, and run by a watcher **on that machine**, which polls GitHub and opens the
+  review with that machine's own `t3 thread start`. `machine=vps` is refused with its reason. *Why:* GitHub-hosted jobs
+  cannot reach Krish's machines and the self-hosted runners are gone (D-66), so a pull model is the only way to get a
+  review into T3 where he can watch or steer it — with no inbound access and no T3 credential on GitHub. *Trade-off:* an
+  extra step before a review appears, and a tag for a machine cannot carry `effort=`. Reuses the two-slot cap, the fixed
+  refusal codes and the CRLF-safe parser from #90, whose dispatcher needed a runner and a stored T3 sign-in; that PR is
+  closed in favour of this. (#71)
+
+- **D-77 · 15 Nov 2026 · Owner** — A machine review is **sent only to a thread T3 reports at `approval-required`**, and
+  the thread never posts it. The watcher opens the thread with a fixed first line that holds nothing from the pull
+  request, reads the thread's runtime mode back from the local T3 server, and only then sends the diff, the issue and the
+  focus; a wider mode is refused with a comment naming the setting. The thread answers with the review as its last
+  message, and the watcher — plain code, no model — checks the marker, the commit and the verdict line and posts it after
+  confirming the head has not moved. A tag is fetched again by id before it runs, so a deleted or edited tag cannot
+  launch from the copy in the state file; a launch is recorded before and after `t3 thread start` and keyed to the comment
+  id in the thread title, so a tick that dies half-way adopts its thread. A slot is held while its thread exists and
+  reclaimed only when the thread is gone or a tick died before starting one, never on a timer. *Why:* a T3 thread runs
+  with Krish's own permissions, and #105's review found that a prompt saying "stay read-only" is not a boundary, that a
+  queued tag could run after deletion, that a live review's slot expired under a two-hour timer, that a crash could
+  start a second thread, and that `effort=` was silently dropped. *Trade-off:* a review takes two messages (the gate,
+  then the review) and its comment appears one tick after the thread settles; the read-only promise is still bounded by
+  T3's own mapping (Codex: OS read-only, no network; Claude: per-tool approval), and files outside the worktree stay
+  readable by the owner's own account, so the Mac stays opt-in per tag and GitHub stays the default. (#71, #105)
+
+- **D-78 · 15 Nov 2026 · Owner** — A machine review runs in the **same stripped copy** the GitHub job reads, and reads
+  `idle` as the end of a turn. `t3 thread start` can only give a thread a project root or a new worktree, so the watcher
+  builds a commit in its own clone whose tree is the reviewed head with every agent setting, instruction file (any depth,
+  any letter case) and link removed, and starts the thread on a worktree of that ref; the commit has no parent, so the
+  change's own history cannot hand `AGENTS.md` back through `git show`. The copy is deleted with the review — worktree and
+  ref both. A turn is finished when T3 reports the run over (`idle`, `completed`, or one of the ended statuses) and the
+  newest run is the one `t3 thread send` started; the sidebar's `settled` is days of quiet and is never consulted, which
+  is what had left finished reviews unposted and both slots held. The mode is read before each send *and* before the
+  answer is accepted, and a thread found wider gets nothing further and loses its copy. Both paths now share the prompt's
+  context (`buildPrContext`: compacted diff, SENSITIVE notices, changed files read from the copy the thread has) and the
+  comment's footer (`formatReviewComment`), and the watcher applies the same key refusal (`looksSecret`, held secrets)
+  before posting. *Why:* #105's second review showed the boundary was a read-back rather than a folder — the thread
+  started on the pull request's own tree, and its answer was posted unchecked — and that a machine review was missing
+  #104's bounds entirely. *Trade-off:* `t3 thread start` takes no token limit, so the comment says `Cap: none on this
+  path` and the bound is the same `timeout_s` the GitHub job uses. (#71, #105)
+
+- **D-79 · 15 Nov 2026 · Owner** — The reviewer's copy gets an **object store of its own**. D-78 built the stripped
+  commit in the watcher's clone, and a worktree of it shares that clone's object store, so `git show <sha>:AGENTS.md`
+  answered from inside the thread's folder — the removed instructions were one command away. Now a pull request's head
+  is fetched into a scratch bare repository under the state directory, the filtered tree is archived out of it and
+  written into the project as one branch with one commit, and the scratch repository is deleted before a thread exists.
+  The reviewed commit is then in no object store the reviewer's git can reach, and `git cat-file -e <sha>` fails in the
+  worktree as well as in the project. The copy is deleted with the review — worktree, branch, and a `gc --prune=now`
+  behind them — so nothing of one review is readable from the next. A thread's copy is also waited for: `t3 thread
+  start` returns while the worktree is still being written, and the changed files are read from it, so the review is
+  held until the index matches `HEAD`'s tree and refused with a comment after `copyWaitMs`. *Why:* the re-check at
+  `6fec684` printed `AGENTS.md` from the worktree through the shared store, and found the changed-files section missing
+  whenever the checkout had not finished. *Trade-off:* the project's object store still holds the repo's own `main` (it
+  is the checkout the watcher keeps current), so the copy can see the public history — never the reviewed commit. A
+  temporary T3 project per review was rejected: a new project gets the environment's default runtime mode, not the
+  `approval-required` the gate needs, and `t3 project add` cannot set one. (#71, #105)
+
 ## Releases and process
 
 - **D-30 · 12 Nov 2026 · Owner** — Any change pushed to the repo ships automatically as a regular update.

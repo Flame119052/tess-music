@@ -32,6 +32,7 @@ import {
   headReviewProblem,
   installedProviders,
   looksSecret,
+  machineOf,
   noRoomComment,
   parseClaudeOutput,
   parseCodexOutput,
@@ -56,8 +57,14 @@ import {
   reviewerEnv,
   readSnapshots,
   reviewerCandidates,
+  queuedComment,
   reviewCost,
   reviewCostPercent,
+  reviewMachines,
+  reviewPrompt,
+  reviewRefusals,
+  reviewRefusalText,
+  reviewUsage,
   reviewsToKeep,
   runReviewer,
   sandboxArgv,
@@ -69,7 +76,10 @@ import {
   snapshotUsage,
   stripAgentConfig,
   timeoutSeconds,
+  tagProblem,
+  tagPromptMax,
   tierForPaths,
+  watcherMachines,
   snapshotAge,
   snapshotMaxAgeMs,
   usageNote,
@@ -2578,6 +2588,29 @@ test('the review comment puts Used and Usage on separate lines and prints one Ve
   }
 });
 
+test('a comment can carry the lines a machine review needs, and the key refusal is written once (#105)', () => {
+  const caps = capsFor(config);
+  const { formatReviewComment, secretRefusal, marker } = agentReview;
+  const comment = formatReviewComment({
+    role: 'pr',
+    sha: '30db62c',
+    tier: 'normal',
+    caps,
+    notes: ['Machine: mac', 'Cap: none on this path'],
+    result: { provider: 'opencode', model: 'opencode-go/deepseek-v4.1-flash', text: 'Finding.\n\nVerdict: approve' },
+  });
+  const lines = comment.split('\n');
+  assert.equal(lines[0], marker);
+  assert.deepEqual(lines.slice(0, 6), [
+    marker, 'Reviewed: 30db62c', 'Tier: normal',
+    'Reviewer: opencode / opencode-go/deepseek-v4.1-flash', 'Machine: mac', 'Cap: none on this path',
+  ]);
+  assert.equal(lines.at(-1), 'Verdict: approve');
+  // The refusal a review holding a key gets, shared by both paths so they cannot drift apart.
+  assert.ok(secretRefusal.startsWith(marker));
+  assert.match(secretRefusal, /its text contained a key or token/);
+});
+
 test('large PR diffs omit generated build outputs by name, flag sensitive omitted paths with bounded excerpts, and pass changed files inline (#103)', () => {
   const { compactDiff, buildPrContext, reviewPrompt } = agentReview;
   assert.equal(typeof compactDiff, 'function', 'compactDiff is exported');
@@ -2846,4 +2879,158 @@ test('Codex multi-turn usage is summed and streaming past max_tokens aborts with
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// A tag now says where the review runs (`machine=`) and may add the owner's focus (`prompt="…"`). The example below is
+// the one Krish wrote when he decided this, and the parser has to read it exactly as he meant it.
+const krishTag = '@tess-review pr provider=codex model=gpt-6.1-sol effort=high author=opencode machine=github prompt="focus on the installer fallback"';
+
+test('a tag names where it runs and what to look at, and quoting on the tag line is read, not guessed', () => {
+  assert.deepEqual(parseRequest(krishTag), {
+    provider: 'codex', model: 'gpt-6.1-sol', effort: 'high', author: 'opencode',
+    machine: 'github', prompt: 'focus on the installer fallback',
+  });
+  // A tag that says nothing about the machine keeps the meaning it had before the option existed.
+  assert.equal(machineOf(parseRequest('@tess-review pr provider=codex model=gpt-6.1-sol')), 'github');
+  assert.equal(machineOf({}), 'github');
+  assert.equal(machineOf({ machine: 'MAC' }), 'mac', 'the value is compared in one letter case');
+
+  // A comment typed in GitHub's web form ends its lines with CRLF; a parser that keeps the `\r` breaks the last option.
+  assert.equal(parseRequest('@tess-review pr provider=codex model=gpt-6.1-sol author=opencode\r\n\r\nwhy: x').author, 'opencode');
+  assert.equal(parseRequest('@tess-review pr\r\nprovider=codex model=gpt-6.1-sol').provider, undefined,
+    'options belong on the tag line, as docs/workflow.md says');
+
+  // A mistyped option is refused, never ignored: ignoring `author=claud` would allow the provider it was meant to exclude.
+  assert.match(parseRequest('@tess-review pr provider=codex model=gpt-6.1-sol tier=docs').problem, /not an option/);
+  assert.match(parseRequest('@tess-review pr provider=codex provider=claude').problem, /given twice/);
+  assert.match(parseRequest('@tess-review pr prompt="never closed').problem, /never closed/);
+  // Prose on the tag line is not an option, and does not become one.
+  assert.deepEqual(parseRequest('@tess-review pr because the plan changed provider=codex model=gpt-6.1-sol'),
+    { provider: 'codex', model: 'gpt-6.1-sol' });
+});
+
+test('a tag may choose a machine, and only the machines a review can run on', () => {
+  for (const machine of ['github', 'mac', 'omarchy']) {
+    assert.equal(tagProblem({ machine }), null, `${machine} is a review machine`);
+  }
+  assert.deepEqual(watcherMachines, ['mac', 'omarchy'], 'a watcher runs on the machines a GitHub job cannot reach');
+
+  // The VPS is named only so it can be refused with its reason: T3 runs as root there, beside Paperclip.
+  const vps = tagProblem({ machine: 'vps' });
+  assert.equal(vps.code, 'machine-vps');
+  assert.match(vps.reason, /root/);
+  assert.match(vps.reason, /Paperclip/);
+  assert.equal(tagProblem({ machine: 'instabox' }).code, 'invalid-options', 'a retired machine is not quietly rerouted');
+
+  // The prompt is the owner's focus, so it is length-capped and kept on one line; a bad one is refused, not trimmed.
+  assert.equal(tagProblem({ prompt: 'x'.repeat(tagPromptMax) }), null);
+  assert.equal(tagProblem({ prompt: 'x'.repeat(tagPromptMax + 1) }).code, 'invalid-options');
+  assert.match(tagProblem({ prompt: '  ' }).reason, /empty/);
+  assert.equal(reviewMachines.length, 4, 'every machine is named in one list');
+});
+
+test('a tag for another machine never runs on GitHub, and a queued tag says where it went', () => {
+  const request = { provider: 'codex', model: 'gpt-6.1-sol', author: 'opencode', machine: 'mac' };
+  const refused = requestProblem(config, request, { author: 'opencode' });
+  assert.equal(refused.code, 'wrong-machine');
+  assert.match(refused.reason, /machine=mac/);
+  // The same tag, read by the Mac's watcher, is accepted.
+  assert.deepEqual(requestProblem(config, request, { author: 'opencode', machine: 'mac' }).model,
+    { provider: 'codex', model: 'gpt-6.1-sol' });
+  // A tag with no machine still runs on GitHub.
+  assert.ok(requestProblem(config, { provider: 'codex', model: 'gpt-6.1-sol', author: 'opencode' }, { author: 'opencode' }).model);
+
+  const queued = queuedComment({ machine: 'mac', provider: 'codex', model: 'gpt-6.1-sol' });
+  assert.ok(queued.startsWith('<!-- tess-review-bot -->'), 'the bot marker keeps it from starting anything');
+  assert.match(queued, /queued for `mac` with codex \/ gpt-6\.1-sol/);
+  assert.match(queued, /Nothing runs on GitHub's machines/);
+
+  // Every refusal the workflow or a watcher can post has fixed words: a script message is never put on a public issue.
+  for (const code of ['invalid-options', 'machine-vps', 'fork-pr', 'ci-not-passed', 'not-a-pull-request', 'slots-busy', 'launch-failed']) {
+    const text = reviewRefusalText(code);
+    assert.ok(text.startsWith('<!-- tess-review-bot -->'), `${code} carries the marker`);
+    assert.match(text, /Review not run\./);
+    assert.ok(reviewRefusals[code], `${code} has words`);
+  }
+  assert.match(reviewRefusalText('machine-vps'), /paperclip-vps/);
+  assert.match(reviewRefusalText('machine-vps'), /Nothing ran/);
+  assert.match(reviewRefusalText('fork-pr'), /fork/);
+  assert.match(reviewRefusalText('nonsense-code'), /was not accepted/, 'an unknown code still refuses in words');
+});
+
+test("the owner's focus is extra attention, never permission to skip a rule", () => {
+  const focused = reviewPrompt('pr', {
+    issue: 'ISSUE', approach: 'APPROACH', diff: 'DIFF', focus: 'focus on the installer fallback',
+  });
+  assert.match(focused, /OWNER'S FOCUS/);
+  assert.match(focused, /focus on the installer fallback/);
+  assert.match(focused, /never permission to ignore the rules/);
+  // The rules and the required verdict line are still there, and the focus sits above the material it is about.
+  assert.match(focused, /End with exactly one line: Verdict: approve OR Verdict: changes needed\./);
+  assert.ok(focused.indexOf('OWNER\'S FOCUS') < focused.indexOf('PULL REQUEST DIFF'), 'focus is read before the diff');
+  const plain = reviewPrompt('approach', { issue: 'ISSUE', approach: 'APPROACH' });
+  assert.ok(!/OWNER'S FOCUS/.test(plain), 'no focus, no section');
+});
+
+test('the gate routes a tag to the machine it names, and refuses the rest with a code', () => {
+  const answers = { ...prComment, pull: prHead(), ci: 'success', files: 'theme/Tess/src/core.js\n' };
+  const mac = runGate({ answers, env: { COMMENT_BODY: `${krishTag.replace('machine=github', 'machine=mac')}` } });
+  assert.deepEqual({ allowed: mac.allowed, machine: mac.machine, refusal: mac.refusal, head: mac.head_sha },
+    { allowed: 'true', machine: 'mac', refusal: '', head: 'abc123' }, 'a Mac tag is checked here and runs there');
+
+  // A tag with no machine is the GitHub job, exactly as before.
+  assert.equal(runGate({ answers, env: { COMMENT_BODY: '@tess-review pr provider=codex model=gpt-6.1-sol author=opencode' } }).machine, 'github');
+  assert.equal(runGate({ answers, env: { COMMENT_BODY: '@tess-review pr' } }).machine, 'github');
+
+  // An approach review has no pull request, so it never asks GitHub about one, and still routes.
+  const approach = runGate({ env: { COMMENT_BODY: '@tess-review approach machine=omarchy provider=codex model=gpt-6.1-sol author=opencode' } });
+  assert.deepEqual({ allowed: approach.allowed, machine: approach.machine, calls: approach.calls },
+    { allowed: 'true', machine: 'omarchy', calls: '' });
+
+  // Refusals carry the fixed code the notice job posts, and never a key or a path.
+  const vps = runGate({ answers, env: { COMMENT_BODY: '@tess-review pr machine=vps provider=codex model=gpt-6.1-sol author=opencode' } });
+  assert.equal(vps.allowed, 'false');
+  assert.equal(vps.refusal, 'machine-vps');
+  assert.equal(runGate({ answers, env: { COMMENT_BODY: '@tess-review pr machine=nowhere' } }).refusal, 'invalid-options');
+  assert.equal(runGate({ answers, env: { COMMENT_BODY: `@tess-review pr prompt="${'x'.repeat(tagPromptMax + 1)}"` } }).refusal, 'invalid-options');
+  assert.equal(runGate({ answers, env: { COMMENT_BODY: '@tess-review pr tier=docs' } }).refusal, 'invalid-options');
+
+  // The hard rules still hold for a tag that asks for a machine, because that machine reads the same commit.
+  const fork = runGate({ answers: {
+    ...prComment,
+    pull: JSON.stringify({ head: { sha: 'abc123', repo: { full_name: 'outside/tess-music', fork: true } } }),
+    ci: 'success',
+  }, env: { COMMENT_BODY: '@tess-review pr machine=mac' } });
+  assert.deepEqual({ allowed: fork.allowed, refusal: fork.refusal, head: fork.head_sha }, { allowed: 'false', refusal: 'fork-pr', head: '' });
+  assert.equal(runGate({ answers: { ...prComment, pull: prHead(), ci: 'failure' }, env: { COMMENT_BODY: '@tess-review pr machine=mac' } }).refusal, 'ci-not-passed');
+  assert.equal(runGate({ answers: { ...prComment, pull: prHead(), ci: '' }, env: { COMMENT_BODY: '@tess-review pr machine=mac' } }).refusal, 'ci-not-passed');
+
+  // `pr` on a plain issue is answered, because the account is allowlisted and asking is what happened.
+  const notPr = runGate({ answers: { issue: '{"number":7}', issueUrl: '' }, env: { COMMENT_BODY: '@tess-review pr machine=mac' } });
+  assert.deepEqual({ allowed: notPr.allowed, refusal: notPr.refusal }, { allowed: 'false', refusal: 'not-a-pull-request' });
+
+  // A stranger is still silent: their comment is read by nothing and answered by nothing.
+  const strangerMac = runGate({ answers, env: { COMMENT_BODY: '@tess-review pr machine=mac', COMMENTER: 'stranger' } });
+  assert.deepEqual({ allowed: strangerMac.allowed, refusal: strangerMac.refusal, calls: strangerMac.calls },
+    { allowed: 'false', refusal: '', calls: '' });
+});
+
+test('the workflow runs a review only for machine=github, and answers the other tags', () => {
+  const review = jobBlock('review');
+  assert.match(review, /machine == 'github'/, 'a tag for another machine never starts this job');
+  const gate = jobBlock('gate');
+  assert.match(gate, /machine: \$\{\{ steps\.gate\.outputs\.machine \}\}/);
+  assert.match(gate, /refusal: \$\{\{ steps\.gate\.outputs\.refusal \}\}/);
+
+  const notice = jobBlock('notice');
+  assert.match(notice, /issues: write/, 'the notice job can comment');
+  assert.match(notice, /needs\.gate\.outputs\.refusal != ''/, 'a refusal is posted');
+  assert.match(notice, /agent-review\.mjs refuse "\$REVIEW_REFUSAL"/, 'the fixed words are the tested ones');
+  assert.match(stepBlock(notice, 'Say where the review is queued'), /agent-review\.mjs queued/);
+  assert.match(stepBlock(notice, 'Say where the review is queued'), /REVIEW_MACHINE: \$\{\{ needs\.gate\.outputs\.machine \}\}/);
+  for (const names of Object.values(providerKeys)) {
+    for (const name of names) assert.ok(!notice.includes(name), `${name} is never in the notice job`);
+  }
+  // A tag that runs on GitHub gets no notice, and the one that runs elsewhere gets no refusal.
+  assert.match(notice, /needs\.gate\.outputs\.allowed == 'true' && needs\.gate\.outputs\.machine != 'github'/);
 });
