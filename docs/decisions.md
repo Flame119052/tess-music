@@ -101,7 +101,8 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   merged since the last beta. Promoting copies beta to stable.
   - Reviewer agents run on self-hosted runners labelled `tess-agent`: the Instabox box `tess-reviewer` first, and any
     `tess-backup` runner (the owner's VPS or omarchy, whichever is idle) when the box does not answer (D-65). They are
-    started only by allowlisted GitHub accounts tagging `@tess-review`, and only after CI passes.
+    started only by allowlisted GitHub accounts tagging `@tess-review`, and only after CI passes. *(This bullet is
+    superseded by D-66: reviews are standard GitHub-hosted jobs now.)*
   - The review a change gets depends on which paths it touches. Docs changes get CI only. Normal changes get a lighter
     PR review. Sensitive changes get the strong model on both the approach and the PR.
   - The 5-minute wake check returns for everyone, because a rescue order can now only press D-62's five buttons. It
@@ -121,6 +122,38 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   pause, which spends free-plan time, and anyone can see when a review is running. Neither stops a review: the box is
   only asked, and the job falls back to a backup. Amends D-63's "reviewer agents run on the owner's machines".
   (#71)
+- **D-66 · 15 Nov 2026 · Owner** — Reviews run on **GitHub's own hosted machines**, not on self-hosted runners. Every
+  `@tess-review` is a standard GitHub Actions job on `ubuntu-latest`: a fresh virtual machine for that review, deleted
+  when the job ends, free and unlimited for this public repository. There is no self-hosted runner, no T3, no Tailscale
+  and no Instabox box to wake (D-65 is superseded). The job installs only the chosen reviewer's CLI, at a pinned
+  version, and holds only that provider's key, from repository secrets the owner adds; fork PRs never reach it.
+  bubblewrap stays: the job lifts Ubuntu 24.04's AppArmor limit on unprivileged user namespaces for that one
+  disposable machine, and a job that cannot start the sandbox stops instead of running a reviewer bare.
+  *Why:* the review reads outside code, so the safest place for it is a machine that exists only for that review. It
+  holds no Tess key, cannot reach Paperclip or the owner's Mac, leaves no runner to patch or keep online, and costs
+  nothing on a paused third-party box. Trade-off: the provider keys move from a machine's `.env` to repository
+  secrets, and one of them is a key that bills an API rather than the ChatGPT plan (Codex's docs forbid the
+  ChatGPT-account path on a public repository). This also retires the runner network filter, and makes #94 and #95
+  moot. (#71)
+- **D-67 · 15 Nov 2026 · Agent** — A review only reads a branch of this repository, and every verdict names the commit it
+  read. The gate asks which repository the PR head lives in and refuses a fork head even when an allowlisted maintainer
+  tagged it and CI is green, failing closed on a deleted or unknown head repository; the review repeats that check before
+  it fetches anything. The head is then checked one last time immediately before posting, so a push during a long review
+  costs a re-tag instead of attaching an approval to code nobody read, and the comment carries `Reviewed: <sha>`. The
+  gate's rules moved from inline YAML into `tools/agent-gate.sh`, because a rule worth having is a rule worth a test.
+  *Why:* the review job holds a provider key, and the fork author writes both the diff and the snapshot the reviewer
+  reads. (#98)
+- **D-68 · 15 Nov 2026 · Agent** — The reviewer's key is contained by what the model can *do*, and by what can leave the
+  job, not by a network allowlist. Each CLI is given read-only tools only (Claude Read/Grep/Glob, Codex's read-only
+  sandbox, OpenCode's deny-everything-but-read agent), so no tool exists that could send the key to an endpoint of a
+  diff's choosing; the job holds one provider's key and no other. What *can* leave is text: a review whose body contains
+  a held key is never posted, and the check now matches the key split over lines, base64'd, hex'd and percent-encoded,
+  not just as written. A failed reviewer's raw output no longer reaches the log at all — one redacted, length-capped line
+  of its stderr does, and its stdout (the review text, which a diff can dictate) never does.
+  *Why not an authenticated proxy inside the job:* it only works if each CLI can be pointed at a local base URL, and the
+  endpoint list per provider cannot be checked from here; a wrong guess would silently stop every review of that provider,
+  and a blocking egress allowlist has the same failure. That stays the recommended next step if a reviewer is ever given a
+  tool that can fetch a URL. (#98)
 
 ## Releases and process
 
@@ -225,7 +258,8 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   that one address in the drop-in. A provider's config and sign-in files are mounted **inside** the throwaway `HOME`, at
   the path its CLI looks in: the earlier mounts sat at the runner's real home, which `HOME` had already moved away from,
   so OpenCode could not find its agent file and Codex could not find its login. Applying the drop-in to a machine is a
-  root action the owner approves; the repository only carries the file and the check. (#71)
+  root action the owner approves; the repository only carries the file and the check. (#71) *Retired with the
+  self-hosted runners by D-66: there is no runner service to attach it to.*
 - **15 Nov 2026 · Review caps (#71)** — One review is now bounded before it starts, not just advised in docs. Each
   provider gets the hardest limit it actually accepts: Claude 12 turns and a dollar ceiling (60 cents Opus, 30 Sonnet,
   explicitly a client-side estimate of API list prices rather than the plan's meter), Codex an effort plus compaction at
