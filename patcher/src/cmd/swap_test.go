@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -395,5 +396,69 @@ func TestSwapAppsMissingStagedFolder(t *testing.T) {
 	}
 	if b, err := os.ReadFile(filepath.Join(apps, "xpui.spa")); err != nil || string(b) != "original" {
 		t.Fatalf("Spotify's interface changed or is missing: %q, %v", b, err)
+	}
+}
+
+// A binary Info.plist used to be written into a temporary file and PlistBuddy was pointed at that path. A second process
+// on the same account could replace that file between the write and the read: a bundle whose own plist says
+// com.example.other had its interface folder renamed aside and deleted, its keep-me gone, and the command exited 0.
+// The bytes now go to plutil on stdin, so there is no name to replace and nothing outside this process can change what
+// the check reads.
+//
+// The racer below does what that second process did, for as long as the checks run: it rewrites every tess-plist* file
+// that appears in TMPDIR. Every run has to refuse and leave the other bundle alone, and no such file may appear at all —
+// not "mostly refused", which is what the racer got out of the old code.
+func TestSwapAppsIgnoresReplacedTempPlist(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp) // where the old code put the plist it handed to PlistBuddy
+	res := t.TempDir()
+	apps := makeApp(t, res, "Other.app", "com.example.other")
+	plist := filepath.Join(res, "Other.app", "Contents", "Info.plist")
+	if err := exec.Command("/usr/bin/plutil", "-convert", "binary1", plist).Run(); err != nil {
+		t.Skipf("plutil cannot make a binary plist here: %v", err)
+	}
+	if b, err := os.ReadFile(plist); err != nil || !strings.HasPrefix(string(b), "bplist") {
+		t.Skipf("the plist is not binary here: %v", err)
+	}
+	staged := filepath.Join(res, "staged")
+	os.MkdirAll(staged, 0o755)
+	os.WriteFile(filepath.Join(staged, "xpui.spa"), []byte("new"), 0o644)
+	spotify := []byte(plistFor("com.spotify.client"))
+
+	var replaced atomic.Int64
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			names, err := os.ReadDir(tmp)
+			if err != nil {
+				continue
+			}
+			for _, e := range names {
+				if !strings.HasPrefix(e.Name(), "tess-plist") {
+					continue
+				}
+				if os.WriteFile(filepath.Join(tmp, e.Name()), spotify, 0o644) == nil {
+					replaced.Add(1)
+				}
+			}
+		}
+	}()
+
+	const runs = 8
+	for i := 0; i < runs; i++ {
+		// The wording is not the point: exit 1 is, and the folder that is not Spotify's is untouched.
+		if code := SwapApps([]string{apps, staged}); code == 0 {
+			t.Fatalf("run %d of a bundle that is not Spotify's reported success", i+1)
+		}
+		assertKept(t, apps)
+	}
+	if n := replaced.Load(); n != 0 {
+		t.Fatalf("the check wrote a temporary plist that a caller could replace (%d replacements were made)", n)
 	}
 }

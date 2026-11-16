@@ -137,27 +137,20 @@ type appsSwap struct {
 const spotifyBundleID = "com.spotify.client"
 
 // plistIdentifier returns CFBundleIdentifier from Info.plist bytes read through the open bundle. Spotify's real plist is
-// a binary one and a test bundle's is XML: XML is read here in Go, and the binary form is copied into a temporary file
-// that PlistBuddy is pointed at, so the tool reads the bytes that came out of the bundle instead of resolving its path
-// again.
+// a binary one and a test bundle's is XML: XML is read here in Go, and the binary form goes to plutil on stdin, so the
+// bytes the bundle gave us are the bytes that name it and no outside tool is ever handed a path to open again.
+//
+// The binary form used to be copied into a temporary file that PlistBuddy was pointed at. Whoever runs the signed
+// program could replace that file after the copy and before the read: another bundle's interface folder was then
+// swapped, its own file deleted, and the command exited 0 while the bundle's plist still said com.example.other
+// (#110 re-check 4, 6 of 12 runs). A pipe has no name to replace, so the read proves the bundle it was opened from.
 func plistIdentifier(b []byte) (string, error) {
 	if !bytes.HasPrefix(b, []byte("bplist")) {
 		return xmlStringValue(b, "CFBundleIdentifier")
 	}
-	f, err := os.CreateTemp("", "tess-plist")
-	if err != nil {
-		return "", err
-	}
-	name := f.Name()
-	defer os.Remove(name)
-	if _, err := f.Write(b); err != nil {
-		f.Close()
-		return "", err
-	}
-	if err := f.Close(); err != nil {
-		return "", err
-	}
-	out, err := exec.Command("/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", name).Output()
+	cmd := exec.Command("/usr/bin/plutil", "-extract", "CFBundleIdentifier", "raw", "-o", "-", "-")
+	cmd.Stdin = bytes.NewReader(b)
+	out, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}

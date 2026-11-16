@@ -44,7 +44,7 @@ var errFolderMoved = errors.New("Spotify's folder was replaced while the new fil
 // after its symlinks are resolved (which is what lets `/var` stand for `/private/var`, and what refuses a symlinked
 // `Resources`).
 //
-// Order matters. Reading the plist is the slow step (a binary plist goes through PlistBuddy), so Resources is opened and
+// Order matters. Reading the plist is the slow step (a binary plist goes through plutil), so Resources is opened and
 // its device and inode recorded *before* it: a real folder moved into that name while the read runs no longer matches
 // the path afterwards, and the command stops before it creates anything. The old order validated a path, then opened it,
 // so a folder swapped in during the read was later compared against its own inode and accepted.
