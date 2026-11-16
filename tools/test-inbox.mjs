@@ -142,6 +142,37 @@ try {
   assert.equal(await status(post('/v1/support', good({ title: '' }), { authorization: `Bearer ${token}` })), 400, 'a report with no title is refused');
   assert.equal(query('SELECT COUNT(*) AS n FROM support_reports')[0].n, 1, 'none of the bad reports were stored');
 
+  // 3b. The endpoint is the last gate before a person's words become a public issue, and the bot can post here directly
+  // without triage ever seeing the text. Personal details and characters that a terminal hides are neutralised on the
+  // way in, so what is stored, and what is later filed from it, says what the person meant and nothing they didn't.
+  const nasty = good({
+    title: 'Ping sam.whitfield@example.com',
+    words: 'my Mac is Krishs-MacBook-Pro.local and my key is ~/.ssh/id_rsa',
+    diagnosis: 'the doctor log says /Users/alice/secret',
+    body: '## What happened\n\n/Users/alice/secret \u202e and \u200b a zero-width space',
+    spotify: '/Users/alice/Spotify.app',
+    macos: 'Krishs-MacBook-Pro.local',
+  });
+  const nastyRes = await worker.fetch(post('/v1/support', nasty, { authorization: `Bearer ${token}` }), env());
+  assert.equal(nastyRes.status, 201, 'a report carrying personal detail is still taken');
+  const [kept] = query(`SELECT * FROM support_reports WHERE id = ${(await nastyRes.json()).id}`);
+  const storedText = [kept.title, kept.words, kept.diagnosis, kept.body, kept.spotify, kept.macos].join('\n');
+  for (const [what, re] of [
+    ['an email', /sam\.whitfield|example\.com/],
+    ['a home folder', /alice/],
+    ['a tilde path', /id_rsa/],
+    ['a computer name', /MacBook|\.local/],
+    ['a right-to-left override', /[\u202a-\u202e]/],
+    ['a zero-width character', /[\u200b-\u200f\ufeff]/],
+  ]) {
+    assert.ok(!re.test(storedText), `${what} does not reach the stored report`);
+  }
+  assert.equal(kept.spotify, '~', 'the Spotify line keeps its place, not the path');
+
+  // 3c. Neutralising happens before the title is judged, so a control character cannot smuggle shell syntax past it.
+  assert.equal(await status(post('/v1/support', good({ title: 'Lyrics $\u200b(touch /tmp/x)' }), { authorization: `Bearer ${token}` })), 400,
+    'a title that only looks harmless until its zero-width space is stripped is refused');
+
   // 4. Sizes and shapes are bounded, like the health reports.
   const huge = good({ body: 'x'.repeat(60 * 1024) });
   assert.equal(await status(post('/v1/support', huge, { authorization: `Bearer ${token}` })), 413, 'an oversized body is refused');
@@ -206,10 +237,15 @@ try {
   assert.equal(oldQuery('SELECT COUNT(*) AS n FROM reports')[0].n, 0, 'the health-report cleanup still ran on a database without the support tables');
   assert.equal(oldQuery('SELECT COUNT(*) AS n FROM limits')[0].n, 0, 'and so did the rate-limit cleanup');
 
-  // 8c. A title that would be read as a command is refused at the door.
-  for (const nasty of ['Lyrics $(touch /tmp/x)', 'Lyrics `id`', 'Lyrics \u0000 null']) {
+  // 8c. A title that would be read as a command is refused at the door. A control byte is not a command, it is noise:
+  // it is stripped and the title is kept, so a stray NUL does not cost someone their report.
+  for (const nasty of ['Lyrics $(touch /tmp/x)', 'Lyrics `id`']) {
     assert.equal(await status(post('/v1/support', good({ title: nasty }), { authorization: `Bearer ${token}` })), 400, `a title with shell syntax is refused: ${JSON.stringify(nasty)}`);
   }
+  const nulRes = await worker.fetch(post('/v1/support', good({ title: 'Lyrics \u0000 null' }), { authorization: `Bearer ${token}` }), env());
+  assert.equal(nulRes.status, 201, 'a title with a stray control byte is still taken');
+  const nulTitle = query(`SELECT title FROM support_reports WHERE id = ${(await nulRes.json()).id}`)[0].title;
+  assert.equal(nulTitle, 'Lyrics  null', 'and the control byte is gone from it');
 
   // 9. A WAF handler that only guards the old path would let floods through here too, so the limiter is checked.
   const denied = env({ LIMIT: { limit: async () => ({ success: false }) } });
@@ -224,6 +260,7 @@ try {
     '  · no token, a wrong token and a revoked token are all refused, and store nothing',
     '  · an approved token stores the report, labelled with the approved poster it belongs to',
     '  · a bad priority, a made-up area, a made-up kind and a missing title are refused',
+    '  · an email, a home folder, a tilde path, a Mac name, a bidi override and a zero-width character are stripped before the report is stored',
     '  · an oversized or non-JSON body is refused, and a text/plain body is refused',
     '  · there is no GET for a support report — reading stays behind the owner\'s Cloudflare login',
     '  · the open-issue title list is served, with no report data in it',

@@ -156,6 +156,33 @@ try {
   const dirtyPayload = JSON.parse(out(process.execPath, [TRIAGE, '--report', dirty, '--words', fix('words-blank-spotify.txt'), '--title', 'Spotify opens as a black window and nothing loads', '--mode', 'inbox']));
   assert.ok(!/alice/.test(JSON.stringify(dirtyPayload)), 'and the inbox payload does not carry it either');
 
+  // 10d. A paste is the screen output of `tess report`, and doctor's own privacy pass only rewrites the JSON it sends,
+  // so a home folder reaches the text as `~`, the Mac's name as `<name>.local`, and a file path in the Spotify line.
+  // Bidi overrides and zero-width characters can reorder or hide a line on screen. None of it may survive into a public
+  // issue, and none of it may ride along in the inbox payload either.
+  const leakyReport = join(box, 'leaky.txt');
+  writeFileSync(leakyReport, readFileSync(fix('report-clean.txt'), 'utf8')
+    .replace('✓ Tess is in Spotify 1.3.9', '✓ Tess is in Spotify /Users/alice/Spotify.app'));
+  const leakyWords = join(box, 'leaky-words.txt');
+  writeFileSync(leakyWords, 'it broke on Krishs-MacBook-Pro.local and my key is at ~/.ssh/id_rsa\n'
+    + 'the window is \u202eactually fine\u202c and there is a \u200bzero width here\n');
+  const leaky = out(process.execPath, [TRIAGE, '--report', leakyReport, '--words', leakyWords, '--also', 'area:theme',
+    '--title', 'Lyrics drift half a second behind the song', '--macos', '26.1', '--mode', 'issue']);
+  const leakyPayload = JSON.parse(out(process.execPath, [TRIAGE, '--report', leakyReport, '--words', leakyWords,
+    '--also', 'area:theme', '--title', 'Lyrics drift half a second behind the song', '--macos', '26.1', '--mode', 'inbox']));
+  const leakyBoth = leaky + JSON.stringify(leakyPayload);
+  for (const [what, re] of [
+    ['a home folder', /alice/],
+    ['a tilde path', /id_rsa/],
+    ['a computer name', /MacBook|\.local/],
+    ['a right-to-left override', /[\u202a-\u202e]/],
+    ['a zero-width character', /[\u200b-\u200f\ufeff]/],
+  ]) {
+    assert.ok(!re.test(leakyBoth), `${what} is not in the issue or the payload`);
+  }
+  assert.equal(leakyPayload.spotify, 'unknown', 'a path where the Spotify version should be is not carried');
+  assert.equal(leakyPayload.macos, '26.1', 'a real macOS version is');
+
   // --- the allowlist -------------------------------------------------------------------------------------------------
   const prof = join(box, 'hermes', 'profiles', 'tess-support');
   mkdirSync(prof, { recursive: true });
@@ -335,6 +362,7 @@ exit 0
     '  · the payload it posts carries only fields the inbox accepts, and no token or personal data',
     '  · a title the inbox would refuse with a 400 is refused here first, before anything is posted',
     '  · a home path or an email inside the helper log is scrubbed out of the issue and the payload',
+    '  · a path where the Spotify version goes, a Mac name, a bidi override and a zero-width character never reach the issue or the payload',
     '  · it refuses to run as root, so the bot\'s shell is never root\'s',
     '  · it never suggests passwordless sudo, and never starts a second gateway beside the systemd unit',
     '  · it never changes the default profile, refuses Paperclip\'s machine, and starts nothing after a failed install',

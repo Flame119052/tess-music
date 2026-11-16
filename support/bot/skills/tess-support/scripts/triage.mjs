@@ -40,17 +40,32 @@ const die = (msg) => { throw new Error(msg); };
 // --- privacy ---------------------------------------------------------------------------------------------------------
 // Everything that leaves this file goes through scrub(): the issue is public, and the person on the other end may
 // have pasted a path, an address or their own phone number. doctor.sh already replaces the home folder, the account
-// name, the computer name and emails, but it can't know what they typed into the chat, and a second pass costs
+// name, the computer name and emails, but only inside the JSON it sends home; the text a person pastes is the screen
+// output, where a home folder appears as `~`. It also can't know what they typed into the chat, and a second pass costs
 // nothing. Timestamps are protected first so the phone-number rule can't eat "2026-11-14 10:02:11".
+//
+// Characters a terminal does not draw but a reader obeys go first: a right-to-left override can reorder a line so an
+// honest path reads as another one, and a zero-width space can split a token or hide a word. A public issue is rendered
+// by a browser with the same bidirectional rules, so they are removed rather than escaped.
+const INVISIBLE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
 export const scrub = (text) => {
   if (!text) return '';
   const keep = [];
   const stash = (m) => `\u0000${keep.push(m) - 1}\u0000`;
-  let out = text
+  let out = String(text)
+    .replace(INVISIBLE, '')
     .replace(/\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?|\b\d+(?:\.\d+){2,}\b/g, stash)
     .replace(/\b[0-9a-f]{32}\b/gi, '(install id withheld)')
     .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '(email)')
-    .replace(/(?:\/Users|\/home|\/Volumes)\/[^\s"'`)]+/g, '~')
+    .replace(/(?:\/Users|\/home|\/Volumes|\/private\/var\/folders)\/[^\s"'`)]+/g, '~')
+    // A path the doctor already rewrote starts with `~`, and it is still a home folder: `~/.ssh/id_rsa` names a file on
+    // someone's Mac and says something about them.
+    .replace(/(^|[\s([{])~\/[^\s"'`)]+/g, '$1~')
+    .replace(/\b[A-Za-z0-9][A-Za-z0-9._-]*\.local\b/g, '(computer)')
+    // A bot token is a secret, and the two shapes here are the ones this machine holds: Telegram's `<digits>:<secret>`
+    // and the inbox's `tess_<64 hex>`. The phone rule below would otherwise leave half of one behind.
+    .replace(/\b\d{6,}:[A-Za-z0-9_-]{30,}\b/g, '(token)')
+    .replace(/\btess_[0-9a-f]{32,}\b/g, '(token)')
     .replace(/(^|[\s([])\+?\d[\d ().-]{7,}\d(?=$|[\s.,;:)\]\n])/g, (_, pre) => `${pre}(number)`)
     .replace(/@[A-Za-z0-9_]{3,}/g, '(handle)');
   return out.replace(/\u0000(\d+)\u0000/g, (_, i) => keep[Number(i)]);
@@ -110,6 +125,15 @@ const tidyReport = (text) => scrub(text
   .replace(/^.*Couldn't send the report.*$/gim, '')
   .trim());
 
+// A version is printed on its own line in the issue, and the thing the paste offers for it is whatever followed "Tess is
+// in Spotify". A path or a name there is not a version, so it becomes "unknown" rather than being copied onto a public
+// page.
+const VERSION = /^[0-9A-Za-z][0-9A-Za-z._+-]{0,39}$/;
+const version = (v, fallback = 'unknown') => {
+  const s = String(v || '').trim();
+  return VERSION.test(s) && !/^\(/.test(s) ? s : fallback;
+};
+
 // --- the judgement the model is not allowed to make on the cheap -----------------------------------------------------
 export const decide = ({ report, words, tess = 'unknown', macos = 'unknown', priority = '', also = [], kind = 'bug',
   title = '', summary = '', related = [], main = '' }) => {
@@ -142,9 +166,9 @@ export const decide = ({ report, words, tess = 'unknown', macos = 'unknown', pri
     floor,
     areas,
     kind,
-    tess,
-    spotify: p.spotify,
-    macos,
+    tess: version(scrub(tess)),
+    spotify: version(scrub(p.spotify)),
+    macos: version(scrub(macos)),
     // These three are read straight out of the person's paste and printed on their own, so they get the same scrub as
     // their words. A path or an email inside the helper's log was reaching the public issue otherwise.
     problems: p.problems.map(scrub),
