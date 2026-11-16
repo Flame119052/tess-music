@@ -374,7 +374,9 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   `Apps`, `.tess-new` and `.tess-old`, the copy itself and the recovery of an interrupted run are `…at` calls on that
   descriptor (`swapAppsAt`). The folder is compared with what the path names before the first write and again before
   each rename, and a folder that no longer matches stops the swap with the original left in place. It takes no config
-  (so it never rewrites `config-xpui.ini`) and reports macOS's block as exit 3 as `can-write` does.
+  (so it never rewrites `config-xpui.ini`) and reports macOS's block as exit 3 as `can-write` does. The bundle's
+  `CFBundleIdentifier` is read out of those bytes and never out of a path an outside tool opens again: a binary plist
+  goes to `plutil` on stdin, where a second process cannot reach it.
   *Why:* macOS App Management denied `/usr/bin/ditto`, attributed to `/bin/zsh` because launchd starts the helper that
   way, so every background theme update failed while Spotify was left intact (16:36 on 15 Nov, #108). The signed
   patcher has its own approval, so the same copy is allowed there. A shell fallback was removed rather than kept: it
@@ -393,7 +395,15 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   `tools/check-safety.sh` blind to `rm -rf "$APPS/xpui"` and `ditto "$1" "${APPS}"`; it now fails any statement whose
   write verb names the folder, in any quoting and with any path after it, and allows only a copy whose source is the
   folder and whose later arguments do not name it — `ditto "$APPS" "$APPS/xpui"` writes the live interface in place
-  and fails the gate.
+  and fails the gate. The same pass had two more holes, both found by the next review. The plist was written into a
+  temporary file that `PlistBuddy` was pointed at, so a second process on the same account could replace that file with
+  a Spotify plist while the check ran: a bundle whose own plist says `com.example.other` was swapped, its `keep-me`
+  deleted and the command exited 0 (measured, 6 of 12 runs); `plutil` on stdin has no name to replace
+  (`TestSwapAppsIgnoresReplacedTempPlist` rewrites any `tess-plist*` it can find during the check, for eight runs, and
+  none is ever written). And the gate's word match started at `$APPS`, so a slash glued in front of the quotes
+  (`/"$APPS"`, which the shell expands to the same folder) hid the destination — `ditto "$APPS/xpui" /"$APPS"` rewrote
+  the live `xpui.spa` in a probe. Each argument is now stripped of a leading `/`, repeated slashes and `./` before it
+  is matched, so the slashes cannot hide a write.
   *Trade-off:* the updater can no longer restore a theme if the patcher itself is missing; Spotify then stays exactly
   as it was, which is the required failure. The test bundles must now carry an `Info.plist` that names Spotify, so a
   sandbox has to be shaped like a real app bundle. The swap is macOS-shaped (`golang.org/x/sys/unix`), so the swap-apps
