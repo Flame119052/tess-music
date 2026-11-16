@@ -9,6 +9,8 @@
 // Cost: everything here stays inside Cloudflare's free allowances even under a flood. Requests over the per-IP limit
 // are refused by Cloudflare's rate limiter before any database work; past the daily total only one row is read per
 // request; at most DAILY_CAP reports are stored a day (~6 rows written each), kept 30 days, 24 KB each at most.
+import { clean as cleanText } from '../support/bot/skills/tess-support/scripts/privacy.mjs';
+
 const MAX_BODY = 32 * 1024;
 // A support report carries the person's words, the bot's diagnosis and the finished write-up, so it is allowed more
 // room than a health report while still being bounded.
@@ -25,26 +27,15 @@ const ISSUE_KINDS = new Set(['bug', 'enhancement', 'design', 'security', 'testin
 // The stored per-IP keys are useless without the salt: an unsalted SHA-256 of an IPv4 address is brute-forceable in
 // minutes, so a Worker with no usable secret refuses reports instead of weakening that promise.
 const MIN_SALT = 16;
-// Nothing every terminal would hide from the person reading a report is stored: C0 and C1 controls, the bidi overrides
-// and marks (they can reorder a line so an honest path reads as something else), zero-width joiners and the byte-order
-// mark, and the invisible operators. The issue these values become is rendered by a browser that obeys the same rules,
-// so they are removed here rather than trusted to be harmless.
-const INVISIBLE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
-// The bot can post here without triage ever seeing the text, so the endpoint does its own pass. It keeps the shape of
-// what a person said and takes out what identifies them: an email, a home folder (absolute or as `~`), the Mac's own
-// name, and a bot token's two shapes.
-const PERSONAL = [
-  [/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b/g, '(email)'],
-  [/(?:\/Users|\/home|\/Volumes|\/private\/var\/folders)\/[^\s"'`)]+/g, '~'],
-  [/(^|[\s([{])~\/[^\s"'`)]+/g, '$1~'],
-  [/\b[A-Za-z0-9][A-Za-z0-9._-]*\.local\b/g, '(computer)'],
-  [/\b\d{6,}:[A-Za-z0-9_-]{30,}\b/g, '(token)'],
-  [/\btess_[0-9a-f]{32,}\b/g, '(token)'],
-];
+// Nothing every terminal would hide from the person reading a report is stored, and nothing that identifies them: the
+// rules are the bot's own, imported from `privacy.mjs` rather than copied, because a copy drifts and the side a rule is
+// missing from is the side a stranger uses. The bot can post here without triage ever seeing the text, so this is the
+// last gate before a person's words are stored and later filed as a public issue.
+
 // Cut by bytes, not characters: 24K characters of 4-byte characters is 96 KB in the database.
 const utf8 = (s) => new TextEncoder().encode(s);
 const cut = (s, n) => { const b = utf8(s); return b.length <= n ? s : new TextDecoder().decode(b.slice(0, n)); };
-const clean = (v) => PERSONAL.reduce((s, [re, to]) => s.replace(re, to), String(v).replace(INVISIBLE, ''));
+const clean = (v) => cleanText(String(v));
 const short = (v, n) => (typeof v === 'string' ? cut(clean(v), n) : null);
 
 // One statement, not a read and then a write: two requests that arrive together both used to see the same count, both

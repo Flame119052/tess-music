@@ -183,6 +183,67 @@ try {
   assert.equal(leakyPayload.spotify, 'unknown', 'a path where the Spotify version should be is not carried');
   assert.equal(leakyPayload.macos, '26.1', 'a real macOS version is');
 
+  // 10d-2. A home folder is a home folder however it is written. The rule used to want a bare `~/` at the start of a
+  // token, so a quote, an `=` or the account's own name after the tilde carried the path straight onto a public page.
+  const quotedWords = join(box, 'quoted-words.txt');
+  const quotedText = 'it stopped at "~/.ssh/id_rsa" and \'~bob/notes\' and path=~alice/x\n'
+    + 'and "/Users/alice/secret", /users/alice/other, /var/folders/ab/xy/T/alice, ~bob alone\n';
+  writeFileSync(quotedWords, quotedText);
+  const quotedArgs = ['--report', fix('report-clean.txt'), '--words', quotedWords, '--also', 'area:theme',
+    '--title', 'Lyrics drift half a second behind the song'];
+  const quotedBoth = out(process.execPath, [TRIAGE, ...quotedArgs, '--mode', 'issue'])
+    + out(process.execPath, [TRIAGE, ...quotedArgs, '--mode', 'inbox']);
+  for (const [what, re] of [
+    ['a quoted tilde path', /id_rsa/],
+    ['a `~user` path', /bob/],
+    ['a home path after an `=`', /alice/],
+    ['a quoted absolute home path', /alice/],
+    ['a lowercase home folder', /\/users/],
+    ['a temp folder that names the account', /alice/],
+  ]) {
+    assert.ok(!re.test(quotedBoth), `${what} is not in the issue or the payload`);
+  }
+  // The same home folder in a title, in the form the slash check cannot see: a title that had to be scrubbed was copied,
+  // not understood.
+  writeFileSync(titleFile, 'Fix the ~bob account please\n');
+  try {
+    out(process.execPath, [TRIAGE, '--report', fix('report-clean.txt'), '--words', fix('words-lyrics.txt'), '--also', 'area:theme', '--title-file', titleFile]);
+    assert.fail('expected a refusal');
+  } catch (e) { assert.match(String(e.stderr), /personal detail/, 'a home folder naming an account in the title is refused'); }
+
+  // 10d-3. Invisible characters outside the old strip list still hid a token: the Mongolian vowel separator, the
+  // combining grapheme joiner, a variation selector and a deprecated bidi control. Every format character and every
+  // invisible mark is removed before a pattern runs, so a split token is one token again by the time it is looked for.
+  const hiddenWords = join(box, 'hidden-words.txt');
+  writeFileSync(hiddenWords, ['\u180e', '\u034f', '\ufe0e', '\u206a'].map((sep) => `token 123456789:${sep}${'Q'.repeat(35)}`).join('\n')
+    + '\nmail sam.whitfield\u180e@example.com\n');
+  const hiddenArgs = ['--report', fix('report-clean.txt'), '--words', hiddenWords, '--also', 'area:theme',
+    '--title', 'Lyrics drift half a second behind the song'];
+  const hiddenBoth = out(process.execPath, [TRIAGE, ...hiddenArgs, '--mode', 'issue'])
+    + out(process.execPath, [TRIAGE, ...hiddenArgs, '--mode', 'inbox']);
+  assert.ok(!/Q{10}/.test(hiddenBoth), 'a token split by an invisible character is redacted');
+  assert.ok(!/sam\.whitfield|example\.com/.test(hiddenBoth), 'and so is an email split by one');
+  for (const sep of ['\u180e', '\u034f', '\ufe0e', '\u206a']) {
+    assert.ok(!hiddenBoth.includes(sep), 'and the invisible character itself is gone');
+  }
+
+  // 10d-4. One set of rules, not two. The bot and the inbox used to keep their own copy of the same list and drifted;
+  // a rule that exists on one side is a rule a stranger walks around on the other. The cleaning lives once, both import
+  // it, and the two agree on the same text.
+  const { clean } = await import(join(SKILL, 'scripts/privacy.mjs'));
+  const triageText = readFileSync(TRIAGE, 'utf8');
+  const workerText = readFileSync(join(root, 'inbox/worker.js'), 'utf8');
+  assert.match(triageText, /from '\.\/privacy\.mjs'/, 'the bot cleans with the shared rules');
+  assert.match(workerText, /privacy\.mjs/, 'and so does the inbox');
+  assert.ok(!/INVISIBLE =/.test(triageText) && !/PERSONAL =\[|const PERSONAL/.test(triageText), 'the bot has no copy of the list');
+  assert.ok(!/INVISIBLE =/.test(workerText) && !/const PERSONAL/.test(workerText), 'and neither does the inbox');
+  const sharedSample = 'at "~/.ssh/id_rsa" or "sam.whitfield@example.com" or 123456789:\u180e' + 'Q'.repeat(35);
+  const sharedWords = join(box, 'shared-words.txt');
+  writeFileSync(sharedWords, sharedSample);
+  const sharedPayload = JSON.parse(out(process.execPath, [TRIAGE, '--report', fix('report-clean.txt'), '--words',
+    sharedWords, '--also', 'area:theme', '--title', 'Lyrics drift half a second behind the song', '--mode', 'inbox']));
+  assert.equal(sharedPayload.words, clean(sharedSample).trim(), 'the bot\'s own words are exactly what the shared rules make of them');
+
   // 10e. The posting token is never in a command. The bot's shell is driven by a model reading a stranger's message, so
   // a message that changes the host, or asks for the token, must have nothing to change and nothing to read: one script
   // holds the address and the token, and refuses anything else.
@@ -208,13 +269,13 @@ try {
   const inbox = (args, extra = {}) => out(process.execPath, [INBOX, ...args], {
     TESS_SESSION_ROOT: sessions, TESS_SUPPORT_TOKEN: postToken, TESS_INBOX: `https://tess-music-player.janus.ing`, ...extra,
   });
-  const refusesToPost = (args, expect, extra = {}) => {
+  const refusesToPost = (args, expect, extra = {}, what = '') => {
     try { inbox(args, extra); } catch (e) {
       assert.notEqual(e.status, 0, 'the refusal exited 0');
-      assert.match(String(e.stderr), expect);
+      assert.match(String(e.stderr), expect, what);
       return String(e.stderr);
     }
-    assert.fail(`expected a refusal matching ${expect}`);
+    assert.fail(`expected a refusal matching ${expect}${what ? ` (${what})` : ''}`);
   };
 
   // A host that is not the Tess inbox is refused before any request is made, so a message cannot walk the token out.
@@ -263,6 +324,7 @@ try {
   } finally {
     server.kill();
   }
+
 
   // --- the allowlist -------------------------------------------------------------------------------------------------
   const prof = join(box, 'hermes', 'profiles', 'tess-support');
@@ -314,7 +376,7 @@ try {
   // left it out would prove a setup that can't work.
   cpSync(join(SKILL, 'SKILL.md'), join(archDir, 'skills', 'tess-support', 'SKILL.md'));
   mkdirSync(join(archDir, 'skills', 'tess-support', 'scripts'), { recursive: true });
-  for (const sc of ['allowlist.mjs', 'triage.mjs', 'inbox.mjs']) cpSync(join(SKILL, 'scripts', sc), join(archDir, 'skills', 'tess-support', 'scripts', sc));
+  for (const sc of ['allowlist.mjs', 'triage.mjs', 'inbox.mjs', 'privacy.mjs']) cpSync(join(SKILL, 'scripts', sc), join(archDir, 'skills', 'tess-support', 'scripts', sc));
   // The download carries support/ as a whole, so the unit template sits beside the bot.
   cpSync(join(root, 'support/tess-support.service'), join(stage, 'tess-music-main', 'support', 'tess-support.service'));
   const archive = join(box, 'tess-music-main.tar.gz');

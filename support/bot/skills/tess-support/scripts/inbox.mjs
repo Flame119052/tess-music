@@ -12,9 +12,10 @@
 //   node inbox.mjs … --dry-run                    say where it would go, send nothing
 // Exit 1 with one plain sentence when it refuses or the inbox answers badly. Nothing here reads a person's text; the
 // payload is whatever triage wrote.
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { inRoot } from './session.mjs';
+import { SECRET_SHAPES, stripInvisible } from './privacy.mjs';
 
 // The one address this bot posts to. Not a variable a message can steer: a redirected host would take the token with it.
 const HOST = 'tess-music-player.janus.ing';
@@ -22,12 +23,6 @@ const HOST = 'tess-music-player.janus.ing';
 const TEST_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 const MAX_RECORDING = 50 * 1024 * 1024;
 const VIDEO = { '.mov': 'video/quicktime', '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm', '.mkv': 'video/x-matroska' };
-// A token has shapes, and none of them may leave in a report: the two this machine holds, and the general API-key one.
-const SECRET_SHAPES = [
-  /\b\d{6,}:[A-Za-z0-9_-]{30,}\b/,
-  /\btess_[0-9a-f]{32,}\b/,
-  /\bsk-[A-Za-z0-9_-]{20,}\b/,
-];
 
 const die = (msg) => { console.error(msg); process.exit(1); };
 const dry = process.argv.includes('--dry-run');
@@ -53,12 +48,15 @@ const token = () => {
 };
 
 // The last gate before something leaves the machine: a report that picked up a token on the way here is not sent.
+// The shapes are the shared ones, and the text is looked at with every invisible character removed first, because a
+// token split by one is two harmless-looking halves to a pattern.
 const noSecrets = (text, what) => {
+  const shown = stripInvisible(text);
   for (const re of SECRET_SHAPES) {
-    if (re.test(text)) die(`${what} carries something that looks like a token. Retype it with that part blanked out.`);
+    if (re.test(shown)) die(`${what} carries something that looks like a token. Retype it with that part blanked out.`);
   }
   const own = process.env.TESS_SUPPORT_TOKEN || '';
-  if (own && text.includes(own)) die(`${what} carries this bot's own posting token. That never leaves, not even to the inbox.`);
+  if (own && shown.includes(own)) die(`${what} carries this bot's own posting token. That never leaves, not even to the inbox.`);
 };
 
 const send = async (method, path, { body, type, auth } = {}) => {
@@ -79,20 +77,35 @@ const send = async (method, path, { body, type, auth } = {}) => {
   return { status: res.status, text };
 };
 
-// A recording is only ever read from this visit's folder, so a path in a message cannot point it at anything else.
-const sessionFile = (p) => {
-  const dir = inRoot(dirname(resolve(String(p || ''))));
-  const file = join(dir, basename(resolve(String(p))));
-  if (!existsSync(file)) die(`no such file: ${file}`);
-  return file;
+// A file the bot sends is only ever read from this visit's folder, and only when it is really a file that is there. A
+// path string is not enough: a `clip.mov` inside the session that is a symlink to the bot's own `.env`, a second name
+// for it (a hard link, which `realpath` cannot tell apart), or a `payload.json` pointed anywhere at all, used to be
+// read and sent. So the real path must be inside the session, the file must have exactly one name, and the bytes come
+// from the handle that passed those checks, so nothing can be swapped in between the check and the read.
+const readSession = (dir, name, missing, max = Infinity) => {
+  let session;
+  try { session = realpathSync(inRoot(dir)); } catch (e) { die(e.message); }
+  const wanted = join(session, basename(String(name || '')));
+  let lst;
+  try { lst = lstatSync(wanted); } catch { die(missing || `no such file: ${wanted}`); }
+  if (!lst.isFile() || lst.nlink > 1) {
+    die(`${basename(wanted)} is not a plain file of this session: a link, or a file with another name, is not something this bot wrote`);
+  }
+  const real = realpathSync(wanted);
+  if (!real.startsWith(session + '/')) die(`${basename(wanted)} leads outside the session folder`);
+  const fd = openSync(real, 'r');
+  try {
+    const st = fstatSync(fd);
+    // The name was checked above; this proves the bytes about to be read are the same file the checks passed.
+    if (!st.isFile() || st.ino !== lst.ino || st.dev !== lst.dev) die(`${basename(wanted)} changed while it was being read`);
+    if (st.size > max) return { tooBig: st.size };
+    return { bytes: readFileSync(fd), size: st.size };
+  } finally { closeSync(fd); }
 };
 
 if (cmd === 'report') {
   if (!one) die('usage: inbox.mjs report <session dir>');
-  const dir = inRoot(one);
-  const file = join(dir, 'payload.json');
-  if (!existsSync(file)) die(`no payload at ${file}: triage writes it with --mode inbox`);
-  const body = readFileSync(file, 'utf8');
+  const body = readSession(one, 'payload.json', `no payload in ${one}: triage writes it with --mode inbox`).bytes.toString('utf8');
   noSecrets(body, 'the report');
   const out = await send('POST', '/v1/support', { body, type: 'application/json', auth: true });
   if (dry) process.exit(0);
@@ -101,12 +114,12 @@ if (cmd === 'report') {
   console.log(id == null ? out.text.trim() : `report id: ${id}`);
 } else if (cmd === 'recording') {
   if (!/^\d+$/.test(String(one || ''))) die('usage: inbox.mjs recording <report id> <file>');
-  const file = sessionFile(two);
-  const type = VIDEO[extname(file).toLowerCase()];
+  const name = basename(resolve(String(two || '')));
+  const type = VIDEO[extname(name).toLowerCase()];
   if (!type) die('a recording must be .mov, .mp4, .webm or .mkv');
-  const size = statSync(file).size;
-  if (size > MAX_RECORDING) die(`that recording is ${Math.round(size / 1048576)} MB; the limit is ${MAX_RECORDING / 1048576}`);
-  const out = await send('PUT', `/v1/support/recording/${one}`, { body: readFileSync(file), type, auth: true });
+  const got = readSession(dirname(resolve(String(two || ''))), name, `no such file: ${two}`, MAX_RECORDING);
+  if (got.tooBig) die(`that recording is ${Math.round(got.tooBig / 1048576)} MB; the limit is ${MAX_RECORDING / 1048576}`);
+  const out = await send('PUT', `/v1/support/recording/${one}`, { body: got.bytes, type, auth: true });
   if (dry) process.exit(0);
   console.log(`recording stored (${out.status})`);
 } else if (cmd === 'issues') {
