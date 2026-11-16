@@ -122,7 +122,19 @@ apps_write() {
       if (cur != "") WARGS[++n] = cur
       return n
     }
-    function is_folder_word(w) { return w ~ /^[$][{]?(APPS|A0)([^A-Za-z0-9_]|$)/ }
+    # A word names the folder however it is written. Quotes are gone by here, and a slash glued in front of them
+    # (`/"$APPS"`), repeated slashes (`//"$APPS"`) or a `./` in front all expand to exactly that folder: the shell does
+    # not care, and `ditto "$APPS/xpui" /"$APPS"` rewrote the live interface just as the bare name would. Strip those
+    # before matching, so a trick in front of the word cannot hide it.
+    function norm(w,   p) {
+      while (1) {
+        p = w
+        sub(/^\/+/, "", w)
+        sub(/^\.\/+/, "", w)
+        if (w == p) return w
+      }
+    }
+    function is_folder_word(w) { return norm(w) ~ /^[$][{]?(APPS|A0)([^A-Za-z0-9_]|$)/ }
     function statement_writes(stmt,   i, c, q, k, v, args, a, n, verbs, nw, x, src, ok) {
       n = split(VERBS, verbs, " ")
       q = ""
@@ -134,7 +146,7 @@ apps_write() {
           a = substr(stmt, i + 1)
           sub(/^[[:space:]]+/, "", a)
           if (substr(a, 1, 1) == "\"" || substr(a, 1, 1) == QUOTE) a = substr(a, 2)
-          if (a ~ /^[$][{]?(APPS|A0)([^A-Za-z0-9_]|$)/) return 1
+          if (norm(a) ~ /^[$][{]?(APPS|A0)([^A-Za-z0-9_]|$)/) return 1
           continue
         }
         for (k = 1; k <= n; k++) {
@@ -194,8 +206,23 @@ apps_write_fixture caught 'ditto "$APPS" "$APPS"'
 apps_write_fixture caught 'ditto "$APPS" "$APPS/xpui"'
 apps_write_fixture caught 'ditto "$APPS/xpui" "$APPS"'
 apps_write_fixture caught 'ditto "$APPS/xpui" "$APPS/other"'
+# A slash glued in front of the quotes is still the same folder to the shell. `ditto "$APPS/xpui" /"$APPS"` rewrote
+# xpui.spa inside the live folder (measured), so every way of writing that prefix has to be seen through here too.
+apps_write_fixture caught 'ditto "$APPS" /"$APPS"'
+apps_write_fixture caught 'ditto "$APPS" /"$APPS/xpui"'
+apps_write_fixture caught 'ditto "$APPS/xpui" /"$APPS"'
+apps_write_fixture caught 'ditto "$1" /"$APPS"'
+apps_write_fixture caught 'ditto "$APPS" /"${APPS}"'
+apps_write_fixture caught 'cp -R "$1" //"$APPS"'
+apps_write_fixture caught 'mv /"$APPS" "$TMP/a"'
+apps_write_fixture caught 'rm -rf /"$APPS"/xpui'
+apps_write_fixture caught 'touch .//"$APPS"/xpui.spa'
+apps_write_fixture caught 'ditto "$APPS" ./"$APPS"'
+apps_write_fixture caught 'mkdir -p /"$A0"'
 apps_write_fixture allowed 'ditto "$APPS" "$TMP/a"'
 apps_write_fixture allowed 'ditto "$APPS/" "$TMP/a"'
+apps_write_fixture allowed 'ditto /"$APPS" "$TMP/a"'
+apps_write_fixture allowed 'ditto "$APPS" /"$TMP/a"'
 apps_write_fixture allowed 'ditto "$APPS" "$bak/Apps"'
 apps_write_fixture allowed 'ditto "$APPS" "$ORIG.new"'
 apps_write_fixture allowed 'ditto -x -k "$APPS/x.zip" "$TMP/mini"'
@@ -204,6 +231,7 @@ apps_write_fixture allowed '"$PATCHER" can-write "$APPS"'
 apps_write_fixture allowed '[ -f "$APPS/xpui.spa" ] || fail "Spotify is incomplete"'
 apps_write_fixture allowed 'rm -rf "$bak"; ditto "$APPS" "$bak" || return 0'
 apps_write_fixture allowed 'if grep -q spicetifyWrapper "$APPS/xpui/index.html"; then'
+apps_write_fixture allowed 'ls -la "$APPS" 2>&1; ls "$T" 2>&1'
 # 8. the install line pins the committed verifier, and the verifier is stored under its own hash
 pin=$(sed -n "s/^VERIFY_SHA='\([0-9a-f]\{64\}\)'$/\1/p" installer/install.sh)
 [ -n "$pin" ] || fail "installer/install.sh has no VERIFY_SHA pin"
