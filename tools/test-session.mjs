@@ -4,7 +4,7 @@
 // Proves: a folder is created under the scratch root; a recording over the size cap is refused when it can't be
 // shrunk and a file of the wrong type is refused; the folder and every file in it are deleted after a successful
 // hand-off with only a one-line record left; a folder older than 24 hours is swept; and the total stays under the cap.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
@@ -154,6 +154,21 @@ exit 0
   assert.match(readFileSync(secretFile, 'utf8'), /TELEGRAM_BOT_TOKEN/, 'the file it pointed at is untouched');
   handoff(linkDir, '46');
   rmSync(outside, { recursive: true, force: true });
+
+  // 6c. A hard link is not a symlink: `realpath` cannot tell it from the file it names, because it is the same file. A
+  // second name for the bot's own `.env`, dropped in the uploads folder as `notes.txt`, used to be copied into a session
+  // and from there into a report. A file Hermes downloaded has exactly one name; one with two is refused.
+  const hardOutside = mkdtempSync(join(tmpdir(), 'tess-outside-hard-'));
+  const hardSecret = join(hardOutside, '.env');
+  writeFileSync(hardSecret, `TELEGRAM_BOT_TOKEN=123456789:${'A'.repeat(35)}\n`);
+  const hardName = join(box, 'borrowed.txt');
+  linkSync(hardSecret, hardName);
+  const hardDir = newSession();
+  assert.throws(() => addFile(hardDir, hardName), /another name|not an attachment/, 'a hard link to a file outside the uploads folder is refused');
+  assert.deepEqual(readdirSync(hardDir).filter((f) => !f.startsWith('session.')), [], 'and nothing that shares its bytes is copied in');
+  assert.match(readFileSync(hardSecret, 'utf8'), /TELEGRAM_BOT_TOKEN/, 'the file it shares with is untouched');
+  rmSync(hardOutside, { recursive: true, force: true });
+  handoff(hardDir, '47');
 
   // 7. A fresh folder is not swept, and the total is held under the cap.
   const fresh = newSession();

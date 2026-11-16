@@ -92,7 +92,8 @@ export const newSession = () => {
 
 // A path-string check is only half of it: a symlink inside the uploads folder, aimed at the profile's own `.env`, passes
 // the string check and is then read. `realpath` says what the file actually is, so a link out of the folder is refused
-// where the string said yes.
+// where the string said yes. A hard link is worse: it is not a link to a path, it is a second name for the same bytes,
+// and `realpath` cannot tell it apart. A download has exactly one name, so a file with more than one is refused too.
 export const inInbound = (file) => {
   const raw = resolve(String(file || ''));
   if (!raw.startsWith(resolve(INBOUND) + '/') || raw.startsWith(resolve(ROOT) + '/')) {
@@ -104,6 +105,9 @@ export const inInbound = (file) => {
   try { inbound = realpathSync(INBOUND); } catch { inbound = resolve(INBOUND); }
   if (!real.startsWith(inbound + '/')) {
     throw new Error(`${basename(raw)} is a link to ${real}, which is not an attachment; only files under ${INBOUND} can be added`);
+  }
+  if ((statSync(real).nlink || 1) > 1) {
+    throw new Error(`${basename(raw)} is another name for a file outside the uploads folder; only the download itself can be added`);
   }
   return raw;
 };

@@ -8,7 +8,7 @@
 // that hosts Paperclip, unpacks GitHub's real archive layout, borrows the connected model, never changes anyone's
 // default profile, and starts its own gateway.
 import { execFileSync, spawn } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -325,6 +325,30 @@ try {
     server.kill();
   }
 
+  // 11b. The session folder holds files, not links. A `clip.mov` that is a symlink to the bot's own `.env` was read and
+  // uploaded as a recording, and a `payload.json` that was a symlink to a file outside the session was posted as the
+  // report — so a message could choose what left the machine. The real path must be inside the session folder, a file
+  // with a second name is refused, and the bytes come from the handle that was checked. `--dry-run` keeps this off the
+  // network: the refusal must happen while the file is being opened, before anything is sent.
+  const linkBox = join(box, 'links');
+  mkdirSync(linkBox, { recursive: true });
+  const botEnv = join(linkBox, '.env');
+  writeFileSync(botEnv, `TELEGRAM_BOT_TOKEN=123456789:${'S'.repeat(35)}\nghp_${'a'.repeat(36)}\n`
+    + '-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n');
+  const linkDir = join(sessions, '2026-01-02T00-00-00-lnk');
+  mkdirSync(linkDir, { recursive: true });
+  symlinkSync(botEnv, join(linkDir, 'clip.mov'));
+  linkSync(botEnv, join(linkDir, 'taken.mov'));
+  symlinkSync(botEnv, join(linkDir, 'payload.json'));
+  const linkPayloadDir = join(sessions, '2026-01-03T00-00-00-lnk');
+  mkdirSync(linkPayloadDir, { recursive: true });
+  linkSync(botEnv, join(linkPayloadDir, 'payload.json'));
+  refusesToPost(['recording', '7', join(linkDir, 'clip.mov'), '--dry-run'], /not a plain file|another name/, {}, 'a recording that is a link to .env');
+  refusesToPost(['recording', '7', join(linkDir, 'taken.mov'), '--dry-run'], /not a plain file|another name/, {}, 'a recording that is a hard link to .env');
+  refusesToPost(['report', linkDir, '--dry-run'], /not a plain file|another name/, {}, 'a payload that is a link to .env');
+  refusesToPost(['report', linkPayloadDir, '--dry-run'], /not a plain file|another name/, {}, 'a payload that is a hard link to .env');
+  assert.match(readFileSync(botEnv, 'utf8'), /TELEGRAM_BOT_TOKEN/, 'and the file they pointed at is untouched');
+  rmSync(linkBox, { recursive: true, force: true });
 
   // --- the allowlist -------------------------------------------------------------------------------------------------
   const prof = join(box, 'hermes', 'profiles', 'tess-support');
