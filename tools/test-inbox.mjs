@@ -41,13 +41,18 @@ const DB = {
       run: async () => {
         // Same connection, so last_insert_rowid() is the row this statement wrote — a separate sqlite3 process would
         // report 0, which is how D1's own meta.last_row_id would have looked fine in production and broken here.
-        const out = execFileSync('sqlite3', [dbFile, `${subs(sql, args)};\nSELECT last_insert_rowid();`], { encoding: 'utf8' }).trim();
-        return { meta: { last_row_id: Number(out.split('\n').pop()) || 0 } };
+        // `changes()` is the other half: it is what D1 reports as meta.changes, and the rate limiter decides on it.
+        const out = execFileSync('sqlite3', [dbFile, `${subs(sql, args)};\nSELECT changes(), last_insert_rowid();`], { encoding: 'utf8' }).trim();
+        const [changes, last] = out.split('\n').pop().split('|');
+        return { meta: { changes: Number(changes) || 0, last_row_id: Number(last) || 0 } };
       },
     }),
     first: async () => query(sql)[0] ?? null,
     all: async () => ({ results: query(sql) }),
-    run: async () => { execFileSync('sqlite3', [dbFile, sql]); return { meta: {} }; },
+    run: async () => {
+      const out = execFileSync('sqlite3', [dbFile, `${sql};\nSELECT changes();`], { encoding: 'utf8' }).trim();
+      return { meta: { changes: Number(out.split('\n').pop()) || 0 } };
+    },
   }),
 };
 // An in-memory stand-in for the R2 bucket: enough to prove what is written and what the sweep deletes.
@@ -253,6 +258,51 @@ try {
   const titlesDenied = await worker.fetch(new Request('https://inbox.test/v1/issues', { method: 'GET' }), env({ LIMIT: { limit: async () => ({ success: false }) } }));
   assert.equal(titlesDenied.status, 429, 'and the public title list is behind the same limiter');
 
+  // 9b. The per-token cap is one decision, not a read and then a write: two posts that arrive together used to read the
+  // same 59, both pass, and both store. That is how a stolen token gets past 60 an hour. The barrier below holds both
+  // readers at the point a read-then-write would have them, which is exactly what an overlap looks like — and it never
+  // fires once the check and the increment are one statement.
+  const raceToken = `tok_${'e'.repeat(40)}`;
+  execFileSync('sqlite3', [dbFile, `INSERT INTO support_tokens (label, sha, added) VALUES ('Race bot', '${shaOf(raceToken)}', ${Date.now()})`]);
+  const raceKey = `tok:${shaOf(raceToken).slice(0, 16)}`;
+  const hour = Math.floor(Date.now() / 1000) + 3600;
+  execFileSync('sqlite3', [dbFile, `INSERT OR REPLACE INTO limits (k, n, until) VALUES ('${raceKey}', 59, ${hour})`]);
+  let held = null;
+  const together = {
+    ...DB,
+    prepare: (sql) => {
+      const base = DB.prepare(sql);
+      if (!/SELECT n, until FROM limits WHERE k/.test(sql)) return base;
+      return { bind: (key) => ({ first: async () => {
+        const value = await base.bind(key).first();
+        if (!held) {
+          held = {};
+          // A safety valve: one reader alone must not hang the run, and one reader alone is already atomic.
+          const timer = setTimeout(() => { const h = held; held = null; h.finish?.(); }, 2000);
+          await new Promise((finish) => { held.finish = () => { clearTimeout(timer); finish(); }; });
+        } else {
+          held.finish();
+          held = null;
+        }
+        return value;
+      } }) };
+    },
+  };
+  const before = count('SELECT COUNT(*) AS n FROM support_reports');
+  const race = await Promise.all([
+    worker.fetch(post('/v1/support', good(), { authorization: `Bearer ${raceToken}` }), env({ DB: together })),
+    worker.fetch(post('/v1/support', good(), { authorization: `Bearer ${raceToken}` }), env({ DB: together })),
+  ]);
+  assert.equal(race.filter((r) => r.status === 201).length, 1, 'of two overlapping posts at the cap, exactly one is stored');
+  assert.equal(race.filter((r) => r.status === 429).length, 1, 'and the other is refused');
+  assert.equal(count('SELECT COUNT(*) AS n FROM support_reports'), before + 1, 'so exactly one row was written');
+  assert.equal(query(`SELECT n FROM limits WHERE k = '${raceKey}'`)[0].n, 60, 'and the counter stops at the cap');
+
+  // 9c. A window that has run out starts again at one, without the cap ever being bypassed.
+  execFileSync('sqlite3', [dbFile, `UPDATE limits SET n = 60, until = ${Math.floor(Date.now() / 1000) - 10} WHERE k = '${raceKey}'`]);
+  assert.equal(await status(post('/v1/support', good(), { authorization: `Bearer ${raceToken}` })), 201, 'an expired hour allows the next report');
+  assert.equal(query(`SELECT n FROM limits WHERE k = '${raceKey}'`)[0].n, 1, 'and the window starts again at one');
+
   console.log('support endpoint: all checks passed\n');
   console.log([
     'checked, against the real Worker and a real SQLite database built from inbox/schema.sql:',
@@ -271,6 +321,8 @@ try {
     '  · a title carrying shell syntax is refused at the door',
     '  · the public title list sits behind Cloudflare\'s limiter',
     '  · nothing is stored when Cloudflare\'s own limiter refuses the request',
+    '  · two posts that overlap at the per-token cap store one report, not two, and the counter stops at the cap',
+    '  · an hour that has run out starts the counter again at one',
     '',
   ].join('\n'));
 } finally {

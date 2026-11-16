@@ -47,16 +47,25 @@ const cut = (s, n) => { const b = utf8(s); return b.length <= n ? s : new TextDe
 const clean = (v) => PERSONAL.reduce((s, [re, to]) => s.replace(re, to), String(v).replace(INVISIBLE, ''));
 const short = (v, n) => (typeof v === 'string' ? cut(clean(v), n) : null);
 
+// One statement, not a read and then a write: two requests that arrive together both used to see the same count, both
+// pass, and the counter finished one past the cap. The increment is the check here — a row is only touched while its
+// window is over or its count is under the cap — and the number of rows D1 says it changed is what decides, so no
+// request can spend a count another one already spent.
 async function hit(env, key, max, seconds) {
   const now = Math.floor(Date.now() / 1000);
-  const row = await env.DB.prepare('SELECT n, until FROM limits WHERE k = ?').bind(key).first();
-  if (!row || row.until < now) {
-    await env.DB.prepare('INSERT OR REPLACE INTO limits (k, n, until) VALUES (?, 1, ?)').bind(key, now + seconds).run();
-    return true;
-  }
-  if (row.n >= max) return false;
-  await env.DB.prepare('UPDATE limits SET n = n + 1 WHERE k = ?').bind(key).run();
-  return true;
+  const res = await env.DB.prepare(
+    `INSERT INTO limits (k, n, until) VALUES (?, 1, ?)
+     ON CONFLICT(k) DO UPDATE SET
+       n = CASE WHEN limits.until <= ? THEN 1 ELSE limits.n + 1 END,
+       until = CASE WHEN limits.until <= ? THEN ? ELSE limits.until END
+     WHERE limits.until <= ? OR limits.n < ?`,
+  ).bind(key, now + seconds, now, now, now + seconds, now, max).run();
+  const changes = res?.meta?.changes;
+  if (typeof changes === 'number') return changes > 0;
+  // A runtime that does not report how many rows changed falls back to reading the row this statement just wrote. The
+  // decision has already been made once, atomically, so the worst this costs is an extra read.
+  const row = await env.DB.prepare('SELECT n FROM limits WHERE k = ?').bind(key).first();
+  return !!row && row.n <= max;
 }
 
 async function sha(text) {
