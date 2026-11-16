@@ -403,7 +403,16 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   none is ever written). And the gate's word match started at `$APPS`, so a slash glued in front of the quotes
   (`/"$APPS"`, which the shell expands to the same folder) hid the destination — `ditto "$APPS/xpui" /"$APPS"` rewrote
   the live `xpui.spa` in a probe. Each argument is now stripped of a leading `/`, repeated slashes and `./` before it
-  is matched, so the slashes cannot hide a write.
+  is matched, so the slashes cannot hide a write. Re-check 5 then found three holes left by reading one physical line
+  and asking awk for the character before a verb. That character does not exist at column 0, and BSD awk answers with
+  the verb's own first letter, so `installer/tess-install.sh:396` — a `ditto` at column 0 — was never looked at; a
+  trailing backslash ended the check at the verb while the folder sat on the next line; and a redirect's path was
+  trimmed after only one quote, so `printf x >/"$APPS/x"` kept its slash. The gate now joins backslash-continued lines
+  into one logical line and remembers the line it started on, normalises that line once — quotes off, `${APPS}` to
+  `$APPS`, `//` to `/`, a leading `/` or `./` dropped in front of a variable and after `>`, `>>`, `>|` or `>&` — and
+  matches by token position, where the start of a line is an ordinary word boundary and position 1 needs no character
+  before it. That reads the same on BSD and GNU awk. The 63 fixtures now include column 0, a joined copy, move, delete
+  and redirect, and the column-0 read out at line 396, which stays allowed.
   *Trade-off:* the updater can no longer restore a theme if the patcher itself is missing; Spotify then stays exactly
   as it was, which is the required failure. The test bundles must now carry an `Info.plist` that names Spotify, so a
   sandbox has to be shaped like a real app bundle. The swap is macOS-shaped (`golang.org/x/sys/unix`), so the swap-apps
