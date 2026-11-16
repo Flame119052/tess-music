@@ -19,7 +19,8 @@ Check first, every time. It costs ten seconds.
 The inbox serves the titles of open issues, so you don't need a GitHub login or a slow search:
 
 ```sh
-curl -fsS "$TESS_INBOX/v1/issues" | head -c 200000
+SKILLS="${TESS_PROFILE_DIR:-$HOME/.hermes/profiles/tess-support}/skills"
+node "$SKILLS/tess-support/scripts/inbox.mjs" issues
 ```
 
 It answers `{"updated": <ms>, "issues": [{"n": 61, "title": "…"}, …]}`, refreshed by Krish's side. If it is empty or

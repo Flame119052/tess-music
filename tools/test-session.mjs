@@ -4,7 +4,7 @@
 // Proves: a folder is created under the scratch root; a recording over the size cap is refused when it can't be
 // shrunk and a file of the wrong type is refused; the folder and every file in it are deleted after a successful
 // hand-off with only a one-line record left; a folder older than 24 hours is swept; and the total stays under the cap.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
@@ -140,6 +140,21 @@ exit 0
   assert.throws(() => addFile(elsewhere, file('x.png', 10)), /not a session folder/, 'add refuses one too');
   assert.throws(() => inRoot('/'), /not a session folder/);
 
+  // 6b. A symlink is not a path check. `notes.txt` inside the uploads folder, aimed at the bot's own `.env`, used to be
+  // copied into the session and from there into a report.
+  const outside = mkdtempSync(join(tmpdir(), 'tess-outside-'));
+  const secretFile = join(outside, '.env');
+  const telegramToken = `123456789:${'A'.repeat(35)}`;
+  writeFileSync(secretFile, `TELEGRAM_BOT_TOKEN=${telegramToken}\nTESS_SUPPORT_TOKEN=tess_${'b'.repeat(64)}\n`);
+  const link = join(box, 'notes.txt');
+  symlinkSync(secretFile, link);
+  const linkDir = newSession();
+  assert.throws(() => addFile(linkDir, link), /not an attachment/, 'a link out of the uploads folder is refused');
+  assert.deepEqual(readdirSync(linkDir).filter((f) => !f.startsWith('session.')), [], 'and nothing was copied into the session');
+  assert.match(readFileSync(secretFile, 'utf8'), /TELEGRAM_BOT_TOKEN/, 'the file it pointed at is untouched');
+  handoff(linkDir, '46');
+  rmSync(outside, { recursive: true, force: true });
+
   // 7. A fresh folder is not swept, and the total is held under the cap.
   const fresh = newSession();
   addFile(fresh, file('new.png', 1024));
@@ -178,6 +193,7 @@ exit 0
     '  · a folder older than 24 hours is swept on the next visit, and the sweep leaves its own line',
     '  · a refused file leaves nothing behind, so the folder is exactly as it was',
     '  · handoff and add refuse a path outside the session root, and the file outside it survives',
+    '  · a link in the uploads folder cannot be used to copy the bot\'s own .env into a session',
     '  · a fresh folder survives a sweep, so someone mid-conversation does not lose their evidence',
     '  · the total scratch space is held under the cap',
     '',

@@ -14,7 +14,7 @@
 //   node session.mjs sweep                      deletes folders older than 24h and holds the total under the cap
 //   node session.mjs size                       total bytes held right now
 // Runs on the server. Nothing here runs on anyone's Mac.
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -90,12 +90,22 @@ export const newSession = () => {
   return dir;
 };
 
+// A path-string check is only half of it: a symlink inside the uploads folder, aimed at the profile's own `.env`, passes
+// the string check and is then read. `realpath` says what the file actually is, so a link out of the folder is refused
+// where the string said yes.
 export const inInbound = (file) => {
-  const src = resolve(String(file || ''));
-  if (!src.startsWith(resolve(INBOUND) + '/') || src.startsWith(resolve(ROOT) + '/')) {
+  const raw = resolve(String(file || ''));
+  if (!raw.startsWith(resolve(INBOUND) + '/') || raw.startsWith(resolve(ROOT) + '/')) {
     throw new Error(`${file} is not an attachment Hermes downloaded; only files under ${INBOUND} can be added`);
   }
-  return src;
+  let real;
+  try { real = realpathSync(raw); } catch { throw new Error(`no such file: ${file}`); }
+  let inbound;
+  try { inbound = realpathSync(INBOUND); } catch { inbound = resolve(INBOUND); }
+  if (!real.startsWith(inbound + '/')) {
+    throw new Error(`${basename(raw)} is a link to ${real}, which is not an attachment; only files under ${INBOUND} can be added`);
+  }
+  return raw;
 };
 
 export const addFile = (dir, file, { record = false } = {}) => {

@@ -7,7 +7,7 @@
 // alone; --kind and the priority floor are enforced; the allowlist fails closed; setup.sh refuses to run on the machine
 // that hosts Paperclip, unpacks GitHub's real archive layout, borrows the connected model, never changes anyone's
 // default profile, and starts its own gateway.
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -183,6 +183,87 @@ try {
   assert.equal(leakyPayload.spotify, 'unknown', 'a path where the Spotify version should be is not carried');
   assert.equal(leakyPayload.macos, '26.1', 'a real macOS version is');
 
+  // 10e. The posting token is never in a command. The bot's shell is driven by a model reading a stranger's message, so
+  // a message that changes the host, or asks for the token, must have nothing to change and nothing to read: one script
+  // holds the address and the token, and refuses anything else.
+  const handoffSkill = readFileSync(join(root, 'support/bot/skills/tess-handoff/SKILL.md'), 'utf8');
+  const dupSkill = readFileSync(join(root, 'support/bot/skills/tess-duplicate/SKILL.md'), 'utf8');
+  const supportSkill = readFileSync(join(root, 'support/bot/skills/tess-support/SKILL.md'), 'utf8');
+  for (const [name, text] of [['tess-handoff', handoffSkill], ['tess-duplicate', dupSkill], ['tess-support', supportSkill]]) {
+    assert.ok(!/\$TESS_SUPPORT_TOKEN|\$TESS_INBOX|Bearer \$/.test(text), `${name} never puts the token or the inbox address in a command`);
+  }
+  assert.match(handoffSkill, /inbox\.mjs" report/, 'the hand-off posts with the inbox script');
+  assert.match(dupSkill, /inbox\.mjs" issues/, 'and the duplicate check reads the titles through it');
+
+  const INBOX = join(SKILL, 'scripts/inbox.mjs');
+  const sessions = join(box, 'sessions');
+  const payloadDir = join(sessions, '2026-01-01T00-00-00-abc');
+  mkdirSync(payloadDir, { recursive: true });
+  const payload = {
+    priority: 'P2', kind: 'bug', areas: ['area: theme'], title: 'Lyrics drift half a second behind the song',
+    words: 'the lyrics are always behind', diagnosis: 'the sync offset', body: '## What happened\n\nthe lyrics drift\n',
+  };
+  writeFileSync(join(payloadDir, 'payload.json'), JSON.stringify(payload));
+  const postToken = `tess_${'c'.repeat(64)}`;
+  const inbox = (args, extra = {}) => out(process.execPath, [INBOX, ...args], {
+    TESS_SESSION_ROOT: sessions, TESS_SUPPORT_TOKEN: postToken, TESS_INBOX: `https://tess-music-player.janus.ing`, ...extra,
+  });
+  const refusesToPost = (args, expect, extra = {}) => {
+    try { inbox(args, extra); } catch (e) {
+      assert.notEqual(e.status, 0, 'the refusal exited 0');
+      assert.match(String(e.stderr), expect);
+      return String(e.stderr);
+    }
+    assert.fail(`expected a refusal matching ${expect}`);
+  };
+
+  // A host that is not the Tess inbox is refused before any request is made, so a message cannot walk the token out.
+  const redirected = refusesToPost(['report', payloadDir], /is not the Tess inbox/, { TESS_INBOX: 'https://example.com' });
+  assert.ok(!redirected.includes(postToken), 'and the refusal does not print the token');
+  // A payload that picked a token up on the way is refused too: the report is not the place for one.
+  writeFileSync(join(payloadDir, 'payload.json'), JSON.stringify({ ...payload, words: `my key is ${postToken}` }));
+  refusesToPost(['report', payloadDir], /looks like a token|own posting token/);
+  writeFileSync(join(payloadDir, 'payload.json'), JSON.stringify(payload));
+
+  // A real POST, against a loopback server this test owns. The token travels in the header, and it is nowhere in what
+  // the script prints.
+  const portFile = join(box, 'port'), seenFile = join(box, 'seen.json');
+  const serverCode = `
+    const http = require('node:http');
+    const { writeFileSync } = require('node:fs');
+    const s = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        writeFileSync(${JSON.stringify(seenFile)}, JSON.stringify({ method: req.method, url: req.url, auth: req.headers.authorization, type: req.headers['content-type'], body }));
+        res.writeHead(201, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, id: 7 }));
+      });
+    });
+    s.listen(0, '127.0.0.1', () => writeFileSync(${JSON.stringify(portFile)}, String(s.address().port)));
+  `;
+  const server = spawn(process.execPath, ['-e', serverCode], { stdio: 'ignore' });
+  const waitFor = (p) => {
+    const until = Date.now() + 10000;
+    while (!existsSync(p) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    return existsSync(p) ? readFileSync(p, 'utf8').trim() : '';
+  };
+  try {
+    const port = waitFor(portFile);
+    assert.ok(port, 'the test inbox is listening');
+    const said = inbox(['report', payloadDir], { TESS_TEST: '1', TESS_INBOX: `http://127.0.0.1:${port}` });
+    assert.match(said, /report id: 7/, 'the script prints the id the inbox answered with');
+    assert.ok(!said.includes(postToken), 'and never the token');
+    const seen = JSON.parse(readFileSync(seenFile, 'utf8'));
+    assert.equal(seen.method, 'POST');
+    assert.equal(seen.url, '/v1/support', 'the report goes to the support route');
+    assert.equal(seen.auth, `Bearer ${postToken}`, 'with the token in the header, not on the command line');
+    assert.equal(seen.type, 'application/json');
+    assert.deepEqual(JSON.parse(seen.body), payload, 'and the payload the session folder holds');
+  } finally {
+    server.kill();
+  }
+
   // --- the allowlist -------------------------------------------------------------------------------------------------
   const prof = join(box, 'hermes', 'profiles', 'tess-support');
   mkdirSync(prof, { recursive: true });
@@ -233,7 +314,7 @@ try {
   // left it out would prove a setup that can't work.
   cpSync(join(SKILL, 'SKILL.md'), join(archDir, 'skills', 'tess-support', 'SKILL.md'));
   mkdirSync(join(archDir, 'skills', 'tess-support', 'scripts'), { recursive: true });
-  for (const sc of ['allowlist.mjs', 'triage.mjs']) cpSync(join(SKILL, 'scripts', sc), join(archDir, 'skills', 'tess-support', 'scripts', sc));
+  for (const sc of ['allowlist.mjs', 'triage.mjs', 'inbox.mjs']) cpSync(join(SKILL, 'scripts', sc), join(archDir, 'skills', 'tess-support', 'scripts', sc));
   // The download carries support/ as a whole, so the unit template sits beside the bot.
   cpSync(join(root, 'support/tess-support.service'), join(stage, 'tess-music-main', 'support', 'tess-support.service'));
   const archive = join(box, 'tess-music-main.tar.gz');
@@ -360,6 +441,7 @@ exit 0
     '  · setup.sh unpacks GitHub\'s real archive layout with the real tar, so the download path is actually tested',
     '  · it borrows the connected model, falls back to OpenCode\'s free tier, and stores the token, owner and inbox',
     '  · the payload it posts carries only fields the inbox accepts, and no token or personal data',
+    '  · the posting token and the inbox address are never in a command: one script holds both, and refuses any other host',
     '  · a title the inbox would refuse with a 400 is refused here first, before anything is posted',
     '  · a home path or an email inside the helper log is scrubbed out of the issue and the payload',
     '  · a path where the Spotify version goes, a Mac name, a bidi override and a zero-width character never reach the issue or the payload',
