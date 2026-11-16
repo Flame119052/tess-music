@@ -179,11 +179,15 @@ node tools/test-support.mjs  # the bot's triage, the payload, the allowlist, the
 
 `test-inbox` drives the real `inbox/worker.js` against a real SQLite database built from `inbox/schema.sql`: no token,
 a wrong token and a revoked token are refused and store nothing; an approved one stores the report with its label; a bad
-priority, a made-up area or a missing title is refused; an oversized body is refused; and there is no GET for it.
+priority, a made-up area or a missing title is refused; an oversized body is refused; and there is no GET for it. It also
+proves the stored text is exactly what the bot's own cleaning rules make of it — an email, a home folder (absolute,
+quoted, or `~bob`), a Mac name, an invisible character, a phone number, and the common key shapes never reach the row —
+because both sides import one `privacy.mjs` instead of keeping a copy each.
 
 `test-support` runs the triage step on real-shaped doctor reports, checks the payload carries only fields the endpoint
 accepts and no secret, checks the allowlist refusals, and runs `setup.sh` against a **real `tar` over a real archive**
-laid out the way GitHub ships them, with a stub `hermes`.
+laid out the way GitHub ships them, with a stub `hermes`. It also proves the hand-off script refuses a `clip.mov` or a
+`payload.json` that is a link — symlink or hard link — to a file outside the visit's folder.
 
 Once it's running, four checks in order:
 

@@ -346,6 +346,22 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
     shell can still read its own token — that is why the token is scoped to one revocable, hashed-at-rest permission,
     the destination is fixed in code, and every path out of the machine scrubs. (#85)
 
+- **D-81 · 16 Nov 2026 · Agent (third review of #85)** — The personal-detail rules are one function, not two copies.
+  `support/bot/skills/tess-support/scripts/privacy.mjs` holds every rule the bot's triage step and the inbox both
+  apply, and both import it; the Worker bundles the same file. Two copies had drifted, and the side a rule is missing
+  from is the side a stranger uses. The rules themselves grew the cases the review found: a home folder is caught
+  quoted, after an `=`, in lowercase, under `/var/folders`, and in the `~bob` form; every format character is removed
+  — all of Cf, not a hand-picked list — plus the invisible marks that are not Cf (the combining grapheme joiner, the
+  variation selectors, the fillers), *before* any pattern runs, so a token split by one is one token again; and the
+  secret shapes now include GitHub, AWS, Slack, `sk-`/`pk-`, a JWT, an uppercase `tess_` and a private-key block, with
+  the phone number the bot already knew about. The hand-off script (`scripts/inbox.mjs`) resolves a path and refuses
+  the file when the real path is outside the visit's folder or when it has a second name, then reads from the handle it
+  checked, so a recording or a payload cannot be swapped or aimed at the bot's own `.env`; `session.mjs` refuses a hard
+  link for the same reason `realpath` alone could not see it. Tests: `tools/test-support.mjs` (quoted paths, split
+  tokens, links), `tools/test-inbox.mjs` (the stored row equals the shared clean), `tools/test-session.mjs` (hard link).
+  Trade-off: the bot's cleaning is now lossy in more places — `~bob` and a pasted phone number are replaced — which is
+  the right direction for a public issue. (#85)
+
 ## Releases and process
 
 - **D-30 · 12 Nov 2026 · Owner** — Any change pushed to the repo ships automatically as a regular update.
