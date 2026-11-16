@@ -18,6 +18,13 @@ const git = (...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8'
 
 run('git', ['-C', root, 'fetch', '-q', 'origin', 'beta', 'stable']);
 const betaManifest = JSON.parse(git('show', 'origin/beta:dist/manifest.json'));
+const stableManifest = (() => { try { return JSON.parse(git('show', 'origin/stable:dist/manifest.json')); } catch { return {}; } })();
+const betaRev = Number(betaManifest.rev) || 0;
+const stableRev = Number(stableManifest.rev) || 0;
+if (betaRev < stableRev) {
+  console.error(`beta rev ${betaRev} is lower than stable rev ${stableRev}; stable Macs would refuse it`);
+  process.exit(1);
+}
 const version = positionals[0] || betaManifest.version;
 if (betaManifest.version !== version) {
   console.error(`beta has ${betaManifest.version}, not ${version}; nothing promoted`);

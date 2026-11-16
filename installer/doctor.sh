@@ -6,6 +6,74 @@
 # The updater runs it by itself: "--auto" after something failed, "--heartbeat" once a day.
 # It never deletes anything of Spotify's: the only thing it puts back is Spotify's own interface files, from the
 # safety copy Tess made of this exact Spotify version, and only when they are missing.
+# >>> tess script guard: keep this block identical in every installer script (issue #107) >>>
+# This file used to be able to act on a real Mac when nobody meant it, three ways: being sourced (a shell one-liner
+# like `sh -c '. installer/tess-install.sh; …'` ran the whole real installer), having its text handed to a shell to run
+# (`sh -c "$(cat installer/tess-install.sh)"`, or `eval` of that text), and being run from a git checkout, whose copy is
+# for developing and for sandboxed tests, not for a real install. All three stop here, before anything is read,
+# downloaded or changed. The published `curl … | sh` line is none of them: that shell reads the pipe as its own script,
+# so it starts with no `-c` and no file to resolve.
+_tess_sourced=""
+_tess_embedded=""
+if [ -n "${ZSH_VERSION-}" ]; then
+  # zsh says where it is evaluating: a sourced file ends in ":file", `zsh -c …` and `eval` begin with "cmdarg", and a
+  # script run as its own command is exactly "toplevel".
+  case ${ZSH_EVAL_CONTEXT-} in
+    *:file) _tess_sourced=1 ;;
+    cmdarg|cmdarg:*|eval|eval:*|*:eval|*:eval:*) _tess_embedded=1 ;;
+  esac
+else
+  # sh/bash puts a `c` in $- only when the commands were given to the shell as an argument (`sh -c …`), and `return`
+  # works in a subshell only when this file was sourced.
+  case $- in *c*) _tess_embedded=1 ;; esac
+  if (return 0 2>/dev/null); then _tess_sourced=1; fi
+fi
+# A shell that kept the `-c` out of $- still shows it in its own command line. Only the argument list is compared: a
+# piped script's is just "/bin/sh", so the published install line is left alone.
+case "$(ps -o args= -p $$ 2>/dev/null) " in *" -c "*) _tess_embedded=1 ;; esac
+if [ -n "$_tess_sourced" ]; then
+  echo "Tess: this file was sourced, so it did nothing. Tess's installer, updater, doctor, rescue line and uninstaller act only when they are run as their own command, so sourcing one can never install, update, repair or remove anything." >&2
+  echo "Tess: run it as its own command (sh ./file or zsh ./file), or use Tess's published install line." >&2
+  return 1
+fi
+if [ -n "$_tess_embedded" ] && [ -z "${TESS_TEST-}" ] && [ "${TESS_REAL_INSTALL-}" != 1 ]; then
+  echo "Tess: not run. This file's text was handed to a shell to run, as in sh -c \"...\" or eval, so the file itself is not what runs and its own checks cannot see it. Tess's installer, updater, doctor, rescue line and uninstaller act only when they are run as their own command." >&2
+  echo "Tess: run it as its own command (sh ./file or zsh ./file), or use Tess's published install line; TESS_REAL_INSTALL=1 is the deliberate way through." >&2
+  exit 1
+fi
+unset _tess_sourced _tess_embedded
+# A development copy sits inside a git checkout or worktree (a .git folder or file somewhere above it). Outside a
+# sandbox it must not act on a real Mac: it is not the installed copy, and its parts are not the signed ones users get.
+# TESS_TEST=1 is the sandbox (AGENTS.md rule 2); TESS_REAL_INSTALL=1 is a person deliberately letting this exact copy act.
+# zsh makes $0 the function's own name inside a function, so the path is taken once, here.
+_tess_self=$0
+# The home folder can be a symlink (`/tmp` is `/private/tmp`; a sandbox often is), so compare its real path as well.
+_tess_home=$(CDPATH= cd -P -- "$HOME" 2>/dev/null && pwd -P) || _tess_home=$HOME
+tess_guard_checkout() {
+  _tg=$_tess_self
+  case $_tg in
+    */*) ;;
+    # `cd installer && sh tess-install.sh` names no folder, so the folder is the current one. A piped copy
+    # (`curl … | sh`) names the shell itself, not a file here, so it takes the branch above and the walk starts outside
+    # any checkout: the pipe is allowed by that, not by this branch.
+    *) [ -f "./$_tg" ] || return 1; _tg="./$_tg" ;;
+  esac
+  _tg=$(CDPATH= cd -P -- "$(dirname -- "$_tg")" 2>/dev/null && pwd -P) || return 1
+  while [ -n "$_tg" ] && [ "$_tg" != "/" ]; do
+    # A dotfiles repository in the home folder (`git init` in ~) is not a copy of Tess.
+    [ "$_tg" = "$HOME" ] && return 1
+    [ "$_tg" = "$_tess_home" ] && return 1
+    [ -e "$_tg/.git" ] && return 0
+    _tg=$(dirname -- "$_tg")
+  done
+  return 1
+}
+if [ -z "${TESS_TEST-}" ] && [ "${TESS_REAL_INSTALL-}" != 1 ] && tess_guard_checkout; then
+  echo "Tess: not run. This copy ($_tg) is inside a git checkout, and a checkout's copy is for developing and for sandboxed tests, not for changing a real Mac." >&2
+  echo "Tess: use Tess's published install line, or set TESS_REAL_INSTALL=1 if you really do mean to let this checkout act on this Mac." >&2
+  exit 1
+fi
+# <<< tess script guard <<<
 T="${TESS_HOME:-$HOME/Library/Application Support/Tess}"
 [ -f "$T/updater.env" ] && . "$T/updater.env"
 CONF="${TESS_CONFIG:-$HOME/.config/tess-patcher}"
@@ -26,6 +94,66 @@ bad() { say "  ✕ $1"; problems=$((problems + 1)); }
 fix() { say "  ↻ $1"; fixed=$((fixed + 1)); }
 loaded() { [ -n "$TESS_TEST" ] && return 0; launchctl print "gui/$UID_/$1" >/dev/null 2>&1; }
 load() { [ -n "$TESS_TEST" ] && return 0; launchctl bootstrap "gui/$UID_" "$LA/$1.plist" >/dev/null 2>&1; }
+# The one privacy filter every report path uses; installer/redact.sh is the copy of record and tools/check-safety.sh
+# fails if this copy drifts. Do not edit it here: edit redact.sh and copy the function across.
+tess_redact() {
+  _rh="$HOME"
+  # `|| true` because the installer runs under set -e and a missing scutil must not stop a report
+  _ru=$(id -un 2>/dev/null || true)
+  _rc=$(scutil --get ComputerName 2>/dev/null || true)
+  _rl=$(scutil --get LocalHostName 2>/dev/null || true)
+  LC_ALL=C awk -v home="$_rh" -v acct="$_ru" -v host="$_rc" -v lhost="$_rl" '
+    # Literal replacement. sed and gsub would read a path containing . or & as a pattern, or a & in the replacement.
+    function lit(s, from, to,   out, p) {
+      if (from == "") return s
+      out = ""
+      while ((p = index(s, from)) > 0) { out = out substr(s, 1, p - 1) to; s = substr(s, p + length(from)) }
+      return out s
+    }
+    # A bare account name means a person only where no letter or digit touches it, so "mac" cannot turn "macOS" into
+    # "userOS" and a file called "sam.jones.bak" is still replaced.
+    function word(s, w, to,   out, p, b, a) {
+      if (w == "") return s
+      out = ""
+      while ((p = index(s, w)) > 0) {
+        b = (p > 1) ? substr(s, p - 1, 1) : ""
+        a = substr(s, p + length(w), 1)
+        if (b ~ /[A-Za-z0-9]/ || a ~ /[A-Za-z0-9]/) { out = out substr(s, 1, p); s = substr(s, p + 1) }
+        else { out = out substr(s, 1, p - 1) to; s = substr(s, p + length(w)) }
+      }
+      return out s
+    }
+    {
+      line = $0
+      # a home folder of any account on the Mac, including one whose name starts like this one
+      while (match(line, /\/Users\/[A-Za-z0-9._-]+/)) line = substr(line, 1, RSTART - 1) "~" substr(line, RSTART + RLENGTH)
+      line = lit(line, home, "~")
+      gsub(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/, "(email)", line)
+      line = lit(line, host, "this-mac")
+      line = lit(line, lhost, "this-mac")
+      if (length(acct) >= 3) line = word(line, acct, "user")
+      print line
+    }'
+}
+# The Spotify path is stored for the helper to read back with `.`, so it is written quoted: a folder name with a quote
+# in it must not become a command in the helper's mouth.
+env_line() {  # KEY value -> one line a POSIX shell reads back with `.`
+  printf '%s=%s\n' "$1" "$2" | LC_ALL=C awk '{
+    eq = index($0, "="); k = substr($0, 1, eq - 1); v = substr($0, eq + 1)
+    gsub(/\047/, "\047\\\047\047", v)
+    print k "=\047" v "\047"
+  }'
+}
+set_env() {  # file KEY value: replace that key's line, keeping every other line
+  local k=$2 line tmp="$1.new"
+  line=$(env_line "$k" "$3") || return 1
+  [ -f "$1" ] || : > "$1"
+  # The new line arrives through the environment, not -v: awk would eat the backslashes that make the quoting valid.
+  TESS_ENV_LINE="$line" LC_ALL=C awk -v k="$k" '
+    substr($0, 1, length(k) + 1) == k "=" { if (!done) { print ENVIRON["TESS_ENV_LINE"]; done = 1 } next }
+    { print }
+    END { if (!done) print ENVIRON["TESS_ENV_LINE"] }' "$1" > "$tmp" && mv "$tmp" "$1"
+}
 
 [ -d "$T" ] || { echo "Tess isn't installed on this Mac."; exit 1; }
 [ -f "$T/install-id" ] || od -An -tx1 -N16 /dev/urandom | tr -d ' \n' > "$T/install-id"
@@ -43,7 +171,7 @@ if [ -z "$SPOTIFY" ] || [ ! -d "$SPOTIFY" ] || { [ -n "$running" ] && [ -z "$TES
     [ -n "$p" ] && { [ -f "$p/Contents/Resources/Apps/xpui.spa" ] || [ -d "$p/Contents/Resources/Apps/xpui" ]; } && { new="$p"; break; }
   done
   if [ -n "$new" ] && [ -z "$TESS_TEST" ]; then
-    SPOTIFY="$new"; sed -i '' "s|^SPOTIFY=.*|SPOTIFY='$new'|" "$T/updater.env"
+    SPOTIFY="$new"; set_env "$T/updater.env" SPOTIFY "$new"
     "$T/bin/patcher/tess-patcher" config spotify_path "$new/Contents/Resources" >/dev/null 2>&1
     fix "Tess now follows the Spotify at $new"
   fi
@@ -88,17 +216,25 @@ fi
 
 # Spotify's interface folder is only ever replaced by switching in a complete copy: the copy is made next to it and
 # checked, then two renames swap them, and if anything fails the original stays. Never delete-then-copy: a block
-# halfway through that left Spotify with no interface at all (black window). tools/check-safety.sh enforces this.
+# halfway through that left Spotify with no interface at all (black window). The copy and the swap run inside
+# tess-patcher, not in this script: macOS's App Management protection denies /usr/bin/ditto when launchd starts a
+# script under /bin/zsh. tools/check-safety.sh enforces it.
 swap_apps() {
-  _new="$APPS.tess-new"; _old="$APPS.tess-old"
-  if [ ! -d "$APPS" ] && [ -d "$_old" ]; then mv "$_old" "$APPS" || return 1; fi
-  rm -rf "$_new"
-  ditto "$1" "$_new" || { rm -rf "$_new"; return 1; }
-  [ -s "$_new/xpui.spa" ] || [ -s "$_new/xpui/index.html" ] || { rm -rf "$_new"; return 1; }
-  rm -rf "$_old"
-  if [ -d "$APPS" ]; then mv "$APPS" "$_old" || { rm -rf "$_new"; return 1; }; fi
-  mv "$_new" "$APPS" || { [ -d "$_old" ] && mv "$_old" "$APPS"; rm -rf "$_new"; return 1; }
-  rm -rf "$_old"
+  if [ ! -x "$T/bin/patcher/tess-patcher" ]; then
+    bad "tess-patcher is missing, so Spotify's folder cannot be switched"; return 1
+  fi
+  local log="$TMP/swap.log" rc=0
+  "$T/bin/patcher/tess-patcher" swap-apps "$APPS" "$1" >"$log" 2>&1 || rc=$?
+  [ $rc -eq 0 ] && return 0
+  # Keep the patcher's own line. "A swap failed" hides that macOS denied the copy, which is the one thing the person
+  # can act on; the exit code says the same thing the updater logs (3 blocked, 4 another user's files).
+  while IFS= read -r line; do say "    $line"; done < "$log"
+  case $rc in
+    3) bad "macOS is blocking tess-patcher: System Settings › Privacy & Security › App Management, turn on tess-patcher" ;;
+    4) bad "Spotify's files belong to another user; tess-patcher could not change them" ;;
+    *) bad "tess-patcher couldn't switch Spotify's folder (code $rc)" ;;
+  esac
+  return 1
 }
 # --- Spotify's interface -------------------------------------------------------------------------------------------
 if [ -f "$APPS/xpui/index.html" ] && grep -q spicetifyWrapper "$APPS/xpui/index.html" 2>/dev/null; then
@@ -177,15 +313,11 @@ send() {
   local kind=$1 tv=$(cat "$T/state/version" 2>/dev/null)
   { cat "$OUT"; echo; echo "--- guard.log"; tail -120 "$T/guard.log" 2>/dev/null; echo; echo "--- rescue.log"; tail -40 "$T/rescue/rescue.log" 2>/dev/null; echo; echo "--- files"
     ls -la "$APPS" 2>&1; ls "$T" 2>&1; } > "$TMP/body"
-  # nothing personal leaves the Mac: home folder, account name, computer name and email addresses are removed
-  local me=$(id -un) host=$(scutil --get ComputerName 2>/dev/null)
-  sed -i '' "s|$HOME|~|g" "$TMP/body"
-  [ ${#me} -ge 3 ] && sed -i '' "s|$me|user|g" "$TMP/body"
-  [ -n "$host" ] && sed -i '' "s|$host|this-mac|g" "$TMP/body"
-  sed -i '' -E 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/(email)/g' "$TMP/body"
+  # nothing personal leaves the Mac: the same filter the installer and the rescue line use removes home folders,
+  # account names, computer names and email addresses
   local jstr='BEGIN { ORS = ""; print "\"" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, ""); gsub(/[\001-\037]/, ""); print $0 "\\n" } END { print "\"" }'
   printf '{"install":"%s","kind":"%s","tess":"%s","spotify":"%s","macos":"%s","status":%s,"body":%s}' "$ID" "$kind" "$tv" "$SPV" \
-    "$(sw_vers -productVersion)" "$(printf '%s' "${st[*]}" | awk "$jstr")" "$(tail -c 20000 "$TMP/body" | awk "$jstr")" > "$TMP/r.json" || return 1
+    "$(sw_vers -productVersion)" "$(printf '%s' "${st[*]}" | awk "$jstr")" "$(tess_redact < "$TMP/body" | tail -c 20000 | awk "$jstr")" > "$TMP/r.json" || return 1
   [ -n "$TESS_TEST" ] && { cp "$TMP/r.json" "$T/last-report.json"; return 0; }
   curl -fsS --max-time 30 -H "content-type: application/json" --data-binary @"$TMP/r.json" "$INBOX/v1/report" >/dev/null 2>&1
 }

@@ -8,6 +8,74 @@
 # It also keeps the doctor (doctor.sh) and the rescue line (rescue/) installed, sends a small daily health report
 # and asks the doctor to fix and report whenever something here fails (unless reports are off: tess reports off).
 # Settings written by the installer: updater.env (SPOTIFY=...). Log: guard.log.
+# >>> tess script guard: keep this block identical in every installer script (issue #107) >>>
+# This file used to be able to act on a real Mac when nobody meant it, three ways: being sourced (a shell one-liner
+# like `sh -c '. installer/tess-install.sh; …'` ran the whole real installer), having its text handed to a shell to run
+# (`sh -c "$(cat installer/tess-install.sh)"`, or `eval` of that text), and being run from a git checkout, whose copy is
+# for developing and for sandboxed tests, not for a real install. All three stop here, before anything is read,
+# downloaded or changed. The published `curl … | sh` line is none of them: that shell reads the pipe as its own script,
+# so it starts with no `-c` and no file to resolve.
+_tess_sourced=""
+_tess_embedded=""
+if [ -n "${ZSH_VERSION-}" ]; then
+  # zsh says where it is evaluating: a sourced file ends in ":file", `zsh -c …` and `eval` begin with "cmdarg", and a
+  # script run as its own command is exactly "toplevel".
+  case ${ZSH_EVAL_CONTEXT-} in
+    *:file) _tess_sourced=1 ;;
+    cmdarg|cmdarg:*|eval|eval:*|*:eval|*:eval:*) _tess_embedded=1 ;;
+  esac
+else
+  # sh/bash puts a `c` in $- only when the commands were given to the shell as an argument (`sh -c …`), and `return`
+  # works in a subshell only when this file was sourced.
+  case $- in *c*) _tess_embedded=1 ;; esac
+  if (return 0 2>/dev/null); then _tess_sourced=1; fi
+fi
+# A shell that kept the `-c` out of $- still shows it in its own command line. Only the argument list is compared: a
+# piped script's is just "/bin/sh", so the published install line is left alone.
+case "$(ps -o args= -p $$ 2>/dev/null) " in *" -c "*) _tess_embedded=1 ;; esac
+if [ -n "$_tess_sourced" ]; then
+  echo "Tess: this file was sourced, so it did nothing. Tess's installer, updater, doctor, rescue line and uninstaller act only when they are run as their own command, so sourcing one can never install, update, repair or remove anything." >&2
+  echo "Tess: run it as its own command (sh ./file or zsh ./file), or use Tess's published install line." >&2
+  return 1
+fi
+if [ -n "$_tess_embedded" ] && [ -z "${TESS_TEST-}" ] && [ "${TESS_REAL_INSTALL-}" != 1 ]; then
+  echo "Tess: not run. This file's text was handed to a shell to run, as in sh -c \"...\" or eval, so the file itself is not what runs and its own checks cannot see it. Tess's installer, updater, doctor, rescue line and uninstaller act only when they are run as their own command." >&2
+  echo "Tess: run it as its own command (sh ./file or zsh ./file), or use Tess's published install line; TESS_REAL_INSTALL=1 is the deliberate way through." >&2
+  exit 1
+fi
+unset _tess_sourced _tess_embedded
+# A development copy sits inside a git checkout or worktree (a .git folder or file somewhere above it). Outside a
+# sandbox it must not act on a real Mac: it is not the installed copy, and its parts are not the signed ones users get.
+# TESS_TEST=1 is the sandbox (AGENTS.md rule 2); TESS_REAL_INSTALL=1 is a person deliberately letting this exact copy act.
+# zsh makes $0 the function's own name inside a function, so the path is taken once, here.
+_tess_self=$0
+# The home folder can be a symlink (`/tmp` is `/private/tmp`; a sandbox often is), so compare its real path as well.
+_tess_home=$(CDPATH= cd -P -- "$HOME" 2>/dev/null && pwd -P) || _tess_home=$HOME
+tess_guard_checkout() {
+  _tg=$_tess_self
+  case $_tg in
+    */*) ;;
+    # `cd installer && sh tess-install.sh` names no folder, so the folder is the current one. A piped copy
+    # (`curl … | sh`) names the shell itself, not a file here, so it takes the branch above and the walk starts outside
+    # any checkout: the pipe is allowed by that, not by this branch.
+    *) [ -f "./$_tg" ] || return 1; _tg="./$_tg" ;;
+  esac
+  _tg=$(CDPATH= cd -P -- "$(dirname -- "$_tg")" 2>/dev/null && pwd -P) || return 1
+  while [ -n "$_tg" ] && [ "$_tg" != "/" ]; do
+    # A dotfiles repository in the home folder (`git init` in ~) is not a copy of Tess.
+    [ "$_tg" = "$HOME" ] && return 1
+    [ "$_tg" = "$_tess_home" ] && return 1
+    [ -e "$_tg/.git" ] && return 0
+    _tg=$(dirname -- "$_tg")
+  done
+  return 1
+}
+if [ -z "${TESS_TEST-}" ] && [ "${TESS_REAL_INSTALL-}" != 1 ] && tess_guard_checkout; then
+  echo "Tess: not run. This copy ($_tg) is inside a git checkout, and a checkout's copy is for developing and for sandboxed tests, not for changing a real Mac." >&2
+  echo "Tess: use Tess's published install line, or set TESS_REAL_INSTALL=1 if you really do mean to let this checkout act on this Mac." >&2
+  exit 1
+fi
+# <<< tess script guard <<<
 HOME_TESS="${TESS_HOME:-$HOME/Library/Application Support/Tess}"
 [ -f "$HOME_TESS/updater.env" ] && . "$HOME_TESS/updater.env"
 [ -n "$TESS_CONFIG" ] && export SPICETIFY_CONFIG="$TESS_CONFIG"
@@ -30,7 +98,11 @@ report_parts_failure() {
     doctor --report
   fi
 }
-notify() { [ -n "$TESS_TEST" ] || osascript -e "display notification \"$1\" with title \"Tess Music\"" >/dev/null 2>&1; }
+# Values Tess stores or hands to another program are escaped where they are written: a folder called "Tom & Jerry"
+# still produces a launchd file macOS can read, and a Spotify version in a notification cannot end the AppleScript string.
+xml_esc() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+as_esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+notify() { [ -n "$TESS_TEST" ] || osascript -e "display notification \"$(as_esc "$1")\" with title \"Tess Music\"" >/dev/null 2>&1; }
 spotify_running() { { [ -n "$TESS_TEST" ] && [ "$TESS_TEST_SPOTIFY_RUNNING" = 1 ]; } || { [ -z "$TESS_TEST" ] && pgrep -x Spotify >/dev/null; }; }
 # Playing audio makes macOS hold a sleep assertion for Spotify, usually filed by coreaudiod "Created for PID: <Spotify>".
 # pmset needs no permission (osascript would ask every user). macOS awk has no IGNORECASE, so match both cases.
@@ -71,13 +143,14 @@ install_guard() {
   [ -n "$TESS_TEST" ] && la="$HOME_TESS/LaunchAgents"
   pl="$la/music.tess.guard.plist"
   mkdir -p "$la"
+  local updater_xml=$(xml_esc "$HOME_TESS/updater.sh") apps_xml=$(xml_esc "$SPOTIFY/Contents/Resources/Apps")
   cat > "$pl.new" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>music.tess.guard</string>
-<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$HOME_TESS/updater.sh</string></array>
-<key>WatchPaths</key><array><string>$SPOTIFY/Contents/Resources/Apps</string></array>
+<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$updater_xml</string></array>
+<key>WatchPaths</key><array><string>$apps_xml</string></array>
 <key>StartInterval</key><integer>1800</integer>
 <key>RunAtLoad</key><true/>
 </dict></plist>
@@ -126,10 +199,11 @@ install_rescue() {
   [ -n "$fresh" ] && /bin/zsh "$dst/rescue.sh" --adopt >/dev/null 2>&1
   [ -f "$pl" ] && return 0
   mkdir -p "$(dirname "$pl")"
+  local rescue_xml=$(xml_esc "$dst/rescue.sh")
   printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
     '<plist version="1.0"><dict>' '<key>Label</key><string>music.tess.rescue</string>' \
-    "<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$dst/rescue.sh</string></array>" \
+    "<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$rescue_xml</string></array>" \
     '<key>StartInterval</key><integer>21600</integer>' '<key>RunAtLoad</key><true/>' '<key>AbandonProcessGroup</key><true/>' '</dict></plist>' > "$pl"
   [ -n "$TESS_TEST" ] && { log "rescue line installed (test)"; return 0; }
   launchctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1
@@ -185,17 +259,20 @@ To allow it once: in System Settings › Privacy & Security › App Management, 
 }
 # Spotify's interface folder is only ever replaced by switching in a complete copy: the copy is made next to it and
 # checked, then two renames swap them, and if anything fails the original stays. Never delete-then-copy: a block
-# halfway through that left Spotify with no interface at all (black window). tools/check-safety.sh enforces this.
+# halfway through that left Spotify with no interface at all (black window). The copy and the swap run inside
+# tess-patcher, not in this script: macOS's App Management protection denies /usr/bin/ditto when launchd starts a
+# script under /bin/zsh, so a shell copy in the background could never update Spotify. tools/check-safety.sh enforces it.
 swap_apps() {
-  _new="$APPS.tess-new"; _old="$APPS.tess-old"
-  if [ ! -d "$APPS" ] && [ -d "$_old" ]; then mv "$_old" "$APPS" || return 1; fi
-  rm -rf "$_new"
-  ditto "$1" "$_new" || { rm -rf "$_new"; return 1; }
-  [ -s "$_new/xpui.spa" ] || [ -s "$_new/xpui/index.html" ] || { rm -rf "$_new"; return 1; }
-  rm -rf "$_old"
-  if [ -d "$APPS" ]; then mv "$APPS" "$_old" || { rm -rf "$_new"; return 1; }; fi
-  mv "$_new" "$APPS" || { [ -d "$_old" ] && mv "$_old" "$APPS"; rm -rf "$_new"; return 1; }
-  rm -rf "$_old"
+  [ -x "$PATCHER" ] || { log "Spotify swap: tess-patcher is missing; Spotify left as it was"; return 1; }
+  "$PATCHER" swap-apps "$APPS" "$1" >> "$LOG" 2>&1
+  local rc=$?
+  case $rc in
+    0) return 0 ;;
+    3) log "Spotify swap: macOS App Management is blocking tess-patcher; Spotify left as it was" ;;
+    4) log "Spotify swap: Spotify's files belong to another user; Spotify left as it was" ;;
+    *) log "Spotify swap: tess-patcher couldn't switch the folder (code $rc); Spotify left as it was" ;;
+  esac
+  return 1
 }
 reapply() {
   [ -f "$APPS/xpui.spa" ] && [ ! -d "$APPS/xpui" ] || return 0
@@ -263,7 +340,18 @@ if ! "$VERIFY" "$TMP/components.txt" "$(tr -d '\n' < "$TMP/components.sig")"; th
 fi
 rm -f "$STATE/.parts-list-reported"
 
-# each line: name sha256 url source-hash (and one "version X.Y.Z" line)
+# each line: name sha256 url source-hash (and one "version X.Y.Z" and one "rev N" line)
+rev=$(awk '$1 == "rev" { print $2 }' "$TMP/components.txt")
+last=$(cat "$STATE/rev-$CHANNEL" 2>/dev/null); case "$last" in ''|*[!0-9]*) last=0 ;; esac
+if [ -z "$rev" ]; then
+  # A pre-rev list is only acceptable before this channel has ever installed a rev; otherwise it is a replay.
+  [ "$last" -gt 0 ] && { problem "parts list has no rev but $last is installed; ignored"; report_parts_failure; exit 0; }
+else
+  case "$rev" in *[!0-9]*) problem "parts list has a bad rev; ignored"; report_parts_failure; exit 0 ;; esac
+  # correctly signed is not enough: an older list served by a mirror is still a downgrade
+  [ "$rev" -ge "$last" ] || { problem "parts list is older than the one already installed ($rev < $last); ignored"; report_parts_failure; exit 0; }
+fi
+# Only record the version once the list is accepted, so a refused downgrade cannot relabel the install.
 awk '$1 == "version" { print $2 }' "$TMP/components.txt" > "$STATE/version.new" && [ -s "$STATE/version.new" ] && mv "$STATE/version.new" "$STATE/version"
 part_file() {
   case "$1" in
@@ -386,6 +474,7 @@ while read -r name sha url _src; do
   touch "$LOCK"
   log "$name: updated"; changed=$((changed + 1))
 done < "$TMP/components.txt"
+[ -n "$rev" ] && echo "$rev" > "$STATE/rev-$CHANNEL"
 [ "$changed" -gt 0 ] && log "parts current ($changed updated)"
 # a newer patcher may support a Spotify version the old one could not
 [ -n "$new_patcher" ] && reapply now

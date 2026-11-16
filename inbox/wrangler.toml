@@ -1,4 +1,7 @@
 # Tess inbox (Cloudflare Worker). Deploy: npx wrangler@4 deploy   (from this folder, with the owner's Cloudflare login)
+#
+# Required secret, without which /v1/report answers 503 and stores nothing (the stored per-IP keys would otherwise be a
+# plain hash of an IP address):  npx wrangler@4 secret put SALT
 name = "tess-inbox"
 main = "worker.js"
 compatibility_date = "2026-10-01"

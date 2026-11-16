@@ -1,55 +1,78 @@
-// Kill each shell swap between its two renames, then prove the next attempt restores the sandboxed Spotify Apps.
+// Kill the real patcher between the steps of its swap, then prove the next attempt restores the sandboxed Spotify Apps.
+// The swap lives in tess-patcher (#108): macOS denies /usr/bin/ditto under /bin/zsh, so a shell can no longer do it.
 // Usage: node tools/test-swap-recovery.mjs
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const scripts = ['tess-install.sh', 'updater.sh', 'doctor.sh'];
+const box = mkdtempSync(join(tmpdir(), 'tess-swap-test-'));
+const bin = join(box, 'tess-patcher');
+const apps = join(box, 'Spotify.app', 'Contents', 'Resources', 'Apps');
+const staged = join(box, 'staged');
+const original = 'original Spotify interface\n';
 
-const swapFunction = (name) => {
-  const lines = readFileSync(join(root, 'installer', name), 'utf8').split('\n');
-  const start = lines.indexOf('swap_apps() {');
-  const end = lines.indexOf('}', start + 1);
-  assert.notEqual(start, -1, `${name}: swap_apps exists`);
-  assert.notEqual(end, -1, `${name}: swap_apps closes`);
-  return lines.slice(start, end + 1).join('\n');
+const runSwap = (src) => {
+  try {
+    execFileSync(bin, ['swap-apps', apps, src], { stdio: 'pipe' });
+    return 0;
+  } catch (e) {
+    return e.status ?? 1;
+  }
 };
 
-for (const name of scripts) {
-  const box = mkdtempSync(join(tmpdir(), 'tess-swap-test-'));
-  try {
-    const apps = join(box, 'Spotify.app', 'Contents', 'Resources', 'Apps');
-    const source = join(box, 'replacement');
-    mkdirSync(apps, { recursive: true });
-    mkdirSync(source, { recursive: true });
-    writeFileSync(join(apps, 'xpui.spa'), 'original Spotify interface\n');
-    writeFileSync(join(source, 'xpui.spa'), 'replacement interface\n');
+try {
+  execFileSync('go', ['build', '-o', bin, '.'], { cwd: join(root, 'patcher') });
+  mkdirSync(apps, { recursive: true });
+  mkdirSync(staged, { recursive: true });
+  // swap-apps only takes a real-shaped Spotify bundle: the path check reads the identifier before it moves anything.
+  writeFileSync(join(box, 'Spotify.app', 'Contents', 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.spotify.client</string></dict></plist>
+`);
+  writeFileSync(join(apps, 'xpui.spa'), original);
+  writeFileSync(join(staged, 'xpui.spa'), 'replacement interface\n');
+  // A FIFO blocks inside the copy (opening it waits for a writer), so the kill lands in the middle of the copy with
+  // Apps still untouched — the same window a real crash or a full disk falls into.
+  execFileSync('mkfifo', [join(staged, 'zz-fifo')]);
 
-    const fn = swapFunction(name);
-    const interrupted = fn.replace(
-      'if [ -d "$APPS" ]; then mv "$APPS" "$_old" || { rm -rf "$_new"; return 1; }; fi',
-      () => 'if [ -d "$APPS" ]; then mv "$APPS" "$_old" || { rm -rf "$_new"; return 1; }; kill -9 $$; fi',
-    );
-    assert.notEqual(interrupted, fn, `${name}: interruption point found`);
-
-    const killedScript = join(box, 'kill-mid-swap.zsh');
-    writeFileSync(killedScript, `#!/bin/zsh\nAPPS="$1"\n${interrupted}\nswap_apps "$2"\n`);
-    const killed = spawnSync('/bin/zsh', [killedScript, apps, source], { encoding: 'utf8' });
-    assert.ok(!existsSync(apps), `${name}: interrupted window reproduced (status ${killed.status}, signal ${killed.signal}, old ${existsSync(`${apps}.tess-old`)}, new ${existsSync(`${apps}.tess-new`)}, stderr ${killed.stderr})`);
-    assert.ok(existsSync(`${apps}.tess-old/xpui.spa`), `${name}: original copy survived`);
-
-    const recoverScript = join(box, 'recover.zsh');
-    writeFileSync(recoverScript, `#!/bin/zsh\nAPPS="$1"\n${fn}\nswap_apps "$2"\n`);
-    const recovered = spawnSync('/bin/zsh', [recoverScript, apps, join(box, 'missing-source')], { encoding: 'utf8' });
-    assert.notEqual(recovered.status, 0, `${name}: failed replacement remains a failure`);
-    assert.equal(readFileSync(join(apps, 'xpui.spa'), 'utf8'), 'original Spotify interface\n', `${name}: next run restored Apps`);
-  } finally {
-    rmSync(box, { recursive: true, force: true });
+  const child = spawn(bin, ['swap-apps', apps, staged], { stdio: 'ignore' });
+  const deadline = Date.now() + 10000;
+  while (!existsSync(`${apps}.tess-new`) && Date.now() < deadline) {
+    // spin: the copy has started once the new folder appears beside Apps
   }
-}
+  assert.ok(existsSync(`${apps}.tess-new`), 'the swap started and copied beside Spotify, not into it');
+  child.kill('SIGKILL');
+  await new Promise((resolve) => child.on('close', resolve));
+  assert.equal(readFileSync(join(apps, 'xpui.spa'), 'utf8'), original, 'a kill during the copy left Spotify exactly as it was');
+  assert.ok(existsSync(`${apps}.tess-new`), 'the killed run left its half-made folder beside Spotify');
 
-console.log('swap recovery tests passed (3 scripts, SIGKILL between renames)');
+  // The next run, whose own staged copy is gone, must still put Spotify's folder back and then fail cleanly.
+  assert.notEqual(runSwap(join(box, 'missing')), 0, 'a missing staged folder is still a failure');
+  assert.equal(readFileSync(join(apps, 'xpui.spa'), 'utf8'), original, 'the next run left Spotify exactly as it was');
+  assert.ok(!existsSync(`${apps}.tess-new`), 'the next run cleared the half-made folder');
+
+  // And a good staged folder finishes the job.
+  rmSync(join(staged, 'zz-fifo'));
+  assert.equal(runSwap(staged), 0, 'a good staged folder swaps in');
+  assert.equal(readFileSync(join(apps, 'xpui.spa'), 'utf8'), 'replacement interface\n', 'the replacement is in place');
+  for (const leftover of [`${apps}.tess-old`, `${apps}.tess-new`]) {
+    assert.ok(!existsSync(leftover), `no leftover at ${leftover}`);
+  }
+
+  // The exact state a kill between the two renames leaves: Apps gone, the original in .tess-old, a partial copy.
+  renameSync(apps, `${apps}.tess-old`);
+  mkdirSync(`${apps}.tess-new`, { recursive: true });
+  writeFileSync(join(`${apps}.tess-new`, 'xpui.spa'), 'partial interface\n');
+  assert.notEqual(runSwap(join(box, 'missing')), 0, 'a failed replacement remains a failure');
+  assert.equal(readFileSync(join(apps, 'xpui.spa'), 'utf8'), 'replacement interface\n', 'the next run restored Apps from .tess-old');
+  assert.equal(runSwap(staged), 0, 'the run after that swaps the good copy in');
+  assert.equal(readFileSync(join(apps, 'xpui.spa'), 'utf8'), 'replacement interface\n');
+
+  console.log('swap recovery tests passed (real tess-patcher: SIGKILL during the copy, and a kill between the two renames)');
+} finally {
+  rmSync(box, { recursive: true, force: true });
+}

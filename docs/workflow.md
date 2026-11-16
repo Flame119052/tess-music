@@ -19,7 +19,7 @@ Only `beta` and `stable` are public. The release workflow does it:
 
 1. **Issue.** Every change starts as an issue. It says the goal, the check, and what blocks it.
 2. **Approach.** The agent picking up the issue posts its plan as a comment: what changes, which files, how it will be checked.
-3. **Approach review.** For changes that need one (see tiers below), the agent tags the reviewer in that comment (`@tess-review approach`). A reviewer agent runs on a fresh GitHub-hosted Linux machine (an ordinary GitHub Actions job, free for this public repo), reads the issue and the plan, and replies **approve** or **changes needed**.
+3. **Approach review.** For changes that need one (see tiers below), the agent tags the reviewer in that comment (`@tess-review approach`). By default a reviewer agent runs on a fresh GitHub-hosted Linux machine (an ordinary GitHub Actions job, free for this public repo); `machine=mac` or `machine=omarchy` runs it as a T3 thread on that machine instead. It reads the issue and the plan, and replies **approve** or **changes needed**.
 4. **PR.** The change lands as a pull request into `main`, with `(#issue)` in its title.
 5. **Checks.** CI (`check.yml`: safety gate, builds, tests) must pass. No AI reviewer runs on a PR whose checks haven't passed.
 6. **PR review.** The agent tags `@tess-review pr`, naming the reviewer and the author as below. The reviewer reads the diff against the approved plan and the issue's check, and posts a review.
@@ -67,6 +67,68 @@ The line after the tag says why, in one sentence, so a reader can see the reason
 GLM-5.3 on the Z.ai plan: 71% of its week left, resets Tuesday, and the change was written by Codex.
 ```
 
+The tag also says **where** the review runs, and may add **what to look at**:
+
+```
+@tess-review pr provider=codex model=gpt-6.1-sol effort=high author=opencode
+@tess-review pr provider=opencode model=opencode-go/deepseek-v4.1-flash author=codex machine=mac prompt="focus on the installer fallback"
+```
+
+| Option | What it means |
+| --- | --- |
+| `provider=`, `model=`, `effort=` | the reviewer that runs. The job runs that model or refuses; it never picks a different one. |
+| `author=` | the provider that wrote the change (`claude`, `codex`, `opencode`, `antigravity`, or `none` for a person). It is the allowlisted account's attestation, and the reviewer must come from a different provider. |
+| `machine=` | where the review runs: `github` (the default), `mac`, `omarchy`, or `vps` (refused, see below). |
+| `prompt="…"` | the owner's focus for this review, 400 characters at most. It adds attention; it is never permission to skip a rule, and a longer one is refused rather than cut. |
+
+### Where a review runs: `machine=`
+
+- **`machine=github`**, or no `machine=` at all: today's path. A fresh GitHub-hosted Linux VM per review, bubblewrap
+  around the reviewer, and only that reviewer's provider login on it (below).
+- **`machine=mac` / `machine=omarchy`**: the review opens as a **T3 thread on that machine**, so Krish can watch or
+  steer it while it runs. GitHub's job reads the tag, checks it, and stops after posting `Review queued for mac`; a small
+  watcher on the machine polls for tags that name it, checks them with the same rules, and starts the thread with
+  `t3 thread start`. The thread answers with the review as its last message and **the watcher posts it**, with the
+  marker, the commit it read and a verdict, after confirming the pull request still points at that commit. Setup, the
+  timer and its one-time check are in [`tools/review-watch/README.md`](../tools/review-watch/README.md); installing it is
+  Krish's step, not a merge.
+- **`machine=vps`** is refused, in fixed words: T3 on `paperclip-vps` runs as root beside Paperclip, so Tess agents do
+  not run there through T3 (see "Which machine does what").
+
+What the machine path enforces, before any pull-request text reaches a thread (D-77, D-78):
+
+- **The thread's runtime mode.** The watcher opens the thread with one fixed line that contains nothing from the pull
+  request, reads the mode T3 reports back, and only sends the diff, the issue and the focus when it is
+  `approval-required` — T3's strictest setting, which is a real read-only, no-network sandbox for Codex and a per-tool
+  approval for Claude. A project left at any wider mode is refused with a comment naming the setting, never reviewed. The
+  project's default runtime mode is set to `approval-required` once, when the watcher is installed.
+- **The copy the thread reads.** Not the pull request's checkout: the reviewed commit is unpacked into the same stripped
+  copy the GitHub job makes — agent settings, instruction files at any depth and every link removed — before the thread
+  exists, so an `AGENTS.md` in the change cannot brief the reviewer. The reviewed commit itself is fetched into a scratch
+  repository that is not the project, and deleted before the thread starts, so the copy's object store has never held it
+  and `git show <sha>:AGENTS.md` fails there. The copy is deleted with the review, branch and objects too. A review also
+  waits for T3 to finish checking that copy out, because the changed files are read from it.
+- **When a review is finished.** T3's own end of the run (`idle`, `completed`, or an ended status), checked against the
+  run `t3 thread send` started — not the sidebar's `settled`, which is days of quiet. The mode is read again on the way
+  out, and the answer is posted only if its shape is a review and it holds no key.
+- **Who posts.** The thread has no way to write: it is never told how to comment or merge, `gh` is not part of its job,
+  and its answer is read, checked for the marker, the commit and one verdict line, and posted by the watcher. A hijacked
+  thread can produce a bad review; it cannot comment, push, merge or release in Krish's name.
+- **The same rules as GitHub.** The allowlist, the fork refusal, CI green on the exact head, the tier, the plans-only
+  list, the author rule, usage and reserve are decided by the same `tools/agent-review.mjs`, so a tag cannot be refused
+  on one path and allowed on the other. A refusal on a machine is posted as a comment too, in the same fixed words or
+  the same rule comment.
+- **The tag as it reads now.** Every tag is fetched again by id right before it runs: one deleted after it was queued
+  does nothing, and one edited after it was queued is judged on its new words. A launch is recorded before and after
+  `t3 thread start` and keyed to the comment, so a tick that dies half-way adopts its thread instead of making a second.
+
+Two things the machine path still is not. It is not a second sandbox around the owner's account: a T3 thread runs as
+Krish's user, the read-only sandbox has no network and no writes, and files outside the worktree stay readable — which is
+why `machine=github` stays the default and the Mac is named only when he wants to watch. And `effort=` cannot be passed
+to a thread, so a tag that names one is refused on those machines rather than run at an effort nobody chose (leave it
+out, or use `machine=github`). `t3 thread start` takes no token limit either, so a machine review has none and its
+comment says `Cap: none on this path`; the bound is the same `timeout_s` the GitHub job runs a reviewer under.
+
 **Plans only.** Every model on the list runs on one of Krish's subscriptions — the Claude plan, the ChatGPT plan, the
 OpenCode Go plan, or the Z.ai coding plan. No per-token API key is used, ever: a review must never bill by the token.
 
@@ -101,7 +163,12 @@ OpenCode Go plan, or the Z.ai coding plan. No per-token API key is used, ever: a
 - the pull request's `Made by` line (in any shape: `Made by: …` or a `## Made by` heading) names a provider that
   disagrees with `author=`;
 - a usage snapshot shows that window used up, fewer than three reviews left in its 5-hour window, or inside a `reserve` (pace is the tagging agent's call, not a refusal);
-- the Codex plan login is missing or inside its last 12 hours.
+- the Codex plan login is missing or inside its last 12 hours;
+- the tag names a machine that is not `github`, `mac` or `omarchy` — including `vps`, which is refused with its reason;
+- a `prompt=` is longer than 400 characters, empty, or the tag has an option a tag does not take (`tier=`, `machine=pc`),
+  or a quote that is never closed;
+- a tag for `mac` or `omarchy` names an `effort=`, which `t3 thread start` cannot carry — the same tag without it runs at
+  the model's own default, and `machine=github` passes the effort to the reviewer's CLI.
 
 The refusal names the reason and, for usage, the exact reset time in UTC plus how far away it is, so the next tag can be
 a good one. **Nothing is substituted.** A review that does not run is better than a review by a model nobody chose, so
@@ -255,7 +322,8 @@ agent file, that no retired API-key secret is used anywhere, and that every note
 ## Reviewer agents on GitHub's machines
 
 - **Who can call them.** Only GitHub accounts in the allowlist (the repo variable `AGENT_ALLOWLIST`, today just `Flame119052`). A tag from anyone else is ignored. Anyone can still open issues and PRs.
-- **Where they run.** A standard GitHub Actions job on `ubuntu-latest`: one fresh virtual machine per review, deleted when the job ends. GitHub-hosted Linux machines are free and unlimited for this public repository, so there is no runner to keep online, no box to wake, and no machine of Krish's in the path (D-66). Nothing of Krish's is on the VM: no signing or rescue keys, no Paperclip, no other job's secrets.
+- **Where they run.** A standard GitHub Actions job on `ubuntu-latest`: one fresh virtual machine per review, deleted when the job ends. GitHub-hosted Linux machines are free and unlimited for this public repository, so there is no runner to keep online, no box to wake, and no machine of Krish's in the path (D-66). Nothing of Krish's is on the VM: no signing or rescue keys, no Paperclip, no other job's secrets. A tag with `machine=mac` or `machine=omarchy` never reaches the review job: the gate reads it, the notice job posts `Review queued for mac`, and that machine's own watcher opens the review as a T3 thread (above).
+- **What reads the tag first.** The `gate` job runs `tools/agent-gate.sh` from `main` and answers in one place: the caller, the machine, the pull request's own head, CI on that commit, and the tier. A refusal is a fixed code, and the `notice` job posts the fixed words for it — never a script's message, which could carry a path or a key. An account that is not allowlisted still gets nothing at all.
 - **What the VM holds.** Only the chosen reviewer's plan login and a `GITHUB_TOKEN` that can comment on this repository. The tag's choice is checked first (`node tools/agent-review.mjs pick ...`), then that one provider's CLI is installed at a pinned version, and only that provider's login is given to the step. A review can never hold a second provider's login. For Claude and Codex the login stays in the review process and the sandbox gets a per-review token instead (`tools/review-proxy.mjs`, D-69, D-73); that proxy forwards only the one inference route its pinned CLI was measured to call and answers everything else with a 403, so the token is not a way to reach the rest of what the login can do. OpenCode keeps its own key, which its agent file cannot read. `GH_TOKEN` is on the step so the review can be posted, and the script removes it before the reviewer process starts.
 - **Which model runs.** The tag says. The pick step only checks the choice — plans-only list, the job's installed CLIs, `strong` for a sensitive change, a different provider from the author, usage and any reserve — and refuses anything that breaks a rule with a comment on the pull request. Usage comes from [#93](https://github.com/Flame119052/tess-music/issues/93)'s quota-only snapshots, one repository variable per machine (`USAGE_SNAPSHOT_MAC`, `_VPS`, `_OMARCHY`): the freshest under 30 minutes wins, and it is read beside the local hub; with none fresh, "no numbers" counts as usable, and the CLI's own refusal is reported in a comment. Those numbers are a check on the agent's choice, never a way for the job to pick for it.
 - **Safety, because the repo is public:**
@@ -263,7 +331,8 @@ agent file, that no retired API-key secret is used anywhere, and that every note
   - The first job runs on GitHub's own machine. It checks the commenter against the allowlist and checks that CI passed on the PR's exact commit. Only then does the review job start.
   - Fork PRs never reach the review job, so they never get a secret. Approval is still required before any workflow runs for an outside collaborator.
   - The reviewer reads the diff and the files. It never runs, builds or installs anything from the PR.
-  - The reviewer's own comments carry a marker and never trigger another review.
+  - The reviewer's own comments carry a marker and never trigger another review; so do the queue notice and every refusal, so none of them can start another review.
+  - A machine's watcher reads only what this repository's workflow publishes anyway (comments, the pull request, its CI), checks every tag with the same rules before starting anything, and never accepts inbound connections. It holds no credential of its own: `gh` and `t3` use that machine's own sign-ins.
 
 ## Where work happens: branches, worktrees and machines
 
@@ -303,16 +372,16 @@ These rules come from mistakes made while setting this up: agents started from t
 
 | Machine | Does | Never |
 | --- | --- | --- |
-| Krish's Mac | Holds the signing and rescue keys. Runs the real Spotify on `dev`. Krish's own commands. The T3 threads. | Hosts a GitHub runner. Holds secrets in the repo or in an external drive's `.env`. |
+| Krish's Mac | Holds the signing and rescue keys. Runs the real Spotify on `dev`. Krish's own commands. The T3 threads. The review watcher, when it is installed, opens a `machine=mac` tag as a T3 thread. | Hosts a GitHub runner. Holds secrets in the repo or in an external drive's `.env`. Reviews a diff nobody here trusts: that is GitHub's job. |
 | GitHub's Linux machines | Every review (`agent-review.yml`): a fresh `ubuntu-latest` VM per review, holding only that review's one provider key and a comment-scoped `GITHUB_TOKEN`. | Gets a fork PR, a second provider's key, or any Tess key. |
 | GitHub's macOS machines | CI (`check.yml`) and every build and signature (`release.yml`). They are the only place the signing secrets are used. | Runs code from a fork PR without Krish's approval. |
-| `paperclip-vps` (reach with `ssh vps`), `omarchy` | Paperclip on the VPS; an agent scratch machine on omarchy. | Holds a Tess key. Hosts a reviewer runner. |
+| `paperclip-vps` (reach with `ssh vps`), `omarchy` | Paperclip on the VPS; an agent scratch machine on omarchy. `omarchy` may run the review watcher (`machine=omarchy`). | Holds a Tess key. Hosts a reviewer runner. Runs the watcher on the VPS: `machine=vps` is refused. |
 | Instabox | Optional Linux scratch box for an agent. | Holds a Tess key. Builds Tess, which needs macOS. Hosts a reviewer runner. |
 
 **`paperclip-vps` runs Paperclip first. Tess work there must never slow it down or touch it.**
 - **No Tess agent edits, restarts or reads Paperclip.** That covers `/srv/paperclip`, its PostgreSQL database, its services, and the Tincan relay. Nothing for Tess is installed system-wide there. Reviews no longer run there at all: they moved to GitHub's machines (D-66), which also retires the runner network filter.
 - **No builds or tests run on the VPS.** Heavy work goes to GitHub's machines or `omarchy`.
-- **Tess agents don't run on the VPS through T3 Code.** T3 runs as root there, so any agent it starts has root power next to Paperclip. Claude refuses full access as root, and we leave that check on. Tess agent work goes to Krish's Mac or `omarchy`. Moving T3 on the VPS to a normal account is a separate decision for Krish.
+- **Tess agents don't run on the VPS through T3 Code.** T3 runs as root there, so any agent it starts has root power next to Paperclip. Claude refuses full access as root, and we leave that check on. Tess agent work goes to Krish's Mac or `omarchy`. Moving T3 on the VPS to a normal account is a separate decision for Krish. A review tag that says `machine=vps` is refused for exactly this reason, in fixed words, and no watcher is installed there.
 
 ## How Macs get updates
 

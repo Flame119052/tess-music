@@ -16,12 +16,19 @@ Owner: Krish (GitHub `Flame119052`). Real users run it on their own Macs; treat 
 ## The rules that are never broken
 
 1. **Never leave anyone's Spotify broken.** Spotify's interface folder (`Spotify.app/Contents/Resources/Apps`) is never
-   deleted and refilled; it is only replaced by switching in a complete, checked copy (`swap_apps` in the scripts,
-   `swapApps` in the patcher). A failure at any step must leave Spotify exactly as it was. `tools/check-safety.sh`
+   deleted and refilled; it is only replaced by switching in a complete, checked copy (`tess-patcher swap-apps`, backed
+   by `swapApps` in the patcher). A failure at any step must leave Spotify exactly as it was. `tools/check-safety.sh`
    enforces this and blocks every release that breaks it.
 2. **Test installers and updaters against a copy, never the real Spotify.** Use a sandbox (`TESS_TEST=1` with
    `TESS_HOME`, `TESS_CONFIG`, `TESS_SPOTIFY` pointing at a copied `Spotify.app` in a scratch folder). Run anything on
    Krish's real Spotify only when he says so, with Spotify closed.
+   **Never source an installer script and never run one from a checkout to see what it does.** `. installer/tess-install.sh`
+   (or `sh -c '. installer/tess-install.sh; …'`) ran the real installer on Krish's Mac once, and a checkout's copy is
+   not the signed copy users get. Every entry-point script now refuses all of them outside a sandbox and prints why:
+   sourcing does nothing at all, handing the file's text to a shell (`sh -c "$(cat …)"`, `eval`) exits, and a copy
+   inside a git checkout or worktree exits unless `TESS_REAL_INSTALL=1` is set exactly. Do not
+   add an escape around that guard, and do not "just run it once" with the flag; test the script in a sandbox
+   (`tools/test-script-guards.mjs` proves the guard, `tools/check-safety.sh` blocks a release that loses it).
 3. **Nothing reaches users untested.** Every push to `main` builds to the internal `dev` channel only (Krish's Mac).
    Users get a build only when it is promoted (Actions → release → `promote`, or `node tools/promote.mjs`) after Krish
    says "ship it". The public install line runs the last promoted installer.
@@ -43,7 +50,7 @@ Owner: Krish (GitHub `Flame119052`). Real users run it on their own Macs; treat 
 | `theme/Tess/src/` | The look and features: `core.js/css` (bar, player, lyrics, settings, menus, perf marks), `home.js/css` (Dial, greeting, On this day), `playlist.js/css`, `dial-pick.js` (Dial picking). Built into `theme/Tess/theme.js` + `user.css` by `tools/build.mjs`. |
 | `theme/loader/loader.js` | What Spotify runs: fetches the signed newest theme for its channel, falls back to the last good one. |
 | `patcher/` | Fork of Spicetify CLI 2.46.4 (Go). Tess changes: `src/cmd/swap.go` (safe folder swap), `can-write`, `tessverify/`. |
-| `installer/` | `install.sh` (public stub, never changes), `tess-install.sh` (real installer), `updater.sh` (background helper, self-updating), `doctor.sh`, `rescue.sh` (separate never-updated rescue line), `uninstall.sh`. |
+| `installer/` | `install.sh` (public stub, never changes), `tess-install.sh` (real installer), `updater.sh` (background helper, self-updating), `doctor.sh`, `rescue.sh` (separate never-updated rescue line), `uninstall.sh`, `wake.sh`, `tess-command.sh`, `redact.sh` (the one privacy filter every reporter copies in; the only file here that is safe to source). Every entry-point script carries the same guard block at the top (issue #107): sourcing it or handing its text to a shell does nothing, and a checkout or worktree copy refuses to run outside a sandbox. |
 | `mini/` | Tess Mini, the macOS miniplayer (Swift). |
 | `inbox/` | Cloudflare Worker at `tess-music-player.janus.ing`: receives anonymous health reports, serves the signed rescue order and its public wake serial. No read endpoint for reports. |
 | `companion/` | Phone PWA (separate project, issue #8). |
@@ -77,6 +84,7 @@ before/after, a failing then passing test, or a log. "Should work" is not done.
 | Look / layout | `tools/hot.mjs`, then screenshots of every affected page/state via `tools/cdp.mjs shot` |
 | Anything that moves, or perf | Window visible: `tools/cpu-ab.mjs "<css>"` (real CPU), `tools/ab.mjs` (main-thread work), `/tmp`-free traces via `tools/trace-idle.mjs`, `tools/trace-style.mjs`; full run `tools/bench.mjs <label>` (memory, clicks, long tasks; appends to `.build/bench.jsonl`) |
 | Installer / updater / doctor / rescue | Sandbox copy of Spotify with `TESS_TEST=1`; cover success, a blocked write, a failure mid-way, and a fresh Mac; `tools/check-safety.sh` |
+| Any installer script's guard | `node tools/test-script-guards.mjs` (in a scratch copy of the checkout: sourcing and `sh -c "$(cat …)"`/`eval` do nothing, a checkout and worktree copy refuse, `TESS_REAL_INSTALL=0`/`false` refuse, the piped install line and installed copies still run) |
 | Patcher (Go) | `cd patcher && go test ./src/cmd/` plus an apply → restore cycle on a sandbox copy |
 | Dial picking | `node tools/test-dial-pick.mjs` |
 | Rescue line | `node tools/test-rescue.mjs` (signed orders in a sandbox: five actions accepted; scripts, unknown actions, injected text, bad signatures, expired orders, replays refused), `node tools/test-rescue-control.mjs` (notice, off/on, status) |
@@ -112,7 +120,10 @@ nothing; Krish using the Mac adds noise, so alternate with/without and repeat (t
   approach` or `@tess-review pr` to call a reviewer agent; the tier (docs / normal / sensitive) decides which reviews a
   change needs. Name the reviewer you chose in the tag — `provider=… model=… effort=… author=…` plus one line saying why —
   because the job runs that model or refuses with a comment; it never picks one for you. `author=` is the provider that
-  wrote the change, and it must be a different one from the reviewer (docs/workflow.md → Choosing a reviewer). Small,
+  wrote the change, and it must be a different one from the reviewer. `machine=github|mac|omarchy` chooses where it runs
+  (omitted = GitHub), `machine=vps` is refused, an optional `prompt="…"` (400 characters) adds the owner's focus, and
+  `effort=` is refused on the machine path, where a T3 thread has nowhere to put it (docs/workflow.md → Choosing a
+  reviewer). Small,
   focused commits; the message says what changed for the user and why, and ends with the issue number, e.g. `(#30)`.
 - Update `docs/status.md` when something user-visible changes state.
 

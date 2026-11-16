@@ -12,10 +12,10 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const boxes = [];
 const sha = (text) => createHash('sha256').update(text).digest('hex');
 
-function sandbox({ stock = false, fresh = false, realDoctor = false } = {}) {
+function sandbox({ stock = false, fresh = false, realDoctor = false, tessName = 'Tess', denyDitto = false } = {}) {
   const box = mkdtempSync(join(tmpdir(), 'tess-updater-test-'));
   boxes.push(box);
-  const tess = join(box, 'Tess');
+  const tess = join(box, tessName);
   const state = join(tess, 'state');
   const bin = join(box, 'fake-bin');
   const spotify = join(box, 'Spotify.app');
@@ -26,7 +26,7 @@ function sandbox({ stock = false, fresh = false, realDoctor = false } = {}) {
 
   writeFileSync(join(spotify, 'Contents', 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>1.3.9.2055</string></dict></plist>
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.spotify.client</string><key>CFBundleShortVersionString</key><string>1.3.9.2055</string></dict></plist>
 `);
   if (stock) {
     writeFileSync(join(apps, 'xpui.spa'), 'stock Spotify interface\n');
@@ -59,6 +59,21 @@ exit 0
 APPS="$TESS_TEST_SPOTIFY/Contents/Resources/Apps"
 case "$*" in
   *can-write*) exit "\${TESS_CAN_WRITE:-0}" ;;
+  # The same checked swap the Go patcher does: copy beside Apps, check it, switch with two renames.
+  *"swap-apps"*)
+    [ -n "$TESS_SWAP_EXIT" ] && { echo "tess-patcher: macOS denied the copy" >&2; exit "$TESS_SWAP_EXIT"; }
+    [ "$TESS_SWAP_FAIL" = 1 ] && exit 1
+    dest=$2; src=$3
+    [ -d "$src" ] || exit 1
+    old="$dest.tess-old"; new="$dest.tess-new"
+    if [ ! -d "$dest" ] && [ -d "$old" ]; then mv "$old" "$dest" || exit 1; fi
+    rm -rf "$new"; mkdir -p "$new" || exit 3
+    cp -R "$src"/. "$new"/ || { rm -rf "$new"; exit 1; }
+    { [ -s "$new/xpui.spa" ] || [ -s "$new/xpui/index.html" ]; } || { rm -rf "$new"; exit 1; }
+    rm -rf "$old"
+    if [ -d "$dest" ]; then mv "$dest" "$old" || { rm -rf "$new"; exit 1; }; fi
+    mv "$new" "$dest" || { [ -d "$old" ] && mv "$old" "$dest"; rm -rf "$new"; exit 1; }
+    rm -rf "$old"; exit 0 ;;
   *"backup apply"*)
     echo apply >> "$TESS_PATCHER_LOG"
     stage="$APPS.tess-fake"; rm -rf "$stage"; mkdir -p "$stage/xpui/extensions"
@@ -99,6 +114,22 @@ case "$url" in
 esac
 `);
   for (const name of ['pmset', 'launchctl', 'curl']) chmodSync(join(bin, name), 0o755);
+  if (denyDitto) {
+    // macOS App Management, as the kernel enforces it for a script launchd started under /bin/zsh: /usr/bin/ditto
+    // may not create anything inside Spotify.app. Copying *out* of Spotify is allowed, which is what the staging does.
+    writeFileSync(join(bin, 'ditto'), `#!/bin/sh
+last=""
+for a in "$@"; do case "$a" in -*) ;; *) last=$a ;; esac; done
+case "$last" in
+  "$TESS_TEST_SPOTIFY"/Contents/Resources/*)
+    echo "ditto: $last: Operation not permitted" >&2
+    echo "$last" >> "$TESS_DITTO_LOG"
+    exit 71 ;;
+esac
+exec /usr/bin/ditto "$@"
+`);
+    chmodSync(join(bin, 'ditto'), 0o755);
+  }
 
   const asset = '#!/bin/sh\necho new installer\n';
   const assetSha = sha(asset);
@@ -121,6 +152,7 @@ esac
     TESS_DOCTOR_LOG: join(box, 'doctor.log'),
     TESS_PATCHER_LOG: join(box, 'patcher.log'),
     TESS_LAUNCH_LOG: join(box, 'launchctl.log'),
+    TESS_DITTO_LOG: join(box, 'ditto.log'),
     TESS_REJECT: join(box, 'reject'),
     TESS_REPORTED: join(box, 'reported'),
   };
@@ -139,6 +171,25 @@ try {
     const guard = readFileSync(join(s.tess, 'LaunchAgents', 'music.tess.guard.plist'), 'utf8');
     assert.match(guard, /<integer>1800<\/integer>/);
     assert.match(guard, /<key>WatchPaths<\/key>/);
+  }
+
+  {
+    // A Tess folder whose name carries & and < still has to produce launchd files macOS can read (SEC-19).
+    const s = sandbox({ tessName: 'Tom & Jerry <Tess>' });
+    s.run();
+    for (const name of ['music.tess.guard.plist', 'music.tess.wake.plist']) {
+      const pl = join(s.tess, 'LaunchAgents', name);
+      assert.ok(existsSync(pl), `${name} was written for a folder name with & and <`);
+      const xml = readFileSync(pl, 'utf8');
+      assert.match(xml, /&amp;/, `${name} escapes &`);
+      assert.match(xml, /&lt;/, `${name} escapes <`);
+      execFileSync('/usr/bin/plutil', ['-lint', pl]);
+    }
+    // The same escaping for an AppleScript string, which would otherwise end the notification early.
+    const asEsc = readFileSync(join(root, 'installer', 'updater.sh'), 'utf8').match(/^as_esc\(\) \{.*\}$/m);
+    assert.ok(asEsc, 'updater defines as_esc');
+    assert.equal(execFileSync('/bin/sh', ['-c', `${asEsc[0]}\nas_esc 'Spotify 1.3.9 "beta" \\ ok'`], { encoding: 'utf8' }),
+      'Spotify 1.3.9 \\"beta\\" \\\\ ok');
   }
 
   {
@@ -283,7 +334,80 @@ try {
     console.log('theme update ran real patcher refresh on staged sandbox; colors and config generated');
   }
 
-  console.log('updater tests passed (success, fresh, blocked, failed swap, rollback/no-retry, playing/idle, list reports)');
+  {
+    // #108: a theme swap that tess-patcher cannot do leaves Spotify exactly as it was and is not recorded as installed.
+    const s = sandbox();
+    const theme = join(s.fixtures, 'Tess');
+    mkdirSync(theme);
+    writeFileSync(join(theme, 'theme.js'), 'TESS_BASELINE staged theme');
+    writeFileSync(join(theme, 'user.css'), 'body { color: red; }');
+    const archive = join(s.fixtures, 'theme.tgz');
+    execFileSync('tar', ['-czf', archive, '-C', s.fixtures, 'Tess']);
+    writeFileSync(join(s.fixtures, 'components.txt'), `theme ${sha(readFileSync(archive))} test://installer source\n`);
+    s.run({ TESS_ASSET: archive, TESS_SWAP_FAIL: '1' });
+    assert.equal(readFileSync(join(s.apps, 'xpui/extensions/theme.js'), 'utf8'), 'TESS_BASELINE\n', 'a failed swap left Spotify exactly as it was');
+    assert.ok(!existsSync(join(s.state, 'theme')), 'a failed swap is not recorded as installed');
+    assert.match(readFileSync(join(s.tess, 'guard.log'), 'utf8'), /theme: checked Spotify swap failed/);
+    assert.ok(!existsSync(`${s.apps}.tess-old`) && !existsSync(`${s.apps}.tess-new`), 'a failed swap left nothing behind');
+  }
+
+  {
+    // #108: the background helper made its copy with /usr/bin/ditto, which macOS App Management denies when launchd
+    // starts a script under /bin/zsh, so every background theme update failed. tess-patcher swap-apps makes the same
+    // checked copy inside the signed binary, which is allowed, and the theme reaches Spotify.
+    const s = sandbox({ denyDitto: true });
+    rmSync(join(s.tess, 'bin/patcher/tess-patcher'));
+    execFileSync('go', ['build', '-o', join(s.tess, 'bin/patcher/tess-patcher'), '.'], { cwd: join(root, 'patcher') });
+    const prefs = join(s.box, 'prefs'), backup = join(s.box, 'backup');
+    mkdirSync(backup);
+    writeFileSync(join(backup, 'xpui.spa'), 'sandbox backup');
+    writeFileSync(prefs, 'app.last-launched-version=1.3.9.2055\n');
+    writeFileSync(join(s.config, 'config-xpui.ini'), `[Setting]\nspotify_path=${join(s.spotify, 'Contents/Resources')}\nprefs_path=${prefs}\ncurrent_theme=Tess\ncolor_scheme=base\ninject_css=1\ninject_theme_js=1\nreplace_colors=1\n[Backup]\nversion=1.3.9.2055\n`);
+    const theme = join(s.fixtures, 'Tess');
+    mkdirSync(theme);
+    writeFileSync(join(theme, 'theme.js'), 'TESS_BASELINE background theme');
+    writeFileSync(join(theme, 'user.css'), 'body { color: blue; }');
+    writeFileSync(join(theme, 'color.ini'), '[base]\ntext=654321\n');
+    const archive = join(s.fixtures, 'theme.tgz');
+    execFileSync('tar', ['-czf', archive, '-C', s.fixtures, 'Tess']);
+    writeFileSync(join(s.fixtures, 'components.txt'), `theme ${sha(readFileSync(archive))} test://installer source\n`);
+    // the sandbox really does refuse that write, or this case proves nothing
+    let denied = false;
+    try {
+      execFileSync('ditto', [theme, join(s.apps, 'should-not-exist')], { env: s.env, stdio: 'pipe' });
+    } catch {
+      denied = true;
+    }
+    assert.ok(denied, 'the sandbox denies ditto a write inside Spotify.app');
+    assert.ok(!existsSync(join(s.apps, 'should-not-exist')), 'the denied copy left nothing');
+    rmSync(join(s.box, 'ditto.log'), { force: true }); // from here on, only the updater's own calls are recorded
+    s.run({ TESS_ASSET: archive, SPICETIFY_STATE: backup });
+    assert.match(readFileSync(join(s.apps, 'xpui/extensions/theme.js'), 'utf8'), /background theme/, 'the theme update reached Spotify while ditto was denied');
+    assert.match(readFileSync(join(s.tess, 'guard.log'), 'utf8'), /theme: updated/);
+    assert.equal(readFileSync(join(s.state, 'theme'), 'utf8').trim(), sha(readFileSync(archive)), 'the theme sha is recorded only after the swap');
+    assert.ok(!existsSync(join(s.box, 'ditto.log')), 'the update itself never called ditto inside Spotify.app');
+    assert.ok(!existsSync(`${s.apps}.tess-old`) && !existsSync(`${s.apps}.tess-new`), 'no swap leftovers');
+    console.log('theme update succeeded with ditto denied inside Spotify.app (#108)');
+  }
+
+  {
+    // A repair that fails has to say why: the doctor used to throw away both the patcher's own line and its exit code,
+    // so a blocked swap read as "nothing happened". A block must read as a block. (Grok review, #110.)
+    const s = sandbox({ realDoctor: true });
+    rmSync(s.apps, { recursive: true, force: true });
+    mkdirSync(s.apps, { recursive: true });
+    const copy = join(s.tess, 'original-1.3.9.2055');
+    mkdirSync(copy, { recursive: true });
+    writeFileSync(join(copy, 'xpui.spa'), "Spotify's own interface\n");
+    const out = execFileSync('/bin/zsh', [join(s.tess, 'doctor.sh'), 'check'],
+      { env: { ...s.env, TESS_SWAP_EXIT: '3' }, encoding: 'utf8' });
+    assert.match(out, /macOS denied the copy/, "the doctor shows the patcher's own line");
+    assert.match(out, /macOS is blocking tess-patcher/, 'a blocked swap is named as App Management');
+    assert.equal(readFileSync(join(copy, 'xpui.spa'), 'utf8'), "Spotify's own interface\n", 'the safety copy is untouched');
+    console.log('doctor repair names why a swap failed (#110)');
+  }
+
+  console.log('updater tests passed (success, fresh, blocked, failed swap, rollback/no-retry, playing/idle, list reports, theme swap with ditto denied)');
 } finally {
   for (const box of boxes) rmSync(box, { recursive: true, force: true });
 }

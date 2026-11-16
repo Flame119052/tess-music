@@ -358,9 +358,192 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   the file when the real path is outside the visit's folder or when it has a second name, then reads from the handle it
   checked, so a recording or a payload cannot be swapped or aimed at the bot's own `.env`; `session.mjs` refuses a hard
   link for the same reason `realpath` alone could not see it. Tests: `tools/test-support.mjs` (quoted paths, split
-  tokens, links), `tools/test-inbox.mjs` (the stored row equals the shared clean), `tools/test-session.mjs` (hard link).
+  tokens, links), `tools/test-inbox-support.mjs` (the stored row equals the shared clean), `tools/test-session.mjs` (hard link).
   Trade-off: the bot's cleaning is now lossy in more places — `~bob` and a pasted phone number are replaced — which is
   the right direction for a public issue. (#85)
+
+- **D-76 · 15 Nov 2026 · Owner** — One review tag names the model, the **machine** and an optional focus:
+  `@tess-review pr provider=… model=… effort=… author=… machine=github|mac|omarchy prompt="…"`. `machine=` omitted means
+  today's GitHub-hosted review, so no existing tag changes meaning; `prompt=` becomes the reviewer's focus, capped at 400
+  characters and framed as extra attention, never permission. A tag for `mac` or `omarchy` is checked by the workflow,
+  answered with `Review queued for <machine>`, and run by a watcher **on that machine**, which polls GitHub and opens the
+  review with that machine's own `t3 thread start`. `machine=vps` is refused with its reason. *Why:* GitHub-hosted jobs
+  cannot reach Krish's machines and the self-hosted runners are gone (D-66), so a pull model is the only way to get a
+  review into T3 where he can watch or steer it — with no inbound access and no T3 credential on GitHub. *Trade-off:* an
+  extra step before a review appears, and a tag for a machine cannot carry `effort=`. Reuses the two-slot cap, the fixed
+  refusal codes and the CRLF-safe parser from #90, whose dispatcher needed a runner and a stored T3 sign-in; that PR is
+  closed in favour of this. (#71)
+
+- **D-77 · 15 Nov 2026 · Owner** — A machine review is **sent only to a thread T3 reports at `approval-required`**, and
+  the thread never posts it. The watcher opens the thread with a fixed first line that holds nothing from the pull
+  request, reads the thread's runtime mode back from the local T3 server, and only then sends the diff, the issue and the
+  focus; a wider mode is refused with a comment naming the setting. The thread answers with the review as its last
+  message, and the watcher — plain code, no model — checks the marker, the commit and the verdict line and posts it after
+  confirming the head has not moved. A tag is fetched again by id before it runs, so a deleted or edited tag cannot
+  launch from the copy in the state file; a launch is recorded before and after `t3 thread start` and keyed to the comment
+  id in the thread title, so a tick that dies half-way adopts its thread. A slot is held while its thread exists and
+  reclaimed only when the thread is gone or a tick died before starting one, never on a timer. *Why:* a T3 thread runs
+  with Krish's own permissions, and #105's review found that a prompt saying "stay read-only" is not a boundary, that a
+  queued tag could run after deletion, that a live review's slot expired under a two-hour timer, that a crash could
+  start a second thread, and that `effort=` was silently dropped. *Trade-off:* a review takes two messages (the gate,
+  then the review) and its comment appears one tick after the thread settles; the read-only promise is still bounded by
+  T3's own mapping (Codex: OS read-only, no network; Claude: per-tool approval), and files outside the worktree stay
+  readable by the owner's own account, so the Mac stays opt-in per tag and GitHub stays the default. (#71, #105)
+
+- **D-78 · 15 Nov 2026 · Owner** — A machine review runs in the **same stripped copy** the GitHub job reads, and reads
+  `idle` as the end of a turn. `t3 thread start` can only give a thread a project root or a new worktree, so the watcher
+  builds a commit in its own clone whose tree is the reviewed head with every agent setting, instruction file (any depth,
+  any letter case) and link removed, and starts the thread on a worktree of that ref; the commit has no parent, so the
+  change's own history cannot hand `AGENTS.md` back through `git show`. The copy is deleted with the review — worktree and
+  ref both. A turn is finished when T3 reports the run over (`idle`, `completed`, or one of the ended statuses) and the
+  newest run is the one `t3 thread send` started; the sidebar's `settled` is days of quiet and is never consulted, which
+  is what had left finished reviews unposted and both slots held. The mode is read before each send *and* before the
+  answer is accepted, and a thread found wider gets nothing further and loses its copy. Both paths now share the prompt's
+  context (`buildPrContext`: compacted diff, SENSITIVE notices, changed files read from the copy the thread has) and the
+  comment's footer (`formatReviewComment`), and the watcher applies the same key refusal (`looksSecret`, held secrets)
+  before posting. *Why:* #105's second review showed the boundary was a read-back rather than a folder — the thread
+  started on the pull request's own tree, and its answer was posted unchecked — and that a machine review was missing
+  #104's bounds entirely. *Trade-off:* `t3 thread start` takes no token limit, so the comment says `Cap: none on this
+  path` and the bound is the same `timeout_s` the GitHub job uses. (#71, #105)
+
+- **D-79 · 15 Nov 2026 · Owner** — The reviewer's copy gets an **object store of its own**. D-78 built the stripped
+  commit in the watcher's clone, and a worktree of it shares that clone's object store, so `git show <sha>:AGENTS.md`
+  answered from inside the thread's folder — the removed instructions were one command away. Now a pull request's head
+  is fetched into a scratch bare repository under the state directory, the filtered tree is archived out of it and
+  written into the project as one branch with one commit, and the scratch repository is deleted before a thread exists.
+  The reviewed commit is then in no object store the reviewer's git can reach, and `git cat-file -e <sha>` fails in the
+  worktree as well as in the project. The copy is deleted with the review — worktree, branch, and a `gc --prune=now`
+  behind them — so nothing of one review is readable from the next. A thread's copy is also waited for: `t3 thread
+  start` returns while the worktree is still being written, and the changed files are read from it, so the review is
+  held until the index matches `HEAD`'s tree and refused with a comment after `copyWaitMs`. *Why:* the re-check at
+  `6fec684` printed `AGENTS.md` from the worktree through the shared store, and found the changed-files section missing
+  whenever the checkout had not finished. *Trade-off:* the project's object store still holds the repo's own `main` (it
+  is the checkout the watcher keeps current), so the copy can see the public history — never the reviewed commit. A
+  temporary T3 project per review was rejected: a new project gets the environment's default runtime mode, not the
+  `approval-required` the gate needs, and `t3 project add` cannot set one. (#71, #105)
+- **D-80 · 15 Nov 2026 · Agent** — One privacy filter for every report path is a function copied byte for byte, not a new
+  installed file: `installer/redact.sh` holds `tess_redact`, the installer's failure report, the doctor's report and the
+  rescue report each carry that same function, and `tools/check-safety.sh` fails if any copy drifts. It removes the home
+  folder of every account on the Mac, this account's short name where no letter touches it, this Mac's computer and local
+  host names, and email addresses.
+  *Why:* every installed script is standalone and may run when the others are broken, so a shared file would either be a
+  new signed part the rescue line cannot rely on or a thing that silently goes missing. The gate removes the real
+  problem: the installer leaked the account name while the doctor removed it (SEC-10), because the two were written
+  separately. *Revisit* if the filter ever needs to change between report paths, which it must not.
+- **D-81 · 15 Nov 2026 · Agent** — Tess takes ownership of a Spotify bundle only after macOS confirms it is Spotify's own
+  app: `CFBundleIdentifier` is `com.spotify.client`, `codesign --verify --strict` passes, `spctl` accepts it, and
+  `codesign --verify --strict --ignore-resources -R=…` tests a code requirement — `anchor apple generic and certificate
+  leaf[subject.OU] = "2FNC3A47ZF"` — against the signature itself, never a line read out of `codesign -dvvv` output. The
+  path is canonicalised first, and a canonical path holding a control character (a newline, a CR, a tab) is refused
+  before any of those checks. Otherwise the install stops and says to reinstall Spotify from Spotify.
+  *Why:* `sudo chown -R` on a path chosen from a running process's name, with no signature check, was a root-owned
+  recursive write on an attacker-influencable folder (SEC-09). `codesign -dvvv` also prints `Executable=<path>`, so a
+  bundle whose folder name carries a newline — reached through a clean-looking symlink that `pwd -P` resolves — put a
+  forged `TeamIdentifier=` line into that output: a text search accepted a team that is not Spotify's, and `spctl`
+  accepts any notarized app. A requirement is evaluated by codesign against the certificate, so no text in a path can
+  stand in for it. Resources are skipped in the requirement call only because the seal is checked on the line before and
+  Tess itself rewrites Spotify's interface files. *Trade-off:* a Spotify copied out of a DMG by hand now stops here
+  rather than being silently taken over — which matches the app-management and DMG warnings elsewhere.
+- **D-82 · 15 Nov 2026 · Agent** — A rescue order may carry `timeout <seconds>` (60-3600, 1800 by default), is stopped at
+  its limit with the limit in the log, and reports only the lines it wrote through the shared filter. The action runs in
+  a process group of its own, and the limit stops the whole group — TERM, a ten-second grace period, then KILL — so
+  nothing the order started outlives it, and the stop is logged only after the group is gone.
+  *Why:* a fixed 15-minute kill could interrupt a real repair silently, and the old upload sent the whole log tail with
+  only the home folder removed (SEC-16). Killing the one pid that was started stopped the action's shell and left its
+  children — the patcher, `ditto`, `curl` — running and reparented, while the log said the order had stopped and the
+  rescue plist's `AbandonProcessGroup` meant launchd would not reap them either. `/bin/sh` turns job control on for the
+  action because zsh refuses `set -m` in a script and the rescue script's own group must not be the one that is killed.
+  *Trade-off:* an order that genuinely needs longer than an hour cannot ask for it; the next order can, and an order whose
+  child ignores TERM takes the grace period before it is killed.
+- **D-83 · 15 Nov 2026 · Agent** — The inbox refuses health reports when `SALT` is missing or shorter than 16 characters,
+  measures the body in bytes, counts every limit with one statement, and stores no character a terminal would hide: C0
+  and C1 controls, bidi overrides and marks, zero-width characters and the byte-order mark are removed on write, and
+  again when `tools/reports.mjs` prints them.
+  *Why:* an unset salt made the stored per-IP keys a plain hash of an IPv4 address (SEC-11), the character-counted body
+  limit allowed a four-times-larger stored report (SEC-14), and check-then-act counters could be overshot by concurrent
+  requests. Anyone can post a report, and a bidi override in one can reorder the line so a path reads as a different
+  path in the owner's terminal. *Trade-off:* a deployment without the secret loses reports instead of storing weak data,
+  which is the way a privacy control should fail.
+- **D-84 · 15 Nov 2026 · Agent** — `tess-patcher can-write` moved into `src/cmd` as `CanWrite`, and probes with
+  `os.CreateTemp` (exclusive, random name) instead of a predictable `.tess-can-write` opened with `O_TRUNC`.
+  *Why:* a planted link at the known name was followed and truncated inside Spotify's bundle (SEC-20), and a Go test for
+  it could not live in `package main` — that package's `init()` exits before any test runs, and does so on a real Mac's
+  config. *Trade-off:* one more file in `src/cmd`, and the command is now reachable from a package that already has
+  tests.
+- **D-85 · 15 Nov 2026 · Agent** — Every script that can act on a Mac (`install.sh`, `tess-install.sh`, `updater.sh`,
+  `doctor.sh`, `rescue.sh`, `uninstall.sh`, `wake.sh`, `tess-command.sh`) carries the same guard block at the top.
+  Sourcing one does nothing and says why; handing its text to a shell (`sh -c "$(cat …)"`, zsh `eval`) exits the same
+  way, because then the file is not what runs and its own checks cannot see it; outside `TESS_TEST=1`, a copy
+  inside a git checkout or worktree (a `.git` folder or file above it) also exits unless `TESS_REAL_INSTALL` is exactly
+  `1` (`0` and `false` mean off to a person and must not open it). *Why:* an agent testing one function ran
+  `sh -c '. installer/tess-install.sh; …'`, which ran the real installer on the owner's Mac from the stable channel with
+  no sandbox (#107). A checkout's copy must not be able to act at all outside a sandbox. *Not affected:* the installed
+  copies (not checkout files), the published install line (`curl … | sh` names no file, so it is code from a pipe), the
+  sandbox tests (`TESS_TEST=1`), and `installer/redact.sh`, which is a library and stays sourceable. The
+  handed-to-a-shell refusal reads the shell's own state (`ZSH_EVAL_CONTEXT` on zsh, `$-` and `ps -o args=` on sh/bash),
+  never the script's text, so the piped install line (whose shell has no `-c` and no file) is untouched. zsh marks an eval at any depth (`eval`, `cmdarg:eval`, `toplevel:eval`), so every eval there is refused. *Known limit:* `/bin/sh` and bash set no flag for `eval`, so `eval "$(cat installer/…)"` from an sh or bash script outside a checkout is indistinguishable from the piped install line and is not refused; AGENTS.md rule 2 forbids it, and the gate's own tests run the scripts only through the sandbox. Detection
+  walks up for a `.git` entry instead of asking `git`, because a user's Mac may have no developer tools, and stops at
+  the home folder so a dotfiles repository in `~` is not mistaken for a checkout. *Trade-off:* a deliberate real run
+  from a checkout needs one environment variable, and the block is copied into every script (the gate compares the
+  copies byte for byte, and `tools/test-script-guards.mjs` proves the behaviour) rather than living in one library,
+  because each installed script has to stand alone.
+- **D-86 · 15 Nov 2026 · Agent** — The folder swap runs inside the signed patcher, as `tess-patcher swap-apps <Apps>
+  <staged>`, and the scripts call it instead of copying with `ditto` and renaming with `mv`. It does what `apply`
+  already does — copy beside `Apps`, check `xpui.spa`/`xpui/index.html`, two renames, restore the original on any
+  failure or after an interrupted run — but relative to a folder held open, not to a path: the check resolves
+  `Contents/Resources` once and validates it (separator-bounded, still `Contents/Resources` after its symlinks are
+  resolved, so `/var` may stand for `/private/var` but a symlinked `Resources` is refused, and the bundle's
+  `CFBundleIdentifier` must be `com.spotify.client`), and it opens as it validates — the bundle from `/` with
+  `O_NOFOLLOW`, `Contents` and then `Resources` relative to it, with `Info.plist` read through that same `Contents`
+  descriptor and the folder's device and inode recorded before the plist is parsed. Every create, rename and delete of
+  `Apps`, `.tess-new` and `.tess-old`, the copy itself and the recovery of an interrupted run are `…at` calls on that
+  descriptor (`swapAppsAt`). The folder is compared with what the path names before the first write and again before
+  each rename, and a folder that no longer matches stops the swap with the original left in place. It takes no config
+  (so it never rewrites `config-xpui.ini`) and reports macOS's block as exit 3 as `can-write` does. The bundle's
+  `CFBundleIdentifier` is read out of those bytes and never out of a path an outside tool opens again: a binary plist
+  goes to `plutil` on stdin, where a second process cannot reach it.
+  *Why:* macOS App Management denied `/usr/bin/ditto`, attributed to `/bin/zsh` because launchd starts the helper that
+  way, so every background theme update failed while Spotify was left intact (16:36 on 15 Nov, #108). The signed
+  patcher has its own approval, so the same copy is allowed there. A shell fallback was removed rather than kept: it
+  is the path that cannot work in the background, and two swap implementations were already one place to drift. The
+  path check started as a plain string ending, which let `…/NotContents/Resources/Apps` and a symlinked `Resources`
+  rename another folder aside and then delete it (#110 review). A path that is checked and then used again is not the
+  same folder either: with `Resources` moved aside and a symlink left in its place during the copy, the path version
+  finished writing through the link, renamed that folder's `Apps` aside, deleted it, and exited 0 (measured). A
+  descriptor cannot be redirected, so the swap keeps writing where it started and the re-check notices. Opening the
+  descriptor after the check was still a check-then-use: with the plist read blocked and a *real* directory — not a
+  symlink, so `O_NOFOLLOW` sees nothing — moved into the `Resources` name, the swap took that folder's inode as its
+  own, replaced its `Apps`, deleted its `keep-me` and exited 0 while the folder that was validated was untouched
+  (measured). So `Resources` is opened and recorded before the plist read, and the path is compared with it again when
+  the read returns; a swap of `Resources` or of `Contents` in that window now aborts before the first write, which
+  `TestSwapAppsAbortsWhenFolderReplacedDuringPlistRead` proves for both. The same review found
+  `tools/check-safety.sh` blind to `rm -rf "$APPS/xpui"` and `ditto "$1" "${APPS}"`; it now fails any statement whose
+  write verb names the folder, in any quoting and with any path after it, and allows only a copy whose source is the
+  folder and whose later arguments do not name it — `ditto "$APPS" "$APPS/xpui"` writes the live interface in place
+  and fails the gate. The same pass had two more holes, both found by the next review. The plist was written into a
+  temporary file that `PlistBuddy` was pointed at, so a second process on the same account could replace that file with
+  a Spotify plist while the check ran: a bundle whose own plist says `com.example.other` was swapped, its `keep-me`
+  deleted and the command exited 0 (measured, 6 of 12 runs); `plutil` on stdin has no name to replace
+  (`TestSwapAppsIgnoresReplacedTempPlist` rewrites any `tess-plist*` it can find during the check, for eight runs, and
+  none is ever written). And the gate's word match started at `$APPS`, so a slash glued in front of the quotes
+  (`/"$APPS"`, which the shell expands to the same folder) hid the destination — `ditto "$APPS/xpui" /"$APPS"` rewrote
+  the live `xpui.spa` in a probe. Each argument is now stripped of a leading `/`, repeated slashes and `./` before it
+  is matched, so the slashes cannot hide a write. Re-check 5 then found three holes left by reading one physical line
+  and asking awk for the character before a verb. That character does not exist at column 0, and BSD awk answers with
+  the verb's own first letter, so `installer/tess-install.sh:396` — a `ditto` at column 0 — was never looked at; a
+  trailing backslash ended the check at the verb while the folder sat on the next line; and a redirect's path was
+  trimmed after only one quote, so `printf x >/"$APPS/x"` kept its slash. The gate now joins backslash-continued lines
+  into one logical line and remembers the line it started on, normalises that line once — quotes off, `${APPS}` to
+  `$APPS`, `//` to `/`, a leading `/` or `./` dropped in front of a variable and after `>`, `>>`, `>|` or `>&` — and
+  matches by token position, where the start of a line is an ordinary word boundary and position 1 needs no character
+  before it. That reads the same on BSD and GNU awk. The 63 fixtures now include column 0, a joined copy, move, delete
+  and redirect, and the column-0 read out at line 396, which stays allowed.
+  *Trade-off:* the updater can no longer restore a theme if the patcher itself is missing; Spotify then stays exactly
+  as it was, which is the required failure. The test bundles must now carry an `Info.plist` that names Spotify, so a
+  sandbox has to be shaped like a real app bundle. The swap is macOS-shaped (`golang.org/x/sys/unix`), so the swap-apps
+  command refuses on anything else rather than falling back to a path. `apply` and `backup` keep the path-based swap,
+  where the folder comes from the user's own Spicetify config. `tools/test-swap-recovery.mjs` builds the real binary,
+  kills it during the copy and between the renames, and proves the next run restores Spotify's folder.
 
 ## Releases and process
 

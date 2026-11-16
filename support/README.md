@@ -173,11 +173,11 @@ later health-inbox `wrangler deploy` needs that bucket to exist.
 ## How to check it
 
 ```sh
-node tools/test-inbox.mjs    # the new endpoint, locally, no Cloudflare account and no deploy
+node tools/test-inbox-support.mjs    # the new endpoint, locally, no Cloudflare account and no deploy
 node tools/test-support.mjs  # the bot's triage, the payload, the allowlist, the setup script
 ```
 
-`test-inbox` drives the real `inbox/worker.js` against a real SQLite database built from `inbox/schema.sql`: no token,
+`test-inbox-support` drives the real `inbox/worker.js` against a real SQLite database built from `inbox/schema.sql`: no token,
 a wrong token and a revoked token are refused and store nothing; an approved one stores the report with its label; a bad
 priority, a made-up area or a missing title is refused; an oversized body is refused; and there is no GET for it. It also
 proves the stored text is exactly what the bot's own cleaning rules make of it — an email, a home folder (absolute,
