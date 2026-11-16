@@ -85,6 +85,30 @@ async function shaFull(text) {
 const reply = (status, text = '') => new Response(status === 204 || status === 304 ? null : text,
   { status, headers: { 'content-type': 'text/plain', 'cache-control': 'no-store' } });
 
+// A Content-Length is a claim, not a measurement: a client can send a hundred bytes of header and a gigabyte of body.
+// The bytes are counted as they arrive and the request is cut off at the cap, so nothing past it is buffered or stored.
+// Returns null when the body went past the cap; the caller answers 413 and never sees the bytes.
+async function readCapped(request, max) {
+  if (!request.body) return new Uint8Array(0);
+  const reader = request.body.getReader();
+  const parts = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      try { await reader.cancel(); } catch { /* the client may already be gone */ }
+      return null;
+    }
+    parts.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const p of parts) { bytes.set(p, at); at += p.byteLength; }
+  return bytes;
+}
+
 async function report(request, env) {
   // Fail closed, before anything else: with no salt or no database there is no safe place to put a report, so none is
   // taken. A health report is the one request here that writes a hash of a person's IP, and that hash is only useless
@@ -98,10 +122,10 @@ async function report(request, env) {
   if (!success) return reply(429);
   const day = await env.DB.prepare('SELECT n, until FROM limits WHERE k = ?').bind('all').first();
   if (day && day.until > Date.now() / 1000 && day.n >= DAILY_CAP) return reply(429);
-  const raw = await request.text();
-  if (raw.length > MAX_BODY) return reply(413);
+  const bytes = await readCapped(request, MAX_BODY);
+  if (!bytes) return reply(413);
   let r;
-  try { r = JSON.parse(raw); } catch { return reply(400); }
+  try { r = JSON.parse(new TextDecoder().decode(bytes)); } catch { return reply(400); }
   if (!r || typeof r !== 'object' || !/^[0-9a-f]{32}$/.test(r.install || '') || !KINDS.has(r.kind)) return reply(400);
   // IPs are never stored: only a salted hash, used for the limit and then thrown away when the window ends
   const ip = await sha(`${env.SALT}|${request.headers.get('cf-connecting-ip') || ''}`);
@@ -138,10 +162,10 @@ async function support(request, env) {
   try {
     if (!(await hit(env, `tok:${sha.slice(0, 16)}`, 60, 3600))) return reply(429);
   } catch { return reply(503); }
-  const raw = await request.text();
-  if (raw.length > MAX_SUPPORT) return reply(413);
+  const bytes = await readCapped(request, MAX_SUPPORT);
+  if (!bytes) return reply(413);
   let r;
-  try { r = JSON.parse(raw); } catch { return reply(400); }
+  try { r = JSON.parse(new TextDecoder().decode(bytes)); } catch { return reply(400); }
   if (!r || typeof r !== 'object') return reply(400);
   if (!PRIORITIES.has(r.priority)) return reply(400);
   if (!ISSUE_KINDS.has(r.kind)) return reply(400);
@@ -213,14 +237,18 @@ async function recording(request, env, id) {
   try {
     if (!(await hit(env, `rec:${sha.slice(0, 16)}`, 10, 3600))) return reply(429);
   } catch { return reply(503); }
+  // The header is a cheap refusal for an honest client that is already too big; the body below is the real check.
   const len = Number(request.headers.get('content-length') || 0);
   if (!len || len > MAX_RECORDING) return reply(413);
   const type = (request.headers.get('content-type') || '').split(';')[0].trim();
   if (!/^video\/(mp4|quicktime|x-matroska|webm)$/.test(type)) return reply(415);
   const ext = { 'video/quicktime': 'mov', 'video/webm': 'webm', 'video/x-matroska': 'mkv' }[type] || 'mp4';
   const key = `support/${id}.${ext}`;
+  let body;
+  try { body = await readCapped(request, MAX_RECORDING); } catch { return reply(400); }
+  if (!body) return reply(413);
   try {
-    await env.SUPPORT.put(key, await request.arrayBuffer(), { httpMetadata: { contentType: type } });
+    await env.SUPPORT.put(key, body, { httpMetadata: { contentType: type } });
     // A re-upload with a different extension would otherwise leave the old object orphaned until the lifecycle rule
     // notices; delete it as part of the same write.
     if (row.recording && row.recording !== key) await env.SUPPORT.delete(row.recording);

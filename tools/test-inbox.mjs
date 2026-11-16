@@ -221,6 +221,22 @@ try {
   assert.equal(await status(rec(bytes, { authorization: `Bearer ${other}` })), 403, 'a different token cannot replace someone else\'s recording');
   assert.equal(query(`SELECT recording FROM support_reports WHERE id = ${id}`)[0].recording, `support/${id}.mov`, 'and the original is still the one recorded');
 
+  // 7c. The 50 MB cap is measured on the bytes that arrive, not on the number the request claims. A posting token that
+  // says "100 bytes" and then sends 51 MB used to fill the bucket; now it is cut off at the cap.
+  const bigRes = await worker.fetch(post('/v1/support', good({ title: 'Lyrics drift and a long recording' }), { authorization: `Bearer ${token}` }), env());
+  const bigId = (await bigRes.json()).id;
+  const recTo = (body, headers) => new Request(`https://inbox.test/v1/support/recording/${bigId}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'video/quicktime', authorization: `Bearer ${token}`, ...headers },
+    body,
+  });
+  assert.equal(await status(recTo(Buffer.alloc(51 * 1024 * 1024, 7), { 'content-length': '100' })), 413,
+    'a recording of 51 MB behind a 100-byte header is refused');
+  assert.ok(!bucket.has(`support/${bigId}.mov`), 'and none of it reaches the bucket');
+  assert.equal(query(`SELECT recording FROM support_reports WHERE id = ${bigId}`)[0].recording, null, 'nor the row');
+  assert.equal(await status(recTo(Buffer.from('not really a video'), { 'content-length': '1' })), 204,
+    'a body that is honestly small is stored, whatever its header says');
+
   // 8. The sweep deletes a recording once the report is filed — the person's screen is not kept.
   execFileSync('sqlite3', [dbFile, `UPDATE support_reports SET issue = 'https://github.com/Flame119052/tess-music/issues/91', filed_at = ${Date.now()} WHERE id = ${id}`]);
   await worker.scheduled({}, env());
@@ -315,6 +331,7 @@ try {
     '  · there is no GET for a support report — reading stays behind the owner\'s Cloudflare login',
     '  · the open-issue title list is served, with no report data in it',
     '  · a recording is refused without an approved token, refused if it is not video or over 50 MB, and can never be read back',
+    '  · the 50 MB cap is measured on the bytes that arrive: 51 MB behind a 100-byte header is cut off and not stored',
     '  · a filed report\'s recording is deleted by the sweep',
     '  · another approved token cannot replace a report\'s recording, even with the same label',
     '  · a Worker deployed before the schema still runs the health-report cleanup instead of throwing',
