@@ -45,7 +45,8 @@ const PERSONAL = [
   // A home folder is a person: the folder is their account and a file under it says what they do. The doctor prints it
   // as `~`, an absolute path names it, and `~bob` names the account. None of them is safe because it is quoted, follows
   // an `=`, or starts with a capital letter — so the rule must not care what stands in front of it.
-  [/(^|[^\w/])(?:\/(?:Users|users|home|Volumes|root|private\/var\/folders|var\/folders))\b[^\s"'`)]*/g, '$1~'],
+  // A `file:///Users/...` link is the same folder behind extra slashes, so any run of slashes in front counts too.
+  [/(^|[^\w/])\/*(?:\/(?:Users|users|home|Volumes|root|private\/var\/folders|var\/folders))\b[^\s"'`)]*/g, '$1~'],
   [/(^|[^\w~])~(?:[A-Za-z0-9._-]+)?\/[^\s"'`)]+/g, '$1~'],
   [/(^|[^\w~/])~[A-Za-z0-9._-]*[A-Za-z][A-Za-z0-9._-]*/g, '$1~'],
   [/\b[A-Za-z0-9][A-Za-z0-9._-]*\.local\b/g, '(computer)'],
@@ -61,8 +62,9 @@ export const clean = (text) => {
   if (text == null || text === '') return '';
   const keep = [];
   let out = stripInvisible(text)
-    // A timestamp or a four-part version ("1.2.52.442") is not a phone number, and both are kept byte for byte.
-    .replace(/\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?|\b\d+(?:\.\d+){2,}\b/g, (m) => `\u0000${keep.push(m) - 1}\u0000`);
+    // A timestamp or a version ("0.2.32", "1.2.52.442") is not a phone number, and both are kept byte for byte. A
+    // dotted 3-3-4 run ("415.555.0134") is the one version-shaped thing that is a phone number, so it is not held aside.
+    .replace(/\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?|\b(?!(?:\d{1,3}\.)?\d{3}\.\d{3}\.\d{4}\b)\d+(?:\.\d+){2,}\b/g, (m) => `\u0000${keep.push(m) - 1}\u0000`);
   for (const re of SECRET_SHAPES) out = out.replace(new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`), '(token)');
   for (const [re, to] of PERSONAL) out = out.replace(re, to);
   return out.replace(/\u0000(\d+)\u0000/g, (_, i) => keep[Number(i)]);

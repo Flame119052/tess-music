@@ -189,7 +189,7 @@ try {
     `123456789:\u180e${'Q'.repeat(35)}`, 'sam.whitfield\u180e@example.com',
     `ghp_${'a'.repeat(36)}`, `sk-${'b'.repeat(32)}`, 'AKIA' + 'C'.repeat(16), 'xoxb-1234567890-abcdefghij',
     'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
-    `tess_${'D'.repeat(64)}`, 'call +1 415 555 0134',
+    `tess_${'D'.repeat(64)}`, 'call +1 415 555 0134', 'open file:///Users/carol/Music/a.mp3', 'or 415.555.0199',
     '-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----',
   ].join(' ');
   const deepRes = await worker.fetch(post('/v1/support', good({ title: 'Lyrics drift, second look', words: nastyText, body: nastyText }), { authorization: `Bearer ${token}` }), env());
@@ -212,6 +212,8 @@ try {
     ['a JSON Web Token', /eyJhbGciOiJ/],
     ['an uppercase `tess_` token', /tess_D/],
     ['a phone number', /415 555/],
+    ['a `file:///` home path', /carol/],
+    ['a dotted phone number', /555\.0199/],
     ['a private key', /OPENSSH PRIVATE KEY/],
     ['the invisible character itself', /[\u180e\u034f\ufe0e\u206a]/],
   ]) {
@@ -219,6 +221,7 @@ try {
   }
   assert.match(deep.words, /\(token\)/);
   assert.match(deep.words, /\(number\)/);
+  assert.equal(clean('Tess 0.2.32 on Spotify 1.2.52.442'), 'Tess 0.2.32 on Spotify 1.2.52.442', 'versions are kept');
   assert.match(deep.words, /\(private|\(token\)/);
 
   // 4. Sizes and shapes are bounded, like the health reports.
