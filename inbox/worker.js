@@ -22,6 +22,9 @@ const KINDS = new Set(['heartbeat', 'problem', 'doctor', 'rescue', 'install']);
 const PRIORITIES = new Set(['P0', 'P1', 'P2', 'P3']);
 const AREAS = new Set(['area: theme', 'area: patcher', 'area: installer', 'area: mini', 'area: companion', 'area: release-ci', 'area: docs']);
 const ISSUE_KINDS = new Set(['bug', 'enhancement', 'design', 'security', 'testing', 'documentation', 'spec']);
+// The stored per-IP keys are useless without the salt: an unsalted SHA-256 of an IPv4 address is brute-forceable in
+// minutes, so a Worker with no usable secret refuses reports instead of weakening that promise.
+const MIN_SALT = 16;
 const short = (v, n) => (typeof v === 'string' ? v.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '').slice(0, n) : null);
 
 async function hit(env, key, max, seconds) {
@@ -54,6 +57,11 @@ const reply = (status, text = '') => new Response(status === 204 || status === 3
   { status, headers: { 'content-type': 'text/plain', 'cache-control': 'no-store' } });
 
 async function report(request, env) {
+  // Fail closed, before anything else: with no salt or no database there is no safe place to put a report, so none is
+  // taken. A health report is the one request here that writes a hash of a person's IP, and that hash is only useless
+  // to an attacker while the salt is long and secret.
+  if (typeof env.SALT !== 'string' || env.SALT.length < MIN_SALT) return reply(503);
+  if (!env.DB) return reply(503);
   if (request.headers.get('content-type') !== 'application/json') return reply(415);
   const len = Number(request.headers.get('content-length') || 0);
   if (!len || len > MAX_BODY) return reply(413);

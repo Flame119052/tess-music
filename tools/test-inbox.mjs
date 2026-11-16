@@ -101,6 +101,25 @@ try {
   assert.equal(await status(post('/v1/support', good(), { authorization: `Bearer ${dead}` })), 401, 'a revoked token is refused');
   assert.equal(query('SELECT COUNT(*) AS n FROM support_reports')[0].n, 0, 'nothing was stored by any refusal');
 
+  // 1a. A health report is refused outright when there is no usable salt. An IPv4 address hashed with a missing or tiny
+  // salt can be reversed straight out of the `limits` row it wrote, so the only safe answer is to store nothing.
+  const health = (over = {}) => ({
+    install: 'b'.repeat(32), kind: 'heartbeat', tess: '0.1.9', spotify: '1.3.9', macos: '26.1', status: 'ok',
+    body: 'nothing wrong', ...over,
+  });
+  const count = (sql) => query(sql)[0].n;
+  const ipRows = () => count("SELECT COUNT(*) AS n FROM limits WHERE k LIKE 'ip:%'");
+  for (const [why, salt] of [['no salt', undefined], ['an empty salt', ''], ['a 9-character salt', 'test-salt'],
+    ['a salt that is not a string', 42]]) {
+    assert.equal(await status(post('/v1/report', health()), env({ SALT: salt })), 503, `a health report with ${why} is refused`);
+  }
+  assert.equal(await status(post('/v1/report', health()), env({ DB: undefined })), 503, 'a health report with no database is refused');
+  assert.equal(count('SELECT COUNT(*) AS n FROM reports'), 0, 'none of those reports was stored');
+  assert.equal(ipRows(), 0, 'and no unsalted IP hash was written to the limits table');
+  assert.equal(await status(post('/v1/report', health()), env({ SALT: 'k'.repeat(32) })), 204, 'a real salt still stores the report');
+  assert.equal(count('SELECT COUNT(*) AS n FROM reports'), 1, 'the report is stored once');
+  assert.equal(ipRows(), 1, 'and its IP is only ever a salted hash');
+
   // 2. An approved token stores the report, labelled with who it belongs to.
   const res = await worker.fetch(post('/v1/support', good(), { authorization: `Bearer ${token}` }), env());
   assert.equal(res.status, 201, 'an approved token is accepted');
@@ -201,6 +220,7 @@ try {
   console.log('support endpoint: all checks passed\n');
   console.log([
     'checked, against the real Worker and a real SQLite database built from inbox/schema.sql:',
+    '  · a health report with no salt, a salt under 16 characters or no database is refused before anything is written',
     '  · no token, a wrong token and a revoked token are all refused, and store nothing',
     '  · an approved token stores the report, labelled with the approved poster it belongs to',
     '  · a bad priority, a made-up area, a made-up kind and a missing title are refused',
