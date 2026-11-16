@@ -331,6 +331,21 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   - **Skill paths**: every skill now derives the profile from its own location or from `TESS_PROFILE_DIR`, never from an
     assumed `$HERMES_HOME`.
 
+- **D-80 · 16 Nov 2026 · Agent (second review of #85)** — The bot reaches the inbox through one script, not through
+  `curl` with its token in the command. A message that points `TESS_INBOX` somewhere else has nothing to point at:
+  `scripts/inbox.mjs` reads the address and the token from the bot's own environment, posts only to the Tess inbox
+  (https, that one host), reads a payload only from the visit's session folder, and refuses a payload that carries a
+  token shape. The two skills that used `curl` (`tess-handoff`, `tess-duplicate`) now call it, and a test runs a real
+  POST against a loopback server to prove the token travels in a header and never in output. (#85)
+  - **Same review, the rest of the floor:** a symlink in the uploads folder is resolved before it is copied, so it can
+    no longer launder the profile's `.env` into a session; the Worker strips bidi and zero-width characters and
+    redacts emails, home folders, `~` paths and Mac names before anything is stored, and judges a title after that
+    cleaning; a health report with no salt (or one under 16 characters) is refused rather than hashing an IP weakly;
+    the per-token counter is one statement that only increments under the cap, so two overlapping posts store one; and
+    the 50 MB recording cap counts the bytes that arrive instead of the `Content-Length` claim. Trade-off: a bot with a
+    shell can still read its own token — that is why the token is scoped to one revocable, hashed-at-rest permission,
+    the destination is fixed in code, and every path out of the machine scrubs. (#85)
+
 ## Releases and process
 
 - **D-30 · 12 Nov 2026 · Owner** — Any change pushed to the repo ships automatically as a regular update.
