@@ -362,6 +362,63 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   from a checkout needs one environment variable, and the block is copied into every script (the gate compares the
   copies byte for byte, and `tools/test-script-guards.mjs` proves the behaviour) rather than living in one library,
   because each installed script has to stand alone.
+- **D-86 · 15 Nov 2026 · Agent** — The folder swap runs inside the signed patcher, as `tess-patcher swap-apps <Apps>
+  <staged>`, and the scripts call it instead of copying with `ditto` and renaming with `mv`. It does what `apply`
+  already does — copy beside `Apps`, check `xpui.spa`/`xpui/index.html`, two renames, restore the original on any
+  failure or after an interrupted run — but relative to a folder held open, not to a path: the check resolves
+  `Contents/Resources` once and validates it (separator-bounded, still `Contents/Resources` after its symlinks are
+  resolved, so `/var` may stand for `/private/var` but a symlinked `Resources` is refused, and the bundle's
+  `CFBundleIdentifier` must be `com.spotify.client`), and it opens as it validates — the bundle from `/` with
+  `O_NOFOLLOW`, `Contents` and then `Resources` relative to it, with `Info.plist` read through that same `Contents`
+  descriptor and the folder's device and inode recorded before the plist is parsed. Every create, rename and delete of
+  `Apps`, `.tess-new` and `.tess-old`, the copy itself and the recovery of an interrupted run are `…at` calls on that
+  descriptor (`swapAppsAt`). The folder is compared with what the path names before the first write and again before
+  each rename, and a folder that no longer matches stops the swap with the original left in place. It takes no config
+  (so it never rewrites `config-xpui.ini`) and reports macOS's block as exit 3 as `can-write` does. The bundle's
+  `CFBundleIdentifier` is read out of those bytes and never out of a path an outside tool opens again: a binary plist
+  goes to `plutil` on stdin, where a second process cannot reach it.
+  *Why:* macOS App Management denied `/usr/bin/ditto`, attributed to `/bin/zsh` because launchd starts the helper that
+  way, so every background theme update failed while Spotify was left intact (16:36 on 15 Nov, #108). The signed
+  patcher has its own approval, so the same copy is allowed there. A shell fallback was removed rather than kept: it
+  is the path that cannot work in the background, and two swap implementations were already one place to drift. The
+  path check started as a plain string ending, which let `…/NotContents/Resources/Apps` and a symlinked `Resources`
+  rename another folder aside and then delete it (#110 review). A path that is checked and then used again is not the
+  same folder either: with `Resources` moved aside and a symlink left in its place during the copy, the path version
+  finished writing through the link, renamed that folder's `Apps` aside, deleted it, and exited 0 (measured). A
+  descriptor cannot be redirected, so the swap keeps writing where it started and the re-check notices. Opening the
+  descriptor after the check was still a check-then-use: with the plist read blocked and a *real* directory — not a
+  symlink, so `O_NOFOLLOW` sees nothing — moved into the `Resources` name, the swap took that folder's inode as its
+  own, replaced its `Apps`, deleted its `keep-me` and exited 0 while the folder that was validated was untouched
+  (measured). So `Resources` is opened and recorded before the plist read, and the path is compared with it again when
+  the read returns; a swap of `Resources` or of `Contents` in that window now aborts before the first write, which
+  `TestSwapAppsAbortsWhenFolderReplacedDuringPlistRead` proves for both. The same review found
+  `tools/check-safety.sh` blind to `rm -rf "$APPS/xpui"` and `ditto "$1" "${APPS}"`; it now fails any statement whose
+  write verb names the folder, in any quoting and with any path after it, and allows only a copy whose source is the
+  folder and whose later arguments do not name it — `ditto "$APPS" "$APPS/xpui"` writes the live interface in place
+  and fails the gate. The same pass had two more holes, both found by the next review. The plist was written into a
+  temporary file that `PlistBuddy` was pointed at, so a second process on the same account could replace that file with
+  a Spotify plist while the check ran: a bundle whose own plist says `com.example.other` was swapped, its `keep-me`
+  deleted and the command exited 0 (measured, 6 of 12 runs); `plutil` on stdin has no name to replace
+  (`TestSwapAppsIgnoresReplacedTempPlist` rewrites any `tess-plist*` it can find during the check, for eight runs, and
+  none is ever written). And the gate's word match started at `$APPS`, so a slash glued in front of the quotes
+  (`/"$APPS"`, which the shell expands to the same folder) hid the destination — `ditto "$APPS/xpui" /"$APPS"` rewrote
+  the live `xpui.spa` in a probe. Each argument is now stripped of a leading `/`, repeated slashes and `./` before it
+  is matched, so the slashes cannot hide a write. Re-check 5 then found three holes left by reading one physical line
+  and asking awk for the character before a verb. That character does not exist at column 0, and BSD awk answers with
+  the verb's own first letter, so `installer/tess-install.sh:396` — a `ditto` at column 0 — was never looked at; a
+  trailing backslash ended the check at the verb while the folder sat on the next line; and a redirect's path was
+  trimmed after only one quote, so `printf x >/"$APPS/x"` kept its slash. The gate now joins backslash-continued lines
+  into one logical line and remembers the line it started on, normalises that line once — quotes off, `${APPS}` to
+  `$APPS`, `//` to `/`, a leading `/` or `./` dropped in front of a variable and after `>`, `>>`, `>|` or `>&` — and
+  matches by token position, where the start of a line is an ordinary word boundary and position 1 needs no character
+  before it. That reads the same on BSD and GNU awk. The 63 fixtures now include column 0, a joined copy, move, delete
+  and redirect, and the column-0 read out at line 396, which stays allowed.
+  *Trade-off:* the updater can no longer restore a theme if the patcher itself is missing; Spotify then stays exactly
+  as it was, which is the required failure. The test bundles must now carry an `Info.plist` that names Spotify, so a
+  sandbox has to be shaped like a real app bundle. The swap is macOS-shaped (`golang.org/x/sys/unix`), so the swap-apps
+  command refuses on anything else rather than falling back to a path. `apply` and `backup` keep the path-based swap,
+  where the folder comes from the user's own Spicetify config. `tools/test-swap-recovery.mjs` builds the real binary,
+  kills it during the copy and between the renames, and proves the next run restores Spotify's folder.
 
 ## Releases and process
 

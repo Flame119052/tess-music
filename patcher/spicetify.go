@@ -138,7 +138,11 @@ func init() {
 
 	utils.MigrateConfigFolder()
 	utils.MigrateFolders()
-	cmd.InitConfig(quiet)
+	// swap-apps needs no settings, and reading them rewrites config-xpui.ini in its canonical form: a background theme
+	// update must not rewrite the user's settings just to switch a folder.
+	if len(commands) == 0 || commands[0] != "swap-apps" {
+		cmd.InitConfig(quiet)
+	}
 
 	if len(commands) < 1 {
 		help()
@@ -160,6 +164,10 @@ func main() {
 		// 4 the files belong to another user, 1 anything else.
 		// Runs as the patcher itself, so macOS judges it exactly like a real patch; it only adds and removes one empty file.
 		os.Exit(cmd.CanWrite(commands[1:]))
+	case "swap-apps":
+		// Tess: replace Spotify's interface folder with a complete staged copy, switched in with renames. Done here,
+		// inside the signed patcher, because macOS's App Management protection denies the same copy made by a shell.
+		os.Exit(cmd.SwapApps(commands[1:]))
 	case "config":
 		commands = commands[1:]
 		if len(commands) == 0 {

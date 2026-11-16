@@ -216,17 +216,25 @@ fi
 
 # Spotify's interface folder is only ever replaced by switching in a complete copy: the copy is made next to it and
 # checked, then two renames swap them, and if anything fails the original stays. Never delete-then-copy: a block
-# halfway through that left Spotify with no interface at all (black window). tools/check-safety.sh enforces this.
+# halfway through that left Spotify with no interface at all (black window). The copy and the swap run inside
+# tess-patcher, not in this script: macOS's App Management protection denies /usr/bin/ditto when launchd starts a
+# script under /bin/zsh. tools/check-safety.sh enforces it.
 swap_apps() {
-  _new="$APPS.tess-new"; _old="$APPS.tess-old"
-  if [ ! -d "$APPS" ] && [ -d "$_old" ]; then mv "$_old" "$APPS" || return 1; fi
-  rm -rf "$_new"
-  ditto "$1" "$_new" || { rm -rf "$_new"; return 1; }
-  [ -s "$_new/xpui.spa" ] || [ -s "$_new/xpui/index.html" ] || { rm -rf "$_new"; return 1; }
-  rm -rf "$_old"
-  if [ -d "$APPS" ]; then mv "$APPS" "$_old" || { rm -rf "$_new"; return 1; }; fi
-  mv "$_new" "$APPS" || { [ -d "$_old" ] && mv "$_old" "$APPS"; rm -rf "$_new"; return 1; }
-  rm -rf "$_old"
+  if [ ! -x "$T/bin/patcher/tess-patcher" ]; then
+    bad "tess-patcher is missing, so Spotify's folder cannot be switched"; return 1
+  fi
+  local log="$TMP/swap.log" rc=0
+  "$T/bin/patcher/tess-patcher" swap-apps "$APPS" "$1" >"$log" 2>&1 || rc=$?
+  [ $rc -eq 0 ] && return 0
+  # Keep the patcher's own line. "A swap failed" hides that macOS denied the copy, which is the one thing the person
+  # can act on; the exit code says the same thing the updater logs (3 blocked, 4 another user's files).
+  while IFS= read -r line; do say "    $line"; done < "$log"
+  case $rc in
+    3) bad "macOS is blocking tess-patcher: System Settings › Privacy & Security › App Management, turn on tess-patcher" ;;
+    4) bad "Spotify's files belong to another user; tess-patcher could not change them" ;;
+    *) bad "tess-patcher couldn't switch Spotify's folder (code $rc)" ;;
+  esac
+  return 1
 }
 # --- Spotify's interface -------------------------------------------------------------------------------------------
 if [ -f "$APPS/xpui/index.html" ] && grep -q spicetifyWrapper "$APPS/xpui/index.html" 2>/dev/null; then

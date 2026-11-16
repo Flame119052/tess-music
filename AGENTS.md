@@ -16,8 +16,8 @@ Owner: Krish (GitHub `Flame119052`). Real users run it on their own Macs; treat 
 ## The rules that are never broken
 
 1. **Never leave anyone's Spotify broken.** Spotify's interface folder (`Spotify.app/Contents/Resources/Apps`) is never
-   deleted and refilled; it is only replaced by switching in a complete, checked copy (`swap_apps` in the scripts,
-   `swapApps` in the patcher). A failure at any step must leave Spotify exactly as it was. `tools/check-safety.sh`
+   deleted and refilled; it is only replaced by switching in a complete, checked copy (`tess-patcher swap-apps`, backed
+   by `swapApps` in the patcher). A failure at any step must leave Spotify exactly as it was. `tools/check-safety.sh`
    enforces this and blocks every release that breaks it.
 2. **Test installers and updaters against a copy, never the real Spotify.** Use a sandbox (`TESS_TEST=1` with
    `TESS_HOME`, `TESS_CONFIG`, `TESS_SPOTIFY` pointing at a copied `Spotify.app` in a scratch folder). Run anything on

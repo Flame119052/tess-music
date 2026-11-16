@@ -376,17 +376,13 @@ fi
 APPS="$SPOTIFY/Contents/Resources/Apps"
 # Spotify's interface folder is only ever replaced by switching in a complete copy: the copy is made next to it and
 # checked, then two renames swap them, and if anything fails the original stays. Never delete-then-copy: a block
-# halfway through that left Spotify with no interface at all (black window). tools/check-safety.sh enforces this.
+# halfway through that left Spotify with no interface at all (black window). The copy and the swap run inside
+# tess-patcher, not in this script: macOS's App Management protection judges the program that asks, so the signed
+# patcher (which the user has already allowed) does it, exactly as it does for the theme itself.
+# tools/check-safety.sh enforces it.
 swap_apps() {
-  _new="$APPS.tess-new"; _old="$APPS.tess-old"
-  if [ ! -d "$APPS" ] && [ -d "$_old" ]; then mv "$_old" "$APPS" || return 1; fi
-  rm -rf "$_new"
-  ditto "$1" "$_new" || { rm -rf "$_new"; return 1; }
-  [ -s "$_new/xpui.spa" ] || [ -s "$_new/xpui/index.html" ] || { rm -rf "$_new"; return 1; }
-  rm -rf "$_old"
-  if [ -d "$APPS" ]; then mv "$APPS" "$_old" || { rm -rf "$_new"; return 1; }; fi
-  mv "$_new" "$APPS" || { [ -d "$_old" ] && mv "$_old" "$APPS"; rm -rf "$_new"; return 1; }
-  rm -rf "$_old"
+  [ -x "$PATCHER" ] || return 1
+  "$PATCHER" swap-apps "$APPS" "$1"
 }
 if [ ! -f "$APPS/xpui.spa" ] && [ -n "$REPAIR" ]; then
   # put back this exact Spotify version's own interface files from the copy found above
@@ -401,7 +397,7 @@ ditto "$APPS" "$ORIG.new" || { rm -rf "$ORIG.new"; fail "Couldn't make a safety 
 for o in "$HOME_TESS"/original-*; do [ "$o" = "$ORIG.new" ] || rm -rf "$o"; done
 mv "$ORIG.new" "$ORIG"
 put_back() {
-  swap_apps "$ORIG"
+  swap_apps "$ORIG" || { rm -f "$HOME_TESS/.installing"; return 1; }
   rm -f "$HOME_TESS/.installing"
 }
 
@@ -419,15 +415,15 @@ tar -xzf "$TMP/theme.tgz" -C "$CONF/Themes"
 "$PATCHER" config home_config 0 >/dev/null
 rm -rf "$CONF/Backup" 2>/dev/null || true
 if ! "$PATCHER" backup apply --no-restart >"$TMP/apply.log" 2>&1; then
-  put_back
+  put_back || fail "Tess couldn't put Spotify's files back, so Spotify may not open. Run the install line again, or reinstall Spotify (https://www.spotify.com/download/mac/); your account, library and downloads are kept."
   if grep -q "operation not permitted" "$TMP/apply.log"; then
-    fail "macOS blocked Terminal from updating Spotify. Open System Settings > Privacy & Security > App Management, turn on your terminal app, then run this again."
+    fail "macOS blocked Tess from updating Spotify. Open System Settings > Privacy & Security > App Management, turn on tess-patcher (and your terminal app), then run this again."
   fi
   tail -5 "$TMP/apply.log" 2>/dev/null || true
   fail "Couldn't apply Tess to Spotify $SPV. Spotify was put back exactly as it was."
 fi
 if [ ! -f "$APPS/xpui/index.html" ] || ! grep -q "spicetifyWrapper" "$APPS/xpui/index.html"; then
-  put_back
+  put_back || fail "Tess couldn't put Spotify's files back, so Spotify may not open. Run the install line again, or reinstall Spotify (https://www.spotify.com/download/mac/); your account, library and downloads are kept."
   fail "Tess didn't apply cleanly. Spotify was put back exactly as it was; please report this."
 fi
 # Copy beside the target and rename: sh and zsh read a running script as they go, and `tess repair` runs this installer
