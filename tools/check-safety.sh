@@ -342,13 +342,13 @@ apps_write() {
         for (k = 1; k <= nw; k++) {
           w = WARGS[k]
           if (w == "-delete") return 1
+          if ((w == "-fprint" || w == "-fprintf" || w == "-fls") && k < nw) {
+            val = strip_prefix(WARGS[k + 1])
+            if (is_folder(val) || (val == "$" && k + 1 < nw && WARGS[k + 2] == "$APPS")) return 1
+          }
           if (w == "-exec" || w == "-execdir" || w == "-ok" || w == "-okdir") {
-            m = k + 1
-            if (m <= nw && WARGS[m] ~ /(^|\/)(env|command)$/) {
-              m++
-              while (m <= nw && (substr(WARGS[m], 1, 1) == "-" || WARGS[m] ~ /^[A-Za-z_][A-Za-z0-9_]*=/)) m++
-            }
-            if (m <= nw && (is_verb(WARGS[m]) || WARGS[m] ~ /(^|\/)(sh|zsh|bash|dash)$/)) return 1
+            for (m = k + 1; m <= nw && WARGS[m] != "\\;" && WARGS[m] != "+"; m++)
+              if (is_verb(WARGS[m]) || WARGS[m] ~ /(^|\/)(sh|zsh|bash|dash)$/) return 1
           }
         }
         return 0
@@ -534,14 +534,19 @@ apps_write_fixture caught 'find "$APPS" \( -name "*.js" -o -name "*.css" \) -del
 apps_write_fixture caught 'find "$APPS" -exec rm {} \;'
 apps_write_fixture caught 'find "$APPS" -exec rm -rf {} +'
 apps_write_fixture caught 'find "$APPS" -exec /bin/rm -f {} \;'
+apps_write_fixture caught 'find "$APPS" -exec nice rm {} \;'
 apps_write_fixture caught 'find "$TMP" -exec rm "$APPS/xpui.spa" \;'
 apps_write_fixture caught 'find "$APPS" -exec grep -l foo {} \; -delete'
 apps_write_fixture caught 'find "$APPS" -exec true {} '"';'"' -delete'
 apps_write_fixture caught 'find "$APPS" -exec true {} ";" -delete'
+apps_write_fixture caught 'find "$TMP" -fprint "$APPS/list"'
+apps_write_fixture caught 'find "$TMP" -fprintf "$APPS/list" "%p\n"'
+apps_write_fixture caught 'find "$TMP" -fls "$APPS/list"'
 apps_write_fixture allowed 'find "$APPS" -exec ls -la {} '"';'"''
 apps_write_fixture allowed 'find "$APPS" -exec ls -la {} '"';'"'; rm -rf "$TMP"'
 apps_write_fixture allowed 'find "$APPS" -name "*.spa"'
 apps_write_fixture allowed 'find "$APPS" -type f -print'
+apps_write_fixture allowed 'find "$APPS" -fprint "$TMP/list"'
 apps_write_fixture allowed 'find "$APPS" -exec ls -la {} +'
 apps_write_fixture allowed 'find "$STATE" \( -name ".reapply-*" -o -name ".asked-*" \) -delete'
 apps_write_fixture caught 'tar -xf a.tar -C "$APPS"'
