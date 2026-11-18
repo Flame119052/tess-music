@@ -39,9 +39,9 @@ rm -f /tmp/tess-setup.sh
 You can also run `sudo sh /tmp/tess-setup.sh` with no exported variables and answer the interactive prompts at the terminal (`/dev/tty`). It is safe to run again to update the bot or rotate keys.
 
 What `setup.sh` does:
-- Refuses to install inside or alongside Paperclip's own user or paths (`/srv/paperclip`, `/home/paperclip`, PostgreSQL).
-- Creates the dedicated unprivileged system user `tess-support` with `/home/tess-support` (if missing).
-- Installs Hermes inside `/home/tess-support` (as `tess-support`, never as `root`) and installs the `tess-support` profile.
+- Ignores inherited `HOME`, `HERMES_HOME`, `TESS_BOT_HOME`, and `TESS_SYSTEMD_DIR` when run as `root` (even via `sudo -E`), resolves physical paths, refuses `..` traversal/symlinks, and refuses to install inside or alongside Paperclip's or PostgreSQL's own paths.
+- Creates the dedicated unprivileged system user `tess-support` with fixed home `/home/tess-support` (if missing).
+- Installs Hermes inside `/home/tess-support` (as `tess-support`, never as `root`), installs the `tess-support` profile, and locks down `plugins/` as root-owned (`0755`/`0644`).
 - Sets the model to `opencode-go/deepseek-v4.1-flash` and writes all secrets into `/home/tess-support/.hermes/profiles/tess-support/.env` at mode `600` (shell builtins only — zero secrets on any command line).
 - Seeds `allow.txt` and `TELEGRAM_ALLOWED_USERS` with Krish (and any `TESS_ALLOW_IDS`).
 - Installs [`tess-support.service`](tess-support.service) in `/etc/systemd/system/`, reloads systemd, enables it, and restarts it cleanly.
@@ -71,11 +71,11 @@ Message the bot from your Telegram account first, then send your tester the link
 Three gates, none relying on model judgement:
 
 1. **The allowlist (`allow.txt` + `TELEGRAM_ALLOWED_USERS`)**, checked by Hermes before the model is called. A gateway with no list refuses everyone. `allowlist.mjs` refuses wildcards (`*`), phone numbers, anything other than a 5–15 digit Telegram id, and removing Krish; it atomically rewrites `allow.txt` and `.env` at mode `600`, logs every change, and `--restart` signals the systemd service `MainPID` so systemd brings the gateway right back with the updated list without needing root.
-2. **The daily usage cap (`plugins/daily-cap/`)**, enforced by the Hermes `pre_llm_call` hook **before any model inference runs**:
+2. **The daily usage cap (`plugins/daily-cap/`)**, installed root-owned/read-only (`0755`/`0644`, plus systemd `ReadOnlyPaths`) with state stored in systemd `StateDirectory=tess-support` (`/var/lib/tess-support/daily-cap.json`, outside `$HOME` and `sessions/`). Enforced by `pre_llm_call` **before any model inference runs** and `pre_tool_call` inside tool loops:
    - **40 replies/day** total across all users (`TESS_DAILY_REPLY_CAP`, default `40`),
    - **20 replies/day** per person (`TESS_DAILY_USER_CAP`, default `20`),
-   - Optional **daily token budget** (`TESS_DAILY_TOKEN_CAP`, unset/`0` by default).
-   When a cap is hit (or if the cap counter file is unreadable/corrupt), the bot pauses with a polite note and resets at `00:00 UTC`.
+   - Optional **daily token budget** (`TESS_DAILY_TOKEN_CAP`, unset/`0` by default, also checked in `pre_tool_call` mid-turn).
+   The `file` toolset is disabled, and `pre_tool_call` blocks any tool targeting cap state, plugins, or config. When a cap is hit (or if the counter file/lock cannot be read cleanly), the bot fails closed with a polite note and resets at `00:00 UTC`.
 3. **The posting token (`TESS_SUPPORT_TOKEN`)**, checked by the Cloudflare Worker on `POST /v1/support` (stored as SHA-256).
 
 Anyone not on the allowlist gets one polite refusal and 24 hours of silence (`unauthorized_dm_behavior: decline`).
@@ -87,8 +87,8 @@ Anyone not on the allowlist gets one polite refusal and 24 hours of silence (`un
 Paperclip owns its own directories and services on the VPS and always has priority. `tess-support` is fenced at both user and kernel levels:
 
 - **Dedicated unprivileged user (`tess-support`):** owns only `/home/tess-support` (`nologin` shell). `setup.sh` runs Hermes commands via `runuser -u tess-support` and refuses any path or username referencing `paperclip`, `postgres`, or `root`.
-- **Resource limits in [`tess-support.service`](tess-support.service):** `MemoryMax=512M`, `CPUQuota=50%`, `TasksMax=64`, `Nice=19`, `IOSchedulingClass=idle`.
-- **Kernel filesystem isolation:** `NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=read-only`, `ReadWritePaths=/home/tess-support`, `ReadOnlyPaths=.../.env .../allow.txt`, and `InaccessiblePaths=-/srv/paperclip -/home/paperclip -/var/lib/postgresql -/run/postgresql`.
+- **Resource limits in [`tess-support.service`](tess-support.service):** `MemoryMax=512M`, `MemorySwapMax=0`, `CPUQuota=50%`, `TasksMax=64`, `Nice=19`, `IOSchedulingClass=idle`.
+- **Kernel filesystem isolation:** `NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=read-only`, `StateDirectory=tess-support`, `ReadWritePaths=/home/tess-support/.hermes/profiles/tess-support`, `ReadOnlyPaths=.../.env .../allow.txt .../plugins .../config.yaml .../skills .../SOUL.md .../distribution.yaml`, and `InaccessiblePaths=-/srv/paperclip -/home/paperclip -/var/lib/postgresql -/run/postgresql`.
 - **No Tincan / Paperclip integration:** `tess-support` never connects to PostgreSQL, `/srv/paperclip`, any Paperclip service, or the Tincan relay.
 
 ## What a person does
@@ -107,7 +107,7 @@ Each skill is its own short file under `bot/skills/`, with its own trigger:
 
 | Component | When it runs | What it settles |
 | --- | --- | --- |
-| `plugins/daily-cap` | before every LLM call (`pre_llm_call`) & after (`post_api_request`) | shared 40/day and per-person 20/day reply caps + optional token budget; resets `00:00 UTC` |
+| `plugins/daily-cap` | `pre_llm_call`, `pre_tool_call` & `post_api_request` | shared 40/day and per-person 20/day reply caps, mid-turn token cap, and tool-path guard; resets `00:00 UTC` |
 | `tess-support` | any message about Tess being broken | the front door: tone, order of the visit, hard limits |
 | `tess-evidence` | they need to show something | screenshots, and a recording of **only the Spotify window** made with Cmd-Shift-5 |
 | `tess-repro` | roughly know what's wrong | exact steps — page, song type, window size, what they clicked — **confirmed by them** |

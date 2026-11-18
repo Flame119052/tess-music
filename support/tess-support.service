@@ -1,6 +1,6 @@
 # Tess Support on Krish's VPS: its own unprivileged system user (tess-support), hard CPU/memory/I/O limits so
-# Paperclip always comes first, filesystem isolation keeping it inside its own home, and a foreground process that
-# systemd supervises.
+# Paperclip always comes first, filesystem isolation keeping it inside its own profile runtime dir, and a foreground
+# process that systemd supervises.
 #
 # setup.sh fills in __USER__, __HOME__ and __HERMES__ and installs this unit when run with root/sudo. To install by
 # hand, replace those placeholders and run:
@@ -24,8 +24,9 @@ Environment=HERMES_HOME=__HOME__/.hermes
 Environment=HOME=__HOME__
 # Foreground, so systemd owns the process and the caps apply to it.
 ExecStart=__HERMES__ -p tess-support gateway run
-# Paperclip comes first: low memory/CPU/task ceilings plus lowest scheduling and I/O priority.
+# Paperclip comes first: low memory/CPU/swap/task ceilings plus lowest scheduling and I/O priority.
 MemoryMax=512M
+MemorySwapMax=0
 CPUQuota=50%
 TasksMax=64
 Nice=19
@@ -33,13 +34,16 @@ IOSchedulingClass=idle
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
-# ProtectHome=read-only makes all home folders read-only except this user's own home below.
+# ProtectHome=read-only makes all home folders read-only except the narrowed profile runtime directory below.
 ProtectHome=read-only
-ReadWritePaths=__HOME__
-# The two files that decide who may talk to the bot and hold its keys are read-only to the bot's own process. Its
-# shell can run anything it likes and still cannot add a friend or overwrite keys, because the write is refused by the
-# kernel, not by a prompt.
-ReadOnlyPaths=__HOME__/.hermes/profiles/tess-support/.env __HOME__/.hermes/profiles/tess-support/allow.txt
+# Dedicated systemd StateDirectory (/var/lib/tess-support) for daily-cap state, outside HOME and session folders.
+StateDirectory=tess-support
+StateDirectoryMode=0700
+# Narrowed to the profile's runtime/session directory instead of the whole home.
+ReadWritePaths=__HOME__/.hermes/profiles/tess-support
+# Secrets, allowlist, plugin code, config, and skills are strictly read-only to the bot's own process. The bot's tools
+# cannot edit plugins, replace config.yaml, add a user, or overwrite keys because the kernel refuses the write.
+ReadOnlyPaths=__HOME__/.hermes/profiles/tess-support/.env __HOME__/.hermes/profiles/tess-support/allow.txt __HOME__/.hermes/profiles/tess-support/plugins __HOME__/.hermes/profiles/tess-support/config.yaml __HOME__/.hermes/profiles/tess-support/skills __HOME__/.hermes/profiles/tess-support/SOUL.md __HOME__/.hermes/profiles/tess-support/distribution.yaml
 # Never touch Paperclip or PostgreSQL (leading "-" ignores absent paths on non-Paperclip hosts).
 InaccessiblePaths=-/srv/paperclip -/home/paperclip -/var/lib/postgresql -/run/postgresql
 # Always, not on-failure: a restart is how an allowlist change takes effect without root — the unit's job is to bring

@@ -6,11 +6,13 @@ shared daily cap plus a smaller per-person cap inside ``pre_llm_call`` before an
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import logging
 import os
 import tempfile
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,11 +47,21 @@ def _profile_dir() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _plugin_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
 def _state_path() -> Path:
     override = os.environ.get("TESS_DAILY_CAP_FILE", "").strip()
     if override:
         return Path(override)
-    return _profile_dir() / "cache" / "daily-cap.json"
+    state_dir = os.environ.get("STATE_DIRECTORY", "").strip()
+    if state_dir:
+        # systemd StateDirectory= may pass colon-separated paths; use the first.
+        primary = state_dir.split(":", 1)[0].strip()
+        if primary:
+            return Path(primary) / "daily-cap.json"
+    return _profile_dir() / "state" / "daily-cap.json"
 
 
 def _int_env(name: str, default: int, *, minimum: int = 0) -> int:
@@ -118,13 +130,30 @@ def _locked_state(state_path: Path) -> Iterator[None]:
     lock_path = state_path.with_suffix(".lock")
     if lock_path.is_symlink():
         raise OSError(f"refusing symlinked cap lock file: {lock_path}")
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        lock_timeout = max(0.05, float(os.environ.get("TESS_CAP_LOCK_TIMEOUT", "2.0") or "2.0"))
+    except ValueError:
+        lock_timeout = 2.0
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    locked = False
+    try:
+        deadline = time.monotonic() + lock_timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"timed out waiting for daily-cap lock: {lock_path}") from exc
+                time.sleep(0.02)
         yield
     finally:
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            if locked:
+                fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
 
@@ -219,6 +248,107 @@ def post_api_request(usage: Any = None, **kwargs: Any) -> None:
         logger.warning("daily-cap failed to record token usage: %s", exc)
 
 
+_DISABLED_FILE_TOOLS = frozenset({"read_file", "write_file", "patch", "search_files"})
+_PROTECTED_MARKERS = (
+    "/var/lib/tess-support",
+    "/opt/tess-support",
+    "daily-cap.json",
+    "daily-cap.lock",
+    "daily-cap",
+    "state_directory",
+    "tess_daily_cap_file",
+    "plugins/daily-cap",
+    "profiles/tess-support/plugins",
+    ".hermes/profiles/tess-support/plugins",
+    "allowlist.mjs",
+    "allow.txt",
+    "config.yaml",
+)
+
+
+def _iter_strings(value: Any) -> list[str]:
+    out: list[str] = []
+    if isinstance(value, str):
+        out.append(value)
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            out.extend(_iter_strings(k))
+            out.extend(_iter_strings(v))
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            out.extend(_iter_strings(item))
+    return out
+
+
+def _is_under(candidate: Path, protected: Path) -> bool:
+    try:
+        cand_res = candidate.resolve()
+        prot_res = protected.resolve()
+        return cand_res == prot_res or prot_res in cand_res.parents
+    except OSError:
+        return True
+
+
+def pre_tool_call(tool_name: str = "", args: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, str] | None:
+    """Refuse file tools, any tool touching cap state/plugin/config, and excess mid-turn token loops."""
+    tname = str(tool_name or "").strip()
+    if tname in _DISABLED_FILE_TOOLS:
+        return {"action": "block", "message": "File tools are disabled for the support bot."}
+
+    state_path = _state_path()
+    protected_dirs = (
+        state_path.parent,
+        _plugin_dir(),
+        _plugin_dir().parent,
+        Path("/var/lib/tess-support"),
+        Path("/opt/tess-support"),
+    )
+    protected_tokens = list(_PROTECTED_MARKERS) + [
+        str(state_path).lower(),
+        str(state_path.parent).lower(),
+        str(_plugin_dir()).lower(),
+        str(_plugin_dir().parent).lower(),
+    ]
+
+    for raw in _iter_strings(args or {}):
+        low = raw.lower()
+        if any(marker in low for marker in protected_tokens):
+            return {
+                "action": "block",
+                "message": "Refused: support bot tools cannot access daily-cap state, plugins, or configuration.",
+            }
+        # Also block direct path references (.env or resolved path inside protected dirs).
+        if ".env" in low.split() or "/.env" in low:
+            return {
+                "action": "block",
+                "message": "Refused: support bot tools cannot access .env.",
+            }
+        if "/" in raw or "\\" in raw:
+            p = Path(raw)
+            for pdir in protected_dirs:
+                if _is_under(p, pdir):
+                    return {
+                        "action": "block",
+                        "message": "Refused: support bot tools cannot access daily-cap state or plugin paths.",
+                    }
+
+    # Low finding: enforce TESS_DAILY_TOKEN_CAP mid-turn as well, so one long tool loop stops once exceeded.
+    token_cap = _int_env("TESS_DAILY_TOKEN_CAP", DEFAULT_DAILY_TOKEN_CAP, minimum=0)
+    if token_cap > 0:
+        today = _today_utc()
+        try:
+            with _locked_state(state_path):
+                state = _load_state(state_path, today)
+                if state["tokens"] >= token_cap:
+                    return {"action": "block", "message": _TOKEN_LIMIT_MSG}
+        except Exception as exc:
+            logger.warning("daily-cap failed closed in pre_tool_call: %s", exc)
+            return {"action": "block", "message": _FAIL_CLOSED_MSG}
+
+    return None
+
+
 def register(ctx: Any) -> None:
     ctx.register_hook("pre_llm_call", pre_llm_call)
     ctx.register_hook("post_api_request", post_api_request)
+    ctx.register_hook("pre_tool_call", pre_tool_call)
