@@ -354,7 +354,7 @@ apps_write() {
         for (k = 1; k <= nw; k++) {
           w = WARGS[k]
           if (w == "-delete") return 1
-          if ((w == "-fprint" || w == "-fprintf" || w == "-fls") && k < nw) {
+          if ((w == "-fprint" || w == "-fprint0" || w == "-fprintf" || w == "-fls") && k < nw) {
             val = strip_prefix(WARGS[k + 1])
             if (is_folder(val) || (val == "$" && k + 1 < nw && WARGS[k + 2] == "$APPS")) return 1
           }
@@ -552,6 +552,7 @@ apps_write_fixture caught 'find "$APPS" -exec grep -l foo {} \; -delete'
 apps_write_fixture caught 'find "$APPS" -exec true {} '"';'"' -delete'
 apps_write_fixture caught 'find "$APPS" -exec true {} ";" -delete'
 apps_write_fixture caught 'find "$TMP" -fprint "$APPS/list"'
+apps_write_fixture caught 'find "$TMP" -fprint0 "$APPS/list"'
 apps_write_fixture caught 'find "$TMP" -fprintf "$APPS/list" "%p\n"'
 apps_write_fixture caught 'find "$TMP" -fls "$APPS/list"'
 apps_write_fixture allowed 'find "$APPS" -exec ls -la {} '"';'"''
