@@ -440,6 +440,7 @@ while read -r name sha url _src; do
         && install_wake || continue ;;
     command)
       sh -n "$f" || { problem "command: bad file"; continue; }
+      [ -f "$HOME_TESS/installer.sh" ] && [ -f "$HOME_TESS/uninstall.sh" ] || { problem "command: waiting for installer/uninstall parts"; continue; }
       cp "$f" "$HOME_TESS/tess.new" && chmod +x "$HOME_TESS/tess.new" && mv "$HOME_TESS/tess.new" "$HOME_TESS/tess" || continue ;;
     installer)
       sh -n "$f" || { problem "installer: bad file"; continue; }

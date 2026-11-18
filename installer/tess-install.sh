@@ -704,10 +704,11 @@ case "$1" in
       off)
         touch "$T/rescue-off"
         lctl disable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+        # Stop the order while rescue.sh (the job's main process) is still alive to log and report it; bootout TERMs it.
+        STOPPED=$(stop_order "$T/rescue")
+        if [ -n "$STOPPED" ]; then _w=0; while [ -f "$T/rescue/order.stop" ] && [ "$_w" -lt 40 ]; do sleep 1; _w=$((_w + 1)); done; fi
         lctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
         rm -f "$LA/music.tess.rescue.plist"
-        # The job is off, but an order that already started is a process group of its own; it has to be stopped here.
-        STOPPED=$(stop_order "$T/rescue")
         [ -n "$STOPPED" ] && echo "An order that had already started was stopped."
         echo "The Tess rescue line is off. Updates will not turn it back on." ;;
       on)

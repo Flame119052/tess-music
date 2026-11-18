@@ -230,7 +230,12 @@ run_bounded() {  # <seconds> <log> <rc file> <stop file> <command...>
     waited=0
     while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt "$secs" ]; do sleep 1; waited=$((waited + 1)); done
     # finished on its own: nothing to stop, and the code written down is the one the action exited with
-    if ! kill -0 "$pid" 2>/dev/null; then wait "$pid"; echo $? > "$rcf"; if [ -n "$pidf" ]; then rm -f "$pidf"; fi; exit 0; fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid"; echo $? > "$rcf"
+      # rescue off TERMs the group; wait for its KILL so nothing of the order outlives the log line
+      if [ "$(tr -d "[:space:]" < "$stopf" 2>/dev/null)" = off ]; then n=0; while kill -0 -- "-$pid" 2>/dev/null && [ "$n" -lt 15 ]; do sleep 1; n=$((n + 1)); done; fi
+      if [ -n "$pidf" ]; then rm -f "$pidf"; fi; exit 0
+    fi
     kill -TERM -- "-$pid" 2>/dev/null
     stop=term; n=0
     while kill -0 -- "-$pid" 2>/dev/null; do
@@ -264,7 +269,7 @@ else
   rm -f "$R/order.stop"
   run_bounded "$timeout" "$LOG" "$TMP/rc" "$R/order.stop" "${cmd[@]}"
   rc=$(cat "$TMP/rc" 2>/dev/null); rc=${rc:-1}
-  if [ -f "$R/order.stop" ]; then _how=$(tr -d '[:space:]' < "$R/order.stop" 2>/dev/null || true); rm -f "$R/order.stop"; fi
+  if [ -f "$R/order.stop" ]; then _how=$(tr -d '[:space:]' < "$R/order.stop" 2>/dev/null || true); fi
   case $_how in
     off) log "rescue order $serial was stopped by rescue off" ;;
     term|kill) log "rescue order $serial ran past ${timeout}s; stopped it" ;;
@@ -286,4 +291,7 @@ if [ ! -f "$T/reports-off" ] && [ -n "$id" ] && printf '%s' "$id" | grep -qx '[0
     curl -fsS --max-time 30 -H "content-type: application/json" -d "$report" "$INBOX/v1/report" >/dev/null 2>&1
   fi
 fi
+# `tess rescue off` boots this job out once this file is gone. It stays through the log line and the report above,
+# whose curl can take 30s, so bootout cannot kill this script before either is written.
+rm -f "$R/order.stop"
 exit 0
