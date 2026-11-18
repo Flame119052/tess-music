@@ -30,6 +30,14 @@ if (betaManifest.version !== version) {
   console.error(`beta has ${betaManifest.version}, not ${version}; nothing promoted`);
   process.exit(1);
 }
+for (const file of ['dist/install.sh', 'dist/install.sig']) {
+  try {
+    git('cat-file', '-e', `origin/beta:${file}`);
+  } catch {
+    console.error(`beta has no ${file}; promoting it would leave new installs refused`);
+    process.exit(1);
+  }
+}
 const betaCommit = git('rev-parse', 'origin/beta');
 let notes = `# Tess ${version}\n\nNo release notes were recorded on beta.\n`;
 try {
