@@ -211,11 +211,71 @@ try {
   {
     const s = sandbox();
     const command = readFileSync(join(root, 'installer', 'tess-command.sh'), 'utf8');
+    writeFileSync(join(s.tess, 'uninstall.sh'), '#!/bin/sh\nexit 0\n');
     writeFileSync(join(s.fixtures, 'installer.sh'), command);
     writeFileSync(join(s.fixtures, 'components.txt'), `command ${sha(command)} test://installer source\n`);
     s.run();
     assert.equal(readFileSync(join(s.tess, 'tess'), 'utf8'), command, 'existing Mac receives signed command');
     assert.match(execFileSync('/bin/sh', [join(s.tess, 'tess'), 'status'], { env: s.env, encoding: 'utf8' }), /Wake check:/);
+  }
+
+  {
+    // installer, uninstall and the command can arrive together. If the installer download fails, the command
+    // must stay uninstalled and unrecorded, or the Mac keeps a tess whose installer.sh is missing until a later
+    // parts list happens to change the command's sha.
+    const s = sandbox();
+    rmSync(join(s.tess, 'installer.sh'));
+    const command = '#!/bin/sh\necho tess-command\n';
+    const installer = '#!/bin/sh\necho new installer\n';
+    const uninstall = '#!/bin/sh\necho new uninstall\n';
+    writeFileSync(join(s.fixtures, 'command.sh'), command);
+    writeFileSync(join(s.fixtures, 'new-installer.sh'), installer);
+    writeFileSync(join(s.fixtures, 'uninstall.sh'), uninstall);
+    writeFileSync(join(s.fixtures, 'components.txt'), [
+      `installer ${sha(installer)} test://new-installer source`,
+      `uninstall ${sha(uninstall)} test://uninstall source`,
+      `command ${sha(command)} test://command source`,
+      '',
+    ].join('\n'));
+    writeFileSync(join(s.box, 'fake-bin', 'curl'), `#!/bin/sh
+echo "$@" >> "$TESS_CURL_LOG"
+out=""; url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out=$2; shift 2 ;;
+    *://*) url=$1; shift ;;
+    *) shift ;;
+  esac
+done
+case "$url" in
+  *components.txt*) cp "$TESS_COMPONENTS" "$out" ;;
+  *components.sig*) cp "$TESS_SIGNATURE" "$out" ;;
+  test://new-installer) [ -f "$TESS_INSTALLER_FAIL" ] && exit 22; cp "$TESS_INSTALLER_ASSET" "$out" ;;
+  test://uninstall) cp "$TESS_UNINSTALL_ASSET" "$out" ;;
+  test://command) cp "$TESS_COMMAND_ASSET" "$out" ;;
+  *) exit 22 ;;
+esac
+`);
+    chmodSync(join(s.box, 'fake-bin', 'curl'), 0o755);
+    const fail = join(s.box, 'installer-fail');
+    writeFileSync(fail, '');
+    const extra = {
+      TESS_INSTALLER_FAIL: fail,
+      TESS_INSTALLER_ASSET: join(s.fixtures, 'new-installer.sh'),
+      TESS_UNINSTALL_ASSET: join(s.fixtures, 'uninstall.sh'),
+      TESS_COMMAND_ASSET: join(s.fixtures, 'command.sh'),
+    };
+    s.run(extra);
+    assert.ok(!existsSync(join(s.tess, 'installer.sh')), 'a failed installer download leaves the script missing');
+    assert.equal(readFileSync(join(s.tess, 'uninstall.sh'), 'utf8'), uninstall, 'the uninstall part in the same update still installs');
+    assert.ok(!existsSync(join(s.tess, 'tess')), 'the command is held back while installer.sh is missing');
+    assert.ok(!existsSync(join(s.state, 'command')), 'the held-back command sha is not recorded');
+    assert.match(readFileSync(join(s.tess, 'guard.log'), 'utf8'), /command: waiting for installer\/uninstall parts/);
+    rmSync(fail);
+    s.run(extra);
+    assert.equal(readFileSync(join(s.tess, 'installer.sh'), 'utf8'), installer, 'the next run installs the installer');
+    assert.equal(readFileSync(join(s.tess, 'tess'), 'utf8'), command, 'the next run installs the command once both scripts exist');
+    assert.equal(readFileSync(join(s.state, 'command'), 'utf8').trim(), sha(command), 'the command sha is recorded only once it is installed');
   }
 
   {

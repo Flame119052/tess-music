@@ -220,13 +220,121 @@ sleep 600
       const stoppedLine = `rescue order ${s} was stopped by rescue off`;
       for (let i = 0; i < 40 && !log().includes(stoppedLine); i++) pause(250);
       assert.match(log(), new RegExp(stoppedLine));
-      const offReport = JSON.parse(readFileSync(join(R, 'order-report.json'), 'utf8'));
+      let offReport;
+      for (let i = 0; i < 40; i++) {
+        try {
+          offReport = JSON.parse(readFileSync(join(R, 'order-report.json'), 'utf8'));
+          if (String(offReport.status).includes('stopped by rescue off')) break;
+        } catch { /* written just after the log line */ }
+        pause(50);
+      }
       assert.match(offReport.status, /stopped by rescue off/);
       assert.match(offReport.body, /stopped by rescue off/);
       assert.equal(alive(leader), false, 'rescue off stopped the order');
     } finally {
       try { offRescue.kill('SIGKILL'); } catch {}
       const leader = pidIn(offOrderPid);
+      try { if (leader > 1) process.kill(-leader, 'SIGKILL'); } catch {}
+    }
+  }
+  // 12f. `rescue off` TERMs the group. The leader can die while a child ignores TERM. The runner must still be
+  // waiting then: the log line is written when it returns, and stop_order's KILL is what actually ends that child.
+  {
+    const lingerChild = join(box, 'linger-child.pid');
+    const lingerStop = join(box, 'linger.stop');
+    const lingerLog = join(box, 'linger.log');
+    const lingerRc = join(box, 'linger.rc');
+    const lingerPid = join(box, 'linger-order.pid');
+    const lingerAction = join(box, 'linger-action.sh');
+    const running = (pid) => {
+      try {
+        const stat = execFileSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim();
+        return stat !== '' && !stat.startsWith('Z');
+      } catch { return false; }
+    };
+    const signalGroup = (sig, pid) => execFileSync('/bin/sh', ['-c', 'kill -"$1" -- "-$2"', '_', sig, String(pid)]);
+    writeFileSync(lingerAction, `#!/bin/sh
+/bin/sh -c 'trap "" TERM; echo $$ > "$1"; while :; do sleep 1; done' _ "$1" &
+while :; do sleep 1; done
+`);
+    chmodSync(lingerAction, 0o755);
+    writeFileSync(driver, `#!/bin/zsh
+${runner[0]}
+RUN_PIDFILE=${JSON.stringify(lingerPid)}
+run_bounded 60 "$1" "$2" "$3" ${JSON.stringify(lingerAction)} ${JSON.stringify(lingerChild)}
+`);
+    const job = spawn('/bin/zsh', [driver, lingerLog, lingerRc, lingerStop], { stdio: 'ignore' });
+    try {
+      for (let i = 0; i < 50 && !existsSync(lingerChild); i++) pause(50);
+      assert.ok(existsSync(lingerChild), 'the action started a child that ignores TERM');
+      for (let i = 0; i < 50 && !existsSync(lingerPid); i++) pause(50);
+      const child = Number(readFileSync(lingerChild, 'utf8').trim());
+      const leader = Number(readFileSync(lingerPid, 'utf8').split('\n')[0]);
+      writeFileSync(lingerStop, 'off\n');
+      signalGroup('TERM', leader);
+      pause(2500);
+      assert.equal(running(leader), false, 'TERM took the group leader');
+      assert.equal(running(child), true, 'a child that ignores TERM is still running');
+      assert.equal(running(job.pid), true, 'the runner waits for the group instead of logging a stop while the child runs');
+      signalGroup('KILL', leader);
+      for (let i = 0; i < 40 && running(job.pid); i++) pause(100);
+      assert.equal(running(job.pid), false, 'the runner returns once the group is gone');
+      assert.equal(running(child), false, 'the child is gone before the runner returns');
+    } finally {
+      try { job.kill('SIGKILL'); } catch {}
+      try { signalGroup('KILL', Number(readFileSync(lingerPid, 'utf8').split('\n')[0])); } catch {}
+      try { const child = pidIn(lingerChild); if (child > 1) process.kill(child, 'SIGKILL'); } catch {}
+    }
+  }
+  // 12g. On a real Mac, launchd bootout TERMs rescue.sh. That has to happen after the stop is logged, or the
+  // line never lands: the job's main process is the script that writes it.
+  {
+    rmSync(join(T, 'rescue-off'), { force: true });
+    writeFileSync(join(T, 'doctor.sh'), '#!/bin/zsh\nsleep 300\n');
+    chmodSync(join(T, 'doctor.sh'), 0o755);
+    const fakeBin = join(box, 'fake-launchctl');
+    const jobPidFile = join(box, 'rescue-job.pid');
+    const bootLog = join(box, 'bootout.log');
+    mkdirSync(fakeBin, { recursive: true });
+    writeFileSync(join(fakeBin, 'launchctl'), `#!/bin/sh
+echo "$1" >> "$TESS_BOOT_LOG"
+case "$1" in
+  bootout)
+    pid=$(cat "$TESS_RESCUE_JOB_PID" 2>/dev/null || true)
+    [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null || true
+    ;;
+esac
+exit 0
+`);
+    chmodSync(join(fakeBin, 'launchctl'), 0o755);
+    publish(order(++s, 'check', ['timeout 60']));
+    const job = spawn('/bin/zsh', [join(R, 'rescue.sh')], { env: { ...env, TESS_TEST_RUN: '1' }, stdio: 'ignore' });
+    const jobOrderPid = join(box, 'boot-order.pid');
+    try {
+      for (let i = 0; i < 50 && !existsSync(join(R, 'order.pid')); i++) pause(100);
+      assert.ok(existsSync(join(R, 'order.pid')), 'the order wrote its pid before bootout could kill the job');
+      writeFileSync(jobOrderPid, `${readFileSync(join(R, 'order.pid'), 'utf8').split('\n')[0]}\n`);
+      writeFileSync(jobPidFile, `${job.pid}\n`);
+      const offOut = execFileSync('/bin/sh', [join(T, 'tess'), 'rescue', 'off'], {
+        env: {
+          ...env,
+          TESS_LAUNCH_AGENTS: join(box, 'LaunchAgents'),
+          PATH: `${fakeBin}:${process.env.PATH}`,
+          TESS_RESCUE_JOB_PID: jobPidFile,
+          TESS_BOOT_LOG: bootLog,
+        },
+        encoding: 'utf8',
+      });
+      assert.match(offOut, /had already started was stopped/);
+      assert.match(readFileSync(bootLog, 'utf8'), /bootout/, 'rescue off still boots the job out');
+      const stoppedLine = `rescue order ${s} was stopped by rescue off`;
+      for (let i = 0; i < 40 && !log().includes(stoppedLine); i++) pause(250);
+      assert.match(log(), new RegExp(stoppedLine), 'bootout did not kill rescue.sh before it logged the stop');
+      const leader = Number(readFileSync(jobOrderPid, 'utf8').split('\n')[0]);
+      assert.equal(alive(leader), false, 'rescue off stopped the order');
+    } finally {
+      try { job.kill('SIGKILL'); } catch {}
+      const leader = pidIn(jobOrderPid);
       try { if (leader > 1) process.kill(-leader, 'SIGKILL'); } catch {}
     }
   }
@@ -244,7 +352,7 @@ sleep 600
   console.log('rescue tests passed (5 actions; script, unknown, injected, bad signature, expired, replay, other Mac; the limit stops the action group; a running order records its group for `tess rescue off`)');
 } finally {
   // a failed run must not leave a long sleep of its own behind
-  for (const f of [join(box, 'held.pid'), join(box, 'stubborn.pid'), slowChild, join(box, 'off-order.pid')]) {
+  for (const f of [join(box, 'held.pid'), join(box, 'stubborn.pid'), slowChild, join(box, 'off-order.pid'), join(box, 'linger-child.pid'), join(box, 'boot-order.pid')]) {
     const pid = pidIn(f);
     try { if (pid > 1) process.kill(pid, 'SIGKILL'); } catch {}
   }
