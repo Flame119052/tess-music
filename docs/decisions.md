@@ -747,3 +747,17 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   signed parts list writes the installer and uninstaller before the command, since a Mac gaining all three in one update
   must never hold a command that points at nothing. The installer's inherited copy of the command is compared with
   `tess-command.sh` byte for byte, because those older channels run the copy and not the signed part.
+- **D-95 · 18 Nov 2026 · Agent** — The Tess support bot isolates `OPENCODE_GO_API_KEY` and enforces daily caps in a
+  separate unprivileged local HTTP proxy (`support/cap-proxy/proxy.mjs`) running as user `tess-cap` under
+  `tess-cap.service` (`StateDirectory=tess-cap`, `/home/tess-cap/.env` mode `600`, `127.0.0.1:4193` only), rather
+  than inside the bot's own `tess-support` process (#85). Because `tess-support` keeps `terminal` enabled, anything
+  writable or readable by `tess-support` (including `StateDirectory=tess-support` or an `.env` key) could be reached by
+  constructing paths or commands in pieces around `pre_tool_call`; moving the key and `daily-cap.json` into `tess-cap`
+  closes both counter resets and key exfiltration. `cap-proxy` reuses `tools/review-proxy.mjs`'s strict allowlist
+  (only `POST /v1/chat/completions`, loopback `Host` only, `CONNECT`/`Upgrade`/query/dot-segment/escape refusal, bearer
+  token verification via `timingSafeEqual`), enforces global, per-person (when carrying Telegram user id), and optional
+  response-`usage` token caps, and leaves counters intact on malformed upstream responses. The in-bot `daily-cap` plugin
+  remains only for a friendly early UX message, while `support/setup.sh` uses `O_NOFOLLOW` + `fchmodSync` instead of
+  path-following `chmod` and refuses `TESS_TEST=1` as root unless both an explicit scratch `TESS_TEST_ROOT` and faked
+  system tools are present.
+

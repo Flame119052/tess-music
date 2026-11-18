@@ -30,13 +30,15 @@ How Tess Music stores, loads, and backs up secrets across **local development**,
 - **Releases ([`tools/release.mjs`](../tools/release.mjs)):** Reads `TESS_SIGNING_KEY`, `TESS_CODESIGN_P12`, `TESS_CODESIGN_PASS`, and `TESS_MIRROR_KEY_FILE` from `process.env` in CI, and falls back to `~/.config/tess-signing/` locally.
 - **Promotion ([`tools/promote.mjs`](../tools/promote.mjs)):** Uses `TESS_MIRROR_KEY_FILE` in CI or local git/GitHub auth locally.
 - **Rescue orders ([`tools/rescue.mjs`](../tools/rescue.mjs)):** Always reads `~/.config/tess-signing/rescue.pem` directly so the rescue key never needs to live in CI or `.env`.
-- **Support bot ([`support/`](../support/README.md), D-76, D-77, D-95):** Runs on Krish's VPS under its own
-  unprivileged system user `tess-support` (never as `root`, never touching `/srv/paperclip`, PostgreSQL, or Tincan), and
-  holds `TELEGRAM_BOT_TOKEN`, `OPENCODE_GO_API_KEY`, `TESS_OWNER_ID`, `TESS_SUPPORT_TOKEN`, `TESS_INBOX`,
-  `TELEGRAM_ALLOWED_USERS`, and daily cap settings (`TESS_DAILY_REPLY_CAP`, `TESS_DAILY_USER_CAP`, optional
-  `TESS_DAILY_TOKEN_CAP`) in `/home/tess-support/.hermes/profiles/tess-support/.env` at mode `600`, written without
-  putting secrets on any command line and mounted read-only to the running systemd service. It has **no GitHub token at
-  all** — filing happens with Krish's own Cloudflare and GitHub logins on his machine.
+- **Support bot ([`support/`](../support/README.md), D-76, D-77, D-95):** Runs on Krish's VPS split across two
+  unprivileged system users (never `root`, never touching `/srv/paperclip`, PostgreSQL, or Tincan):
+  `tess-cap` holds the real `OPENCODE_GO_API_KEY`, local `TESS_CAP_PROXY_TOKEN`, loopback listener settings, and
+  enforced daily cap limits (`TESS_DAILY_REPLY_CAP`, `TESS_DAILY_USER_CAP`, optional `TESS_DAILY_TOKEN_CAP`) in
+  `/home/tess-cap/.env` at mode `600`; `tess-support` holds `TELEGRAM_BOT_TOKEN`, the local proxy bearer token as
+  `OPENCODE_GO_API_KEY` + `OPENCODE_GO_BASE_URL`, `TESS_OWNER_ID`, `TESS_SUPPORT_TOKEN`, `TESS_INBOX`, and
+  `TELEGRAM_ALLOWED_USERS` in `/home/tess-support/.hermes/profiles/tess-support/.env` at mode `600`, written without
+  putting secrets on any command line and mounted read-only to each systemd service. Neither user holds a GitHub token
+  — filing happens with Krish's own Cloudflare and GitHub logins on his machine.
 - **Support posting tokens (inbox):** minted by `node tools/reports.mjs support token add "<label>"`, stored in D1 as a
   plain SHA-256, revoked with `support token revoke "<label>"`. Recordings go to the `tess-support` R2 bucket, never the
   database, and are deleted when the report is filed or at 14 days.
