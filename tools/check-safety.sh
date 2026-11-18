@@ -6,6 +6,176 @@ set -e
 cd "$(dirname "$0")/.."
 fail() { echo "SAFETY CHECK FAILED: $1"; exit 1; }
 
+# Stable is still the build from before Release B, so it has no dist/install.sh and the public
+# install line refuses a new install. Promoting is paused. Failing here would turn every pull
+# request red, so this is a notice. tools/promote.mjs is what refuses a beta that lacks the pair.
+stable_installer_notice() {
+  _repo=${1:-.}
+  if git -C "$_repo" rev-parse -q --verify refs/remotes/origin/stable >/dev/null 2>&1; then
+    if ! git -C "$_repo" cat-file -e refs/remotes/origin/stable:dist/install.sh 2>/dev/null; then
+      echo "notice: origin/stable has no dist/install.sh; new installs are refused until the first promote"
+    fi
+  fi
+}
+
+if [ "${1:-}" = "--stable-notice" ]; then
+  stable_installer_notice "${2:-.}"
+  exit 0
+fi
+
+# Quoted words are not commands: the install line's own messages mention a shell inside quotes.
+# A downloaded file may be run only as sh of the installer, and only after a tess-verify of that
+# same file whose failure exits. Any fetch from main is refused. The one exception is the pinned
+# verifier download written to $D/tess-verify. A variable set to main counts as main.
+forwarder_problem() {
+  awk '
+    function continued(s,   k) {
+      if (substr(s, length(s), 1) != "\\") return 0
+      k = 0
+      while (k < length(s) && substr(s, length(s) - k, 1) == "\\") k++
+      return k % 2
+    }
+    function line_aborts(s) {
+      return s ~ /[$]D\/tess-verify/ && s ~ /[$]D\/install\.sh/ && s ~ /\|\|[[:space:]]*(fail|exit)/
+    }
+    function note_main_vars(   i, tok, name) {
+      for (i = 1; i <= nt; i++) {
+        tok = TW[i]
+        if (tok ~ /^[A-Za-z_][A-Za-z0-9_]*=main$/) {
+          name = tok
+          sub(/=main$/, "", name)
+          main_vars[name] = 1
+        }
+      }
+    }
+    function forbidden(s,   name) {
+      # The pinned verifier is the only download that may name main, and only as tess-verify.
+      if (s ~ /\/main\// || s ~ /main\/installer\/verify\//) {
+        if (s ~ /main\/installer\/verify\// && s ~ /\$D\/tess-verify/ && s !~ /install\.sh/) return 0
+        return 1
+      }
+      if (s ~ /[?&]ref=main([^A-Za-z0-9_-]|$)/) return 1
+      if (s ~ /main\/installer\/(tess-install|legacy|install)([^A-Za-z0-9_-]|$)/) return 1
+      if (s ~ /main\/dist\/install/) return 1
+      for (name in main_vars) {
+        if (s ~ ("[?&]ref=\\$" name "([^A-Za-z0-9_]|$)")) return 1
+        if (s ~ ("[?&]ref=\\$\\{" name "\\}")) return 1
+        if (s ~ ("[/]\\$" name "[/]")) return 1
+        if (s ~ ("[/]\\$\\{" name "\\}[/]")) return 1
+      }
+      return 0
+    }
+    function tokenize(s,   i, n, c, q, w) {
+      nt = 0
+      w = ""
+      q = ""
+      delete TW
+      n = length(s)
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (q != "") {
+          if (c == q) q = ""
+          else w = w c
+          continue
+        }
+        if (c == " " || c == "\t") {
+          if (w != "") { nt++; TW[nt] = w; w = "" }
+          continue
+        }
+        if (c == "\"" || c == sprintf("%c", 39)) { q = c; continue }
+        if (c == ";" || c == "|" || c == "&" || c == "(" || c == ")" || c == "{" || c == "}") {
+          if (w != "") { nt++; TW[nt] = w; w = "" }
+          nt++; TW[nt] = c
+          continue
+        }
+        w = w c
+      }
+      if (w != "") { nt++; TW[nt] = w }
+    }
+    function next_arg(i,   tok) {
+      if (i + 1 > nt) return ""
+      tok = TW[i + 1]
+      if (tok == ";" || tok == "|" || tok == "&" || tok == "(" || tok == ")" || tok == "{" || tok == "}" || tok == "then" || tok == "else" || tok == "do") return ""
+      return tok
+    }
+    function scan_execs(   i, cmdpos, tok, arg, piped, runs_download) {
+      cmdpos = 1
+      for (i = 1; i <= nt; i++) {
+        tok = TW[i]
+        # Between `in` and `)`, and after `;;`, words are case patterns. `eval|eval:*` is not a command.
+        if (in_pat) {
+          if (tok == "esac") { in_case = 0; in_pat = 0; cmdpos = 1; continue }
+          if (tok == ")") { in_pat = 0; cmdpos = 1 }
+          continue
+        }
+        if (tok == "esac") { in_case = 0; in_pat = 0; cmdpos = 1; continue }
+        if (tok == ";" || tok == "|" || tok == "&" || tok == "(" || tok == "{" || tok == "then" || tok == "else" || tok == "do") {
+          if (tok == ";" && in_case && i > 1 && TW[i - 1] == ";") in_pat = 1
+          cmdpos = 1
+          continue
+        }
+        if (tok == ")" || tok == "}" || tok == "fi" || tok == "done") continue
+        if (!cmdpos) {
+          if (in_case && tok == "in") in_pat = 1
+          continue
+        }
+        if (tok == "!") { cmdpos = 1; continue }
+        if (tok ~ /^[A-Za-z_][A-Za-z0-9_]*=/) continue
+        if (tok == "case") in_case = 1
+        # Count a shell only when it is aimed at a downloaded file, a pipe, or `sh -c`.
+        arg = next_arg(i)
+        piped = (i > 1 && TW[i - 1] == "|")
+        runs_download = (tok == "sh" || tok == "bash" || tok == "zsh") && (arg ~ /^[$]D\// || piped || arg ~ /^-l?c$/)
+        runs_download = runs_download || ((tok == "source" || tok == "." || tok == "eval") && (arg ~ /[$]D\// || piped))
+        if (runs_download) {
+          exec_n++
+          EX_ARG[exec_n] = tok " " arg
+          EX_OK[exec_n] = (tok == "sh" && arg == "$D/install.sh" && !piped) ? 1 : 0
+        }
+        cmdpos = 0
+      }
+    }
+    function take(s,   exec_before, i) {
+      if (s ~ /^[[:space:]]*#/ || s ~ /^[[:space:]]*$/) return
+      tokenize(s)
+      note_main_vars()
+      if (forbidden(s)) problems = problems "installer fetched from main\n"
+      exec_before = exec_n
+      scan_execs()
+      for (i = exec_before + 1; i <= exec_n; i++) {
+        if (!seen) problems = problems "shell runs a download before tess-verify exits: " EX_ARG[i] "\n"
+        else if (!EX_OK[i]) problems = problems "shell runs " EX_ARG[i] "\n"
+        else allowed++
+      }
+      if (line_aborts(s)) seen = 1
+    }
+    BEGIN { seen = 0; allowed = 0; exec_n = 0; problems = ""; in_case = 0; in_pat = 0 }
+    {
+      if (!cont) buf = $0
+      else buf = buf $0
+      cont = 0
+      if (continued(buf)) { buf = substr(buf, 1, length(buf) - 1); cont = 1; next }
+      take(buf)
+    }
+    END {
+      if (cont) take(buf)
+      if (allowed != 1) problems = problems "expected one sh of the verified installer, found " allowed "\n"
+      if (problems != "") printf "%s", problems
+    }
+  ' "$1"
+}
+
+if [ "${1:-}" = "--forwarder-fixture" ]; then
+  [ -n "${2:-}" ] && [ -f "$2" ] || fail "--forwarder-fixture needs a file"
+  out=$(forwarder_problem "$2" || true)
+  if [ -n "$out" ]; then
+    echo "forwarder-blocked: $out"
+    exit 1
+  fi
+  echo "forwarder-ok"
+  exit 0
+fi
+
 # 1. no delete-then-copy of Spotify's folder anywhere
 if grep -nE 'rm -rf "?\$(APPS|A0)"?( |;|$)' installer/*.sh; then fail "a script deletes Spotify's interface folder directly; use tess-patcher swap-apps"; fi
 if grep -rn 'RemoveAll(appDestPath)' patcher/src; then fail "the patcher deletes Spotify's interface folder directly; use swapApps"; fi
@@ -55,11 +225,43 @@ repo_values=$(sed -n 's/^REPO="\([^"]*\)".*/\1/p' installer/*.sh | sort -u | wc 
 if grep -nE 'curl[^|]*\|[[:space:]]*([^[:space:]]+[[:space:]]+)*(sh|zsh)([[:space:];]|$)' installer/tess-install.sh installer/updater.sh installer/doctor.sh installer/rescue.sh installer/uninstall.sh installer/wake.sh installer/tess-command.sh; then
   fail "an installed script pipes a download into a shell"
 fi
-# The public forwarder's main fallback is allowed only while stable lacks dist/install.sh (temporary, #77).
-# A channel without a signed installer refuses; the public line never runs an installer from main.
-if grep -nE 'main/installer/(tess-install|legacy)' installer/install.sh; then
-  fail "installer/install.sh has a fallback installer; a channel must publish a signed installer"
+# A channel without a signed installer refuses. The public line's only shell of a downloaded file is
+# the installer tess-verify accepted. A main fallback under any name fails the gate.
+if out=$(forwarder_problem installer/install.sh) && [ -n "$out" ]; then
+  echo "$out"
+  fail "installer/install.sh runs a download tess-verify did not accept, or fetches an installer from main"
 fi
+forwarder_fixture() {
+  fixture=$(mktemp)
+  printf '%s\n' "$2" > "$fixture"
+  out=$(forwarder_problem "$fixture" || true)
+  rm -f "$fixture"
+  if [ "$1" = blocked ]; then
+    [ -n "$out" ] || fail "the install-line gate lets this through: $3"
+  else
+    [ -z "$out" ] || fail "the install-line gate rejects the verified installer: $3 ($out)"
+  fi
+}
+forwarder_ok='"$D/tess-verify" "$D/install.sh" "sig" || fail "no"
+sh "$D/install.sh"'
+forwarder_fixture ok "$forwarder_ok" "verified installer"
+forwarder_fixture blocked 'sh "$D/install.sh"' "shell before tess-verify"
+forwarder_fixture blocked 'curl -fsSL "$BASE/main/dist/install.sh" -o "$D/install.sh"
+'"$forwarder_ok" "installer from main/dist"
+forwarder_fixture blocked 'curl -fsSL "$BASE/main/installer/legacy.sh" -o "$D/x"
+'"$forwarder_ok" "legacy fallback"
+forwarder_fixture blocked 'curl -fsSL "$BASE/main/installer/tess-install.sh" -o "$D/x"
+'"$forwarder_ok" "tess-install fallback"
+forwarder_fixture blocked 'curl -fsSL "$API/contents/dist/install.sh?ref=main" -o "$D/install.sh"
+'"$forwarder_ok" "ref=main"
+forwarder_fixture blocked 'curl -fsSL "$BASE/$CH/dist/install.sh" | sh
+'"$forwarder_ok" "pipe into a shell"
+forwarder_fixture blocked 'curl "$BASE/main/installer/verify/x" -o "$D/install.sh"
+'"$forwarder_ok" "verifier path written over the installer"
+forwarder_fixture blocked 'M=main
+curl -fsSL "$API/contents/dist/install.sh?ref=$M" -o "$D/install.sh"
+'"$forwarder_ok" "ref variable set to main"
+stable_installer_notice
 
 # The folder swap runs inside tess-patcher, never in a shell: macOS's App Management protection denies /usr/bin/ditto
 # when launchd starts a script under /bin/zsh, so a background theme update could never reach Spotify that way. Each
@@ -614,7 +816,9 @@ for f in patcher/prebuilt/spicetify-2.46.4/css-map.json patcher/prebuilt/spiceti
 done
 (cd patcher/prebuilt/spicetify-2.46.4 && shasum -a 256 -c SHA256SUMS >/dev/null) || fail "the vendored Spicetify files do not match SHA256SUMS"
 (cd patcher/prebuilt/spicetify-2.46.4 && [ "$(find css-map.json jsHelper -type f | sort)" = "$(awk '{print $2}' SHA256SUMS | sort)" ]) || fail "the vendored Spicetify files and SHA256SUMS list differ"
-if grep -q 'spicetify-2.46.4-darwin' tools/release.mjs; then fail "release.mjs downloads Spicetify; use patcher/prebuilt"; fi
+if grep -nE 'spicetify-2\.46\.4-darwin|check-spicetify-upstream' tools/release.mjs .github/workflows/release.yml; then
+  fail "the release downloads Spicetify or runs the maintainer upstream check; vendor the files"
+fi
 
 # 10. no script can act on a real Mac by accident (issue #107). Every entry point refuses to do anything when it is
 #     sourced, and refuses to run from a git checkout or worktree outside a sandbox, where TESS_TEST=1 marks the sandbox

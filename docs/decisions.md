@@ -436,6 +436,28 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   non-letter old-style `tar` flags, or nested `$(…)` inside redirects (which stop at the first `)`) can either be
   conservative or slip past; reads out of `$APPS` remain covered by must-pass fixtures. The gate deliberately does not
   check writes through a variable, through another working directory, or through `xargs`. (#111)
+- **D-96 · 18 Nov 2026 · Agent** — The public install line fetches `install.sh` and `install.sig` as one pair from
+  GitHub's contents API, and fetches that pair once more when the signature check fails. Both files of a try come
+  from the same place. The raw address is used only when the API is unavailable, not when the API says the file is
+  missing. A raw signature fetch that returns 404 is reported as no signature on that channel. Any other failure of
+  that fetch, including a dropped connection or a 5xx, is reported as a download failure. The install-line gate
+  refuses any fetch from `main`. The one allowed fetch is the pinned verifier download written to `$D/tess-verify`.
+  A verifier path written over the installer, and a `ref` variable set to `main`, are refused. `tools/promote.mjs`
+  refuses a beta whose `dist/` lacks `install.sh` or `install.sig`, including on a dry run, so a promote cannot
+  publish a channel that refuses every new install. `tools/check-safety.sh` prints a notice when `origin/stable` has
+  no `dist/install.sh` and does not fail the check. The workflow comment that said the safety check judges what
+  users get was wrong, and now says the fetch is for that notice. `tools/check-spicetify-upstream.sh` downloads the
+  Spicetify v2.46.4 archive, requires SHA-256 `d217bcf3b780136d66dee9b3548b3689f6004263a958c57d96ad73d7f6fcdd5b`,
+  and diffs the vendored files. A person runs it. The release does not. CI runs the offline fixtures. The live
+  download runs only when `TESS_UPSTREAM_LIVE=1`. A promotion key that signs the channel name, and a `rev` floor the
+  page cannot rewrite, stay the owner's decision. This change does not add a key or a new store. (#92)
+  *Why:* raw.githubusercontent caches each file on its own, so just after a promote a new installer can arrive with
+  the previous signature and a good install fails closed. The vendored Spicetify checksum only proves the committed
+  files still match each other. Stable is still 0.2.22, from before Release B, and promoting is paused. A check that
+  failed whenever stable lacked `dist/install.sh` would turn every pull request red. New installs are refused until
+  the first promote. *Trade-off:* an unauthenticated contents read counts against GitHub's 60 reads an hour, so a
+  rate limit falls back to the raw pair and one retry. CI no longer proves the vendored tree against the live
+  archive on every push. A person does that with `TESS_UPSTREAM_LIVE=1`.
 
 ## Releases and process
 
