@@ -1,10 +1,12 @@
 # Tess Support. Runs on Krish's VPS as its own isolated system user (tess-support) using OpenCode Go
-# (opencode-go/deepseek-v4.1-flash) with a hard daily cap enforced before any model call. Secrets live in this
-# profile's own .env at mode 600 — never here.
+# (opencode-go/deepseek-v4.1-flash) routed through the separate `tess-cap` proxy user (http://127.0.0.1:4193/v1),
+# which holds the real OPENCODE_GO_API_KEY and enforces the real daily caps. The bot's own .env only holds a local
+# proxy token at mode 600 — never the real Go key or GitHub credentials.
 
 model:
   provider: opencode-go
   default: deepseek-v4.1-flash
+  base_url: http://127.0.0.1:4193/v1
 
 plugins:
   enabled:

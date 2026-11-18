@@ -1,7 +1,8 @@
-"""Hard daily reply and token budget for the Tess support bot.
+"""Friendly early daily usage notice and tool-path guard for the Tess support bot.
 
-Hermes has no built-in daily reply/token cap (only a per-run wall clock), so this plugin checks and increments a
-shared daily cap plus a smaller per-person cap inside ``pre_llm_call`` before any model inference runs.
+The real, tamper-resistant daily cap and real ``OPENCODE_GO_API_KEY`` live outside ``tess-support`` inside the
+separate ``tess-cap`` proxy service (``support/cap-proxy/proxy.mjs``). This in-bot plugin remains only as a
+friendly early message before an HTTP turn starts and as defense-in-depth inside ``pre_tool_call``.
 """
 
 from __future__ import annotations
