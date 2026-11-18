@@ -217,7 +217,7 @@ apps_write() {
     # The words after a verb up to the next operator at the same nesting level. Nested `$(...)` and backticks are
     # skipped except when a nested word names the folder (which adds a `$APPS` placeholder so the outer verb still sees
     # it), and only parens with a matching `)` enter depth > 0 so an unmatched `(` cannot hide trailing words.
-    function command_writes(verb, from, nt, bt_start,   k, w, nw, depth, in_bt, sp, open_exec, bverb, src, ok, hit, m, mode, pending, ch, idx, val, opt, c_hits, f_hits, stop_opts, STACK, MATCHED) {
+    function command_writes(verb, from, nt, bt_start,   k, w, nw, depth, in_bt, sp, open_exec, bverb, src, ok, hit, m, mode, pending, ch, idx, val, opt, c_hits, f_hits, stop_opts, rm_src, STACK, MATCHED) {
       delete STACK
       delete MATCHED
       sp = 0
@@ -264,47 +264,54 @@ apps_write() {
         return 0
       }
       if (bverb == "tar") {
-        mode = ""; pending = ""; c_hits = 0; f_hits = 0; stop_opts = 0
+        mode = ""; pending = ""; c_hits = 0; f_hits = 0; stop_opts = 0; rm_src = 0
         for (k = 1; k <= nw; k++) {
           w = WARGS[k]
           if (pending != "") {
             opt = substr(pending, 1, 1)
             pending = substr(pending, 2)
-            if (opt == "C" && is_folder(strip_prefix(w))) c_hits = 1
-            if (opt == "f" && is_folder(strip_prefix(w))) f_hits = 1
+            if (opt == "C" && (is_folder(strip_prefix(w)) || (w == "$" && k < nw && WARGS[k + 1] == "$APPS"))) c_hits = 1
+            if (opt == "f" && (is_folder(strip_prefix(w)) || (w == "$" && k < nw && WARGS[k + 1] == "$APPS"))) f_hits = 1
             continue
           }
           if (!stop_opts && w == "--") { stop_opts = 1; continue }
           if (!stop_opts && substr(w, 1, 2) == "--") {
             if (w == "--extract" || w == "--get") mode = "x"
             else if (w == "--create" || w == "--append" || w == "--update") mode = "c"
+            else if (w == "--delete" || w == "--concatenate" || w == "--catenate") mode = "c"
+            else if (w == "--remove-files") rm_src = 1
             else if (w == "--list") mode = "t"
             else if (w == "--diff" || w == "--compare") mode = "d"
             else if (w == "--directory") pending = pending "C"
-            else if (w ~ /^--directory=/) { if (is_folder(strip_prefix(substr(w, 13)))) c_hits = 1 }
-            else if (w == "--file") pending = pending "f"
-            else if (w ~ /^--file=/) { if (is_folder(strip_prefix(substr(w, 8)))) f_hits = 1 }
+            else if (w ~ /^--directory=/) {
+              val = substr(w, 13)
+              if (is_folder(strip_prefix(val)) || (val == "$" && k < nw && WARGS[k + 1] == "$APPS")) c_hits = 1
+            } else if (w == "--file") pending = pending "f"
+            else if (w ~ /^--file=/) {
+              val = substr(w, 8)
+              if (is_folder(strip_prefix(val)) || (val == "$" && k < nw && WARGS[k + 1] == "$APPS")) f_hits = 1
+            }
             continue
           }
-          if (!stop_opts && ((substr(w, 1, 1) == "-" && length(w) > 1) || (k == 1 && w ~ /^[xtcrud][A-Za-z0-9]*$/))) {
+          if (!stop_opts && ((substr(w, 1, 1) == "-" && length(w) > 1) || (k == 1 && w ~ /^[xtcrudA][A-Za-z0-9]*$/))) {
             idx = (substr(w, 1, 1) == "-") ? 2 : 1
             for (; idx <= length(w); idx++) {
               ch = substr(w, idx, 1)
               if (ch == "x") mode = "x"
-              else if (ch == "c" || ch == "r" || ch == "u") mode = "c"
+              else if (ch == "c" || ch == "r" || ch == "u" || ch == "A") mode = "c"
               else if (ch == "t") mode = "t"
               else if (ch == "d") mode = "d"
               else if (ch == "C") {
                 if (idx < length(w) && substr(w, idx + 1, 1) ~ /[\/.$]/) {
                   val = substr(w, idx + 1)
-                  if (is_folder(strip_prefix(val))) c_hits = 1
+                  if (is_folder(strip_prefix(val)) || (val == "$" && k < nw && WARGS[k + 1] == "$APPS")) c_hits = 1
                   break
                 }
                 pending = pending "C"
               } else if (ch == "f") {
                 if (idx < length(w) && substr(w, idx + 1, 1) ~ /[\/.$]/) {
                   val = substr(w, idx + 1)
-                  if (is_folder(strip_prefix(val))) f_hits = 1
+                  if (is_folder(strip_prefix(val)) || (val == "$" && k < nw && WARGS[k + 1] == "$APPS")) f_hits = 1
                   break
                 }
                 pending = pending "f"
@@ -313,9 +320,16 @@ apps_write() {
             continue
           }
         }
-        if (mode == "c") return f_hits
+        if (mode == "c") {
+          if (rm_src) {
+            if (c_hits) return 1
+            for (k = 1; k <= nw; k++) if (is_folder(strip_prefix(WARGS[k]))) return 1
+          }
+          return f_hits
+        }
+        if (mode == "x") return c_hits
         if (mode == "t" || mode == "d") return 0
-        return c_hits
+        return c_hits || f_hits
       }
       hit = 0
       for (k = 1; k <= nw; k++) if (is_folder(strip_prefix(WARGS[k]))) { hit = 1; break }
@@ -535,6 +549,12 @@ apps_write_fixture caught 'tar --extract --file=a.tar --directory="$APPS"'
 apps_write_fixture caught 'tar -xCf "$APPS" a.tar'
 apps_write_fixture caught 'tar xzf a.tgz -C "$APPS"'
 apps_write_fixture caught 'tar -cf "$APPS/bak.tar" "$TMP/x"'
+apps_write_fixture caught 'tar -Af "$APPS/a.tar" b.tar'
+apps_write_fixture caught 'tar --delete -f "$APPS/a.tar" x'
+apps_write_fixture caught 'tar --concatenate -f "$APPS/a.tar" b.tar'
+apps_write_fixture caught 'tar --catenate -f "$APPS/a.tar" b.tar'
+apps_write_fixture caught 'tar -czf "$TMP/b.tgz" --remove-files "$APPS"'
+apps_write_fixture caught 'tar -czf "$TMP/b.tgz" --remove-files --directory="$APPS" .'
 apps_write_fixture allowed 'tar -czf "$TMP/bak.tgz" "$APPS"'
 apps_write_fixture allowed 'tar -czf "$TMP/bak.tgz" -C "$APPS" .'
 apps_write_fixture allowed 'tar -C "$APPS" -czf "$TMP/bak.tgz" .'
