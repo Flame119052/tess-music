@@ -47,8 +47,11 @@ How Tess Music stores, loads, and backs up secrets across **local development**,
 - **Support chat settings (inbox vars, not secrets):** set in [`inbox/wrangler.toml`](../inbox/wrangler.toml).
   `SUPPORT_MODEL` is `deepseek-v4.1-flash`. `SUPPORT_CHAT_PERSON_REQUESTS` is 80 and `SUPPORT_CHAT_SHARED_REQUESTS` is
   400 per UTC day. `SUPPORT_CHAT_PERSON_TOKENS` is 300000 and `SUPPORT_CHAT_SHARED_TOKENS` is 2000000; a token var of
-  `0` turns that budget off. Counters live in the existing `limits` table. Token totals move only when the upstream
-  body includes a usable `usage` object.
+  `0` turns that budget off. Counters live in the existing `limits` table. A normal reply moves token totals only
+  when the upstream body includes a usable `usage` object, and a malformed body does not write them back to zero.
+  A withheld reply or a client disconnect still counts the parsed usage, or that request's max_tokens when none can
+  be read. The token cap is soft by up to about one reply per parallel request. Chat uses its own Cloudflare limiter,
+  `CHAT_LIMIT` (30 a minute per IP). Health reports and support posts keep `LIMIT` (6 a minute).
 - **Sandbox testing ([`installer/tess-install.sh`](../installer/tess-install.sh)):** Uses `TESS_TEST=1`, `TESS_HOME`, `TESS_CONFIG`, `TESS_SPOTIFY`, and `TESS_CHANNEL` (`stable` | `beta` | `dev`). See [`.env.example`](../.env.example). A checkout's copy of any installer script refuses to act outside a sandbox — sourcing one does nothing at all — and needs `TESS_REAL_INSTALL=1` before it will run on a real Mac ([#107](https://github.com/Flame119052/tess-music/issues/107)).
 
 ## 4. Offline & cloud key backups
