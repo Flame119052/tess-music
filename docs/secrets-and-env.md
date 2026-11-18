@@ -11,7 +11,7 @@ How Tess Music stores, loads, and backs up secrets across **local development**,
 | Mirror deploy key | *(uses local `gh` / git auth)* | GitHub Actions `TESS_MIRROR_KEY` | Pushes builds to `Flame119052/tess-releases` |
 | Rescue key (Ed25519) | `~/.config/tess-signing/rescue.pem` (**Mac only**) | **Never in GitHub / CI** | Signs emergency rescue orders via [`tools/rescue.mjs`](../tools/rescue.mjs) |
 | Inbox IP hash salt | `inbox/.dev.vars` (if running locally) | Cloudflare Worker secret `SALT`, **required** (`wrangler secret put SALT`; at least 16 characters) | Salts hashed IPs in [`inbox/worker.js`](../inbox/worker.js). With no usable salt the Worker answers 503 and stores nothing, because an unsalted hash of an IPv4 address is reversible |
-| OpenCode Go key for support chat | Not on a person's Mac. A local wrangler test can put a fake value in `inbox/.dev.vars` (gitignored) | Cloudflare Worker secret `OPENCODE_GO_API_KEY` (`npx wrangler@4 secret put OPENCODE_GO_API_KEY` from `inbox/`). Never a `[vars]` entry and never in git | Attached only to the Worker's own request to `https://opencode.ai/zen/go/v1/chat/completions`. `POST /v1/support/chat` answers 503 and does not call upstream when this secret is missing (D-103) |
+| OpenCode Go key for support chat | Not on a person's Mac. A local wrangler test can put a fake value in `inbox/.dev.vars` (gitignored) | Cloudflare Worker secret `OPENCODE_GO_API_KEY` (`npx wrangler@4 secret put OPENCODE_GO_API_KEY` from `inbox/`). Never a `[vars]` entry and never in git | Attached only to the Worker's own request to `https://opencode.ai/zen/go/v1/chat/completions`. `POST /v1/support/chat/completions` answers 503 and does not call upstream when this secret is missing (D-103) |
 | Cloudflare auth | `npx wrangler@4 login` session | Cloudflare dashboard / API | Deploys `inbox/` and reads D1/KV reports |
 | Reviewer plan logins | `~/.config/tess-codex-ci/auth.json` (Codex only) | Actions secrets `CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_AUTH_JSON`, `OPENCODE_API_KEY`, `ZHIPU_API_KEY` | The hosted AI reviewer. Every one is a subscription login; no pay-per-use API key is used (D-71, D-73). Setup and the Codex renewal step: [`tools/runner-setup.md`](../tools/runner-setup.md) |
 
@@ -43,7 +43,7 @@ How Tess Music stores, loads, and backs up secrets across **local development**,
 - **Support posting tokens (inbox):** minted by `node tools/reports.mjs support token add "<label>"`, stored in D1 as a
   plain SHA-256, revoked with `support token revoke "<label>"`. Recordings go to the `tess-support` R2 bucket, never the
   database, and are deleted when the report is filed or at 14 days. The same token is the bearer for
-  `POST /v1/support/chat` (D-103). Revoking it stops both routes.
+  `POST /v1/support/chat/completions` (D-103). Revoking it stops both routes.
 - **Support chat settings (inbox vars, not secrets):** set in [`inbox/wrangler.toml`](../inbox/wrangler.toml).
   `SUPPORT_MODEL` is `deepseek-v4.1-flash`. `SUPPORT_CHAT_PERSON_REQUESTS` is 80 and `SUPPORT_CHAT_SHARED_REQUESTS` is
   400 per UTC day. `SUPPORT_CHAT_PERSON_TOKENS` is 300000 and `SUPPORT_CHAT_SHARED_TOKENS` is 2000000; a token var of

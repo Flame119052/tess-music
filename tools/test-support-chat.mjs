@@ -1,4 +1,4 @@
-// The support chat gate (POST /v1/support/chat) against a fake upstream. The Worker runs as it does in production;
+// The support chat gate (POST /v1/support/chat/completions) against a fake upstream. The Worker runs as it does in production;
 // only global fetch is replaced, and only after the gates that must not open a socket.
 // Usage: node tools/test-support-chat.mjs
 import { execFileSync } from 'node:child_process';
@@ -156,7 +156,7 @@ try {
     }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
   calls.length = 0;
-  const pending = worker.fetch(req('/v1/support/chat', { body: chatBody({ stream: true }) }), env());
+  const pending = worker.fetch(req('/v1/support/chat/completions', { body: chatBody({ stream: true }) }), env());
   const raced = await Promise.race([
     pending.then((res) => res),
     new Promise((resolve) => setTimeout(() => resolve('blocked'), 400)),
@@ -196,7 +196,7 @@ try {
   // A non-streaming reply is returned whole, and its usage is added on top of the stream.
   upstreamImpl = async () => jsonReply({ choices: [{ message: { content: 'plain' } }], usage: { total_tokens: 9 } });
   calls.length = 0;
-  const plain = await worker.fetch(req('/v1/support/chat'), env());
+  const plain = await worker.fetch(req('/v1/support/chat/completions'), env());
   assert.equal(plain.status, 200);
   const plainBody = await plain.json();
   assert.equal(plainBody.choices[0].message.content, 'plain');
@@ -210,27 +210,31 @@ try {
     assert.equal(calls.length, before, `${label} opened an upstream socket`);
     return res;
   };
-  const revoked = await silent('revoked token', req('/v1/support/chat', { token: REVOKED }));
+  const revoked = await silent('revoked token', req('/v1/support/chat/completions', { token: REVOKED }));
   assert.equal(revoked.status, 401);
   assert.equal(await revoked.text(), '');
-  const missing = await silent('missing token', req('/v1/support/chat', { token: '' }));
+  const missing = await silent('missing token', req('/v1/support/chat/completions', { token: '' }));
   assert.equal(missing.status, 401);
   assert.equal(await missing.text(), '');
-  const wrong = await silent('second model', req('/v1/support/chat', { body: chatBody({ model: 'gpt-4o' }) }));
+  const wrong = await silent('second model', req('/v1/support/chat/completions', { body: chatBody({ model: 'gpt-4o' }) }));
   assert.equal(wrong.status, 400);
-  const get = await silent('GET', req('/v1/support/chat', { method: 'GET', body: null }));
+  const get = await silent('GET', req('/v1/support/chat/completions', { method: 'GET', body: null }));
   assert.equal(get.status, 405);
-  const query = await silent('query string', req('/v1/support/chat?x=1'));
+  const query = await silent('query string', req('/v1/support/chat/completions?x=1'));
   assert.equal(query.status, 404);
+  // Hermes and every OpenAI-compatible client add /chat/completions to the base URL, so that is the route; the bare base
+  // is not a second door.
+  const bare = await silent('bare base path', req('/v1/support/chat'));
+  assert.equal(bare.status, 404);
   // Request (and the Worker runtime) resolves ".." before the handler. A path that still carries an encoded
   // slash or dot is not the one allowed route, and a sibling path is not either.
-  const dots = await silent('encoded dot segment', req('/v1/support/chat%2f%2e%2e'));
+  const dots = await silent('encoded dot segment', req('/v1/support/chat/completions%2f%2e%2e'));
   assert.equal(dots.status, 404);
   const other = await silent('other path', req('/v1/support/other'));
   assert.equal(other.status, 404);
-  const shaped = await silent('non-chat body', req('/v1/support/chat', { body: { hello: 'there' } }));
+  const shaped = await silent('non-chat body', req('/v1/support/chat/completions', { body: { hello: 'there' } }));
   assert.equal(shaped.status, 400);
-  const textBody = await silent('non-json body', req('/v1/support/chat', { body: 'not-json' }));
+  const textBody = await silent('non-json body', req('/v1/support/chat/completions', { body: 'not-json' }));
   assert.equal(textBody.status, 400);
 
   // Over the request cap: the fake upstream sees nothing.
@@ -238,7 +242,7 @@ try {
   const until = Math.floor(Date.now() / 1000) + 3600;
   execFileSync('sqlite3', [dbFile, `INSERT INTO limits (k, n, until) VALUES ('chat:p:${shaOf(TOKEN)}', 1, ${until})`]);
   calls.length = 0;
-  const capped = await worker.fetch(req('/v1/support/chat'), env({ SUPPORT_CHAT_PERSON_REQUESTS: '1' }));
+  const capped = await worker.fetch(req('/v1/support/chat/completions'), env({ SUPPORT_CHAT_PERSON_REQUESTS: '1' }));
   assert.equal(capped.status, 429);
   assert.equal(calls.length, 0, 'an over-cap request opened an upstream socket');
   const cappedBody = await capped.json();
@@ -252,7 +256,7 @@ try {
   clearCaps();
   execFileSync('sqlite3', [dbFile, `INSERT INTO limits (k, n, until) VALUES ('chat:s', 2, ${until})`]);
   calls.length = 0;
-  const sharedCap = await worker.fetch(req('/v1/support/chat'), env({ SUPPORT_CHAT_SHARED_REQUESTS: '2' }));
+  const sharedCap = await worker.fetch(req('/v1/support/chat/completions'), env({ SUPPORT_CHAT_SHARED_REQUESTS: '2' }));
   assert.equal(sharedCap.status, 429);
   assert.equal(calls.length, 0, 'a shared-cap request opened an upstream socket');
   assert.equal(limitOf(`chat:p:${shaOf(TOKEN)}`)?.n ?? 0, 0, 'a shared-cap refusal does not spend the person slot');
@@ -261,13 +265,13 @@ try {
   // A malformed upstream body does not reset the token counter.
   clearCaps();
   upstreamImpl = async () => jsonReply({ choices: [{ message: { content: 'counted' } }], usage: { total_tokens: 40 } });
-  const seeded = await worker.fetch(req('/v1/support/chat'), env());
+  const seeded = await worker.fetch(req('/v1/support/chat/completions'), env());
   assert.equal(seeded.status, 200);
   await seeded.text();
   assert.equal(limitOf(`chat:tp:${shaOf(TOKEN)}`).n, 40);
   const requestsBefore = limitOf(`chat:p:${shaOf(TOKEN)}`).n;
   upstreamImpl = async () => new Response('this is not json', { status: 200, headers: { 'content-type': 'application/json' } });
-  const broken = await worker.fetch(req('/v1/support/chat'), env());
+  const broken = await worker.fetch(req('/v1/support/chat/completions'), env());
   assert.equal(broken.status, 200);
   assert.equal(await broken.text(), 'this is not json');
   assert.equal(limitOf(`chat:tp:${shaOf(TOKEN)}`).n, 40, 'a malformed upstream body reset the token counter');
@@ -279,7 +283,7 @@ try {
   });
   calls.length = 0;
   const beforeWithheld = tokenCount();
-  const leaked = await worker.fetch(req('/v1/support/chat', { body: chatBody({ max_tokens: 64 }) }), env());
+  const leaked = await worker.fetch(req('/v1/support/chat/completions', { body: chatBody({ max_tokens: 64 }) }), env());
   const leakedText = await leaked.text();
   assert.equal(leaked.status, 502);
   assert.equal(leakedText.includes(KEY), false);
@@ -293,7 +297,7 @@ try {
       controller.close();
     },
   }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
-  const leakedStream = await worker.fetch(req('/v1/support/chat', { body: chatBody({ stream: true }) }), env());
+  const leakedStream = await worker.fetch(req('/v1/support/chat/completions', { body: chatBody({ stream: true }) }), env());
   const leakedStreamText = await leakedStream.text();
   assert.equal(leakedStreamText.includes(KEY), false, 'a streamed key reached the client');
 
@@ -307,8 +311,8 @@ try {
   };
   const pairEnv = env({ SUPPORT_CHAT_PERSON_REQUESTS: '1', SUPPORT_CHAT_SHARED_REQUESTS: '10' });
   const [first, second] = await Promise.all([
-    worker.fetch(req('/v1/support/chat'), pairEnv),
-    worker.fetch(req('/v1/support/chat'), pairEnv),
+    worker.fetch(req('/v1/support/chat/completions'), pairEnv),
+    worker.fetch(req('/v1/support/chat/completions'), pairEnv),
   ]);
   const statuses = [first.status, second.status].sort((a, b) => a - b);
   assert.deepEqual(statuses, [200, 429]);
@@ -320,14 +324,14 @@ try {
 
   // Fail closed: no key, no database, upstream throw. None of these is a successful chat.
   calls.length = 0;
-  const noKey = await worker.fetch(req('/v1/support/chat'), env({ OPENCODE_GO_API_KEY: '' }));
+  const noKey = await worker.fetch(req('/v1/support/chat/completions'), env({ OPENCODE_GO_API_KEY: '' }));
   assert.equal(noKey.status, 503);
   assert.equal(calls.length, 0);
-  const noDb = await worker.fetch(req('/v1/support/chat'), env({ DB: undefined }));
+  const noDb = await worker.fetch(req('/v1/support/chat/completions'), env({ DB: undefined }));
   assert.equal(noDb.status, 503);
   assert.equal(calls.length, 0);
   upstreamImpl = async () => { throw new Error(`upstream down ${KEY}`); };
-  const down = await worker.fetch(req('/v1/support/chat'), env());
+  const down = await worker.fetch(req('/v1/support/chat/completions'), env());
   assert.equal(down.status, 502);
   assert.equal((await down.text()).includes(KEY), false);
 
@@ -338,7 +342,7 @@ try {
     usage: { total_tokens: 33 },
   });
   calls.length = 0;
-  const withheldUsage = await worker.fetch(req('/v1/support/chat', { body: chatBody({ max_tokens: 64 }) }), env());
+  const withheldUsage = await worker.fetch(req('/v1/support/chat/completions', { body: chatBody({ max_tokens: 64 }) }), env());
   const withheldUsageText = await withheldUsage.text();
   assert.equal(withheldUsage.status, 502);
   assert.equal(withheldUsageText.includes(KEY), false, 'a withheld reply showed the key');
@@ -354,7 +358,7 @@ try {
       controller.close();
     },
   }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
-  const withheldStream = await worker.fetch(req('/v1/support/chat', { body: chatBody({ stream: true, max_tokens: 64 }) }), env());
+  const withheldStream = await worker.fetch(req('/v1/support/chat/completions', { body: chatBody({ stream: true, max_tokens: 64 }) }), env());
   const withheldStreamText = await withheldStream.text();
   assert.equal(withheldStreamText.includes(KEY), false, 'a streamed secret reached the client');
   assert.equal(tokenCount(), 15, 'a withheld stream counted the usage frame');
@@ -380,7 +384,7 @@ try {
   }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   const jobs = [];
   const ctx = { waitUntil(p) { jobs.push(Promise.resolve(p)); } };
-  const leaving = await worker.fetch(req('/v1/support/chat', { body: chatBody({ stream: true, max_tokens: 64 }) }), env(), ctx);
+  const leaving = await worker.fetch(req('/v1/support/chat/completions', { body: chatBody({ stream: true, max_tokens: 64 }) }), env(), ctx);
   const leavingReader = leaving.body.getReader();
   const firstChunk = await leavingReader.read();
   const firstText = new TextDecoder().decode(firstChunk.value);
@@ -402,7 +406,7 @@ try {
   }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   const quietJobs = [];
   const quietCtx = { waitUntil(p) { quietJobs.push(Promise.resolve(p)); } };
-  const quiet = await worker.fetch(req('/v1/support/chat', { body: chatBody({ stream: true, max_tokens: 128 }) }), env(), quietCtx);
+  const quiet = await worker.fetch(req('/v1/support/chat/completions', { body: chatBody({ stream: true, max_tokens: 128 }) }), env(), quietCtx);
   const quietReader = quiet.body.getReader();
   await quietReader.read();
   await quietReader.cancel();
@@ -413,7 +417,7 @@ try {
   clearCaps();
   calls.length = 0;
   const limitBefore = hits.limit;
-  const openDespiteReports = await worker.fetch(req('/v1/support/chat'), env({
+  const openDespiteReports = await worker.fetch(req('/v1/support/chat/completions'), env({
     LIMIT: { limit: async () => { hits.limit += 1; return { success: false }; } },
   }));
   assert.equal(openDespiteReports.status, 200, 'chat was refused by the reports limiter');
@@ -422,7 +426,7 @@ try {
   calls.length = 0;
   const chatBefore = hits.chat;
   const spentBeforePace = limitOf(`chat:p:${shaOf(TOKEN)}`)?.n ?? 0;
-  const paced = await worker.fetch(req('/v1/support/chat'), env({
+  const paced = await worker.fetch(req('/v1/support/chat/completions'), env({
     CHAT_LIMIT: { limit: async () => { hits.chat += 1; return { success: false }; } },
   }));
   assert.equal(paced.status, 429);
@@ -447,7 +451,7 @@ try {
     usage: { total_tokens: 11 },
   });
   calls.length = 0;
-  const tooled = await worker.fetch(req('/v1/support/chat', {
+  const tooled = await worker.fetch(req('/v1/support/chat/completions', {
     body: chatBody({
       messages: toolMessages,
       tools,
@@ -483,7 +487,7 @@ try {
   const refused = async (label, body) => {
     const before = calls.length;
     const spent = limitOf(`chat:p:${shaOf(TOKEN)}`)?.n ?? 0;
-    const res = await worker.fetch(req('/v1/support/chat', { body }), env());
+    const res = await worker.fetch(req('/v1/support/chat/completions', { body }), env());
     assert.equal(res.status, 400, `${label} was accepted`);
     assert.equal(calls.length, before, `${label} opened an upstream socket`);
     assert.equal(limitOf(`chat:p:${shaOf(TOKEN)}`)?.n ?? 0, spent, `${label} spent a request slot`);

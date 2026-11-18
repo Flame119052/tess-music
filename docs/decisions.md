@@ -810,7 +810,7 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   path-following `chmod` and refuses `TESS_TEST=1` as root unless both an explicit scratch `TESS_TEST_ROOT` and faked
   system tools are present.
 - **D-103 · 18 Nov 2026 · Agent** — Support chat goes through the inbox Worker, not the VPS cap proxy (#121).
-  `POST /v1/support/chat` checks the same `support_tokens` row as `POST /v1/support`. It accepts one model
+  `POST /v1/support/chat/completions` checks the same `support_tokens` row as `POST /v1/support`. It accepts one model
   (`SUPPORT_MODEL`, default `deepseek-v4.1-flash`) and forwards only to
   `https://opencode.ai/zen/go/v1/chat/completions`. `OPENCODE_GO_API_KEY` is a Worker secret and is attached on that
   upstream request alone. Per-person and shared request caps are spent in D1 with the existing one-statement `hit()`

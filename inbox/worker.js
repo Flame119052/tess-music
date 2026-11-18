@@ -276,7 +276,7 @@ async function recording(request, env, id) {
   return reply(204);
 }
 
-// --- support chat: POST /v1/support/chat only.
+// --- support chat: POST /v1/support/chat/completions only.
 
 function chatJson(status, message, type, code, extraHeaders = {}) {
   return new Response(JSON.stringify({ error: { message, type, code } }), {
@@ -357,15 +357,15 @@ function rawPathAndQuery(request) {
   return { path, query: m[2] || '', encoded };
 }
 
-// Exact POST /v1/support/chat, or a refusal for anything that is trying to be that route. Null means some other route.
+// Exact POST /v1/support/chat/completions, or a refusal for anything that is trying to be that route. Null means some other route.
 function classifySupportChat(request) {
   const raw = rawPathAndQuery(request);
   let pathname = '';
   try { pathname = new URL(request.url).pathname; } catch { return null; }
-  const clean = raw.path === '/v1/support/chat' && !raw.query && !raw.encoded
+  const clean = raw.path === '/v1/support/chat/completions' && !raw.query && !raw.encoded
     && !raw.path.split('/').includes('.') && !raw.path.split('/').includes('..');
   if (clean && request.method === 'POST') return 'handle';
-  if (clean || raw.path === '/v1/support/chat' || pathname === '/v1/support/chat') return 'refuse';
+  if (clean || raw.path === '/v1/support/chat/completions' || pathname === '/v1/support/chat/completions') return 'refuse';
   return null;
 }
 
@@ -844,7 +844,7 @@ export default {
     const chat = classifySupportChat(request);
     if (chat === 'handle') return supportChat(request, env, ctx);
     if (chat === 'refuse') {
-      const exact = rawPathAndQuery(request).path === '/v1/support/chat' && !rawPathAndQuery(request).query;
+      const exact = rawPathAndQuery(request).path === '/v1/support/chat/completions' && !rawPathAndQuery(request).query;
       if (exact && request.method !== 'POST') return chatJson(405, 'Only POST is accepted.', 'invalid_request_error', 'method_not_allowed');
       return reply(404);
     }
