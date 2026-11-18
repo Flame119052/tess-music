@@ -21,7 +21,8 @@
 #  - it hasn't expired;
 #  - it is meant for every Mac, or names this Mac's install id;
 #  - its action is one of the five above.
-# "rescue.sh --adopt" only records the current order as already seen.
+# "rescue.sh --adopt" only records the current order as already seen. While an action runs, its process group is written
+# to Tess/rescue/order.pid, which is how "tess rescue off" stops an order that has already started.
 # Order format: "tess-rescue 2" / "serial N" / "expires <unix time>" / optional "only <id> <id>..." / optional
 # "timeout <seconds>" (60-3600, default 1800) / "action <name>".
 # >>> tess script guard: keep this block identical in every installer script (issue #107) >>>
@@ -210,17 +211,20 @@ esac
 # Stop file: absent when the action finished on its own; "term" when the group went away on TERM, "kill" when it needed
 # KILL, and "lingering" when something in it would not exit even then, so the log can say exactly what happened.
 run_bounded() {  # <seconds> <log> <rc file> <stop file> <command...>
-  _secs=$1 _log=$2 _rcf=$3 _stopf=$4; shift 4
+  _secs=$1 _log=$2 _rcf=$3 _stopf=$4 _pidf=${RUN_PIDFILE-}; shift 4
   /bin/sh -c '
-    log=$1 secs=$2 rcf=$3 stopf=$4; shift 4
+    log=$1 secs=$2 rcf=$3 stopf=$4 pidf=$5; shift 5
     set -m
     # stdin is /dev/null for the action, as it was for a background job before: one that reads must not be stopped (SIGTTIN)
     "$@" >> "$log" 2>&1 < /dev/null &
     pid=$!
+    # The group this order runs in, so `tess rescue off` can stop one that has already started (#91). It is a separate
+    # group from this script, so stopping it cannot stop the script that is waiting on it.
+    [ -n "$pidf" ] && echo "$pid" > "$pidf"
     waited=0
     while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt "$secs" ]; do sleep 1; waited=$((waited + 1)); done
     # finished on its own: nothing to stop, and the code written down is the one the action exited with
-    if ! kill -0 "$pid" 2>/dev/null; then wait "$pid"; echo $? > "$rcf"; exit 0; fi
+    if ! kill -0 "$pid" 2>/dev/null; then wait "$pid"; echo $? > "$rcf"; if [ -n "$pidf" ]; then rm -f "$pidf"; fi; exit 0; fi
     kill -TERM -- "-$pid" 2>/dev/null
     stop=term; n=0
     while kill -0 -- "-$pid" 2>/dev/null; do
@@ -235,11 +239,14 @@ run_bounded() {  # <seconds> <log> <rc file> <stop file> <command...>
     fi
     echo "$stop" > "$stopf"
     wait "$pid"; echo $? > "$rcf"
-  ' _ "$_log" "$_secs" "$_rcf" "$_stopf" "$@" 2>/dev/null
+    if [ -n "$pidf" ]; then rm -f "$pidf"; fi
+  ' _ "$_log" "$_secs" "$_rcf" "$_stopf" "$_pidf" "$@" 2>/dev/null
 }
 log "running rescue order $serial: $action (from $got, up to ${timeout}s)"
 # Only the lines this order writes are reported, so note where the log ends now, before anything has run.
 offset=$(wc -c < "$LOG" 2>/dev/null || echo 0)
+# While the action runs, its process group is written here; `tess rescue off` reads it to stop a mistake already started.
+RUN_PIDFILE="$R/order.pid"
 # TESS_TEST logs what would run; TESS_TEST_RUN makes the sandbox actually run it, against the sandbox's own stand-in tools
 if [ -n "$TESS_TEST" ] && [ -z "$TESS_TEST_RUN" ]; then
   echo "test: would run ${cmd[*]}" >> "$LOG"; rc=0

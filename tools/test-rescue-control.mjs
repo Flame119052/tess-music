@@ -1,7 +1,7 @@
 // Test the installed tess rescue switch and status command with sandbox folders and a fake launchctl.
 // Usage: node tools/test-rescue-control.mjs
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,6 +11,11 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const installer = readFileSync(join(root, 'installer', 'tess-install.sh'), 'utf8');
 const command = readFileSync(join(root, 'installer', 'tess-command.sh'), 'utf8');
+// Channels that have no signed command part get the command from a heredoc copy in the installer, so the copy has to be
+// the same file: otherwise those Macs run a different `tess` than the one the command part installs.
+const embedded = installer.match(/cat > "\$HOME_TESS\/tess\.new" <<'TESS_COMMAND'\n([\s\S]*?)\nTESS_COMMAND\n/);
+assert.ok(embedded, 'the installer carries a copy of the tess command');
+assert.equal(embedded[1] + '\n', command, "the installer's copy of the tess command is tess-command.sh, byte for byte");
 for (const name of ['README.md', 'installer/README.md', 'SECURITY.md']) {
   const text = readFileSync(join(root, name), 'utf8');
   assert.match(text, /before 13 Nov 2026/, `${name} names the older rescue scripts`);
@@ -35,6 +40,8 @@ const loadedRescue = join(box, 'rescue-loaded');
 const loadedGuard = join(box, 'guard-loaded');
 const spotify = join(box, 'Spotify.app');
 const config = join(box, 'config');
+// Process groups the tests start, so a failed assertion never leaves one running.
+const kids = [];
 
 try {
   mkdirSync(state, { recursive: true });
@@ -79,11 +86,22 @@ esac
   };
   const run = (...args) => execFileSync('/bin/sh', [join(tess, 'tess'), ...args], { env, encoding: 'utf8' });
   const fingerprint = createHash('sha256').update('test rescue verifier\n').digest('hex');
+  // A process this test started stays a zombie until Node reaps it, and `kill -0` still succeeds on a zombie, so
+  // liveness is read from ps: an empty stat or a "Z" one is gone.
+  const alive = (pid) => {
+    try {
+      const stat = execFileSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim();
+      return stat !== '' && !stat.startsWith('Z');
+    } catch { return false; }
+  };
+  const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  const gone = (pid) => { for (let i = 0; i < 40 && alive(pid); i++) pause(50); return !alive(pid); };
 
   let out = run('status');
   assert.match(out, /Tess 1\.2\.3 \(beta\)/);
   assert.match(out, /Updater: running/);
-  assert.match(out, new RegExp(`Rescue: on, running \\(verifier SHA-256 ${fingerprint}\\)`));
+  // "Loaded" is the launchd job. A person asking status wants to know whether an order is in progress, so that is said.
+  assert.match(out, new RegExp(`Rescue: on, loaded; no order is running \\(verifier SHA-256 ${fingerprint}\\)`));
   assert.match(out, /Reports: on/);
   assert.match(out, /Wake check: stopped/);
   assert.doesNotMatch(out, /Rescue format: older/);
@@ -147,6 +165,52 @@ esac
   assert.equal(readFileSync(join(rescue, 'tess-rescue-verify'), 'utf8'), 'test rescue verifier\n', 'ordinary update preserves independent rescue verifier');
   assert.match(readFileSync(launchLog, 'utf8'), /bootstrap .*music\.tess\.rescue\.plist/);
 
+  // A line that was already on must not be switched off just because a check while offline could not read the order.
+  writeFileSync(join(rescue, 'rescue.sh'), '#!/bin/zsh\nexit 1\n');
+  chmodSync(join(rescue, 'rescue.sh'), 0o755);
+  assert.throws(() => run('rescue', 'on'), /Command failed/);
+  assert.ok(!existsSync(join(tess, 'rescue-off')), 'an offline "rescue on" leaves an already-on line on');
+  assert.ok(existsSync(join(agents, 'music.tess.rescue.plist')), 'an offline "rescue on" keeps the login plist');
+  assert.ok(existsSync(loadedRescue), 'an offline "rescue on" keeps the agent loaded');
+  writeFileSync(join(rescue, 'rescue.sh'), '#!/bin/zsh\nexit 0\n');
+
+  // A Mac that already had Tess is owed the notice once after the update that gave it the line; status shows it once.
+  writeFileSync(join(state, 'rescue-notice-pending'), '');
+  const noticed = run('status');
+  assert.match(noticed, /maintainer can remotely run five Tess actions on this Mac, without asking/);
+  assert.match(noticed, /This notice is shown once/);
+  assert.ok(!existsSync(join(state, 'rescue-notice-pending')), 'the notice is cleared once shown');
+  assert.doesNotMatch(run('status'), /maintainer can remotely run five Tess actions/);
+
+  // `rescue off` stops an order that had already started; a stale number that is not Tess's is never signalled.
+  const foreign = spawn('/bin/sh', ['-c', 'sleep 300'], { detached: true, stdio: 'ignore' });
+  kids.push(foreign);
+  writeFileSync(join(rescue, 'order.pid'), `${foreign.pid}\n`);
+  const offForeign = run('rescue', 'off');
+  assert.ok(alive(foreign.pid), 'a pid that is not one of Tess\'s is not signalled');
+  assert.ok(!existsSync(join(rescue, 'order.pid')), 'a stale order number is removed');
+  assert.doesNotMatch(offForeign, /had already started was stopped/);
+  assert.match(run('rescue', 'on'), /rescue line is on/i);
+
+  const orderScript = join(tess, 'order-test.sh');
+  const childPidFile = join(box, 'order-child.pid');
+  // An order runs as a group of its own whose leader's command is the action's own path, as run_bounded starts it with
+  // `set -m`. A plain `sh -c` does not stand in for that: the shell replaces itself with the last command, so the path in
+  // the group leader's command line disappears. A script inside Tess's folder, with a child of its own, does.
+  writeFileSync(orderScript, `#!/bin/sh\nsleep 300 &\necho $! > "${childPidFile}"\nsleep 300\n`);
+  chmodSync(orderScript, 0o755);
+  const order = spawn('/bin/sh', [orderScript], { detached: true, stdio: 'ignore' });
+  kids.push(order);
+  for (let i = 0; i < 40 && !existsSync(childPidFile); i++) pause(50);
+  const childPid = Number(readFileSync(childPidFile, 'utf8').trim());
+  writeFileSync(join(rescue, 'order.pid'), `${order.pid}\n`);
+  assert.match(run('status'), /an order is running now/, 'status says an order is in progress, not just that the job is loaded');
+  const offRunning = run('rescue', 'off');
+  assert.match(offRunning, /had already started was stopped/, 'off says it stopped the order');
+  assert.ok(gone(order.pid), 'the order that had already started is stopped');
+  assert.ok(gone(childPid), 'the order stops its own child too');
+  assert.ok(!existsSync(join(rescue, 'order.pid')), 'a stopped order leaves no number behind');
+
   writeFileSync(join(tess, 'rescue-off'), '');
   writeFileSync(loadedRescue, '');
   writeFileSync(join(agents, 'music.tess.rescue.plist'), '<plist>music.tess.rescue</plist>\n');
@@ -202,7 +266,8 @@ if ! real_launchctl && launchctl print "gui/1/music.tess.rescue"; then echo CALL
   assert.match(called, /print gui\/1\/music.tess.rescue/, 'a fake launchctl is still used in the sandbox');
   assert.match(called, /CALLED/);
 
-  console.log('rescue control tests passed (notice, off/on persistence, status fingerprint, loaded-while-off, sandbox launchctl, reports new-id)');
+  console.log('rescue control tests passed (notice once, offline on keeps an on line, off stops a started order, status says loaded, off/on persistence, status fingerprint, loaded-while-off, sandbox launchctl, reports new-id)');
 } finally {
+  for (const k of kids ?? []) { try { process.kill(-k.pid, 'SIGKILL'); } catch {} }
   rmSync(box, { recursive: true, force: true });
 }

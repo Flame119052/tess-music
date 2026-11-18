@@ -2,8 +2,9 @@
 // Usage: node tools/test-rescue.mjs [--slow] (no installed Tess or production keys required)
 // Proves: each of the five actions is accepted; script orders, unknown actions, injected text, bad signatures,
 // expired orders, replays and orders for other Macs do nothing; an order's time limit stops the action and every
-// process it started (--slow adds the 60 s end-to-end run).
-import { execFileSync } from 'node:child_process';
+// process it started, and a running order records its process group for `tess rescue off` (--slow adds the 60 s
+// end-to-end run).
+import { execFileSync, spawn } from 'node:child_process';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -151,6 +152,26 @@ run_bounded 2 "$1" "$2" "$3" /bin/zsh -c 'trap "" TERM; echo $$ > "$1"; while :;
   assert.ok((Date.now() - t1) / 1000 < 40, 'TERM, the grace period and KILL all finished');
   assert.equal(readFileSync(stubbornStop, 'utf8').trim(), 'kill', 'a process that ignores TERM is killed outright');
   assert.equal(alive(held2), false, `the process that ignored TERM is gone (pid ${held2})`);
+  // 12d. while an action runs, the runner writes its process group to order.pid, which is what `tess rescue off` reads to
+  // stop an order that has already started (#91). The number is the group's leader, and it goes away when the limit stops
+  // the action, so a person who turns the line off later is never handed a number that has moved on.
+  const groupPidFile = join(R, 'order.pid'), groupLog = join(box, 'group.log'), groupRc = join(box, 'group.rc'), groupStopFile = join(box, 'group.stop');
+  writeFileSync(driver, `#!/bin/zsh
+${runner[0]}
+RUN_PIDFILE=${JSON.stringify(groupPidFile)}
+run_bounded 2 "$1" "$2" "$3" /bin/zsh -c 'sleep 60' _ 2>/dev/null
+`);
+  const runnerJob = spawn('/bin/zsh', [driver, groupLog, groupRc, groupStopFile], { stdio: 'ignore' });
+  const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  for (let i = 0; i < 60 && !existsSync(groupPidFile); i++) pause(50);
+  assert.ok(existsSync(groupPidFile), 'a running order writes its process group down for `tess rescue off`');
+  const groupPid = Number(readFileSync(groupPidFile, 'utf8').trim());
+  assert.equal(execFileSync('/bin/ps', ['-o', 'pgid=', '-p', String(groupPid)], { encoding: 'utf8' }).trim(), String(groupPid), 'the number written is the group leader');
+  for (let i = 0; i < 100 && existsSync(groupPidFile); i++) pause(50);
+  assert.ok(!existsSync(groupPidFile), 'a stopped order leaves no number behind');
+  assert.equal(readFileSync(groupStopFile, 'utf8').trim(), 'term', 'the action was stopped by the limit, not left running');
+  assert.equal(alive(groupPid), false, `the action's group is gone (pid ${groupPid})`);
+  runnerJob.kill('SIGKILL');
   if (process.argv.includes('--slow')) {
     // 13. an action that outlives its limit is stopped, with everything it started, and the log says which limit it
     // passed (60 s of real waiting). The child is the shape that matters: `check`, `update` and `repair` run the
@@ -183,7 +204,7 @@ sleep 600
   rmSync(join(orders, 'rescue.txt'));
   assert.throws(() => run('--adopt'), /Command failed/, 'offline adoption fails');
   assert.ok(existsSync(join(T, 'rescue-off')), 'adoption never removes opt-out');
-  console.log('rescue tests passed (5 actions; script, unknown, injected, bad signature, expired, replay, other Mac; the limit stops the action group)');
+  console.log('rescue tests passed (5 actions; script, unknown, injected, bad signature, expired, replay, other Mac; the limit stops the action group; a running order records its group for `tess rescue off`)');
 } finally {
   // a failed run must not leave a long sleep of its own behind
   for (const f of [join(box, 'held.pid'), join(box, 'stubborn.pid'), slowChild]) {

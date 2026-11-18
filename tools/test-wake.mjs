@@ -64,6 +64,9 @@ esac
     writeFileSync(order, `tess-rescue 2\nserial ${serial}\n`);
     writeFileSync(join(state, 'version'), `${installed}\n`);
     writeFileSync(join(rescue, 'serial'), `${done}\n`);
+    // A Mac whose rescue line is installed: only then is the rescue branch read at all.
+    writeFileSync(join(rescue, 'tess-rescue-verify'), '#!/bin/sh\nexit 0\n');
+    chmodSync(join(rescue, 'tess-rescue-verify'), 0o755);
     rmSync(join(state, '.wake-rescue-kicked'), { force: true });
     rmSync(curlLog, { force: true });
     rmSync(launchLog, { force: true });
@@ -93,6 +96,17 @@ esac
   writeFileSync(order, 'tess-rescue 2\nserial 7\n');
   run();
   assert.equal(kicks().filter(line => line.endsWith('music.tess.rescue')).length, 2, 'new serial wakes again');
+
+  // A Mac that never had the rescue line has nothing to wake, so its every-5-minute check does not read that branch.
+  reset({ serial: 6 });
+  rmSync(join(rescue, 'tess-rescue-verify'), { force: true });
+  run();
+  assert.equal(lines(curlLog).length, 1, 'no rescue line installed reads only the version');
+  assert.ok(!lines(curlLog).some((line) => line.includes('rescue.txt')), 'no rescue line installed skips the rescue branch');
+  assert.ok(!kicks().some((line) => line.endsWith('music.tess.rescue')), 'no rescue line installed starts no rescue wake');
+  reset({ published: '1.2.4', serial: 6 });
+  run();
+  assert.ok(kicks().some((line) => line.endsWith('music.tess.rescue')), 'an installed line still wakes rescue');
 
   reset({ serial: 6 });
   writeFileSync(join(tess, 'rescue-off'), '');
@@ -187,7 +201,7 @@ esac
   assert.match(readFileSync(priorPlist, 'utf8'), /<integer>300<\/integer>/, 'a valid wake plist replaces the old one');
   assert.ok(lines(launchLog).some((line) => line.includes('bootstrap') && line.includes('music.tess.wake')), 'a valid wake plist is loaded');
 
-  console.log('wake tests passed (no change, version, serial, off skips rescue read, independent read failures, network backoff, lock, 5-minute agent, install continues)');
+  console.log('wake tests passed (no change, version, serial, uninstalled line skips rescue read, off skips rescue read, independent read failures, network backoff, lock, 5-minute agent, install continues)');
 } finally {
   rmSync(box, { recursive: true, force: true });
 }

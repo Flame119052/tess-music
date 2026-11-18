@@ -261,6 +261,10 @@ try {
     writeFileSync(join(s.state, 'rescue-notice-shown'), '');
     s.run();
     assert.equal(readFileSync(join(s.tess, 'rescue', 'rescue.sh'), 'utf8'), '#!/bin/zsh\nexit 0\n', 'updater may restore a rescue line after the notice');
+    // A line that appeared on an existing Mac through an update is announced: status shows it once, then clears it.
+    assert.ok(existsSync(join(s.state, 'rescue-notice-pending')), 'an update that adds the rescue line leaves the one-time notice for status');
+    s.run();
+    assert.ok(existsSync(join(s.state, 'rescue-notice-pending')), 'a later update does not drop the unshown notice');
   }
 
   {

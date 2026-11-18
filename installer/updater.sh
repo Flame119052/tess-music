@@ -197,6 +197,9 @@ install_rescue() {
   [ -f "$dst/rescue.sh" ] || { cp "$src/rescue.sh" "$dst/rescue.sh"; fresh=1; }
   chmod +x "$dst/tess-rescue-verify" "$dst/rescue.sh"
   [ -n "$fresh" ] && /bin/zsh "$dst/rescue.sh" --adopt >/dev/null 2>&1
+  # The line appeared on a Mac that already had Tess, so the installer's notice never ran. Leave it for `tess status` to
+  # show once; a later update must not drop it unseen.
+  [ -n "$fresh" ] && touch "$STATE/rescue-notice-pending"
   [ -f "$pl" ] && return 0
   mkdir -p "$(dirname "$pl")"
   local rescue_xml=$(xml_esc "$dst/rescue.sh")
