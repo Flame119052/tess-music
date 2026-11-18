@@ -18,11 +18,13 @@ helper blanked its Spotify).
 
 ## Support bot
 
-Built and tested in `support/` (#70, D-76, D-77): **one Hermes bot on a server**, on OpenCode's free tier, that people
-message. It works out what broke from Tess's own doctor report and their screenshots and **posts it to the inbox** —
-`POST /v1/support`, token-authenticated, stored beside the health reports. Krish's side reads it with
-`tools/reports.mjs support list` and files the issue with its P0–P3 and area labels; **the bot itself never files, and
-has no GitHub token or `gh` at all**. Access is an allowlist only Krish can change, on the server over SSH (D-79).
+Built and tested in `support/` (#70, D-76, D-77, D-87): **one isolated Hermes bot (`tess-support`) on Krish's VPS**,
+on OpenCode Go (`opencode-go/deepseek-v4.1-flash`) with a hard daily cap (40 shared replies/day, 20/person/day), that
+Krish and a trusted tester message. It works out what broke from Tess's own doctor report and their screenshots and
+**posts it to the inbox** — `POST /v1/support`, token-authenticated, stored beside the health reports. Krish's side
+reads it with `tools/reports.mjs support list` and files the issue with its P0–P3 and area labels; **the bot itself
+never files, and has no GitHub token or `gh` at all**. Access is an allowlist only Krish can change, on the server
+over SSH (D-79).
 
 **Not deployed, and not part of a release.** Before it can work: `inbox/schema.sql` applied to D1, the Worker deployed,
 and the R2 bucket created — all Krish's, none done here — plus a machine, a Telegram bot and a posting token. What can be

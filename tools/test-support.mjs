@@ -101,13 +101,20 @@ try {
   const hedged = out(process.execPath, [TRIAGE, '--report', offFixture, '--words', fix('words-lyrics.txt'), '--mode', 'issue', '--also', 'area:theme', '--title', 'Lyrics drift half a second behind the song']);
   assert.match(hedged, /may not have gone through — reports are off on this Mac, or it was offline/, 'the person is not told a report went that did not');
 
-  // 9b. The admin gate is Hermes', not the model's: configured, and written with Krish's own id by setup.sh.
+  // 9b. The admin gate is Hermes', not the model's, model defaults to opencode-go/deepseek-v4.1-flash with daily-cap
+  // plugin enabled, secrets never reach argv, and the systemd unit enforces strict VPS isolation.
   const cfg = readFileSync(join(root, 'support/bot/config.yaml'), 'utf8');
   assert.match(cfg, /allow_admin_from:/, 'the gateway has an admin list');
   assert.match(cfg, /user_allowed_commands:/, 'and a short list of what everyone else may run');
+  assert.match(cfg, /provider:\s*opencode-go/, 'default provider is opencode-go');
+  assert.match(cfg, /default:\s*deepseek-v4\.1-flash/, 'default model is deepseek-v4.1-flash');
+  assert.match(cfg, /plugins:\s*\n\s*enabled:\s*\n\s*-\s*daily-cap/, 'daily-cap plugin is enabled');
+  const distYaml = readFileSync(join(root, 'support/bot/distribution.yaml'), 'utf8');
+  assert.match(distYaml, /-\s*plugins\b/, 'distribution_owned includes plugins so hermes copies daily-cap');
+  assert.match(distYaml, /OPENCODE_GO_API_KEY/, 'distribution.yaml documents OPENCODE_GO_API_KEY');
   const setupText = readFileSync(SETUP, 'utf8');
   assert.match(setupText, /config set gateway\.platforms\.telegram\.extra\.allow_admin_from/, 'setup.sh writes the admin list from Krish\'s id');
-  assert.match(setupText, /id -u.*= 0/, 'and refuses to run as root, where the bot\'s shell would be root\'s');
+  assert.ok(!/config set (TELEGRAM_BOT_TOKEN|OPENCODE_GO_API_KEY|TESS_SUPPORT_TOKEN)/.test(setupText), 'setup.sh never puts secrets on config set argv');
   // No in-chat admin at all: the gate is shell access plus the unit's read-only files, and a chat command would put the
   // allowlist back within reach of the model that a stranger is talking to.
   for (const cmd of ['tess-allow', 'tess-deny', 'tess-who']) {
@@ -116,6 +123,9 @@ try {
   const unit = readFileSync(join(root, 'support/tess-support.service'), 'utf8');
   assert.match(unit, /ReadOnlyPaths=.*\.env/, 'the unit makes .env read-only to the bot');
   assert.match(unit, /ReadOnlyPaths=.*allow\.txt/, 'and the allowlist too');
+  for (const directive of ['MemoryMax=512M', 'CPUQuota=50%', 'TasksMax=64', 'Nice=19', 'IOSchedulingClass=idle', 'NoNewPrivileges=yes', 'PrivateTmp=yes', 'ProtectSystem=strict', 'ProtectHome=read-only', 'ReadWritePaths=__HOME__', 'InaccessiblePaths=.*\\/srv\\/paperclip']) {
+    assert.match(unit, new RegExp(directive), `unit sets ${directive}`);
+  }
   assert.ok(!/^\s+web,|, web\b/m.test(cfg.split('platform_toolsets')[1] || ''), 'the bot has no general web tool to send a token out with');
 
   // 10. The bot is seven skills, each short enough to load on its own and each saying when to use it.
@@ -396,19 +406,21 @@ try {
   const stage = join(box, 'stage'), archDir = join(stage, 'tess-music-main', 'support', 'bot');
   mkdirSync(archDir, { recursive: true });
   for (const f of ['SOUL.md', 'config.yaml', 'distribution.yaml']) writeFileSync(join(archDir, f), `# ${f}\n`);
-  // The whole skill, scripts included: the setup script runs allowlist.mjs from inside it, and a test archive that
-  // left it out would prove a setup that can't work.
+  // Include skills and the daily-cap plugin: setup.sh runs allowlist.mjs and installs plugins/daily-cap.
   cpSync(join(SKILL, 'SKILL.md'), join(archDir, 'skills', 'tess-support', 'SKILL.md'));
   mkdirSync(join(archDir, 'skills', 'tess-support', 'scripts'), { recursive: true });
   for (const sc of ['allowlist.mjs', 'triage.mjs', 'inbox.mjs', 'privacy.mjs']) cpSync(join(SKILL, 'scripts', sc), join(archDir, 'skills', 'tess-support', 'scripts', sc));
+  mkdirSync(join(archDir, 'plugins', 'daily-cap'), { recursive: true });
+  cpSync(join(root, 'support/bot/plugins/daily-cap/plugin.yaml'), join(archDir, 'plugins', 'daily-cap/plugin.yaml'));
+  cpSync(join(root, 'support/bot/plugins/daily-cap/__init__.py'), join(archDir, 'plugins', 'daily-cap/__init__.py'));
   // The download carries support/ as a whole, so the unit template sits beside the bot.
   cpSync(join(root, 'support/tess-support.service'), join(stage, 'tess-music-main', 'support', 'tess-support.service'));
   const archive = join(box, 'tess-music-main.tar.gz');
   out('/usr/bin/tar', ['-czf', archive, '-C', stage, 'tess-music-main']);
 
-  const bin = join(box, 'bin'), state = join(box, 'state'), home = join(box, 'setup-home');
-  mkdirSync(bin, { recursive: true }); mkdirSync(state, { recursive: true }); mkdirSync(home, { recursive: true });
-  const stub = (name, body) => { const p = join(bin, name); writeFileSync(p, `#!/bin/sh\n${body}\n`); chmodSync(p, 0o755); };
+  const bin = join(box, 'bin'), state = join(box, 'state'), home = join(box, 'setup-home'), userHome = join(box, 'user-home');
+  mkdirSync(bin, { recursive: true }); mkdirSync(state, { recursive: true }); mkdirSync(home, { recursive: true }); mkdirSync(userHome, { recursive: true });
+  const stub = (name, body, dir = bin) => { const p = join(dir, name); writeFileSync(p, `#!/bin/sh\n${body}\n`); chmodSync(p, 0o755); };
   stub('hermes', `
 echo "hermes $*" >> "${state}/calls"
 [ -n "$STUB_FAIL_PROFILE" ] && case "$*" in *"profile install"*) exit 1;; esac
@@ -437,14 +449,15 @@ exit 0
   // curl is stubbed to hand over the real archive; tar is the real one, so the layout is genuinely tested.
   stub('curl', `cat "${archive}"; exit 0`);
 
+  const tgSecret = '123:abc_secret';
+  const goSecret = 'og_go_stub_secret';
+  const supSecret = 'tess_stub_secret';
   const senv = {
     // The stub hermes is first; the real node is left on PATH on purpose, so the allowlist script genuinely runs.
-    PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`, HERMES_HOME: home,
-    TESS_SUPPORT_BOT_DIR: '', TESS_TELEGRAM_TOKEN: '123:abc', TESS_OWNER_ID: '900000001',
-    TESS_SUPPORT_NONINTERACTIVE: '1', TESS_SUPPORT_TOKEN: 'tess_stub',
+    PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: userHome, HERMES_HOME: home, TESS_TEST: '1',
+    TESS_SUPPORT_BOT_DIR: '', TESS_TELEGRAM_TOKEN: tgSecret, TESS_OWNER_ID: '900000001',
+    TESS_SUPPORT_NONINTERACTIVE: '1', TESS_SUPPORT_TOKEN: supSecret, OPENCODE_GO_API_KEY: goSecret,
   };
-  writeFileSync(join(state, 'model.default.model.default'), 'glm-5\n');
-  writeFileSync(join(state, 'model.default.model.provider'), 'nous\n');
 
   const setup = (extra = {}) => out('/bin/sh', [SETUP], { ...senv, ...extra });
   const calls = () => (existsSync(join(state, 'calls')) ? readFileSync(join(state, 'calls'), 'utf8').match(/^.*$/gm) || [] : []);
@@ -452,41 +465,139 @@ exit 0
   const ran = setup();
   const said = calls().join('\n');
   assert.match(said, /profile install .*\/bot --name tess-support --yes/, 'the bot is installed from the path the real tar produced');
-  assert.match(said, /-p tess-support config set model.default/, 'the connected model is borrowed');
-  assert.equal(readFileSync(join(state, 'model.tess-support.model.default'), 'utf8').trim(), 'glm-5');
-  assert.match(said, /config set TELEGRAM_BOT_TOKEN/, 'the token is stored on the server');
-  assert.match(said, /config set TESS_OWNER_ID/, 'and Krish is recorded as the only owner');
-  assert.match(said, /config set TESS_SUPPORT_TOKEN/, 'the inbox posting token is stored');
-  assert.match(said, /config set TESS_INBOX/, 'and so is where to post');
+  assert.match(said, /config set model\.provider opencode-go/, 'default provider is opencode-go');
+  assert.match(said, /config set model\.default deepseek-v4\.1-flash/, 'default model is deepseek-v4.1-flash');
+  assert.equal(readFileSync(join(state, 'model.tess-support.model.provider'), 'utf8').trim(), 'opencode-go');
+  assert.equal(readFileSync(join(state, 'model.tess-support.model.default'), 'utf8').trim(), 'deepseek-v4.1-flash');
+  assert.ok(!said.includes(tgSecret) && !said.includes(goSecret) && !said.includes(supSecret), 'no secret ever enters CLI arguments');
   assert.ok(!said.includes('GH_TOKEN'), 'no GitHub token anywhere: the bot posts to the inbox, not to GitHub');
-  assert.match(readFileSync(join(state, 'gateway'), 'utf8'), /gateway start for tess-support/, 'the bot starts its own gateway');
+  assert.match(readFileSync(join(state, 'gateway'), 'utf8'), /gateway start for tess-support/, 'the bot starts its own gateway when systemctl is absent');
   assert.ok(!said.includes('profile use'), 'it never changes which profile is the default for everything else');
   assert.match(ran, /Message the bot from Telegram/, 'and it says what to do next');
-  const setupList = join(home, 'profiles', 'tess-support', 'allow.txt');
+
+  const profDir = join(home, 'profiles', 'tess-support');
+  const setupEnv = join(profDir, '.env');
+  const setupList = join(profDir, 'allow.txt');
+  assert.ok(existsSync(setupEnv), 'setup.sh wrote .env under the profile');
+  assert.equal(statSync(setupEnv).mode & 0o777, 0o600, '.env is mode 600');
+  const setupEnvText = readFileSync(setupEnv, 'utf8');
+  assert.match(setupEnvText, new RegExp(`^TELEGRAM_BOT_TOKEN=${tgSecret}$`, 'm'));
+  assert.match(setupEnvText, new RegExp(`^OPENCODE_GO_API_KEY=${goSecret}$`, 'm'));
+  assert.match(setupEnvText, /^TESS_OWNER_ID=900000001$/m);
+  assert.match(setupEnvText, new RegExp(`^TESS_SUPPORT_TOKEN=${supSecret}$`, 'm'));
+  assert.match(setupEnvText, /^TESS_INBOX=https:\/\/tess-music-player\.janus\.ing$/m);
+  assert.match(setupEnvText, /^TESS_DAILY_REPLY_CAP=40$/m);
+  assert.match(setupEnvText, /^TESS_DAILY_USER_CAP=20$/m);
+  assert.match(setupEnvText, /^TELEGRAM_ALLOWED_USERS=900000001$/m);
+  assert.ok(existsSync(join(profDir, 'plugins', 'daily-cap', '__init__.py')), 'daily-cap plugin installed in profile');
   assert.ok(existsSync(setupList), 'setup.sh wrote an allowlist under the Hermes home');
-  assert.match(readFileSync(setupList, 'utf8'), /^900000001 Kris$|^900000001/m, 'starting with Krish and only Krish');
+  assert.match(readFileSync(setupList, 'utf8'), /^900000001 Krish$/m, 'starting with Krish');
 
-  // 12. A machine with nothing connected gets OpenCode's free tier, not a request for a paid key.
-  rmSync(join(state, 'model.default.model.default'), { force: true });
-  rmSync(join(state, 'model.tess-support.model.default'), { force: true });
+  // 12. Idempotent re-run with TESS_ALLOW_IDS + custom caps, then re-run without TESS_ALLOW_IDS preserving tester + caps.
   rmSync(join(state, 'calls'), { force: true });
-  const free = setup();
-  assert.match(calls().join('\n'), /config set model.provider opencode/, 'the free tier is chosen when nothing is connected');
-  assert.equal(readFileSync(join(state, 'model.tess-support.model.default'), 'utf8').trim(), 'deepseek-v4.1-flash-free');
-  assert.match(free, /free tier/, 'and it says so rather than asking for a key');
+  setup({ TESS_ALLOW_IDS: '222222222', TESS_DAILY_REPLY_CAP: '50', TESS_DAILY_USER_CAP: '15', TESS_DAILY_TOKEN_CAP: '250000' });
+  assert.match(calls().join('\n'), /profile install .* --name tess-support --force --yes/, 'second run updates in place with --force');
+  assert.match(readFileSync(setupList, 'utf8'), /^222222222 tester$/m, 'TESS_ALLOW_IDS seeds the trusted tester');
+  const envAfterTester = readFileSync(setupEnv, 'utf8');
+  assert.match(envAfterTester, /^TELEGRAM_ALLOWED_USERS=900000001,222222222$/m);
+  assert.match(envAfterTester, /^TESS_DAILY_REPLY_CAP=50$/m);
+  assert.match(envAfterTester, /^TESS_DAILY_USER_CAP=15$/m);
+  assert.match(envAfterTester, /^TESS_DAILY_TOKEN_CAP=250000$/m);
 
-  // 2b. Root is refused outright: the bot has a shell, and a root-owned shell is a root shell.
-  const rootBin = join(box, 'root-bin');
-  mkdirSync(rootBin, { recursive: true });
-  writeFileSync(join(rootBin, 'id'), '#!/bin/sh\n[ "$1" = "-u" ] && { echo 0; exit 0; }; echo root; exit 0\n');
-  chmodSync(join(rootBin, 'id'), 0o755);
-  let asRoot = '';
-  try { out('/bin/sh', [SETUP], { ...senv, PATH: `${rootBin}:${senv.PATH}` }); } catch (e) { asRoot = String(e.stderr) + String(e.stdout); }
-  assert.match(asRoot, /don't run this as root/, 'setup.sh refuses to run as root');
-  assert.ok(!/profile install/.test(asRoot), 'and installs nothing when it does');
+  setup();
+  const envPreserved = readFileSync(setupEnv, 'utf8');
+  assert.match(envPreserved, /^TELEGRAM_ALLOWED_USERS=900000001,222222222$/m, 're-run preserves existing tester');
+  assert.match(envPreserved, /^TESS_DAILY_REPLY_CAP=50$/m, 're-run preserves existing cap');
+  assert.match(envPreserved, /^TESS_DAILY_TOKEN_CAP=250000$/m, 're-run preserves existing token cap');
 
-  // 7b. No advice to grant the bot passwordless sudo, and never two gateways: when a unit was generated, setup does not
-  // start one of its own.
+  // Missing OPENCODE_GO_API_KEY, bad TESS_ALLOW_IDS, and control characters in inputs are refused upfront.
+  for (const [label, extra, expect] of [
+    ['missing OpenCode Go key', { OPENCODE_GO_API_KEY: '' }, /OPENCODE_GO_API_KEY/],
+    ['wildcard TESS_ALLOW_IDS', { TESS_ALLOW_IDS: '*' }, /TESS_ALLOW_IDS/],
+    ['newline in secret', { OPENCODE_GO_API_KEY: 'abc\ndef' }, /control characters/],
+  ]) {
+    let err = '';
+    try { setup(extra); assert.fail(`expected refusal for ${label}`); } catch (e) { if (e.code === 'ERR_ASSERTION') throw e; err = String(e.stderr) + String(e.stdout); }
+    assert.match(err, expect, label);
+  }
+
+  // 13. Simulated root VPS install: creates `tess-support` user, runs Hermes/allowlist via runuser, writes .env at 600,
+  // installs hardened systemd unit to TESS_SYSTEMD_DIR, stops standalone gateway, enables & restarts service.
+  const vpsBox = join(box, 'vps');
+  const vpsBin = join(vpsBox, 'bin'), vpsHome = join(vpsBox, 'home', 'tess-support'), vpsUnitDir = join(vpsBox, 'systemd'), vpsState = join(vpsBox, 'state');
+  mkdirSync(vpsBin, { recursive: true }); mkdirSync(vpsUnitDir, { recursive: true }); mkdirSync(vpsState, { recursive: true });
+  rmSync(join(state, 'calls'), { force: true });
+  rmSync(join(state, 'installed'), { force: true });
+  rmSync(join(state, 'gateway'), { force: true });
+  stub('id', `
+if [ "$1" = "-u" ]; then echo 0; exit 0; fi
+if [ "$1" = "-un" ]; then echo root; exit 0; fi
+if [ "$1" = "tess-support" ]; then [ -f "${vpsState}/user-created" ] && exit 0; exit 1; fi
+exit 0
+`, vpsBin);
+  stub('useradd', `echo "useradd $*" >> "${vpsState}/sys"; touch "${vpsState}/user-created"; exit 0`, vpsBin);
+  stub('chown', `echo "chown $*" >> "${vpsState}/sys"; exit 0`, vpsBin);
+  stub('runuser', `
+[ "$1" = "-u" ] || exit 2
+U=$2; shift 2
+[ "$1" = "--" ] && shift
+[ "$1" = "env" ] && shift
+while [ $# -gt 0 ]; do
+  case "$1" in
+    *=*) export "$1"; shift ;;
+    *) break ;;
+  esac
+done
+echo "runuser $U $*" >> "${vpsState}/runuser"
+exec "$@"
+`, vpsBin);
+  stub('systemctl', `echo "systemctl $*" >> "${vpsState}/sys"; exit 0`, vpsBin);
+
+  const vpsEnv = {
+    ...senv,
+    PATH: `${vpsBin}:${senv.PATH}`,
+    TESS_BOT_HOME: vpsHome,
+    HERMES_HOME: join(vpsHome, '.hermes'),
+    TESS_SYSTEMD_DIR: vpsUnitDir,
+    TESS_ALLOW_IDS: '333333333',
+  };
+  const vpsOut = out('/bin/sh', [SETUP], vpsEnv);
+  assert.match(vpsOut, /Installed and started .*tess-support\.service as user 'tess-support'/);
+  const sysLog = readFileSync(join(vpsState, 'sys'), 'utf8');
+  assert.match(sysLog, /useradd --system --create-home --home-dir .*\/tess-support --shell .* tess-support/, 'creates system user tess-support');
+  assert.match(sysLog, /systemctl daemon-reload/, 'reloads systemd');
+  assert.match(sysLog, /systemctl enable tess-support/, 'enables tess-support');
+  assert.match(sysLog, /systemctl restart tess-support/, 'restarts tess-support');
+  const ruLog = readFileSync(join(vpsState, 'runuser'), 'utf8');
+  assert.match(ruLog, /runuser tess-support .*hermes profile install/, 'runs hermes as tess-support');
+  assert.match(ruLog, /runuser tess-support node .*allowlist\.mjs/, 'runs allowlist.mjs as tess-support');
+  assert.ok(!ruLog.includes(tgSecret) && !ruLog.includes(goSecret) && !ruLog.includes(supSecret), 'no secret in runuser argv');
+  const installedUnit = readFileSync(join(vpsUnitDir, 'tess-support.service'), 'utf8');
+  assert.match(installedUnit, /^User=tess-support$/m);
+  assert.match(installedUnit, /^MemoryMax=512M$/m);
+  assert.match(installedUnit, /^CPUQuota=50%$/m);
+  assert.match(installedUnit, /^InaccessiblePaths=.*\/srv\/paperclip/m);
+  assert.equal(statSync(join(vpsHome, '.hermes', 'profiles', 'tess-support', '.env')).mode & 0o777, 0o600);
+  // Idempotent second run as simulated root: user already exists so useradd is not called again.
+  rmSync(join(vpsState, 'sys'), { force: true });
+  out('/bin/sh', [SETUP], vpsEnv);
+  assert.ok(!/useradd/.test(readFileSync(join(vpsState, 'sys'), 'utf8')), 'second run skips useradd');
+
+  // Non-root on a systemd+useradd machine without TESS_TEST refuses and directs operator to sudo -E sh.
+  const linuxBin = join(box, 'linux-bin');
+  mkdirSync(linuxBin, { recursive: true });
+  stub('useradd', 'exit 0', linuxBin);
+  stub('systemctl', 'exit 0', linuxBin);
+  stub('id', '[ "$1" = "-u" ] && { echo 1000; exit 0; }; echo alice; exit 0', linuxBin);
+  let nonRootLinux = '';
+  try {
+    out('/bin/sh', [SETUP], { ...senv, TESS_TEST: '0', PATH: `${linuxBin}:${senv.PATH}` });
+    assert.fail('expected non-root Linux systemd refusal');
+  } catch (e) { if (e.code === 'ERR_ASSERTION') throw e; nonRootLinux = String(e.stderr) + String(e.stdout); }
+  assert.match(nonRootLinux, /sudo -E sh/);
+
+  // 7b. No advice to grant the bot passwordless sudo, and never two gateways: when a unit is generated non-root (TESS_TEST=1),
+  // setup does not start a standalone gateway.
   assert.ok(!/passwordless sudo for systemctl|give this account passwordless sudo/i.test(setupText), 'setup never suggests granting the bot sudo');
   const sysDir = join(box, 'sysonly');
   mkdirSync(sysDir, { recursive: true });
@@ -494,16 +605,25 @@ exit 0
   chmodSync(join(sysDir, 'systemctl'), 0o755);
   rmSync(join(state, 'calls'), { force: true });
   const unitRun = out('/bin/sh', [SETUP], { ...senv, PATH: `${sysDir}:${senv.PATH}` });
-  assert.match(unitRun, /Not starting a second gateway/, 'with a unit generated, it does not start a second gateway');
+  assert.match(unitRun, /Not starting a second gateway/, 'with a unit generated non-root, it does not start a second gateway');
   assert.ok(!/gateway start/.test(calls().join('\n')), 'and never calls gateway start in that case');
 
-  // Paperclip's machine is refused outright, before anything is installed.
+  // Paperclip user/path collisions are refused outright before anything is installed.
   const pc = join(box, 'paperclip-host');
   mkdirSync(join(pc, 'paperclip'), { recursive: true });
-  let pcOut = '';
-  try { out('/bin/sh', [SETUP], { ...senv, HOME: pc }); } catch (e) { pcOut = String(e.stderr) + String(e.stdout); }
-  assert.match(pcOut, /machine that runs Paperclip/, 'it will not run beside Paperclip');
-  assert.ok(!/profile install/.test(pcOut), 'and installs nothing there');
+  for (const [label, extra, expect] of [
+    ['home containing paperclip dir', { HOME: pc }, /paperclip/i],
+    ['TESS_BOT_HOME=/srv/paperclip', { TESS_BOT_HOME: '/srv/paperclip' }, /Paperclip/],
+    ['TESS_BOT_HOME=/home/paperclip/bot', { TESS_BOT_HOME: '/home/paperclip/bot' }, /Paperclip/],
+    ['TESS_BOT_USER=paperclip', { TESS_BOT_USER: 'paperclip' }, /refusing bot user/],
+    ['TESS_BOT_USER=root', { TESS_BOT_USER: 'root' }, /refusing bot user/],
+  ]) {
+    let pcOut = '';
+    try { out('/bin/sh', [SETUP], { ...senv, ...extra }); assert.fail(`expected refusal for ${label}`); }
+    catch (e) { if (e.code === 'ERR_ASSERTION') throw e; pcOut = String(e.stderr) + String(e.stdout); }
+    assert.match(pcOut, expect, label);
+    assert.ok(!/profile install/.test(pcOut), `${label} installs nothing`);
+  }
 
   // A failed install is reported and the gateway is not started onto nothing.
   rmSync(join(state, 'gateway'), { force: true });
@@ -511,6 +631,69 @@ exit 0
   try { out('/bin/sh', [SETUP], { ...senv, STUB_FAIL_PROFILE: '1' }); } catch (e) { failed = String(e.stderr) + String(e.stdout); }
   assert.match(failed, /couldn't (install|update) the tess-support profile/);
   assert.ok(!existsSync(join(state, 'gateway')), 'no gateway started for a bot that is not there');
+
+  // --- daily-cap plugin (Python unit checks) ------------------------------------------------------------------------
+  const capDir = join(box, 'cap-test');
+  mkdirSync(capDir, { recursive: true });
+  const capScript = `
+import importlib.util, json, os, pathlib, tempfile
+plugin_path = pathlib.Path(${JSON.stringify(join(root, 'support/bot/plugins/daily-cap/__init__.py'))})
+spec = importlib.util.spec_from_file_location("daily_cap", plugin_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+class FakeCtx:
+    def __init__(self): self.hooks = {}
+    def register_hook(self, name, fn): self.hooks[name] = fn
+
+ctx = FakeCtx()
+mod.register(ctx)
+assert "pre_llm_call" in ctx.hooks and "post_api_request" in ctx.hooks
+
+with tempfile.TemporaryDirectory() as td:
+    cap_file = pathlib.Path(td) / "daily-cap.json"
+    os.environ["TESS_DAILY_CAP_FILE"] = str(cap_file)
+    os.environ["TESS_DAILY_REPLY_CAP"] = "3"
+    os.environ["TESS_DAILY_USER_CAP"] = "2"
+    os.environ["TESS_DAILY_TOKEN_CAP"] = "0"
+    os.environ["TESS_CAP_TODAY"] = "2026-11-18"
+
+    # Per-person cap (2) blocks user A on 3rd turn while user B can still take the remaining global slot.
+    assert mod.pre_llm_call(sender_id="1001") is None
+    assert mod.pre_llm_call(sender_id="1001") is None
+    blk_user = mod.pre_llm_call(sender_id="1001")
+    assert blk_user and blk_user["action"] == "block" and "limit" in blk_user["message"]
+    assert mod.pre_llm_call(sender_id="1002") is None
+
+    # Shared global cap (3) now blocks user B as well.
+    blk_global = mod.pre_llm_call(sender_id="1002")
+    assert blk_global and blk_global["action"] == "block" and "00:00 UTC" in blk_global["message"]
+
+    # Next UTC day resets counters cleanly.
+    os.environ["TESS_CAP_TODAY"] = "2026-11-19"
+    assert mod.pre_llm_call(sender_id="1001") is None
+
+    # Token cap blocks after post_api_request crosses TESS_DAILY_TOKEN_CAP.
+    os.environ["TESS_DAILY_TOKEN_CAP"] = "1000"
+    mod.post_api_request(usage={"prompt_tokens": 600, "completion_tokens": 450})
+    blk_tok = mod.pre_llm_call(sender_id="1002")
+    assert blk_tok and blk_tok["action"] == "block"
+
+    # Corrupt state fails closed.
+    cap_file.write_text("{bad json", encoding="utf-8")
+    blk_bad = mod.pre_llm_call(sender_id="1002")
+    assert blk_bad and blk_bad["action"] == "block"
+
+    # Symlinked state fails closed and leaves target untouched.
+    secret_target = pathlib.Path(td) / "secret.txt"
+    secret_target.write_text("keep-me", encoding="utf-8")
+    cap_file.unlink()
+    cap_file.symlink_to(secret_target)
+    blk_sym = mod.pre_llm_call(sender_id="1002")
+    assert blk_sym and blk_sym["action"] == "block"
+    assert secret_target.read_text(encoding="utf-8") == "keep-me"
+`;
+  out('python3', ['-c', capScript]);
 
   console.log('support bot: all checks passed\n');
   console.log([
@@ -525,15 +708,16 @@ exit 0
     '  · the allowlist is not reachable from chat, and the unit makes .env and allow.txt read-only to the bot',
     '  · Hermes\' own admin list is still written with Krish\'s id, for Hermes\' own commands',
     '  · setup.sh unpacks GitHub\'s real archive layout with the real tar, so the download path is actually tested',
-    '  · it borrows the connected model, falls back to OpenCode\'s free tier, and stores the token, owner and inbox',
+    '  · it defaults to opencode-go/deepseek-v4.1-flash with OPENCODE_GO_API_KEY in .env at 600 and zero secrets on CLI argv',
+    '  · it seeds TESS_ALLOW_IDS, writes cap settings, and stays idempotent on re-run',
+    '  · under simulated root/VPS it creates tess-support, drops privileges via runuser, installs the hardened unit, and enables/restarts it',
+    '  · it refuses Paperclip/PostgreSQL paths and users, and installs nothing after a failed profile install',
+    '  · daily-cap plugin enforces per-user and shared daily reply limits, token budget, UTC rollover, and fails closed on corrupt/symlinked state',
     '  · the payload it posts carries only fields the inbox accepts, and no token or personal data',
     '  · the posting token and the inbox address are never in a command: one script holds both, and refuses any other host',
     '  · a title the inbox would refuse with a 400 is refused here first, before anything is posted',
     '  · a home path or an email inside the helper log is scrubbed out of the issue and the payload',
     '  · a path where the Spotify version goes, a Mac name, a bidi override and a zero-width character never reach the issue or the payload',
-    '  · it refuses to run as root, so the bot\'s shell is never root\'s',
-    '  · it never suggests passwordless sudo, and never starts a second gateway beside the systemd unit',
-    '  · it never changes the default profile, refuses Paperclip\'s machine, and starts nothing after a failed install',
     '',
   ].join('\n'));
   console.log('─'.repeat(96));

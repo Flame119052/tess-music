@@ -544,6 +544,28 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   command refuses on anything else rather than falling back to a path. `apply` and `backup` keep the path-based swap,
   where the folder comes from the user's own Spicetify config. `tools/test-swap-recovery.mjs` builds the real binary,
   kills it during the copy and between the renames, and proves the next run restores Spotify's folder.
+- **D-87 · 18 Nov 2026 · Owner** — Support runs as **one shared Hermes bot (`tess-support`) on Krish's VPS**, under its
+  own unprivileged system user and resource-capped systemd unit, using **OpenCode Go (`opencode-go/deepseek-v4.1-flash`)**
+  with a **hard daily cap**. Reverses the "free tier" in D-77 and the "refuse the Paperclip host outright" rule in
+  D-76/D-78 (replacing it with user, systemd, and path-collision isolation). (#85)
+  - **Why per-person Hermes on each Mac was rejected:** Hermes requires bash, git, Node, and macOS Developer Tools —
+    far too heavy for a casual user, and it cannot run inside the `.dmg`/Mac setup without leaving Intel/non-dev Macs
+    behind. Moving to one bot on the VPS keeps user Macs completely untouched except `tess report`.
+  - **Why OpenCode Go + daily cap:** OpenCode's free tier returned `403` from Hermes. Moving to Krish's personal
+    OpenCode Go plan works reliably, and a Hermes `pre_llm_call` plugin (`support/bot/plugins/daily-cap/`) enforces a
+    hard daily ceiling (default `40` shared replies/day across users, `20`/day per person, plus optional
+    `TESS_DAILY_TOKEN_CAP`, resetting at `00:00 UTC`, failing closed on lock/corrupt state) before any model inference
+    runs. Kept strictly to **Krish and one trusted tester** to stay inside personal plan terms.
+  - **Why the shared VPS is safe alongside Paperclip:** Paperclip always comes first. `setup.sh` creates the dedicated
+    `tess-support` account with its own `/home/tess-support` (`nologin`), refuses to install inside or alongside Paperclip
+    or PostgreSQL paths/users, writes secrets (`OPENCODE_GO_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TESS_SUPPORT_TOKEN`) to
+    `.env` at mode `600` via shell builtins with zero secrets on any command line, and installs `tess-support.service`
+    with `MemoryMax=512M`, `CPUQuota=50%`, `TasksMax=64`, `Nice=19`, `IOSchedulingClass=idle`, `NoNewPrivileges=yes`,
+    `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=read-only`, `ReadOnlyPaths` over `.env` and `allow.txt`, and
+    `InaccessiblePaths` blocking `/srv/paperclip`, `/home/paperclip`, `/var/lib/postgresql`, and `/run/postgresql`.
+    It never touches Paperclip, PostgreSQL, or the Tincan relay. *Trade-off:* running on the same host means `setup.sh`
+    runs once with `sudo -E` to create the user and unit, and OpenCode Go API quota is shared with other personal Go
+    usage, mitigated by the daily cap.
 
 ## Releases and process
 
