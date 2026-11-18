@@ -159,7 +159,7 @@ apps_write() {
     }
     # A redirect writes the folder with no verb at all: `printf x >/"$APPS/xpui.spa"` replaced the live file in a probe.
     # `>`, `>>`, `>|`, `>!` (zsh clobber) and `>&` are all redirects, a space may follow, and the path may start with a slash or `./`.
-    function redirect_writes(s,   i, n, j) {
+    function redirect_writes(s,   i, n, j, t) {
       n = length(s)
       for (i = 1; i <= n; i++) {
         if (substr(s, i, 1) != ">") continue
@@ -172,6 +172,10 @@ apps_write() {
           break
         }
         if (j <= n && is_folder(substr(s, j))) return 1
+        if (substr(s, j, 2) == "$(" || substr(s, j, 1) == "`") {
+          t = substr(s, j)
+          if (match(t, /^([$][(][^)]*[)]|`[^`]*`)/) && substr(t, 1, RLENGTH) ~ /[$](APPS|A0)([^A-Za-z0-9_]|$)/) return 1
+        }
       }
       return 0
     }
@@ -567,6 +571,9 @@ apps_write_fixture caught 'printf pwned >>!"$APPS/xpui.spa"'
 apps_write_fixture caught 'printf pwned >&!"$APPS/xpui.spa"'
 apps_write_fixture caught 'printf pwned >| "$APPS/xpui.spa"'
 apps_write_fixture caught 'printf pwned >| /"$APPS/xpui.spa"'
+apps_write_fixture caught 'printf x >"$(dirname "$APPS")/Apps/xpui.spa"'
+apps_write_fixture caught 'printf x >`dirname "$APPS"`/Apps/xpui.spa'
+apps_write_fixture allowed 'printf x >"$(dirname "$TMP")/x"'
 apps_write_fixture allowed 'printf pwned >!"$TMP/x"'
 apps_write_fixture allowed 'printf pwned >|"$TMP/x"'
 apps_write_fixture allowed 'cat <"$APPS/xpui.spa" >!"$TMP/x"'
