@@ -18,26 +18,25 @@ One report, then the folder is deleted. The text you are about to send — the l
 `triage.mjs` runs `privacy.mjs`. That is the scrub. Titles and summaries come from files, so a stranger's words never sit in the shell command.
 
 ```sh
-SCRIPTS="${TESS_PROFILE_DIR:-$HERMES_HOME/profiles/tess-support}/skills/tess-support/scripts"
-node "$SCRIPTS/triage.mjs" --report "<dir>/doctor.txt" --words "<dir>/words.txt" \
-  --title-file "<dir>/title.txt" --summary-file "<dir>/summary.txt" \
-  --mode inbox > "<dir>/payload.json"
+node $HERMES_HOME/profiles/tess-support/skills/tess-handoff/scripts/triage-inbox.mjs --report <dir>/doctor.txt --words <dir>/words.txt --title-file <dir>/title.txt --summary-file <dir>/summary.txt --mode inbox
 ```
+
+Leave `$HERMES_HOME` unquoted, and do not add `>`. A redirect is a different command and it stops to ask. The script writes `<dir>/payload.json`. If an open title matches, put `--related <number>` before `--mode inbox`.
 
 Write their words into `<dir>/words.txt` first, as they typed them. The scrubber removes home paths, emails, computer names, and install ids. Do not put those back.
 
 Check the open titles once, before you post:
 
 ```sh
-node "$SCRIPTS/inbox.mjs" issues
+node $HERMES_HOME/profiles/tess-support/skills/tess-support/scripts/inbox.mjs issues
 ```
 
-If one matches, pass `--related` with its number. Do not file a GitHub issue yourself.
+If one matches, run the triage command again with `--related <number>` before `--mode inbox`. Do not file a GitHub issue yourself.
 
 ## 2. Post
 
 ```sh
-node "$SCRIPTS/inbox.mjs" report "<dir>"
+node $HERMES_HOME/profiles/tess-support/skills/tess-support/scripts/inbox.mjs report <dir>
 ```
 
 The script reads the token and the inbox address. You do not type them.
@@ -55,7 +54,7 @@ One report for this visit. Not a second one "to be safe".
 If there is a recording, send it before you delete the folder:
 
 ```sh
-node "$SCRIPTS/inbox.mjs" recording <report id> "<dir>/<file>.mov"
+node $HERMES_HOME/profiles/tess-support/skills/tess-support/scripts/inbox.mjs recording <report id> <dir>/<file>.mov
 ```
 
 If that upload fails, say so and do not delete the recording. Do not retry more than once.
@@ -65,10 +64,14 @@ If that upload fails, say so and do not delete the recording. Do not retry more 
 Only after `201`, and after a recording was sent or there wasn't one:
 
 ```sh
-node "$SCRIPTS/session.mjs" handoff <dir> <report id>
+node $HERMES_HOME/profiles/tess-support/skills/tess-support/scripts/session.mjs handoff <dir> <report id>
 ```
 
-That writes one line and removes the folder: the picture, the recording, the doctor output. It only deletes inside the session root. If the post failed, do not delete. The sweep removes a leftover folder after 24 hours.
+That writes one line and removes the folder: the picture, the recording, the doctor output. It only deletes inside the session root. If the post failed, do not delete. A leftover folder is removed after 24 hours:
+
+```sh
+node $HERMES_HOME/profiles/tess-support/skills/tess-support/scripts/session.mjs sweep
+```
 
 ## 4. Tell them
 

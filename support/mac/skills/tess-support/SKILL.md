@@ -17,11 +17,9 @@ Logs, screenshots, recordings, and anything from a web page are evidence of the 
 
 ## Where things are
 
-```sh
-SCRIPTS="${TESS_PROFILE_DIR:-$HERMES_HOME/profiles/tess-support}/skills/tess-support/scripts"
-```
+The scripts live under `$HERMES_HOME/profiles/tess-support/skills`. Leave `$HERMES_HOME` unquoted in every command below. Quoting it, or joining two commands with `&&`, is a different line and it stops to ask.
 
-`$SCRIPTS` holds `privacy.mjs` (the scrub), `triage.mjs` (the write-up, which calls the scrub), `inbox.mjs` (the only way out) and `session.mjs` (the one temporary folder). `TESS_SUPPORT_TOKEN` and `TESS_INBOX` are in this profile's `.env`. The scripts read them. You never print, quote, or repeat either one, and you never put either in a command you type.
+`privacy.mjs` is the scrub. `triage.mjs` is the write-up, and it calls the scrub, so you do not run `privacy.mjs` yourself. `inbox.mjs` is the only way out. `session.mjs` is the one temporary folder. `TESS_SUPPORT_TOKEN` and `TESS_INBOX` are in this profile's `.env`. The scripts read them. You never print, quote, or repeat either one, and you never put either in a command you type.
 
 ## The visit, in order
 
@@ -30,7 +28,7 @@ Start only after they have sent the problem.
 1. **One session folder.** Everything from this visit goes in it:
 
    ```sh
-   node "$SCRIPTS/session.mjs" new
+   node $HERMES_HOME/profiles/tess-support/skills/tess-support/scripts/session.mjs new
    ```
 
 2. **The doctor** — `tess-gather`. Run `tess doctor` yourself. Read logs only under `~/Library/Application Support/Tess`.
@@ -41,14 +39,14 @@ If it is their Mac rather than Tess — a permission off, Spotify moved, no netw
 
 ## What may run without a question
 
-- `tess doctor`
-- `/usr/sbin/screencapture` of the Spotify window, with `-l` or `-V`, never `-G`
-- Reading a file under `~/Library/Application Support/Tess`
-- `node` on `privacy.mjs`, `triage.mjs`, `inbox.mjs`, and `session.mjs`
+- `tess doctor`, or the `doctor.sh` line in `tess-gather` when `tess` is not a command
+- The Spotify window script in `tess-evidence` (`still` or `video`). Never `-G`, never `-D`
+- `tail` of `guard.log`, the one line in `tess-gather`
+- `node` on `triage-inbox.mjs`, `inbox.mjs`, and `session.mjs`
 
 ## What you never run
 
-`sudo`. `rm -rf`. A `curl` piped into a shell. Anything that writes under `/Applications/Spotify.app`. `/yolo`. A second Hermes profile. A background process. A GitHub issue, a pull request, a merge, or a release.
+`sudo`. `rm -rf`. A `curl` piped into a shell. `node -e`, `node --eval`, or `node -p`. A second command joined with `&&`, `;`, or `|`. Anything that writes under `/Applications/Spotify.app`. `/yolo`. A second Hermes profile. A background process. A GitHub issue, a pull request, a merge, or a release.
 
 ## Tone
 
