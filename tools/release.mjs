@@ -155,11 +155,13 @@ const gitTree = (p) => execFileSync('git', ['-C', root, 'rev-parse', `HEAD:${p}`
 const parts = {
   updater: { file: `${build}tess-updater.sh`, src: hashFiles([`${root}installer/updater.sh`]) },
   patcher: { file: `${build}tess-patcher-macos-universal.tar.gz`, src: hashFiles([`${root}installer/rescue.sh`]).slice(0, 20) + gitTree('patcher').slice(0, 20) },
-  command: { file: `${build}tess-command.sh`, src: hashFiles([`${root}installer/tess-command.sh`]) },
   wake: { file: `${build}tess-wake.sh`, src: hashFiles([`${root}installer/wake.sh`]) },
   doctor: { file: `${build}tess-doctor.sh`, src: hashFiles([`${root}installer/doctor.sh`]) },
+  // Order matters: the Mac installs these lines in this order. The tess command runs installer.sh and uninstall.sh, so
+  // those are written first; a Mac gaining all three in one update must never hold a command that points at nothing.
   installer: { file: `${build}tess-installer.sh`, src: hashFiles([`${root}installer/tess-install.sh`]) },
   uninstall: { file: `${build}tess-uninstall.sh`, src: hashFiles([`${root}installer/uninstall.sh`]) },
+  command: { file: `${build}tess-command.sh`, src: hashFiles([`${root}installer/tess-command.sh`]) },
   mini: { file: `${build}tess-mini.zip`, src: hashFiles([`${root}mini/TessMini.swift`, `${root}mini/Info.plist`]).slice(0, 56) + 'sig1' },
   theme: { file: `${build}tess-theme.tar.gz`, src: hashFiles([`${root}theme/loader/loader.js`]) },
 };

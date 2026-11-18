@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Every five minutes, read the public release marker and wake the signed updater when it moved.
-# The rescue serial is read only while that line is on, so a user who turned it off is not
-# stuck waiting on the rescue branch for ordinary updates.
+# The rescue serial is read only while that line is installed and on, so a Mac that never had it (or a user who turned
+# it off) is not stuck waiting on the rescue branch for ordinary updates.
 # >>> tess script guard: keep this block identical in every installer script (issue #107) >>>
 # This file used to be able to act on a real Mac when nobody meant it, three ways: being sourced (a shell one-liner
 # like `sh -c '. installer/tess-install.sh; …'` ran the whole real installer), having its text handed to a shell to run
@@ -119,7 +119,8 @@ if curl -fsSL --connect-timeout 5 --max-time 15 "$version_url" -o "$TMP/version"
 else
   failed=1
 fi
-if [ -f "$T/rescue-off" ]; then
+if [ -f "$T/rescue-off" ] || [ ! -x "$R/tess-rescue-verify" ]; then
+  # Off, or never installed on this Mac: there is nothing to wake, and the rescue branch is not read at all.
   if [ -n "$failed" ]; then touch "$FAILED"; else rm -f "$FAILED"; fi
   exit 0
 fi

@@ -2,8 +2,9 @@
 // Usage: node tools/test-rescue.mjs [--slow] (no installed Tess or production keys required)
 // Proves: each of the five actions is accepted; script orders, unknown actions, injected text, bad signatures,
 // expired orders, replays and orders for other Macs do nothing; an order's time limit stops the action and every
-// process it started (--slow adds the 60 s end-to-end run).
-import { execFileSync } from 'node:child_process';
+// process it started, and a running order records its process group for `tess rescue off` (--slow adds the 60 s
+// end-to-end run).
+import { execFileSync, spawn } from 'node:child_process';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -151,6 +152,29 @@ run_bounded 2 "$1" "$2" "$3" /bin/zsh -c 'trap "" TERM; echo $$ > "$1"; while :;
   assert.ok((Date.now() - t1) / 1000 < 40, 'TERM, the grace period and KILL all finished');
   assert.equal(readFileSync(stubbornStop, 'utf8').trim(), 'kill', 'a process that ignores TERM is killed outright');
   assert.equal(alive(held2), false, `the process that ignored TERM is gone (pid ${held2})`);
+  // 12d. while an action runs, the runner writes its process group to order.pid, which is what `tess rescue off` reads to
+  // stop an order that has already started (#91). The number is the group's leader, and it goes away when the limit stops
+  // the action, so a person who turns the line off later is never handed a number that has moved on.
+  const groupPidFile = join(R, 'order.pid'), groupLog = join(box, 'group.log'), groupRc = join(box, 'group.rc'), groupStopFile = join(box, 'group.stop');
+  writeFileSync(driver, `#!/bin/zsh
+${runner[0]}
+RUN_PIDFILE=${JSON.stringify(groupPidFile)}
+run_bounded 2 "$1" "$2" "$3" /bin/zsh -c 'sleep 60' _ 2>/dev/null
+`);
+  const runnerJob = spawn('/bin/zsh', [driver, groupLog, groupRc, groupStopFile], { stdio: 'ignore' });
+  const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  for (let i = 0; i < 60 && !existsSync(groupPidFile); i++) pause(50);
+  assert.ok(existsSync(groupPidFile), 'a running order writes its process group down for `tess rescue off`');
+  const groupLines = readFileSync(groupPidFile, 'utf8').split('\n');
+  const groupPid = Number(groupLines[0]);
+  const groupStart = execFileSync('/bin/ps', ['-o', 'lstart=', '-p', String(groupPid)], { encoding: 'utf8' }).trim();
+  assert.equal(groupLines[1], groupStart, 'order.pid records the pid and the start time');
+  assert.equal(execFileSync('/bin/ps', ['-o', 'pgid=', '-p', String(groupPid)], { encoding: 'utf8' }).trim(), String(groupPid), 'the number written is the group leader');
+  for (let i = 0; i < 100 && existsSync(groupPidFile); i++) pause(50);
+  assert.ok(!existsSync(groupPidFile), 'a stopped order leaves no number behind');
+  assert.equal(readFileSync(groupStopFile, 'utf8').trim(), 'term', 'the action was stopped by the limit, not left running');
+  assert.equal(alive(groupPid), false, `the action's group is gone (pid ${groupPid})`);
+  runnerJob.kill('SIGKILL');
   if (process.argv.includes('--slow')) {
     // 13. an action that outlives its limit is stopped, with everything it started, and the log says which limit it
     // passed (60 s of real waiting). The child is the shape that matters: `check`, `update` and `repair` run the
@@ -172,6 +196,148 @@ sleep 600
     assert.ok(child > 1, 'the action recorded the child it started');
     assert.equal(alive(child), false, `the child the action started was stopped too (pid ${child} still ran)`);
   }
+  // 12e. `tess rescue off` writes "off" before the signal, so the log and the report name what stopped the order.
+  {
+    writeFileSync(join(T, 'doctor.sh'), '#!/bin/zsh\nsleep 300\n');
+    chmodSync(join(T, 'doctor.sh'), 0o755);
+    const agents = join(box, 'LaunchAgents');
+    mkdirSync(agents, { recursive: true });
+    writeFileSync(join(T, 'tess'), readFileSync(join(root, 'installer/tess-command.sh')));
+    chmodSync(join(T, 'tess'), 0o755);
+    publish(order(++s, 'check', ['timeout 60']));
+    const offRescue = spawn('/bin/zsh', [join(R, 'rescue.sh')], { env: { ...env, TESS_TEST_RUN: '1' }, stdio: 'ignore' });
+    const offOrderPid = join(box, 'off-order.pid');
+    try {
+      for (let i = 0; i < 50 && !existsSync(join(R, 'order.pid')); i++) pause(100);
+      assert.ok(existsSync(join(R, 'order.pid')), 'the order wrote its pid before rescue off');
+      const leader = Number(readFileSync(join(R, 'order.pid'), 'utf8').split('\n')[0]);
+      writeFileSync(offOrderPid, `${leader}\n`);
+      const offOut = execFileSync('/bin/sh', [join(T, 'tess'), 'rescue', 'off'], {
+        env: { ...env, TESS_LAUNCH_AGENTS: agents },
+        encoding: 'utf8',
+      });
+      assert.match(offOut, /had already started was stopped/);
+      const stoppedLine = `rescue order ${s} was stopped by rescue off`;
+      for (let i = 0; i < 40 && !log().includes(stoppedLine); i++) pause(250);
+      assert.match(log(), new RegExp(stoppedLine));
+      let offReport;
+      for (let i = 0; i < 40; i++) {
+        try {
+          offReport = JSON.parse(readFileSync(join(R, 'order-report.json'), 'utf8'));
+          if (String(offReport.status).includes('stopped by rescue off')) break;
+        } catch { /* written just after the log line */ }
+        pause(50);
+      }
+      assert.match(offReport.status, /stopped by rescue off/);
+      assert.match(offReport.body, /stopped by rescue off/);
+      assert.equal(alive(leader), false, 'rescue off stopped the order');
+    } finally {
+      try { offRescue.kill('SIGKILL'); } catch {}
+      const leader = pidIn(offOrderPid);
+      try { if (leader > 1) process.kill(-leader, 'SIGKILL'); } catch {}
+    }
+  }
+  // 12f. `rescue off` TERMs the group. The leader can die while a child ignores TERM. The runner must still be
+  // waiting then: the log line is written when it returns, and stop_order's KILL is what actually ends that child.
+  {
+    const lingerChild = join(box, 'linger-child.pid');
+    const lingerStop = join(box, 'linger.stop');
+    const lingerLog = join(box, 'linger.log');
+    const lingerRc = join(box, 'linger.rc');
+    const lingerPid = join(box, 'linger-order.pid');
+    const lingerAction = join(box, 'linger-action.sh');
+    const running = (pid) => {
+      try {
+        const stat = execFileSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim();
+        return stat !== '' && !stat.startsWith('Z');
+      } catch { return false; }
+    };
+    const signalGroup = (sig, pid) => execFileSync('/bin/sh', ['-c', 'kill -"$1" -- "-$2"', '_', sig, String(pid)]);
+    writeFileSync(lingerAction, `#!/bin/sh
+/bin/sh -c 'trap "" TERM; echo $$ > "$1"; while :; do sleep 1; done' _ "$1" &
+while :; do sleep 1; done
+`);
+    chmodSync(lingerAction, 0o755);
+    writeFileSync(driver, `#!/bin/zsh
+${runner[0]}
+RUN_PIDFILE=${JSON.stringify(lingerPid)}
+run_bounded 60 "$1" "$2" "$3" ${JSON.stringify(lingerAction)} ${JSON.stringify(lingerChild)}
+`);
+    const job = spawn('/bin/zsh', [driver, lingerLog, lingerRc, lingerStop], { stdio: 'ignore' });
+    try {
+      for (let i = 0; i < 50 && !existsSync(lingerChild); i++) pause(50);
+      assert.ok(existsSync(lingerChild), 'the action started a child that ignores TERM');
+      for (let i = 0; i < 50 && !existsSync(lingerPid); i++) pause(50);
+      const child = Number(readFileSync(lingerChild, 'utf8').trim());
+      const leader = Number(readFileSync(lingerPid, 'utf8').split('\n')[0]);
+      writeFileSync(lingerStop, 'off\n');
+      signalGroup('TERM', leader);
+      pause(2500);
+      assert.equal(running(leader), false, 'TERM took the group leader');
+      assert.equal(running(child), true, 'a child that ignores TERM is still running');
+      assert.equal(running(job.pid), true, 'the runner waits for the group instead of logging a stop while the child runs');
+      signalGroup('KILL', leader);
+      for (let i = 0; i < 40 && running(job.pid); i++) pause(100);
+      assert.equal(running(job.pid), false, 'the runner returns once the group is gone');
+      assert.equal(running(child), false, 'the child is gone before the runner returns');
+    } finally {
+      try { job.kill('SIGKILL'); } catch {}
+      try { signalGroup('KILL', Number(readFileSync(lingerPid, 'utf8').split('\n')[0])); } catch {}
+      try { const child = pidIn(lingerChild); if (child > 1) process.kill(child, 'SIGKILL'); } catch {}
+    }
+  }
+  // 12g. On a real Mac, launchd bootout TERMs rescue.sh. That has to happen after the stop is logged, or the
+  // line never lands: the job's main process is the script that writes it.
+  {
+    rmSync(join(T, 'rescue-off'), { force: true });
+    writeFileSync(join(T, 'doctor.sh'), '#!/bin/zsh\nsleep 300\n');
+    chmodSync(join(T, 'doctor.sh'), 0o755);
+    const fakeBin = join(box, 'fake-launchctl');
+    const jobPidFile = join(box, 'rescue-job.pid');
+    const bootLog = join(box, 'bootout.log');
+    mkdirSync(fakeBin, { recursive: true });
+    writeFileSync(join(fakeBin, 'launchctl'), `#!/bin/sh
+echo "$1" >> "$TESS_BOOT_LOG"
+case "$1" in
+  bootout)
+    pid=$(cat "$TESS_RESCUE_JOB_PID" 2>/dev/null || true)
+    [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null || true
+    ;;
+esac
+exit 0
+`);
+    chmodSync(join(fakeBin, 'launchctl'), 0o755);
+    publish(order(++s, 'check', ['timeout 60']));
+    const job = spawn('/bin/zsh', [join(R, 'rescue.sh')], { env: { ...env, TESS_TEST_RUN: '1' }, stdio: 'ignore' });
+    const jobOrderPid = join(box, 'boot-order.pid');
+    try {
+      for (let i = 0; i < 50 && !existsSync(join(R, 'order.pid')); i++) pause(100);
+      assert.ok(existsSync(join(R, 'order.pid')), 'the order wrote its pid before bootout could kill the job');
+      writeFileSync(jobOrderPid, `${readFileSync(join(R, 'order.pid'), 'utf8').split('\n')[0]}\n`);
+      writeFileSync(jobPidFile, `${job.pid}\n`);
+      const offOut = execFileSync('/bin/sh', [join(T, 'tess'), 'rescue', 'off'], {
+        env: {
+          ...env,
+          TESS_LAUNCH_AGENTS: join(box, 'LaunchAgents'),
+          PATH: `${fakeBin}:${process.env.PATH}`,
+          TESS_RESCUE_JOB_PID: jobPidFile,
+          TESS_BOOT_LOG: bootLog,
+        },
+        encoding: 'utf8',
+      });
+      assert.match(offOut, /had already started was stopped/);
+      assert.match(readFileSync(bootLog, 'utf8'), /bootout/, 'rescue off still boots the job out');
+      const stoppedLine = `rescue order ${s} was stopped by rescue off`;
+      for (let i = 0; i < 40 && !log().includes(stoppedLine); i++) pause(250);
+      assert.match(log(), new RegExp(stoppedLine), 'bootout did not kill rescue.sh before it logged the stop');
+      const leader = Number(readFileSync(jobOrderPid, 'utf8').split('\n')[0]);
+      assert.equal(alive(leader), false, 'rescue off stopped the order');
+    } finally {
+      try { job.kill('SIGKILL'); } catch {}
+      const leader = pidIn(jobOrderPid);
+      try { if (leader > 1) process.kill(-leader, 'SIGKILL'); } catch {}
+    }
+  }
   writeFileSync(join(T, 'rescue-off'), '');
   publish(order(++s, 'uninstall'));
   const beforeAdopt = log();
@@ -183,10 +349,10 @@ sleep 600
   rmSync(join(orders, 'rescue.txt'));
   assert.throws(() => run('--adopt'), /Command failed/, 'offline adoption fails');
   assert.ok(existsSync(join(T, 'rescue-off')), 'adoption never removes opt-out');
-  console.log('rescue tests passed (5 actions; script, unknown, injected, bad signature, expired, replay, other Mac; the limit stops the action group)');
+  console.log('rescue tests passed (5 actions; script, unknown, injected, bad signature, expired, replay, other Mac; the limit stops the action group; a running order records its group for `tess rescue off`)');
 } finally {
   // a failed run must not leave a long sleep of its own behind
-  for (const f of [join(box, 'held.pid'), join(box, 'stubborn.pid'), slowChild]) {
+  for (const f of [join(box, 'held.pid'), join(box, 'stubborn.pid'), slowChild, join(box, 'off-order.pid'), join(box, 'linger-child.pid'), join(box, 'boot-order.pid')]) {
     const pid = pidIn(f);
     try { if (pid > 1) process.kill(pid, 'SIGKILL'); } catch {}
   }
