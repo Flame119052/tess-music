@@ -47,6 +47,9 @@ jobs:
       - name: Safety checks (a release never ships if these fail)
         if: steps.key.outputs.ok
         run: tools/check-safety.sh
+      - name: Upgrade gate (pinned 0.2.22 on a fake Spotify, then this build)
+        if: steps.key.outputs.ok
+        run: node tools/test-upgrade.mjs
       - name: Build, sign and publish
         if: steps.key.outputs.ok
         env:
@@ -73,6 +76,10 @@ jobs:
         with: { fetch-depth: 0 }
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
+      - uses: actions/setup-go@v5
+        with: { go-version-file: patcher/go.mod, cache: false }
+      - name: Upgrade gate (pinned 0.2.22 on a fake Spotify, then this build)
+        run: node tools/test-upgrade.mjs
       - name: Declare dev on beta
         env:
           TESS_MIRROR_KEY: ${{ secrets.TESS_MIRROR_KEY }}
@@ -100,6 +107,10 @@ jobs:
         with: { fetch-depth: 0 }
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
+      - uses: actions/setup-go@v5
+        with: { go-version-file: patcher/go.mod, cache: false }
+      - name: Upgrade gate (pinned 0.2.22 on a fake Spotify, then this build)
+        run: node tools/test-upgrade.mjs
       - name: Promote beta to stable
         env:
           TESS_MIRROR_KEY: ${{ secrets.TESS_MIRROR_KEY }}

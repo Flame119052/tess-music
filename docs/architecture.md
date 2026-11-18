@@ -97,7 +97,7 @@ Its files go back to stock (`Apps/xpui.spa`). The updater notices (LaunchAgent W
 
 ## Release pipeline
 
-`push to main` → `.github/workflows/release.yml`: `tools/check-safety.sh` → `tools/release.mjs auto dev`:
+`push to main` → `.github/workflows/release.yml`: `tools/check-safety.sh` → `node tools/test-upgrade.mjs` (install the pinned 0.2.22 updater and doctor on a fake Spotify, update to this build, run the doctor, and install fresh; a failure stops the job) → `tools/release.mjs auto dev`:
 build theme → sign → build patcher (+ tess-verify, rescue verify), Tess Mini (universal), sign binaries with the
 "Tess Music" identity → write `dist/` (manifest with `rev` and a signed envelope binding both file hashes, theme, components list +
 signature + `rev`, `install.sh`, `install.sig`, `uninstall.sh`) to the
@@ -107,7 +107,7 @@ Declaration (`tools/declare.mjs`): copy `dev`'s `dist/` byte for byte to `beta` 
 changes; it is outside the signed envelope), copy the install line to the channel root, record the source `main`
 commit, and write release notes from every PR merged since the previous beta. Promotion (`tools/promote.mjs`): copy
 that exact beta to `stable`, including its notes and channel-root install line, mirror it, and mark the release latest.
-Both public-channel jobs use the protected GitHub `release` environment and support a no-write `--dry-run`.
+Both public-channel jobs use the protected GitHub `release` environment and support a no-write `--dry-run`. Each runs the same upgrade gate before it copies anything, and a failure means beta or stable is left as it was.
 
 Install line: `installer/install.sh` (forwarder on `main`) pins the committed verifier's SHA-256, downloads
 `main/installer/verify/<sha>`, checks it, then downloads `$CH/dist/install.sh` and `dist/install.sig` and verifies the
