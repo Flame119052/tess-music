@@ -101,17 +101,19 @@ try {
   const hedged = out(process.execPath, [TRIAGE, '--report', offFixture, '--words', fix('words-lyrics.txt'), '--mode', 'issue', '--also', 'area:theme', '--title', 'Lyrics drift half a second behind the song']);
   assert.match(hedged, /may not have gone through — reports are off on this Mac, or it was offline/, 'the person is not told a report went that did not');
 
-  // 9b. The admin gate is Hermes', not the model's, model defaults to opencode-go/deepseek-v4.1-flash with daily-cap
-  // plugin enabled, secrets never reach argv, and the systemd unit enforces strict VPS isolation.
+  // 9b. The admin gate is Hermes', not the model's, model defaults to opencode-go/deepseek-v4.1-flash pointed at the
+  // local tess-cap proxy, secrets never reach argv, and both systemd units enforce strict VPS isolation.
   const cfg = readFileSync(join(root, 'support/bot/config.yaml'), 'utf8');
   assert.match(cfg, /allow_admin_from:/, 'the gateway has an admin list');
   assert.match(cfg, /user_allowed_commands:/, 'and a short list of what everyone else may run');
   assert.match(cfg, /provider:\s*opencode-go/, 'default provider is opencode-go');
   assert.match(cfg, /default:\s*deepseek-v4\.1-flash/, 'default model is deepseek-v4.1-flash');
+  assert.match(cfg, /base_url:\s*http:\/\/127\.0\.0\.1:4193\/v1/, 'config points opencode-go at local tess-cap proxy');
   assert.match(cfg, /plugins:\s*\n\s*enabled:\s*\n\s*-\s*daily-cap/, 'daily-cap plugin is enabled');
   const distYaml = readFileSync(join(root, 'support/bot/distribution.yaml'), 'utf8');
   assert.match(distYaml, /-\s*plugins\b/, 'distribution_owned includes plugins so hermes copies daily-cap');
   assert.match(distYaml, /OPENCODE_GO_API_KEY/, 'distribution.yaml documents OPENCODE_GO_API_KEY');
+  assert.match(distYaml, /OPENCODE_GO_BASE_URL/, 'distribution.yaml documents OPENCODE_GO_BASE_URL');
   const setupText = readFileSync(SETUP, 'utf8');
   assert.match(setupText, /config set gateway\.platforms\.telegram\.extra\.allow_admin_from/, 'setup.sh writes the admin list from Krish\'s id');
   assert.ok(!/config set (TELEGRAM_BOT_TOKEN|OPENCODE_GO_API_KEY|TESS_SUPPORT_TOKEN)/.test(setupText), 'setup.sh never puts secrets on config set argv');
@@ -123,8 +125,14 @@ try {
   const unit = readFileSync(join(root, 'support/tess-support.service'), 'utf8');
   assert.match(unit, /ReadOnlyPaths=.*\.env/, 'the unit makes .env read-only to the bot');
   assert.match(unit, /ReadOnlyPaths=.*allow\.txt/, 'and the allowlist too');
-  for (const directive of ['MemoryMax=512M', 'CPUQuota=50%', 'TasksMax=64', 'Nice=19', 'IOSchedulingClass=idle', 'NoNewPrivileges=yes', 'PrivateTmp=yes', 'ProtectSystem=strict', 'ProtectHome=read-only', 'ReadWritePaths=__HOME__', 'InaccessiblePaths=.*\\/srv\\/paperclip']) {
+  assert.ok(!/^StateDirectory=/m.test(unit), 'tess-support no longer holds StateDirectory (moved to tess-cap)');
+  assert.match(unit, /After=.*tess-cap\.service/, 'tess-support orders after tess-cap.service');
+  for (const directive of ['MemoryMax=512M', 'CPUQuota=50%', 'TasksMax=64', 'Nice=19', 'IOSchedulingClass=idle', 'NoNewPrivileges=yes', 'PrivateTmp=yes', 'ProtectSystem=strict', 'ProtectHome=read-only', 'ReadWritePaths=__HOME__', 'InaccessiblePaths=.*\\/srv\\/paperclip.*__CAP_HOME__.*\\/var\\/lib\\/tess-cap']) {
     assert.match(unit, new RegExp(directive), `unit sets ${directive}`);
+  }
+  const capUnit = readFileSync(join(root, 'support/tess-cap.service'), 'utf8');
+  for (const directive of ['User=__CAP_USER__', 'StateDirectory=tess-cap', 'StateDirectoryMode=0700', 'MemoryMax=128M', 'MemorySwapMax=0', 'CPUQuota=25%', 'TasksMax=32', 'Nice=19', 'IOSchedulingClass=idle', 'NoNewPrivileges=yes', 'PrivateTmp=yes', 'ProtectSystem=strict', 'ProtectHome=read-only', 'ReadOnlyPaths=__CAP_HOME__\\/cap-proxy __CAP_HOME__\\/\\.env', 'InaccessiblePaths=.*\\/srv\\/paperclip.*__BOT_HOME__']) {
+    assert.match(capUnit, new RegExp(directive), `tess-cap unit sets ${directive}`);
   }
   assert.ok(!/^\s+web,|, web\b/m.test(cfg.split('platform_toolsets')[1] || ''), 'the bot has no general web tool to send a token out with');
 
@@ -413,8 +421,11 @@ try {
   mkdirSync(join(archDir, 'plugins', 'daily-cap'), { recursive: true });
   cpSync(join(root, 'support/bot/plugins/daily-cap/plugin.yaml'), join(archDir, 'plugins', 'daily-cap/plugin.yaml'));
   cpSync(join(root, 'support/bot/plugins/daily-cap/__init__.py'), join(archDir, 'plugins', 'daily-cap/__init__.py'));
-  // The download carries support/ as a whole, so the unit template sits beside the bot.
+  // The download carries support/ as a whole, so cap-proxy and both unit templates sit beside the bot.
+  mkdirSync(join(stage, 'tess-music-main', 'support', 'cap-proxy'), { recursive: true });
+  cpSync(join(root, 'support/cap-proxy/proxy.mjs'), join(stage, 'tess-music-main', 'support', 'cap-proxy/proxy.mjs'));
   cpSync(join(root, 'support/tess-support.service'), join(stage, 'tess-music-main', 'support', 'tess-support.service'));
+  cpSync(join(root, 'support/tess-cap.service'), join(stage, 'tess-music-main', 'support', 'tess-cap.service'));
   const archive = join(box, 'tess-music-main.tar.gz');
   out('/usr/bin/tar', ['-czf', archive, '-C', stage, 'tess-music-main']);
 
@@ -467,8 +478,10 @@ exit 0
   assert.match(said, /profile install .*\/bot --name tess-support --yes/, 'the bot is installed from the path the real tar produced');
   assert.match(said, /config set model\.provider opencode-go/, 'default provider is opencode-go');
   assert.match(said, /config set model\.default deepseek-v4\.1-flash/, 'default model is deepseek-v4.1-flash');
+  assert.match(said, /config set model\.base_url http:\/\/127\.0\.0\.1:4193\/v1/, 'base_url points at tess-cap proxy');
   assert.equal(readFileSync(join(state, 'model.tess-support.model.provider'), 'utf8').trim(), 'opencode-go');
   assert.equal(readFileSync(join(state, 'model.tess-support.model.default'), 'utf8').trim(), 'deepseek-v4.1-flash');
+  assert.equal(readFileSync(join(state, 'model.tess-support.model.base_url'), 'utf8').trim(), 'http://127.0.0.1:4193/v1');
   assert.ok(!said.includes(tgSecret) && !said.includes(goSecret) && !said.includes(supSecret), 'no secret ever enters CLI arguments');
   assert.ok(!said.includes('GH_TOKEN'), 'no GitHub token anywhere: the bot posts to the inbox, not to GitHub');
   assert.match(readFileSync(join(state, 'gateway'), 'utf8'), /gateway start for tess-support/, 'the bot starts its own gateway when systemctl is absent');
@@ -477,43 +490,60 @@ exit 0
 
   const profDir = join(home, 'profiles', 'tess-support');
   const setupEnv = join(profDir, '.env');
+  const capHomeNonRoot = join(box, 'tess-cap');
+  const capEnvNonRoot = join(capHomeNonRoot, '.env');
   const setupList = join(profDir, 'allow.txt');
   assert.ok(existsSync(setupEnv), 'setup.sh wrote .env under the profile');
+  assert.ok(existsSync(capEnvNonRoot), 'setup.sh wrote tess-cap .env');
+  assert.ok(existsSync(join(capHomeNonRoot, 'cap-proxy', 'proxy.mjs')), 'setup.sh installed cap-proxy');
   assert.equal(statSync(setupEnv).mode & 0o777, 0o600, '.env is mode 600');
+  assert.equal(statSync(capEnvNonRoot).mode & 0o777, 0o600, 'tess-cap .env is mode 600');
+
   const setupEnvText = readFileSync(setupEnv, 'utf8');
+  const capEnvText = readFileSync(capEnvNonRoot, 'utf8');
+  assert.ok(!setupEnvText.includes(goSecret), 'real OPENCODE_GO_API_KEY never enters tess-support .env');
+  assert.match(capEnvText, new RegExp(`^OPENCODE_GO_API_KEY=${goSecret}$`, 'm'), 'real key lives in tess-cap .env');
+  const proxyTokenMatch = capEnvText.match(/^TESS_CAP_PROXY_TOKEN=(.+)$/m);
+  assert.ok(proxyTokenMatch && proxyTokenMatch[1] && proxyTokenMatch[1] !== goSecret, 'distinct local proxy token minted');
+  const mintedProxyToken = proxyTokenMatch[1];
+  assert.match(setupEnvText, new RegExp(`^OPENCODE_GO_API_KEY=${mintedProxyToken}$`, 'm'), 'bot .env holds proxy token');
+  assert.match(setupEnvText, /^OPENCODE_GO_BASE_URL=http:\/\/127\.0\.0\.1:4193\/v1$/m);
   assert.match(setupEnvText, new RegExp(`^TELEGRAM_BOT_TOKEN=${tgSecret}$`, 'm'));
-  assert.match(setupEnvText, new RegExp(`^OPENCODE_GO_API_KEY=${goSecret}$`, 'm'));
   assert.match(setupEnvText, /^TESS_OWNER_ID=900000001$/m);
   assert.match(setupEnvText, new RegExp(`^TESS_SUPPORT_TOKEN=${supSecret}$`, 'm'));
   assert.match(setupEnvText, /^TESS_INBOX=https:\/\/tess-music-player\.janus\.ing$/m);
-  assert.match(setupEnvText, /^TESS_DAILY_REPLY_CAP=40$/m);
-  assert.match(setupEnvText, /^TESS_DAILY_USER_CAP=20$/m);
+  assert.match(capEnvText, /^TESS_DAILY_REPLY_CAP=40$/m);
+  assert.match(capEnvText, /^TESS_DAILY_USER_CAP=20$/m);
   assert.match(setupEnvText, /^TELEGRAM_ALLOWED_USERS=900000001$/m);
   assert.ok(existsSync(join(profDir, 'plugins', 'daily-cap', '__init__.py')), 'daily-cap plugin installed in profile');
   assert.ok(existsSync(setupList), 'setup.sh wrote an allowlist under the Hermes home');
   assert.match(readFileSync(setupList, 'utf8'), /^900000001 Krish$/m, 'starting with Krish');
 
-  // 12. Idempotent re-run with TESS_ALLOW_IDS + custom caps, then re-run without TESS_ALLOW_IDS preserving tester + caps.
+  // 12. Idempotent re-run with TESS_ALLOW_IDS + custom caps, then re-run without TESS_ALLOW_IDS preserving tester + caps + proxy token.
   rmSync(join(state, 'calls'), { force: true });
   setup({ TESS_ALLOW_IDS: '222222222', TESS_DAILY_REPLY_CAP: '50', TESS_DAILY_USER_CAP: '15', TESS_DAILY_TOKEN_CAP: '250000' });
   assert.match(calls().join('\n'), /profile install .* --name tess-support --force --yes/, 'second run updates in place with --force');
   assert.match(readFileSync(setupList, 'utf8'), /^222222222 tester$/m, 'TESS_ALLOW_IDS seeds the trusted tester');
   const envAfterTester = readFileSync(setupEnv, 'utf8');
+  const capEnvAfterTester = readFileSync(capEnvNonRoot, 'utf8');
   assert.match(envAfterTester, /^TELEGRAM_ALLOWED_USERS=900000001,222222222$/m);
-  assert.match(envAfterTester, /^TESS_DAILY_REPLY_CAP=50$/m);
-  assert.match(envAfterTester, /^TESS_DAILY_USER_CAP=15$/m);
-  assert.match(envAfterTester, /^TESS_DAILY_TOKEN_CAP=250000$/m);
+  assert.match(capEnvAfterTester, /^TESS_DAILY_REPLY_CAP=50$/m);
+  assert.match(capEnvAfterTester, /^TESS_DAILY_USER_CAP=15$/m);
+  assert.match(capEnvAfterTester, /^TESS_DAILY_TOKEN_CAP=250000$/m);
+  assert.match(capEnvAfterTester, new RegExp(`^TESS_CAP_PROXY_TOKEN=${mintedProxyToken}$`, 'm'), 're-run preserves proxy token');
 
   setup();
   const envPreserved = readFileSync(setupEnv, 'utf8');
+  const capEnvPreserved = readFileSync(capEnvNonRoot, 'utf8');
   assert.match(envPreserved, /^TELEGRAM_ALLOWED_USERS=900000001,222222222$/m, 're-run preserves existing tester');
-  assert.match(envPreserved, /^TESS_DAILY_REPLY_CAP=50$/m, 're-run preserves existing cap');
-  assert.match(envPreserved, /^TESS_DAILY_TOKEN_CAP=250000$/m, 're-run preserves existing token cap');
+  assert.match(capEnvPreserved, /^TESS_DAILY_REPLY_CAP=50$/m, 're-run preserves existing cap');
+  assert.match(capEnvPreserved, /^TESS_DAILY_TOKEN_CAP=250000$/m, 're-run preserves existing token cap');
 
-  // Missing OPENCODE_GO_API_KEY, bad TESS_ALLOW_IDS, and control characters in inputs are refused upfront.
+  // Missing OPENCODE_GO_API_KEY, bad TESS_ALLOW_IDS, bad TESS_CAP_PORT, and control characters in inputs are refused upfront.
   for (const [label, extra, expect] of [
     ['missing OpenCode Go key', { OPENCODE_GO_API_KEY: '' }, /OPENCODE_GO_API_KEY/],
     ['wildcard TESS_ALLOW_IDS', { TESS_ALLOW_IDS: '*' }, /TESS_ALLOW_IDS/],
+    ['bad TESS_CAP_PORT', { TESS_CAP_PORT: '99999' }, /TESS_CAP_PORT/],
     ['newline in secret', { OPENCODE_GO_API_KEY: 'abc\ndef' }, /control characters/],
   ]) {
     let err = '';
@@ -521,22 +551,31 @@ exit 0
     assert.match(err, expect, label);
   }
 
-  // 13. Simulated root VPS install: creates `tess-support` user, runs Hermes/allowlist via runuser, writes .env at 600,
-  // installs hardened systemd unit to TESS_SYSTEMD_DIR, stops standalone gateway, enables & restarts service.
+  // 13. Simulated root VPS install: creates `tess-support` and `tess-cap` users, runs Hermes/allowlist via runuser,
+  // puts real key only in tess-cap/.env, writes both units to TESS_SYSTEMD_DIR, enables & restarts tess-cap then tess-support.
   const vpsBox = join(box, 'vps');
-  const vpsBin = join(vpsBox, 'bin'), vpsHome = join(vpsBox, 'home', 'tess-support'), vpsUnitDir = join(vpsBox, 'systemd'), vpsState = join(vpsBox, 'state');
+  const vpsBin = join(vpsBox, 'bin'), vpsHome = join(vpsBox, 'home', 'tess-support'), vpsCapHome = join(vpsBox, 'home', 'tess-cap'), vpsUnitDir = join(vpsBox, 'systemd'), vpsState = join(vpsBox, 'state');
   mkdirSync(vpsBin, { recursive: true }); mkdirSync(vpsUnitDir, { recursive: true }); mkdirSync(vpsState, { recursive: true });
   rmSync(join(state, 'calls'), { force: true });
   rmSync(join(state, 'installed'), { force: true });
   rmSync(join(state, 'gateway'), { force: true });
   stub('id', `
 if [ "$1" = "-u" ] && [ -z "$2" ]; then echo 0; exit 0; fi
-if [ "$1" = "-u" ] && [ "$2" = "tess-support" ]; then [ -f "${vpsState}/user-created" ] && { echo "\${TESS_TEST_BOT_UID:-998}"; exit 0; }; exit 1; fi
+if [ "$1" = "-u" ] && [ -n "$2" ]; then
+  if [ "$2" = "tess-support" ] && [ -f "${vpsState}/user-tess-support" ]; then echo "\${TESS_TEST_BOT_UID:-998}"; exit 0; fi
+  if [ "$2" = "tess-cap" ] && [ -f "${vpsState}/user-tess-cap" ]; then echo "\${TESS_TEST_CAP_UID:-997}"; exit 0; fi
+  exit 1
+fi
 if [ "$1" = "-un" ] && [ -z "$2" ]; then echo root; exit 0; fi
-if [ "$1" = "tess-support" ]; then [ -f "${vpsState}/user-created" ] && exit 0; exit 1; fi
+if [ -n "$1" ] && [ -f "${vpsState}/user-$1" ]; then exit 0; fi
+exit 1
+`, vpsBin);
+  stub('useradd', `
+for _ua in "$@"; do _last=$_ua; done
+echo "useradd $*" >> "${vpsState}/sys"
+touch "${vpsState}/user-$_last"
 exit 0
 `, vpsBin);
-  stub('useradd', `echo "useradd $*" >> "${vpsState}/sys"; touch "${vpsState}/user-created"; exit 0`, vpsBin);
   stub('chown', `echo "chown $*" >> "${vpsState}/sys"; exit 0`, vpsBin);
   stub('runuser', `
 [ "$1" = "-u" ] || exit 2
@@ -565,51 +604,92 @@ exec "$@"
     TESS_TEST_ROOT: vpsBox,
     TESS_TEST_ALLOW_UID: String(process.getuid()),
     TESS_BOT_HOME: vpsHome,
+    TESS_CAP_HOME: vpsCapHome,
     TESS_SYSTEMD_DIR: vpsUnitDir,
     TESS_ALLOW_IDS: '333333333',
   };
   const vpsOut = out('/bin/sh', [SETUP], vpsEnv);
+  assert.match(vpsOut, /Installed and started .*tess-cap\.service as user 'tess-cap'/);
   assert.match(vpsOut, /Installed and started .*tess-support\.service as user 'tess-support'/);
   const sysLog = readFileSync(join(vpsState, 'sys'), 'utf8');
   assert.match(sysLog, /useradd --system --create-home --home-dir .*\/tess-support --shell .* tess-support/, 'creates system user tess-support');
+  assert.match(sysLog, /useradd --system --create-home --home-dir .*\/tess-cap --shell .* tess-cap/, 'creates system user tess-cap');
   assert.match(sysLog, /systemctl daemon-reload/, 'reloads systemd');
-  assert.match(sysLog, /systemctl enable tess-support/, 'enables tess-support');
-  assert.match(sysLog, /systemctl restart tess-support/, 'restarts tess-support');
+  assert.match(sysLog, /systemctl enable tess-cap\n[\s\S]*systemctl restart tess-cap\n[\s\S]*systemctl enable tess-support\n[\s\S]*systemctl restart tess-support/, 'enables and starts tess-cap before tess-support');
   const ruLog = readFileSync(join(vpsState, 'runuser'), 'utf8');
   assert.match(ruLog, /runuser tess-support .*hermes profile install/, 'runs hermes as tess-support');
   assert.match(ruLog, /runuser tess-support node .*allowlist\.mjs/, 'runs allowlist.mjs as tess-support');
   assert.ok(!ruLog.includes(tgSecret) && !ruLog.includes(goSecret) && !ruLog.includes(supSecret), 'no secret in runuser argv');
+
   const installedUnit = readFileSync(join(vpsUnitDir, 'tess-support.service'), 'utf8');
   assert.match(installedUnit, /^User=tess-support$/m);
   assert.match(installedUnit, /^MemoryMax=512M$/m);
   assert.match(installedUnit, /^MemorySwapMax=0$/m);
   assert.match(installedUnit, /^CPUQuota=50%$/m);
-  assert.match(installedUnit, /^StateDirectory=tess-support$/m);
-  assert.match(installedUnit, /^StateDirectoryMode=0700$/m);
+  assert.ok(!/^StateDirectory=/m.test(installedUnit), 'tess-support unit has no StateDirectory');
   assert.match(installedUnit, /^ReadWritePaths=.*\/\.hermes\/profiles\/tess-support(?:\s|$)/m);
   assert.ok(!/^ReadWritePaths=.*\/vps\/home\/tess-support(?:\s|$)/m.test(installedUnit), 'ReadWritePaths no longer exposes the whole home');
   assert.match(installedUnit, /^ReadOnlyPaths=.*\/plugins\b/m);
   assert.match(installedUnit, /^ReadOnlyPaths=.*\/config\.yaml\b/m);
-  assert.match(installedUnit, /^InaccessiblePaths=.*\/srv\/paperclip/m);
+  assert.match(installedUnit, new RegExp(`^InaccessiblePaths=.*\\/srv\\/paperclip.*${vpsCapHome.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*\\/var\\/lib\\/tess-cap`, 'm'));
+
+  const installedCapUnit = readFileSync(join(vpsUnitDir, 'tess-cap.service'), 'utf8');
+  assert.match(installedCapUnit, /^User=tess-cap$/m);
+  assert.match(installedCapUnit, /^MemoryMax=128M$/m);
+  assert.match(installedCapUnit, /^MemorySwapMax=0$/m);
+  assert.match(installedCapUnit, /^CPUQuota=25%$/m);
+  assert.match(installedCapUnit, /^StateDirectory=tess-cap$/m);
+  assert.match(installedCapUnit, /^StateDirectoryMode=0700$/m);
+  assert.match(installedCapUnit, /^ReadOnlyPaths=.*\/cap-proxy\s+.*\/\.env$/m);
+  assert.match(installedCapUnit, new RegExp(`^InaccessiblePaths=.*\\/srv\\/paperclip.*${vpsHome.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'm'));
+
   const vpsProfDir = join(vpsHome, '.hermes', 'profiles', 'tess-support');
   assert.equal(statSync(join(vpsProfDir, '.env')).mode & 0o777, 0o600);
+  assert.equal(statSync(join(vpsCapHome, '.env')).mode & 0o777, 0o600);
+  assert.ok(!readFileSync(join(vpsProfDir, '.env'), 'utf8').includes(goSecret), 'bot .env never receives real Go key on VPS');
+  assert.match(readFileSync(join(vpsCapHome, '.env'), 'utf8'), new RegExp(`^OPENCODE_GO_API_KEY=${goSecret}$`, 'm'));
+  assert.equal(statSync(join(vpsCapHome, 'cap-proxy')).mode & 0o777, 0o755, 'cap-proxy dir is 0755');
+  assert.equal(statSync(join(vpsCapHome, 'cap-proxy', 'proxy.mjs')).mode & 0o777, 0o644, 'cap-proxy/proxy.mjs is 0644');
   assert.equal(statSync(join(vpsProfDir, 'plugins')).mode & 0o777, 0o755, 'plugins dir is 0755');
   assert.equal(statSync(join(vpsProfDir, 'plugins', 'daily-cap')).mode & 0o777, 0o755, 'daily-cap dir is 0755');
   assert.equal(statSync(join(vpsProfDir, 'plugins', 'daily-cap', '__init__.py')).mode & 0o777, 0o644, 'plugin __init__.py is 0644');
   assert.equal(statSync(join(vpsProfDir, 'plugins', 'daily-cap', 'plugin.yaml')).mode & 0o777, 0o644, 'plugin.yaml is 0644');
   assert.match(sysLog, /chown -h /, 'uses chown -h without following symlinks');
   assert.match(sysLog, /chown -h (?:root:root|0:0) .*\/plugins\/daily-cap\/__init__\.py/, 'plugin code is chowned to root');
+  assert.match(sysLog, /chown -h (?:root:root|0:0) .*\/cap-proxy\/proxy\.mjs/, 'cap-proxy code is chowned to root');
   assert.ok(!/chown\s+-R|chmod\s+-R/.test(setupText), 'setup.sh never uses recursive chown -R or chmod -R');
+  assert.match(setupText, /O_NOFOLLOW/, 'setup.sh uses fd-safe O_NOFOLLOW chmod_no_follow');
   // Inherited admin HOME/HERMES_HOME were ignored completely when running as root.
   assert.equal(readFileSync(join(adminHome, '.hermes', 'keep.txt'), 'utf8'), 'admin-secret');
   assert.ok(!existsSync(join(adminHome, '.hermes', 'profiles', 'tess-support')), 'admin HERMES_HOME was untouched');
 
-  // Idempotent second run as simulated root: user already exists so useradd is not called again.
+  // Idempotent second run as simulated root: users already exist so useradd is not called again.
   rmSync(join(vpsState, 'sys'), { force: true });
   out('/bin/sh', [SETUP], vpsEnv);
   assert.ok(!/useradd/.test(readFileSync(join(vpsState, 'sys'), 'utf8')), 'second run skips useradd');
 
-  // Root without TESS_TEST=1 ignores inherited HOME, HERMES_HOME, TESS_BOT_HOME, TESS_SYSTEMD_DIR and uses fixed /home/tess-support.
+  // Grok low #2: As root, TESS_TEST=1 must refuse unsafe TESS_TEST_ROOT (like /usr/local), missing TESS_TEST_ROOT,
+  // or unfaked system tools (real PATH useradd/systemctl), never redirecting real paths.
+  const unfakedRootBin = join(vpsBox, 'unfaked-root-bin');
+  mkdirSync(unfakedRootBin, { recursive: true });
+  stub('id', '[ "$1" = "-u" ] && [ -z "$2" ] && { echo 0; exit 0; }; [ "$1" = "-un" ] && { echo root; exit 0; }; exit 1', unfakedRootBin);
+  for (const [label, extra, expect] of [
+    ['root TESS_TEST=1 without TESS_TEST_ROOT', { TESS_TEST_ROOT: '' }, /refusing TESS_TEST=1 as root/],
+    ['root TESS_TEST=1 with /usr/local', { TESS_TEST_ROOT: '/usr/local' }, /refusing|outside scratch/],
+    ['root TESS_TEST=1 without faked useradd/chown', { PATH: `${unfakedRootBin}:${bin}:${dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`, TESS_TEST_ROOT: vpsBox }, /must be faked inside TESS_TEST_ROOT/],
+  ]) {
+    let testBypassErr = '';
+    try {
+      out('/bin/sh', [SETUP], { ...vpsEnv, ...extra });
+      assert.fail(`expected refusal for ${label}`);
+    } catch (e) {
+      if (e.code === 'ERR_ASSERTION') throw e;
+      testBypassErr = String(e.stderr) + String(e.stdout);
+    }
+    assert.match(testBypassErr, expect, label);
+  }
+
+  // Root without TESS_TEST=1 ignores inherited HOME, HERMES_HOME, TESS_BOT_HOME, TESS_CAP_HOME, TESS_SYSTEMD_DIR and uses fixed /home/tess-support.
   const realRootBin = join(vpsBox, 'real-root-bin');
   mkdirSync(realRootBin, { recursive: true });
   stub('id', '[ "$1" = "-u" ] && [ -z "$2" ] && { echo 0; exit 0; }; [ "$1" = "-un" ] && { echo root; exit 0; }; exit 1', realRootBin);
@@ -623,6 +703,7 @@ exec "$@"
       HOME: adminHome,
       HERMES_HOME: join(adminHome, '.hermes'),
       TESS_BOT_HOME: '/tmp/nope/../../var/lib/postgresql',
+      TESS_CAP_HOME: '/tmp/nope/../../usr/local',
       TESS_SYSTEMD_DIR: '/tmp/nope/../../etc',
     });
     assert.fail('expected stubbed useradd failure');
@@ -645,10 +726,12 @@ exec "$@"
 
   for (const [label, extra] of [
     ['.. in TESS_BOT_HOME', { TESS_BOT_HOME: '/tmp/nope/../../var/lib/postgresql' }],
+    ['.. in TESS_CAP_HOME', { TESS_CAP_HOME: '/tmp/nope/../../usr/local' }],
     ['.. in TESS_BOT_HOME under scratch', { TESS_BOT_HOME: `${vpsBox}/home/sub/../../outside` }],
     ['.. in TESS_SYSTEMD_DIR', { TESS_SYSTEMD_DIR: '/tmp/nope/../../etc' }],
     ['symlink parent in TESS_BOT_HOME', { TESS_BOT_HOME: join(linkParent, 'tess-support') }],
     ['symlinked TESS_BOT_HOME', { TESS_BOT_HOME: linkHome }],
+    ['symlinked TESS_CAP_HOME', { TESS_CAP_HOME: linkHome }],
     ['symlinked TESS_BOT_HERMES_HOME', { TESS_BOT_HERMES_HOME: linkHermes }],
     ['foreign-owned TESS_BOT_HOME', { TESS_BOT_HOME: foreignHome, TESS_TEST_ALLOW_UID: '', TESS_TEST_BOT_UID: '998' }],
   ]) {
@@ -663,10 +746,21 @@ exec "$@"
   }
   assert.equal(readFileSync(join(outsideDir, 'sentinel.txt'), 'utf8'), 'keep', 'symlink target outside root untouched');
 
-  // Symlinked plugin file inside profile is refused on root re-run.
+  // Symlinked plugin file inside profile AND symlinked cap-proxy/proxy.mjs are refused on root re-run without altering targets.
+  rmSync(join(vpsCapHome, 'cap-proxy', 'proxy.mjs'));
+  symlinkSync(join(outsideDir, 'sentinel.txt'), join(vpsCapHome, 'cap-proxy', 'proxy.mjs'));
+  let symCapOut = '';
+  try {
+    out('/bin/sh', [SETUP], vpsEnv);
+    assert.fail('expected refusal for symlinked proxy.mjs');
+  } catch (e) { if (e.code === 'ERR_ASSERTION') throw e; symCapOut = String(e.stderr) + String(e.stdout); }
+  assert.match(symCapOut, /symlink/i);
+  assert.equal(readFileSync(join(outsideDir, 'sentinel.txt'), 'utf8'), 'keep', 'symlinked proxy target untouched');
+  rmSync(join(vpsCapHome, 'cap-proxy', 'proxy.mjs'));
+  cpSync(join(root, 'support/cap-proxy/proxy.mjs'), join(vpsCapHome, 'cap-proxy', 'proxy.mjs'));
+
   rmSync(join(vpsProfDir, 'plugins', 'daily-cap', '__init__.py'));
   symlinkSync(join(outsideDir, 'sentinel.txt'), join(vpsProfDir, 'plugins', 'daily-cap', '__init__.py'));
-  // Note: setup removes/re-installs plugins on force update only if real dir with no symlinks; a symlinked plugin must be refused!
   let symPluginOut = '';
   try {
     out('/bin/sh', [SETUP], vpsEnv);
@@ -710,9 +804,12 @@ exec "$@"
   for (const [label, extra, expect] of [
     ['home containing paperclip dir', { HOME: pc }, /paperclip/i],
     ['TESS_BOT_HOME=/srv/paperclip', { TESS_BOT_HOME: '/srv/paperclip' }, /Paperclip/],
+    ['TESS_CAP_HOME=/srv/paperclip', { TESS_CAP_HOME: '/srv/paperclip' }, /Paperclip/],
     ['TESS_BOT_HOME=/home/paperclip/bot', { TESS_BOT_HOME: '/home/paperclip/bot' }, /Paperclip/],
     ['TESS_BOT_USER=paperclip', { TESS_BOT_USER: 'paperclip' }, /refusing bot user/],
+    ['TESS_CAP_USER=paperclip', { TESS_CAP_USER: 'paperclip' }, /refusing cap proxy user/],
     ['TESS_BOT_USER=root', { TESS_BOT_USER: 'root' }, /refusing bot user/],
+    ['TESS_CAP_USER=root', { TESS_CAP_USER: 'root' }, /refusing cap proxy user/],
   ]) {
     let pcOut = '';
     try { out('/bin/sh', [SETUP], { ...senv, ...extra }); assert.fail(`expected refusal for ${label}`); }
