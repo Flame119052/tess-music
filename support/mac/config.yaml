@@ -18,6 +18,10 @@ providers:
     api_mode: chat_completions
     default_model: deepseek-v4.1-flash
 
+# Intel Macs open this chat in the browser. `hermes webapp` stays off until this is set (D-105).
+webapp:
+  enabled: true
+
 agent:
   # A picture of Spotify is evidence, so an attached image stays an image.
   image_input_mode: auto
