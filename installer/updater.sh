@@ -171,7 +171,7 @@ EOF
 }
 install_guard
 
-# D-92: the line is already on this Mac and rescue-notice-shown is absent, so this person was never told.
+# D-93: the line is already on this Mac and rescue-notice-shown is absent, so this person was never told.
 # Pop the notice up once. A test run skips that and leaves the marker for `tess status`.
 mark_rescue_notice() { # <rescue.sh>
   [ -f "$1" ] || return 0
