@@ -69,6 +69,18 @@ if [ -z "${TESS_TEST-}" ] && [ "${TESS_REAL_INSTALL-}" != 1 ] && tess_guard_chec
   exit 1
 fi
 # <<< tess script guard <<<
+# A piped copy is whatever is on main right now, and it is not signed. Removal runs the signed script already on
+# this Mac. $0 is the shell itself when the file arrives on stdin (`curl … | sh`); a real run names uninstall.sh.
+case "$0" in
+  *uninstall.sh) ;;
+  *)
+    if [ -z "${TESS_TEST-}" ]; then
+      echo "Tess: this download does not remove Tess. It is not the signed uninstaller." >&2
+      echo "Tess: run \"$HOME/Library/Application Support/Tess/tess\" uninstall" >&2
+      exit 1
+    fi
+    ;;
+esac
 HOME_TESS="${TESS_HOME:-$HOME/Library/Application Support/Tess}"
 [ -f "$HOME_TESS/updater.env" ] && . "$HOME_TESS/updater.env"
 CONF="${TESS_CONFIG:-$HOME/.config/tess-patcher}"

@@ -2,8 +2,9 @@
 //
 // A small glass panel that floats above every app, on every Space and over full-screen apps. It reads and controls
 // the Spotify app through its AppleScript interface (so it works with or without Tess), and shows the current lyric
-// line when Tess's theme sends it (POST http://127.0.0.1:38411/lyric). Tess's theme toggles it with
-// GET /toggle. Drag anywhere to move; resize to switch between the square tile and the slim strip.
+// line when Tess's theme sends it (POST http://127.0.0.1:38411/lyric?k=…). Tess's theme toggles it with
+// GET /toggle?k=…. The token is minted at launch and only Spotify's page can read it. Drag anywhere to move;
+// resize to switch between the square tile and the slim strip.
 
 import AppKit
 import SwiftUI
@@ -246,6 +247,7 @@ final class Panel: NSPanel {
 
 final class App: NSObject, NSApplicationDelegate {
   let sp = Spotify()
+  let miniToken = miniNewToken()
   var panel: Panel!
   var listener: NWListener?
   var pollTimer: Timer?
@@ -289,7 +291,7 @@ final class App: NSObject, NSApplicationDelegate {
   }
   func saveFrame() { UserDefaults.standard.set(NSStringFromRect(panel.frame), forKey: "frame") }
 
-  // Tess's theme talks to the miniplayer over localhost: /toggle, /show, /hide, /lyric (body = the line)
+  // Tess's theme talks to the miniplayer over localhost. The gate checks the token before any of these run.
   func startServer() {
     let params = NWParameters.tcp
     params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: 38411)
@@ -298,26 +300,23 @@ final class App: NSObject, NSApplicationDelegate {
       c.start(queue: .global())
       c.receive(minimumIncompleteLength: 1, maximumLength: 8192) { data, _, _, _ in
         let req = String(decoding: data ?? Data(), as: UTF8.self)
-        let line = req.split(separator: "\r\n", omittingEmptySubsequences: false).first ?? ""
-        let path = line.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
-        let body = req.components(separatedBy: "\r\n\r\n").dropFirst().joined(separator: "\r\n\r\n")
+        let reply = miniHandle(raw: req, token: self?.miniToken ?? "")
         DispatchQueue.main.async {
-          switch path {
-          case "/toggle": self?.toggle()
-          case "/show": self?.show()
-          case "/hide": self?.hide()
-          case "/lyric": self?.sp.lyric = body.trimmingCharacters(in: .whitespacesAndNewlines)
-          case "/lines":
+          switch reply.effect {
+          case .toggle: self?.toggle()
+          case .show: self?.show()
+          case .hide: self?.hide()
+          case .lyric(let text): self?.sp.lyric = text
+          case .lines(let body):
             if let d = body.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-               let l = o["l"] as? [[Double]], let dur = o["d"] as? Double {
-              self?.sp.lines = l.compactMap { $0.count == 2 ? ($0[0], $0[1]) : nil }
+               let lines = o["l"] as? [[Double]], let dur = o["d"] as? Double {
+              self?.sp.lines = lines.compactMap { $0.count == 2 ? ($0[0], $0[1]) : nil }
               self?.sp.linesDuration = max(1, dur)
             }
-          default: break
+          case .none: break
           }
         }
-        let ok = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST\r\nAccess-Control-Allow-Private-Network: true\r\nConnection: close\r\n\r\n"
-        c.send(content: ok.data(using: .utf8), completion: .contentProcessed { _ in c.cancel() })
+        c.send(content: (reply.head + reply.body).data(using: .utf8), completion: .contentProcessed { _ in c.cancel() })
       }
     }
     l.start(queue: .global())

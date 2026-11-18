@@ -318,12 +318,10 @@ getlist() {
     || curl -fsSL --max-time 60 "https://raw.githubusercontent.com/$REPO/$CH/dist/$1" -o "$TMP/$1"
 }
 getlist components.txt && getlist components.sig || fail "Download failed. Check your connection and try again."
-# Check the signed list before the patcher is fetched or unpacked: the verifier came from the stub, not from the
-# download it is checking. (A manual run without TESS_VERIFY keeps the old order; the install line always sets it.)
-if [ -n "$VERIFY" ]; then
-  [ -x "$VERIFY" ] || fail "Tess's installer couldn't find its signature checker, so nothing was installed."
-  "$VERIFY" "$TMP/components.txt" "$(tr -d '\n' < "$TMP/components.sig")" || fail "Tess's download didn't pass its signature check, so nothing was installed."
-fi
+# Check the signed list before the patcher is fetched or unpacked. The checker has to be the one the install line
+# already pinned. The copy inside the download is not that checker: it would approve whatever it arrived with.
+[ -n "$VERIFY" ] && [ -x "$VERIFY" ] || fail "Tess's installer was started without the signature checker from the install line, so nothing was installed."
+"$VERIFY" "$TMP/components.txt" "$(tr -d '\n' < "$TMP/components.sig")" || fail "Tess's download didn't pass its signature check, so nothing was installed."
 part() { awk -v n="$1" '$1 == n { print $'"$2"' }' "$TMP/components.txt"; }
 # The same forward-only rule as the updater: a repair must not install an older release or reset the rev floor.
 rev=$(awk '$1 == "rev" { print $2 }' "$TMP/components.txt") || true
@@ -337,10 +335,6 @@ fi
 fetch() { curl -fsSL --retry 2 --connect-timeout 20 --max-time 300 "$(part "$1" 3)" -o "$2" && [ "$(shasum -a 256 "$2" | cut -d' ' -f1)" = "$(part "$1" 2)" ]; }
 fetch patcher "$TMP/patcher.tgz" || fail "Download failed. Check your connection and try again."
 mkdir -p "$TMP/p" && tar -xzf "$TMP/patcher.tgz" -C "$TMP/p"
-if [ -z "$VERIFY" ]; then
-  # Manual run: the verifier comes from the archive it is about to check, so this only catches corruption in transit.
-  "$TMP/p/tess-verify" "$TMP/components.txt" "$(tr -d '\n' < "$TMP/components.sig")" || fail "Tess's download didn't pass its signature check, so nothing was installed."
-fi
 fetch theme "$TMP/theme.tgz" || fail "Download failed. Check your connection and try again."
 fetch updater "$TMP/updater.sh" || fail "Download failed. Check your connection and try again."
 fetch mini "$TMP/mini.zip" || rm -f "$TMP/mini.zip"
@@ -525,6 +519,18 @@ if [ -z "${TESS_TEST-}" ] && [ "${TESS_REAL_INSTALL-}" != 1 ] && tess_guard_chec
   exit 1
 fi
 # <<< tess script guard <<<
+# A piped copy is whatever is on main right now, and it is not signed. Removal runs the signed script already on
+# this Mac. $0 is the shell itself when the file arrives on stdin (`curl … | sh`); a real run names uninstall.sh.
+case "$0" in
+  *uninstall.sh) ;;
+  *)
+    if [ -z "${TESS_TEST-}" ]; then
+      echo "Tess: this download does not remove Tess. It is not the signed uninstaller." >&2
+      echo "Tess: run \"$HOME/Library/Application Support/Tess/tess\" uninstall" >&2
+      exit 1
+    fi
+    ;;
+esac
 HOME_TESS="${TESS_HOME:-$HOME/Library/Application Support/Tess}"
 [ -f "$HOME_TESS/updater.env" ] && . "$HOME_TESS/updater.env"
 CONF="${TESS_CONFIG:-$HOME/.config/tess-patcher}"

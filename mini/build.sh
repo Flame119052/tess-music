@@ -4,7 +4,7 @@ set -e
 cd "$(dirname "$0")"
 APP="$HOME/Applications/Tess Mini.app"
 mkdir -p "$APP/Contents/MacOS"
-swiftc -O -parse-as-library TessMini.swift -o "$APP/Contents/MacOS/TessMini" -framework AppKit -framework SwiftUI 2>&1 | grep -v "^$" || true
+swiftc -O -parse-as-library MiniGate.swift TessMini.swift -o "$APP/Contents/MacOS/TessMini" -framework AppKit -framework SwiftUI 2>&1 | grep -v "^$" || true
 cat > "$APP/Contents/Info.plist" <<PL
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

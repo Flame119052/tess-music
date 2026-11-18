@@ -143,6 +143,16 @@ try {
   assert.equal(readFileSync(join(box, 'tess/state/version'), 'utf8').trim(), '0.2.98', 'fresh pre-rev install recorded');
   assert.equal(existsSync(join(box, 'tess/state/rev-stable')), false, 'no rev file for a pre-rev list');
 
+  // 1e. no verifier from the install line: do not trust the one packed inside the download
+  rmSync(join(spotify, 'Contents/Resources/Apps/xpui'), { recursive: true, force: true });
+  rmSync(join(box, 'tess'), { recursive: true, force: true });
+  writeComponents(['version 0.2.99', 'rev 99']);
+  const circular = await install({ TESS_VERIFY: '' });
+  assert.notEqual(circular.status, 0, 'an install with no outside verifier fails');
+  assert.match(`${circular.stdout}${circular.stderr}`, /install line/, 'the failure points at the install line');
+  assert.equal(installed(), false, 'Spotify was not touched');
+  assert.equal(existsSync(join(box, 'tess/bin/patcher')), false, 'the patcher archive was not unpacked');
+
   // 2. a failing verifier stops before the patcher is unpacked or Spotify is touched
   rmSync(join(spotify, 'Contents/Resources/Apps/xpui'), { recursive: true, force: true });
   rmSync(join(box, 'tess'), { recursive: true, force: true });

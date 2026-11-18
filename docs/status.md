@@ -1,7 +1,7 @@
 # Status
 
 What's true right now, what's open, and what's waiting on whom. Update this when something user-visible changes.
-Last updated: 15 Nov 2026.
+Last updated: 18 Nov 2026.
 
 ## Releases
 
@@ -20,7 +20,7 @@ helper blanked its Spotify).
 
 | # | Priority | Area | What | State / next step |
 | --- | --- | --- | --- | --- |
-| #56 | `P0` | `installer`, `release-ci` | Security audit (DeepSeek V4.1 via OpenCode Go): 25 findings, 2 Critical, 4 High | Open; Phase 1 top priority. Release B (#72) merged: the install line verifies itself, downgrades are refused, the cache is verified, Spicetify's files are vendored. Release C (#73) in review: one privacy filter, a verified `sudo chown`, an escaped path/plist writer, a bounded rescue order with a redacted per-order report, an inbox that fails closed, and an exclusive `can-write` probe. Left open by #73: SEC-06, SEC-12, SEC-17, SEC-21 and most of SEC-24. |
+| #56 | `P0` | `installer`, `release-ci` | Security audit (DeepSeek V4.1 via OpenCode Go): 25 findings, 2 Critical, 4 High | Open. Releases B and C are on main (#76, #106), with #109, #110, #114 and #117. The loader refuses a part name that leaves `dist/`, an install without the pinned verifier stops, a piped uninstall from `main` does not run, and Tess Mini ignores other websites (D-98 to D-101). Still Krish: a new rescue key (SEC-06), 2FA and branch protection (SEC-12), rewriting history (#54, SEC-21), deleting `stable`'s root `install.sh` on the next promote (SEC-22), and signing the channel name plus a rev floor the page cannot rewrite (#92). |
 | #68 | `P1` | `installer`, `release-ci` | Rescue line: start a new order within a minute instead of waiting up to six hours | Shipped to every Mac as the 5-minute wake check (D-63, #75): it reads two public files and starts the updater or the rescue line, which can only run its five actions (#69). Users can turn the rescue line off with `tess rescue off` (#53). |
 | #53 | `P1` | `installer` | Tell users about the rescue line; `tess rescue off`, `tess status` | PR #75 review fixes implemented; sandbox checks cover persistent opt-out, older channel installs, separate wake reads, and the older-script notice. The #91 follow-ups landed too: an offline `rescue on` keeps an already-on line on, `rescue off` stops an order that has already started, a Mac without the line no longer reads the rescue branch, `tess status` says the job is loaded and whether an order is running, and an existing Mac sees the notice once after its next update (D-93). Awaiting CI and reviewer acceptance; not released. |
 | #54 | `P1` | `docs`, `release-ci` | Purge old issue revisions and commit messages with personal details | Waiting on Krish (Phase 1). |
