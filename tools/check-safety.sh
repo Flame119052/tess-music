@@ -25,8 +25,8 @@ fi
 
 # Quoted words are not commands: the install line's own messages mention a shell inside quotes.
 # A downloaded file may be run only as sh of the installer, and only after a tess-verify of that
-# same file whose failure exits. An installer fetched from main is refused, including paths the
-# old two-name grep did not name.
+# same file whose failure exits. Any fetch from main is refused. The one exception is the pinned
+# verifier download written to $D/tess-verify. A variable set to main counts as main.
 forwarder_problem() {
   awk '
     function continued(s,   k) {
@@ -38,8 +38,32 @@ forwarder_problem() {
     function line_aborts(s) {
       return s ~ /[$]D\/tess-verify/ && s ~ /[$]D\/install\.sh/ && s ~ /\|\|[[:space:]]*(fail|exit)/
     }
-    function forbidden(s) {
-      return s ~ /main\/installer\/(tess-install|legacy|install)([^A-Za-z0-9_-]|$)/ || s ~ /main\/dist\/install/ || s ~ /[?&]ref=main([^A-Za-z0-9_-]|$)/
+    function note_main_vars(   i, tok, name) {
+      for (i = 1; i <= nt; i++) {
+        tok = TW[i]
+        if (tok ~ /^[A-Za-z_][A-Za-z0-9_]*=main$/) {
+          name = tok
+          sub(/=main$/, "", name)
+          main_vars[name] = 1
+        }
+      }
+    }
+    function forbidden(s,   name) {
+      # The pinned verifier is the only download that may name main, and only as tess-verify.
+      if (s ~ /\/main\// || s ~ /main\/installer\/verify\//) {
+        if (s ~ /main\/installer\/verify\// && s ~ /\$D\/tess-verify/ && s !~ /install\.sh/) return 0
+        return 1
+      }
+      if (s ~ /[?&]ref=main([^A-Za-z0-9_-]|$)/) return 1
+      if (s ~ /main\/installer\/(tess-install|legacy|install)([^A-Za-z0-9_-]|$)/) return 1
+      if (s ~ /main\/dist\/install/) return 1
+      for (name in main_vars) {
+        if (s ~ ("[?&]ref=\\$" name "([^A-Za-z0-9_]|$)")) return 1
+        if (s ~ ("[?&]ref=\\$\\{" name "\\}")) return 1
+        if (s ~ ("[/]\\$" name "[/]")) return 1
+        if (s ~ ("[/]\\$\\{" name "\\}[/]")) return 1
+      }
+      return 0
     }
     function tokenize(s,   i, n, c, q, w) {
       nt = 0
@@ -113,8 +137,9 @@ forwarder_problem() {
     }
     function take(s,   exec_before, i) {
       if (s ~ /^[[:space:]]*#/ || s ~ /^[[:space:]]*$/) return
-      if (forbidden(s)) problems = problems "installer fetched from main\n"
       tokenize(s)
+      note_main_vars()
+      if (forbidden(s)) problems = problems "installer fetched from main\n"
       exec_before = exec_n
       scan_execs()
       for (i = exec_before + 1; i <= exec_n; i++) {
@@ -231,6 +256,11 @@ forwarder_fixture blocked 'curl -fsSL "$API/contents/dist/install.sh?ref=main" -
 '"$forwarder_ok" "ref=main"
 forwarder_fixture blocked 'curl -fsSL "$BASE/$CH/dist/install.sh" | sh
 '"$forwarder_ok" "pipe into a shell"
+forwarder_fixture blocked 'curl "$BASE/main/installer/verify/x" -o "$D/install.sh"
+'"$forwarder_ok" "verifier path written over the installer"
+forwarder_fixture blocked 'M=main
+curl -fsSL "$API/contents/dist/install.sh?ref=$M" -o "$D/install.sh"
+'"$forwarder_ok" "ref variable set to main"
 stable_installer_notice
 
 # The folder swap runs inside tess-patcher, never in a shell: macOS's App Management protection denies /usr/bin/ditto

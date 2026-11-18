@@ -49,6 +49,8 @@ blocked('curl -fsSL "$BASE/main/installer/tess-install.sh" -o "$D/x"\n' + accept
 blocked('curl -fsSL -H "Accept: application/vnd.github.raw" "$API/contents/dist/install.sh?ref=main" -o "$D/install.sh"\n' + accepted, 'ref=main is refused');
 blocked('"$D/tess-verify" "$D/install.sh" "sig" || true\nsh "$D/install.sh"\n', 'a verify that does not exit still refuses');
 blocked('curl -fsSL "$BASE/$CH/dist/install.sh" | sh\n' + accepted, 'a pipe into a shell is refused');
+blocked('curl "$BASE/main/installer/verify/x" -o "$D/install.sh"\n' + accepted, 'a verifier path written over the installer is refused');
+blocked('M=main\ncurl -fsSL "$API/contents/dist/install.sh?ref=$M" -o "$D/install.sh"\n' + accepted, 'a ref variable set to main is refused');
 
 r = run(readFileSync(join(root, 'installer/install.sh'), 'utf8'));
 assert.equal(r.status, 0, r.out);
