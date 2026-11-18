@@ -301,9 +301,19 @@ apps_write() {
             }
             continue
           }
-          if (!stop_opts && ((substr(w, 1, 1) == "-" && length(w) > 1) || (k == 1 && w ~ /^[xtcrudA][A-Za-z0-9]*$/))) {
-            idx = (substr(w, 1, 1) == "-") ? 2 : 1
-            for (; idx <= length(w); idx++) {
+          if (!stop_opts && k == 1 && w ~ /^[A-Za-z]+$/ && w ~ /[xtcrudA]/) {   # old-style group: each f/C takes the next word, in order
+            for (idx = 1; idx <= length(w); idx++) {
+              ch = substr(w, idx, 1)
+              if (ch == "x") mode = "x"
+              else if (ch == "c" || ch == "r" || ch == "u" || ch == "A") mode = "c"
+              else if (ch == "t") mode = "t"
+              else if (ch == "d") mode = "d"
+              else if (ch == "C" || ch == "f") pending = pending ch
+            }
+            continue
+          }
+          if (!stop_opts && substr(w, 1, 1) == "-" && length(w) > 1) {
+            for (idx = 2; idx <= length(w); idx++) {
               ch = substr(w, idx, 1)
               if (ch == "x") mode = "x"
               else if (ch == "c" || ch == "r" || ch == "u" || ch == "A") mode = "c"
@@ -561,6 +571,8 @@ apps_write_fixture caught 'tar -xCf "$APPS" a.tar'
 apps_write_fixture caught 'tar -xfa.tar -C "$APPS"'
 apps_write_fixture caught 'tar -xvfarchive -C "$APPS"'
 apps_write_fixture caught 'tar xzf a.tgz -C "$APPS"'
+apps_write_fixture caught 'tar Cxf "$APPS" a.tar'
+apps_write_fixture caught 'tar fxC a.tar "$APPS"'
 apps_write_fixture caught 'tar -cf "$APPS/bak.tar" "$TMP/x"'
 apps_write_fixture caught 'tar -Af "$APPS/a.tar" b.tar'
 apps_write_fixture caught 'tar --delete -f "$APPS/a.tar" x'
@@ -571,6 +583,7 @@ apps_write_fixture caught 'tar -czf "$TMP/b.tgz" --remove-files --directory="$AP
 apps_write_fixture allowed 'tar -czf "$TMP/bak.tgz" "$APPS"'
 apps_write_fixture allowed 'tar -czf "$TMP/bak.tgz" -C "$APPS" .'
 apps_write_fixture allowed 'tar -C "$APPS" -czf "$TMP/bak.tgz" .'
+apps_write_fixture allowed 'tar cfC "$TMP/b.tar" "$APPS" .'
 apps_write_fixture allowed 'tar -xf "$APPS/bak.tar" -C "$TMP/out"'
 apps_write_fixture allowed 'tar -tf "$APPS/bak.tar"'
 apps_write_fixture caught 'printf pwned >!"$APPS/xpui.spa"'
