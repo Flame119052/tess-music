@@ -290,9 +290,9 @@ apps_write() {
             else if (w == "--remove-files") rm_src = 1
             else if (w == "--list") mode = "t"
             else if (w == "--diff" || w == "--compare") mode = "d"
-            else if (w == "--directory") pending = pending "C"
-            else if (w ~ /^--directory=/) {
-              val = substr(w, 13)
+            else if (w ~ /^--(cd|dir[a-z]*)$/) pending = pending "C"
+            else if (w ~ /^--(cd|dir[a-z]*)=/) {
+              val = substr(w, index(w, "=") + 1)
               if (is_folder(strip_prefix(val)) || (val == "$" && k < nw && WARGS[k + 1] == "$APPS")) c_hits = 1
             } else if (w == "--file") pending = pending "f"
             else if (w ~ /^--file=/) {
@@ -567,6 +567,8 @@ apps_write_fixture caught 'tar -C "$APPS" -xf a.tar'
 apps_write_fixture caught 'tar -xf - -C "$APPS"'
 apps_write_fixture caught 'tar -xzf a.tgz -C/"$APPS"'
 apps_write_fixture caught 'tar --extract --file=a.tar --directory="$APPS"'
+apps_write_fixture caught 'tar --extract --file=a.tar --dir="$APPS"'
+apps_write_fixture caught 'tar -xf a.tar --cd="$APPS"'
 apps_write_fixture caught 'tar -xCf "$APPS" a.tar'
 apps_write_fixture caught 'tar -xfa.tar -C "$APPS"'
 apps_write_fixture caught 'tar -xvfarchive -C "$APPS"'
