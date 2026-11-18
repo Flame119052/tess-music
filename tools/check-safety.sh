@@ -107,15 +107,47 @@ apps_write() {
       }
     }
     # One normal form per logical line. Quotes come off, so `>"$APPS/x"` and `>"$APPS"/x` are the same text; `${APPS}`
-    # becomes `$APPS`; `//` becomes `/`; a comment is cut at its `#`. Everything after this matches the same way.
-    function norm_line(s,   i, n, c, q, o, name) {
-      o = ""; q = ""
+    # becomes `$APPS`; `//` becomes `/`; a comment is cut at its `#`. Quoted `(`, `)` (outside `$(...)`) and single-quoted
+    # backticks are escaped so literal characters like `"("` cannot unbalance subshell depth.
+    function norm_line(s,   i, n, c, nextc, q, o, name, sp, dollar, QSTACK) {
+      o = ""; q = ""; sp = 0; dollar = 0
+      delete QSTACK
       n = length(s)
       for (i = 1; i <= n; i++) {
         c = substr(s, i, 1)
-        if (q != "") { if (c == q) q = ""; else o = o c; continue }
-        if (c == "\"" || c == QUOTE) { q = c; continue }
+        if (q != "") {
+          if (c == q) { q = ""; dollar = 0; continue }
+          if (q == QUOTE) {
+            if (c == "(" || c == ")" || c == "`") o = o "\\" c
+            else o = o c
+            dollar = 0
+            continue
+          }
+          if (c == "\\" && i < n) {
+            nextc = substr(s, i + 1, 1)
+            if (nextc == "\"" || nextc == "\\" || nextc == "$" || nextc == "`") {
+              o = o c nextc; i++; dollar = 0; continue
+            }
+          }
+          if (c == "(") {
+            if (dollar) { QSTACK[++sp] = q; q = ""; o = o c }
+            else o = o "\\("
+            dollar = 0
+            continue
+          }
+          if (c == ")") { o = o "\\)"; dollar = 0; continue }
+          dollar = (c == "$")
+          o = o c
+          continue
+        }
+        if (c == "\\" && i < n) {
+          o = o c substr(s, i + 1, 1); i++; dollar = 0; continue
+        }
+        if (c == "\"" || c == QUOTE) { q = c; dollar = 0; continue }
         if (c == "#" && (o == "" || o ~ /[ \t;&|]$/)) break
+        if (c == "(") { QSTACK[++sp] = ""; o = o c; dollar = 0; continue }
+        if (c == ")") { if (sp > 0) q = QSTACK[sp--]; o = o c; dollar = 0; continue }
+        dollar = (c == "$")
         o = o c
       }
       while (match(o, /[$][{][A-Za-z_][A-Za-z0-9_]*[}]/)) {
@@ -183,9 +215,21 @@ apps_write() {
       return 0
     }
     # The words after a verb up to the next operator at the same nesting level. Nested `$(...)` and backticks are
-    # skipped here so an outer read like `ditto "$APPS" "$(dirname "$APPS")/Apps.bak"` is allowed while each inner
-    # command is still checked on its own pass.
-    function command_writes(verb, from, nt, bt_start,   k, w, nw, depth, in_bt, bverb, src, ok, hit, m, mode, pending, ch, idx, val, opt, c_hits, f_hits, stop_opts) {
+    # skipped except when a nested word names the folder (which adds a `$APPS` placeholder so the outer verb still sees
+    # it), and only parens with a matching `)` enter depth > 0 so an unmatched `(` cannot hide trailing words.
+    function command_writes(verb, from, nt, bt_start,   k, w, nw, depth, in_bt, sp, bverb, src, ok, hit, m, mode, pending, ch, idx, val, opt, c_hits, f_hits, stop_opts, STACK, MATCHED) {
+      delete STACK
+      delete MATCHED
+      sp = 0
+      for (k = from + 1; k <= nt; k++) {
+        w = TOK[k]
+        if (w == "(") STACK[++sp] = k
+        else if (w == ")") {
+          if (sp == 0) break
+          MATCHED[STACK[sp--]] = 1
+          MATCHED[k] = 1
+        }
+      }
       nw = 0; depth = 0; in_bt = 0
       for (k = from + 1; k <= nt; k++) {
         w = TOK[k]
@@ -194,13 +238,15 @@ apps_write() {
           in_bt = !in_bt
           continue
         }
-        if (w == "(") { depth++; continue }
+        if (w == "(" && MATCHED[k]) { depth++; continue }
         if (w == ")") {
           if (depth == 0) break
-          depth--
+          if (MATCHED[k]) { depth--; continue }
+        }
+        if (depth > 0 || in_bt) {
+          if (is_folder(strip_prefix(w))) WARGS[++nw] = "$APPS"
           continue
         }
-        if (depth > 0 || in_bt) continue
         if (w == ";" || w == "|" || w == "&" || w == "<" || w == ">") break
         WARGS[++nw] = w
       }
@@ -443,7 +489,18 @@ apps_write_fixture caught 'cp "$(dirname "$0")/foo" "$APPS/bar"'
 apps_write_fixture allowed '(ditto "$APPS" "$TMP/a")'
 apps_write_fixture allowed 'out=$(ditto "$APPS" "$TMP/a")'
 apps_write_fixture allowed '`ditto "$APPS" "$TMP/a"`'
-apps_write_fixture allowed 'ditto "$APPS" "$(dirname "$APPS")/Apps.bak"'
+apps_write_fixture caught 'ditto "$APPS" "$(dirname "$APPS")/Apps.bak"'
+apps_write_fixture caught 'rm -rf "$(dirname "$APPS")"'
+apps_write_fixture caught 'ditto "$1" "$(dirname "$APPS")/Apps"'
+apps_write_fixture caught 'find "$(dirname "$APPS")" -delete'
+apps_write_fixture caught 'mv "$(dirname "$APPS")" x'
+apps_write_fixture caught 'rm -rf "(" "$APPS"'
+apps_write_fixture caught 'find "$APPS" -name "(" -delete'
+apps_write_fixture caught 'tar -xf "(" -C "$APPS"'
+apps_write_fixture caught 'ditto "(" "$APPS"'
+apps_write_fixture caught 'find "$APPS" -name "$(echo "(")" -delete'
+apps_write_fixture allowed 'ditto "$APPS" "$(dirname "$TMP")/Apps.bak"'
+apps_write_fixture allowed 'ditto "$APPS" "("'
 apps_write_fixture caught 'dd if=src of="$APPS/xpui.spa"'
 apps_write_fixture caught 'dd if=src of=/"$APPS/xpui.spa"'
 apps_write_fixture caught 'dd bs=4096 of="${APPS}/xpui.spa" < src'
