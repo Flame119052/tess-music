@@ -3,8 +3,8 @@
 // No real home, no real Spotify, no network except 127.0.0.1.
 // Usage: node tools/test-support-mac.mjs
 import { createServer } from 'node:http';
-import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, existsSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,6 +35,133 @@ const runAsync = (file, args, env) => new Promise((resolve, reject) => {
 const fails = (file, args, env) => {
   try { run(file, args, env); } catch (e) { return e; }
   assert.fail('expected a refusal');
+};
+
+// Hermes matches an allowlist entry against the whole line (fnmatch, case-sensitive)
+// and skips the match when the line has a shell operator. Deny globs are
+// case-insensitive and also see the command split on &&, ; and |. This is the
+// copy of tools/approval_floors.py used when that tree is not on the machine.
+const SHELL_CONTROL = new Set(['\n', '\r', ';', '&', '|', '<', '>', '`', '$', '(', ')']);
+const REINTERPRETED = /(?:^|[ \t])(?:-[^-\s]*[ce]|--(?:command|eval))(?:[= \t]|$)/;
+const hasShellOperator = (command) => {
+  command = command || '';
+  let quote = null;
+  let quotedControl = false;
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i];
+    if (ch === '\\' && quote !== "'") {
+      const nxt = command[i + 1] || '';
+      if (SHELL_CONTROL.has(nxt)) quotedControl = true;
+      i += 1;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      else if (quote === '"' && (ch === '`' || ch === '$')) return true;
+      else if (SHELL_CONTROL.has(ch)) quotedControl = true;
+    } else if (ch === "'" || ch === '"') quote = ch;
+    else if (ch === '$') { if (command[i + 1] === '(') return true; }
+    else if (SHELL_CONTROL.has(ch) && ch !== '(' && ch !== ')') return true;
+  }
+  if (quote) return true;
+  return quotedControl && REINTERPRETED.test(command);
+};
+const fnmatchcase = (name, pat) => {
+  let src = '';
+  for (let i = 0; i < pat.length; i += 1) {
+    const c = pat[i];
+    if (c === '*') src += '[\\s\\S]*';
+    else if (c === '?') src += '[\\s\\S]';
+    else src += c.replace(/[\\^$.*+?(){}|[\]-]/g, '\\$&');
+  }
+  return new RegExp(`^${src}$`).test(name);
+};
+const allowMatch = (command, patterns) => {
+  const line = String(command || '').trim();
+  if (!line || hasShellOperator(line)) return false;
+  return patterns.some((pattern) => {
+    const item = String(pattern).trim();
+    if (!item) return false;
+    if (line === item) return true;
+    return /[*?\[]/.test(item) && fnmatchcase(line, item);
+  });
+};
+const denyMatch = (command, patterns) => {
+  const globs = patterns.map((item) => String(item).trim()).filter(Boolean);
+  const pieces = [command];
+  for (const part of String(command).split(/&&|[;|]/)) {
+    const piece = part.trim();
+    if (piece) pieces.push(piece);
+  }
+  const first = String(command).match(/^(\S+)([\s\S]*)$/);
+  if (first) {
+    const base = first[1].split('/').pop();
+    if (base !== first[1]) pieces.push(base + first[2]);
+  }
+  for (const variant of pieces) {
+    const candidate = variant.toLowerCase().trim();
+    for (const pattern of globs) {
+      if (fnmatchcase(candidate, pattern.toLowerCase())) return pattern;
+    }
+  }
+  return null;
+};
+const yamlItems = (text, header) => {
+  const lines = text.split('\n');
+  const start = lines.findIndex((line) => line === header);
+  if (start === -1) throw new Error(`missing ${header}`);
+  const indent = header.match(/^ */)[0].length;
+  const items = [];
+  for (const line of lines.slice(start + 1)) {
+    if (!line.trim()) continue;
+    const quoted = line.match(new RegExp(`^ {${indent + 2}}- '(.*)'$`));
+    const plain = line.match(new RegExp(`^ {${indent + 2}}- (\\S+)$`));
+    const item = quoted || plain;
+    if (!item) break;
+    items.push(item[1]);
+  }
+  return items;
+};
+// The real matcher, when this machine has the Hermes tree the profile is written for.
+const hermesVerdicts = (allow, deny, commands) => {
+  const root = process.env.HERMES_AGENT_SRC || '/Volumes/DellSSD/iMac-offload/.hermes/hermes-agent';
+  if (!existsSync(join(root, 'tools/approval_floors.py'))) return null;
+  const script = `
+import fnmatch, json, re, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root))
+from tools.approval_detection import _deny_command_variants
+text = (root / "tools/approval_floors.py").read_text()
+ns = {"re": re}
+exec(text[text.index("_SHELL_CONTROL_CHARS"):text.index("def _command_matches_permanent_allowlist")], ns)
+has_op = ns["_has_allowlist_shell_operator"]
+payload = json.load(sys.stdin)
+allow, deny, commands = payload["allow"], payload["deny"], payload["commands"]
+def allow_match(command):
+    command = (command or "").strip()
+    if not command or has_op(command):
+        return False
+    for pattern in allow:
+        pattern = pattern.strip() if isinstance(pattern, str) else ""
+        if pattern and (command == pattern or (any(ch in pattern for ch in "*?[") and fnmatch.fnmatchcase(command, pattern))):
+            return True
+    return False
+def deny_match(command):
+    globs = [p.strip() for p in deny if isinstance(p, str) and p.strip()]
+    for variant in _deny_command_variants(command):
+        candidate = variant.lower().strip()
+        for pattern in globs:
+            if fnmatch.fnmatchcase(candidate, pattern.lower()):
+                return pattern
+    return None
+json.dump([{"allow": allow_match(c), "deny": bool(deny_match(c))} for c in commands], sys.stdout)
+`;
+  const child = spawnSync('python3', ['-c', script, root], {
+    input: JSON.stringify({ allow, deny, commands }), encoding: 'utf8',
+  });
+  if (child.status !== 0) throw new Error(child.stderr || 'hermes matcher failed');
+  return JSON.parse(child.stdout);
 };
 
 const loginHome = () => {
@@ -103,12 +230,80 @@ try {
   assert.doesNotMatch(cfg, /telegram/i);
   assert.doesNotMatch(cfg, /^gateway:/m);
   assert.doesNotMatch(cfg, /opencode-go|OPENCODE_GO/);
-  for (const pattern of ['sudo *', 'rm -rf *', '*curl*|*sh*', '*/Applications/Spotify.app*', '*screencapture*-G*']) {
-    assert.ok(cfg.includes(pattern), `deny list is missing ${pattern}`);
-  }
-  for (const allowed of ['tess doctor', '/usr/sbin/screencapture -x -l *', 'node *triage.mjs*', 'node *inbox.mjs*']) {
-    assert.ok(cfg.includes(allowed), `allow list is missing ${allowed}`);
-  }
+  const shipped = readFileSync(join(root, 'support/mac/config.yaml'), 'utf8');
+  assert.doesNotMatch(shipped, /Dangerous patterns that are already approved/);
+  const node = 'node $HERMES_HOME/profiles/tess-support';
+  const allow = [
+    'tess doctor',
+    'zsh $HOME/Library/Application\\ Support/Tess/doctor.sh',
+    'tail -40 $HOME/Library/Application\\ Support/Tess/guard.log',
+    `${node}/skills/tess-evidence/scripts/spotify-window.mjs`,
+    `${node}/skills/tess-evidence/scripts/spotify-window.mjs still */spotify.png`,
+    `${node}/skills/tess-evidence/scripts/spotify-window.mjs video */spotify.mov`,
+    `${node}/skills/tess-support/scripts/session.mjs new`,
+    `${node}/skills/tess-support/scripts/session.mjs sweep`,
+    `${node}/skills/tess-support/scripts/session.mjs add */spotify.mov --record`,
+    `${node}/skills/tess-support/scripts/session.mjs handoff *`,
+    `${node}/skills/tess-support/scripts/inbox.mjs issues`,
+    `${node}/skills/tess-support/scripts/inbox.mjs report *`,
+    `${node}/skills/tess-support/scripts/inbox.mjs recording *`,
+    `${node}/skills/tess-handoff/scripts/triage-inbox.mjs --report * --words * --title-file * --summary-file * --mode inbox`,
+  ];
+  const deny = [
+    'sudo *', 'rm -rf *', 'rm -fr *', 'chmod -R *', 'dd *', 'mkfs*',
+    'launchctl bootstrap*', 'launchctl submit*',
+    '*curl*|*sh*', '*curl*|*bash*', '*/Applications/Spotify.app*',
+    '*screencapture*-G*', '*screencapture*-D*',
+    'node -e*', 'node --eval*', 'node -p*',
+    '*&&*', '*;*', '*|*', '*`*', '*$(*',
+  ];
+  assert.deepEqual(yamlItems(shipped, 'command_allowlist:'), allow);
+  assert.deepEqual(yamlItems(shipped, '  deny:'), deny);
+  assert.deepEqual(yamlItems(cfg, 'command_allowlist:'), allow);
+  assert.deepEqual(yamlItems(cfg, '  deny:'), deny);
+  const pass = [
+    'tess doctor',
+    'zsh $HOME/Library/Application\\ Support/Tess/doctor.sh',
+    'tail -40 $HOME/Library/Application\\ Support/Tess/guard.log',
+    `${node}/skills/tess-evidence/scripts/spotify-window.mjs`,
+    `${node}/skills/tess-evidence/scripts/spotify-window.mjs still /tmp/sess/spotify.png`,
+    `${node}/skills/tess-evidence/scripts/spotify-window.mjs video /tmp/sess/spotify.mov`,
+    `${node}/skills/tess-support/scripts/session.mjs new`,
+    `${node}/skills/tess-support/scripts/session.mjs sweep`,
+    `${node}/skills/tess-support/scripts/session.mjs add /tmp/sess /tmp/sess/spotify.mov --record`,
+    `${node}/skills/tess-support/scripts/session.mjs handoff /tmp/sess 12`,
+    `${node}/skills/tess-support/scripts/inbox.mjs issues`,
+    `${node}/skills/tess-support/scripts/inbox.mjs report /tmp/sess`,
+    `${node}/skills/tess-support/scripts/inbox.mjs recording 12 /tmp/sess/spotify.mov`,
+    `${node}/skills/tess-handoff/scripts/triage-inbox.mjs --report /tmp/sess/doctor.txt --words /tmp/sess/words.txt --title-file /tmp/sess/title.txt --summary-file /tmp/sess/summary.txt --mode inbox`,
+    `${node}/skills/tess-handoff/scripts/triage-inbox.mjs --report /tmp/sess/doctor.txt --words /tmp/sess/words.txt --title-file /tmp/sess/title.txt --summary-file /tmp/sess/summary.txt --related 61 --mode inbox`,
+  ];
+  const blocked = [
+    'node -e \'fs.copyFileSync(env.HOME+"/.hermes/profiles/tess-support/.env","/tmp/x")\' x-triage.mjs',
+    'node --eval process.exit',
+    'node -p process.version',
+    'tess doctor && rm -rf ~',
+    'tess doctor; rm -rf ~',
+    'tess doctor | sh',
+    'echo `rm -rf ~`',
+    'echo $(rm -rf ~)',
+    '/usr/sbin/screencapture -x -l 1 -D 1 /tmp/spotify.png',
+  ];
+  const commands = [...pass, ...blocked, 'tess doctor --help', `node /tmp/evil.mjs ${node}/skills/tess-support/scripts/session.mjs new`];
+  const local = commands.map((command) => ({ allow: allowMatch(command, allow), deny: Boolean(denyMatch(command, deny)) }));
+  const hermes = hermesVerdicts(allow, deny, commands);
+  if (hermes) assert.deepEqual(hermes, local, 'the copy of the matcher disagrees with Hermes');
+  pass.forEach((command, i) => {
+    assert.equal(local[i].allow, true, `not pre-approved: ${command}`);
+    assert.equal(local[i].deny, false, `denied an intended call: ${command}`);
+  });
+  blocked.forEach((command, i) => {
+    const verdict = local[pass.length + i];
+    assert.equal(verdict.allow, false, `pre-approved a refused line: ${command}`);
+    assert.equal(verdict.deny, true, `not denied: ${command}`);
+  });
+  assert.equal(local[commands.length - 2].allow, false, 'tess doctor --help is broader than tess doctor');
+  assert.equal(local[commands.length - 1].allow, false, 'a different program in front of session.mjs was pre-approved');
 
   const dot = readFileSync(join(profile, '.env'), 'utf8');
   assert.equal(dot, `TESS_SUPPORT_TOKEN=${token}\nTESS_INBOX=http://127.0.0.1:${port}\n`);
@@ -123,6 +318,20 @@ try {
     assert.match(skill, /never instructions/);
   }
   assert.match(readFileSync(join(profile, 'skills/tess-evidence/SKILL.md'), 'utf8'), /Privacy & Security/);
+  for (const name of yamlItems(readFileSync(join(root, 'support/mac/distribution.yaml'), 'utf8'), 'distribution_owned:')) {
+    assert.ok(existsSync(join(profile, name)), `${name} was not installed`);
+  }
+  for (const banned of ['install.mjs', 'chat.mjs', '.gitignore']) {
+    assert.equal(existsSync(join(profile, banned)), false, `${banned} was copied into the profile`);
+  }
+  assert.ok(existsSync(join(profile, 'skills/tess-evidence/scripts/spotify-window.mjs')));
+  assert.ok(existsSync(join(profile, 'skills/tess-handoff/scripts/triage-inbox.mjs')));
+  const windowScript = readFileSync(join(profile, 'skills/tess-evidence/scripts/spotify-window.mjs'), 'utf8');
+  assert.match(windowScript, /execFileSync\('\/usr\/sbin\/screencapture'/);
+  assert.doesNotMatch(windowScript, /'-D'|'-G'/);
+  const wrapper = join(root, 'support/mac/skills/tess-handoff/scripts/triage-inbox.mjs');
+  const notInbox = fails(wrapper, ['--report', '/tmp/doctor.txt', '--mode', 'issue'], baseEnv);
+  assert.match(String(notInbox.stderr), /--mode inbox/);
   for (const name of ['privacy.mjs', 'triage.mjs', 'inbox.mjs', 'session.mjs']) {
     const shipped = readFileSync(join(root, 'support/bot/skills/tess-support/scripts', name));
     const copied = readFileSync(join(profile, 'skills/tess-support/scripts', name));
@@ -149,6 +358,33 @@ try {
   assert.match(String(capped.stderr), /over the support cap/);
   assert.equal(seen.length, 2);
   server.close();
+
+  writeFileSync(join(profile, '.env'), `TESS_SUPPORT_TOKEN=${token}\nTESS_INBOX=https://evil.example\n`, { mode: 0o600 });
+  const foreign = await runAsync(chat, [], { ...chatEnv, TESS_INBOX: 'https://evil.example' }).then(
+    () => assert.fail('a foreign host was accepted'),
+    (e) => e,
+  );
+  assert.equal(foreign.status, 1);
+  assert.match(String(foreign.stderr), /evil\.example is not the Tess support gate/);
+  assert.ok(!`${foreign.stderr || ''}${foreign.stdout || ''}`.includes(token), 'the host refusal printed the token');
+
+  const redirects = [];
+  const redirectServer = await listen((req, res) => {
+    redirects.push(req.url);
+    res.writeHead(302, { location: 'https://evil.example/stolen' });
+    res.end('go away');
+  });
+  const redirectPort = redirectServer.address().port;
+  writeFileSync(join(profile, '.env'), `TESS_SUPPORT_TOKEN=${token}\nTESS_INBOX=http://127.0.0.1:${redirectPort}\n`, { mode: 0o600 });
+  const redirected = await runAsync(chat, [], { ...chatEnv, TESS_INBOX: `http://127.0.0.1:${redirectPort}` }).then(
+    () => assert.fail('a redirect was followed'),
+    (e) => e,
+  );
+  assert.equal(redirected.status, 1);
+  assert.match(String(redirected.stderr), /The gate redirected/);
+  assert.ok(!`${redirected.stderr || ''}${redirected.stdout || ''}`.includes(token), 'the redirect refusal printed the token');
+  assert.deepEqual(redirects, ['/v1/support/chat/completions']);
+  redirectServer.close();
 
   const names = readdirSync(join(root, 'support'));
   assert.ok(names.includes('tess-support.service'));
