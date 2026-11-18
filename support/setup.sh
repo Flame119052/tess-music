@@ -380,6 +380,8 @@ if [ "${TESS_TEST:-0}" = 1 ]; then
     is_scratch_dir "$TEST_ROOT_PHYS" || die "refusing TESS_TEST_ROOT outside scratch directory: \"$TEST_ROOT_PHYS\""
     for _fake_cmd in useradd chown runuser systemctl; do
       _fake_bin=$(command -v "$_fake_cmd" 2>/dev/null || true)
+      # Compare physical paths: on macOS /var is a link to /private/var, so the same fake can be named both ways.
+      [ -n "$_fake_bin" ] && _fake_bin="$(resolve_phys "$(dirname "$_fake_bin")" 2>/dev/null || dirname "$_fake_bin")/$(basename "$_fake_bin")"
       case "$_fake_bin" in
         "$TEST_ROOT_PHYS"/*) ;;
         *) die "refusing TESS_TEST=1 as root: '$_fake_cmd' must be faked inside TESS_TEST_ROOT (found \"${_fake_bin:-none}\")" ;;
