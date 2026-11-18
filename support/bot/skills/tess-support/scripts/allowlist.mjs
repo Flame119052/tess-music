@@ -14,7 +14,7 @@
 //   node allowlist.mjs remove 123456789 [--restart]
 //
 // Run it ON THE SERVER, as the account that owns the bot (over SSH). It is not reachable from chat.
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, chownSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -48,7 +48,7 @@ const stop = (msg) => { console.error(msg); process.exit(1); };
 const isId = (v) => /^\d{5,15}$/.test(v);
 
 // There is no in-chat admin command any more, on purpose. The gate is **shell access to this machine**: Krish runs this
-// file over SSH as the account that owns the bot, and the bot's own process cannot change who is allowed because the
+// file over SSH as the bot user (or via sudo), and the bot's own process cannot change who is allowed because the
 // unit marks `.env` and `allow.txt` read-only to it. An argument the model types proves nothing, so nothing here trusts
 // one: `--as` is accepted only to record who ran it.
 const askedBy = (() => {
@@ -76,12 +76,25 @@ const load = () => (existsSync(LIST)
   }).filter((u) => isId(u.id))
   : []);
 
+const preserveOwner = (tmp, target) => {
+  if (typeof process.getuid === 'function' && process.getuid() === 0) {
+    try {
+      const ref = existsSync(target) ? target : PROFILE_DIR;
+      if (existsSync(ref)) {
+        const st = statSync(ref);
+        chownSync(tmp, st.uid, st.gid);
+      }
+    } catch { /* best-effort ownership preservation */ }
+  }
+};
+
 const save = (users) => {
   mkdirSync(dirname(LIST), { recursive: true });
   const body = users.map((u) => (u.label ? `${u.id} ${u.label}` : u.id)).join('\n') + (users.length ? '\n' : '');
   const tmp = `${LIST}.tmp-${process.pid}`;
   writeFileSync(tmp, body, { mode: 0o600 });
   chmodSync(tmp, 0o600);
+  preserveOwner(tmp, LIST);
   renameSync(tmp, LIST);          // atomic: a reader never sees half a list
 };
 
@@ -95,8 +108,15 @@ const writeEnv = (users) => {
   const tmp = `${ENV_FILE}.tmp-${process.pid}`;
   writeFileSync(tmp, text, { mode: 0o600 });
   chmodSync(tmp, 0o600);
+  preserveOwner(tmp, ENV_FILE);
   renameSync(tmp, ENV_FILE);
   return line;
+};
+
+const envInSync = (users) => {
+  if (!existsSync(ENV_FILE)) return false;
+  const expected = `${KEY}=${users.map((u) => u.id).join(',')}`;
+  return new RegExp(`^${expected}$`, 'm').test(readFileSync(ENV_FILE, 'utf8'));
 };
 
 const argv = process.argv.slice(2);
@@ -108,6 +128,7 @@ const audit = (what) => {
   try {
     mkdirSync(dirname(LOG), { recursive: true });
     appendFileSync(LOG, `${new Date().toISOString()} ${what} by ${askedBy} -> ${users.map((u) => u.id).join(',')}\n`, { mode: 0o600 });
+    preserveOwner(LOG, LIST);
   } catch { /* a log that can't be written must not stop the change */ }
 };
 const report = (line) => {
@@ -128,10 +149,19 @@ switch (cmd) {
     if (users.some((u) => u.id === checkId(arg || stop('usage: allowlist.mjs check <id> --as <owner id>')))) { console.log('allowed'); break; }
     console.log('not allowed'); process.exit(1);
     break;
+  case 'sync':
+    requireOwner('syncing the list');
+    writeEnv(users);
+    report(`${KEY} synced.`);
+    break;
   case 'add': {
     requireOwner('adding someone');
     const id = checkId(arg || stop('usage: allowlist.mjs add <id> [label] --as <owner id>'));
-    if (users.some((u) => u.id === id)) { report('Already on the list — nothing changed.'); break; }
+    if (users.some((u) => u.id === id)) {
+      if (!envInSync(users)) { writeEnv(users); report(`Already on the list — ${KEY} synced.`); break; }
+      report('Already on the list — nothing changed.');
+      break;
+    }
     users.push({ id, label: String(label.join(' ')).replace(/[^\w .'-]/g, '').replace(/\s+/g, ' ').trim().slice(0, 40) });
     save(users); writeEnv(users); audit('add');
     report(`Added. ${KEY} rewritten.`);
@@ -149,7 +179,7 @@ switch (cmd) {
     break;
   }
   default:
-    stop('usage: allowlist.mjs list | add <id> [label] | remove <id> | check <id> --as <owner id>   (add --restart to restart the gateway)');
+    stop('usage: allowlist.mjs list | add <id> [label] | remove <id> | check <id> | sync --as <owner id>   (add --restart to restart the gateway)');
 }
 
 if (restart) {

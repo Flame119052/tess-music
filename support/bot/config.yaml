@@ -1,8 +1,14 @@
-# Tess Support. setup.sh keeps the model as whatever is connected on the machine (falling back to OpenCode's free
-# tier), and stores the Telegram token, Krish's id and the inbox posting token in this profile's own .env — never here.
+# Tess Support. Runs on Krish's VPS as its own isolated system user (tess-support) using OpenCode Go
+# (opencode-go/deepseek-v4.1-flash) with a hard daily cap enforced before any model call. Secrets live in this
+# profile's own .env at mode 600 — never here.
 
-# No `model:` block on purpose. setup.sh fills it from whatever provider is connected on the machine (falling back to
-# OpenCode's free tier), and a default here would mean that lookup never found an empty value and never ran.
+model:
+  provider: opencode-go
+  default: deepseek-v4.1-flash
+
+plugins:
+  enabled:
+    - daily-cap
 
 # This profile gets its own gateway so it can't disturb another profile's bots on the same machine.
 gateway:

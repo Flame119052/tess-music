@@ -1,10 +1,11 @@
-# Tess Support on a server: its own unprivileged user, a hard memory and CPU ceiling, and a foreground process that
+# Tess Support on Krish's VPS: its own unprivileged system user (tess-support), hard CPU/memory/I/O limits so
+# Paperclip always comes first, filesystem isolation keeping it inside its own home, and a foreground process that
 # systemd supervises.
 #
-# This file is a template: setup.sh fills in your user, home and Hermes path and installs it. To do it by hand, replace
-# __USER__, __HOME__ and __HERMES__ below and then:
+# setup.sh fills in __USER__, __HOME__ and __HERMES__ and installs this unit when run with root/sudo. To install by
+# hand, replace those placeholders and run:
 #
-#   sudo cp support/tess-support.service /etc/systemd/system/
+#   sudo install -m 0644 support/tess-support.service.filled /etc/systemd/system/tess-support.service
 #   sudo systemctl daemon-reload && sudo systemctl enable --now tess-support
 #
 # If it is started this way, do NOT also run `hermes gateway start`: two gateways on one profile fight over the same
@@ -23,18 +24,24 @@ Environment=HERMES_HOME=__HOME__/.hermes
 Environment=HOME=__HOME__
 # Foreground, so systemd owns the process and the caps apply to it.
 ExecStart=__HERMES__ -p tess-support gateway run
-# The caps: a support bot that leaks memory or spins cannot take the machine with it.
-MemoryMax=1G
+# Paperclip comes first: low memory/CPU/task ceilings plus lowest scheduling and I/O priority.
+MemoryMax=512M
 CPUQuota=50%
 TasksMax=64
+Nice=19
+IOSchedulingClass=idle
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
+# ProtectHome=read-only makes all home folders read-only except this user's own home below.
 ProtectHome=read-only
-ReadWritePaths=__HOME__/.hermes
-# The two files that decide who may talk to the bot are read-only to the bot's own process. Its shell can run anything it
-# likes and still cannot add itself a friend, because the write is refused by the kernel, not by a prompt.
+ReadWritePaths=__HOME__
+# The two files that decide who may talk to the bot and hold its keys are read-only to the bot's own process. Its
+# shell can run anything it likes and still cannot add a friend or overwrite keys, because the write is refused by the
+# kernel, not by a prompt.
 ReadOnlyPaths=__HOME__/.hermes/profiles/tess-support/.env __HOME__/.hermes/profiles/tess-support/allow.txt
+# Never touch Paperclip or PostgreSQL (leading "-" ignores absent paths on non-Paperclip hosts).
+InaccessiblePaths=-/srv/paperclip -/home/paperclip -/var/lib/postgresql -/run/postgresql
 # Always, not on-failure: a restart is how an allowlist change takes effect without root — the unit's job is to bring
 # the gateway back after the bot user signals it.
 Restart=always
