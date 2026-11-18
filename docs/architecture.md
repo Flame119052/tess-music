@@ -47,13 +47,15 @@ Inside Spotify (`Spotify.app/Contents/Resources/Apps/xpui`): Spicetify's wrapper
 
 ## Rescue line
 
-`rescue.sh` runs every six hours, at login, and within about 5 minutes of a new order (the wake check sees the new serial on the public `rescue` branch and starts it). The wake check reads that serial only when the rescue line is on, and a failure to read it does not block an update wake-up. `tess rescue off` turns it off for good; `tess status` shows whether it's on and which rescue key it trusts. The installer tells every user this. What it can do is fixed in the file and limited to Tess and Spotify: an
+`rescue.sh` runs every six hours, at login, and within about 5 minutes of a new order (the wake check sees the new serial on the public `rescue` branch and starts it). The wake check reads that serial only when the rescue line is installed and on, and a failure to read it does not block an update wake-up. `tess rescue off` turns it off for good, and stops an order that has already started; `tess status` says whether the job is loaded, whether an order is running now, and which rescue key it trusts. The installer tells every user this. A Mac that already has the line and was never told is shown the notice once after its next update, as a notification, and `tess status` prints it if it has not been seen. What it can do is fixed in the file and limited to Tess and Spotify: an
 order names one of five actions (`check`, `update`, `repair`, `restore-spotify`, `uninstall`), each of which calls Tess's
 own installed, signed tool (doctor, updater, the installed installer copy, the patcher's safe restore, the installed
 uninstaller). An order's header is `tess-rescue 2`, a serial, an expiry, an optional `only <id>...`, an optional
 `timeout <seconds>` (60-3600, half an hour by default) and the action; nothing in it is executed as a script. The order
 is stopped at its limit, and the stop and the limit go in the log. An action runs in a process group of its own, so the
 limit stops the action and every process it started (the patcher, `ditto`, `curl`), not just the shell that started them;
+the group's id and the time it started are written to `Tess/rescue/order.pid` while it runs, which is how `tess rescue off` stops a mistake that
+already started (a number that no longer leads a group of Tess's own processes, or whose start time has changed, is ignored, then removed). `rescue off` writes `off` to the order's stop file before the signal, so the log and the report name it;
 nothing of the order is still running when the line is logged. The report sent afterwards covers only the lines that
 order wrote (the log's size is noted before it starts) and passes through the same privacy filter as every other report.
 Rescue lines installed from this release on download nothing from `main`; `repair` runs the installer

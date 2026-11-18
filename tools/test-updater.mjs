@@ -211,11 +211,71 @@ try {
   {
     const s = sandbox();
     const command = readFileSync(join(root, 'installer', 'tess-command.sh'), 'utf8');
+    writeFileSync(join(s.tess, 'uninstall.sh'), '#!/bin/sh\nexit 0\n');
     writeFileSync(join(s.fixtures, 'installer.sh'), command);
     writeFileSync(join(s.fixtures, 'components.txt'), `command ${sha(command)} test://installer source\n`);
     s.run();
     assert.equal(readFileSync(join(s.tess, 'tess'), 'utf8'), command, 'existing Mac receives signed command');
     assert.match(execFileSync('/bin/sh', [join(s.tess, 'tess'), 'status'], { env: s.env, encoding: 'utf8' }), /Wake check:/);
+  }
+
+  {
+    // installer, uninstall and the command can arrive together. If the installer download fails, the command
+    // must stay uninstalled and unrecorded, or the Mac keeps a tess whose installer.sh is missing until a later
+    // parts list happens to change the command's sha.
+    const s = sandbox();
+    rmSync(join(s.tess, 'installer.sh'));
+    const command = '#!/bin/sh\necho tess-command\n';
+    const installer = '#!/bin/sh\necho new installer\n';
+    const uninstall = '#!/bin/sh\necho new uninstall\n';
+    writeFileSync(join(s.fixtures, 'command.sh'), command);
+    writeFileSync(join(s.fixtures, 'new-installer.sh'), installer);
+    writeFileSync(join(s.fixtures, 'uninstall.sh'), uninstall);
+    writeFileSync(join(s.fixtures, 'components.txt'), [
+      `installer ${sha(installer)} test://new-installer source`,
+      `uninstall ${sha(uninstall)} test://uninstall source`,
+      `command ${sha(command)} test://command source`,
+      '',
+    ].join('\n'));
+    writeFileSync(join(s.box, 'fake-bin', 'curl'), `#!/bin/sh
+echo "$@" >> "$TESS_CURL_LOG"
+out=""; url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out=$2; shift 2 ;;
+    *://*) url=$1; shift ;;
+    *) shift ;;
+  esac
+done
+case "$url" in
+  *components.txt*) cp "$TESS_COMPONENTS" "$out" ;;
+  *components.sig*) cp "$TESS_SIGNATURE" "$out" ;;
+  test://new-installer) [ -f "$TESS_INSTALLER_FAIL" ] && exit 22; cp "$TESS_INSTALLER_ASSET" "$out" ;;
+  test://uninstall) cp "$TESS_UNINSTALL_ASSET" "$out" ;;
+  test://command) cp "$TESS_COMMAND_ASSET" "$out" ;;
+  *) exit 22 ;;
+esac
+`);
+    chmodSync(join(s.box, 'fake-bin', 'curl'), 0o755);
+    const fail = join(s.box, 'installer-fail');
+    writeFileSync(fail, '');
+    const extra = {
+      TESS_INSTALLER_FAIL: fail,
+      TESS_INSTALLER_ASSET: join(s.fixtures, 'new-installer.sh'),
+      TESS_UNINSTALL_ASSET: join(s.fixtures, 'uninstall.sh'),
+      TESS_COMMAND_ASSET: join(s.fixtures, 'command.sh'),
+    };
+    s.run(extra);
+    assert.ok(!existsSync(join(s.tess, 'installer.sh')), 'a failed installer download leaves the script missing');
+    assert.equal(readFileSync(join(s.tess, 'uninstall.sh'), 'utf8'), uninstall, 'the uninstall part in the same update still installs');
+    assert.ok(!existsSync(join(s.tess, 'tess')), 'the command is held back while installer.sh is missing');
+    assert.ok(!existsSync(join(s.state, 'command')), 'the held-back command sha is not recorded');
+    assert.match(readFileSync(join(s.tess, 'guard.log'), 'utf8'), /command: waiting for installer\/uninstall parts/);
+    rmSync(fail);
+    s.run(extra);
+    assert.equal(readFileSync(join(s.tess, 'installer.sh'), 'utf8'), installer, 'the next run installs the installer');
+    assert.equal(readFileSync(join(s.tess, 'tess'), 'utf8'), command, 'the next run installs the command once both scripts exist');
+    assert.equal(readFileSync(join(s.state, 'command'), 'utf8').trim(), sha(command), 'the command sha is recorded only once it is installed');
   }
 
   {
@@ -261,6 +321,49 @@ try {
     writeFileSync(join(s.state, 'rescue-notice-shown'), '');
     s.run();
     assert.equal(readFileSync(join(s.tess, 'rescue', 'rescue.sh'), 'utf8'), '#!/bin/zsh\nexit 0\n', 'updater may restore a rescue line after the notice');
+    assert.ok(!existsSync(join(s.state, 'rescue-notice-pending')), 'a Mac that was already told is not told again');
+    s.run();
+    assert.ok(!existsSync(join(s.state, 'rescue-notice-pending')), 'a later update does not mark a Mac that was already told');
+  }
+
+  {
+    // The line is already on the Mac and rescue-notice-shown is absent: this person was never told.
+    // The updater marks that once. A test run does not pop a notification; status prints it, records
+    // that it was shown, and the next update does not mark it again.
+    const s = sandbox();
+    const src = join(s.tess, 'bin', 'patcher', 'rescue');
+    const dst = join(s.tess, 'rescue');
+    mkdirSync(src, { recursive: true });
+    mkdirSync(dst, { recursive: true });
+    const script = '#!/bin/zsh\ngrep -qx "tess-rescue 2" >/dev/null 2>&1 || true\nexit 0\n';
+    const verify = '#!/bin/sh\nexit 0\n';
+    for (const dir of [src, dst]) {
+      writeFileSync(join(dir, 'rescue.sh'), script);
+      writeFileSync(join(dir, 'tess-rescue-verify'), verify);
+      chmodSync(join(dir, 'rescue.sh'), 0o755);
+      chmodSync(join(dir, 'tess-rescue-verify'), 0o755);
+    }
+    const popped = join(s.box, 'popup');
+    writeFileSync(join(s.box, 'fake-bin', 'osascript'), `#!/bin/sh\ntouch ${JSON.stringify(popped)}\nexit 0\n`);
+    chmodSync(join(s.box, 'fake-bin', 'osascript'), 0o755);
+    const updater = readFileSync(join(root, 'installer', 'updater.sh'), 'utf8');
+    assert.match(updater, /notify "This Mac has an older Tess rescue line:/);
+    assert.match(updater, /notify "Tess's maintainer can remotely run five Tess actions/);
+    s.run();
+    assert.ok(existsSync(join(s.state, 'rescue-notice-pending')), 'a Mac that has the line and was never told is marked');
+    assert.ok(!existsSync(join(s.state, 'rescue-notice-shown')), 'the test run has not shown the notice yet');
+    assert.ok(!existsSync(popped), 'a test run does not pop the notice up');
+    writeFileSync(join(s.tess, 'tess'), readFileSync(join(root, 'installer', 'tess-command.sh')));
+    chmodSync(join(s.tess, 'tess'), 0o755);
+    const status = () => execFileSync('/bin/sh', [join(s.tess, 'tess'), 'status'], { env: s.env, encoding: 'utf8' });
+    const first = status();
+    assert.match(first, /Rescue notice: Tess's maintainer can remotely run five Tess actions on this Mac, without asking/);
+    assert.match(first, /This notice is shown once/);
+    assert.ok(!existsSync(join(s.state, 'rescue-notice-pending')), 'status clears the marker once it has printed the notice');
+    assert.ok(existsSync(join(s.state, 'rescue-notice-shown')), 'status records that this Mac was told');
+    assert.doesNotMatch(status(), /Rescue notice:/, 'status shows the notice once');
+    s.run();
+    assert.ok(!existsSync(join(s.state, 'rescue-notice-pending')), 'a later update does not mark a Mac that was already told');
   }
 
   {

@@ -1,4 +1,5 @@
-// Tess Music loader — the only Tess code written into Spotify by the installer.
+// Tess Music loader — the only Tess code written into Spotify, by the installer or, when the loader itself changes, by
+// the background updater through `tess-patcher swap-apps` (D-86), which swaps in a complete, checked copy of the folder.
 // On every Spotify start it fetches the newest Tess for its channel, checks the release is signed by Tess's key,
 // runs it and remembers it. If the network or the check fails it runs the last good copy, and if there is none,
 // the copy that came with the installer (appended below as TESS_BASELINE).

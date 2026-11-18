@@ -649,6 +649,38 @@ real_launchctl() { [ -n "$TESS_TEST" ] && [ "$(command -v launchctl)" = /bin/lau
 lctl() { real_launchctl && return 1; command launchctl "$@"; }
 # A folder name with & or < in it would otherwise produce a launchd file macOS refuses to load.
 xml_esc() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+# The rescue line writes the process group of a running order to order.pid, and the time that process started.
+# A number left behind by a crash can belong to another program by now, so it counts only when it still leads its own
+# group, that start time still matches, and its command is still one of Tess's own.
+order_group() {  # <rescue folder>
+  _og="$1/order.pid"
+  [ -f "$_og" ] || return 0
+  _op=$(sed -n '1p' "$_og" 2>/dev/null | tr -d '[:space:]')
+  _started=$(sed -n '2p' "$_og" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  case $_op in ''|*[!0-9]*) return 0 ;; esac
+  [ -n "$_started" ] || return 0
+  [ "$(ps -o pgid= -p "$_op" 2>/dev/null | tr -d ' ')" = "$_op" ] || return 0
+  _now=$(ps -o lstart= -p "$_op" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  [ "$_now" = "$_started" ] || return 0
+  case "$(ps -o command= -p "$_op" 2>/dev/null)" in
+    *"$T"*) echo "$_op" ;;
+  esac
+}
+# Turning the line off must also stop an order that has already started: it runs in a process group of its own, and
+# launchd's AbandonProcessGroup would leave it changing Spotify after the person said stop. TERM, a grace period, then
+# KILL: the same way the order's own time limit stops it.
+stop_order() {  # <rescue folder> -> prints "stopped" when it stopped something
+  _sp=$(order_group "$1")
+  [ -n "$_sp" ] || { rm -f "$1/order.pid"; return 0; }
+  # The order reads this when the group dies. It has to be there before the signal, or the log only has the exit code.
+  printf '%s\n' off > "$1/order.stop"
+  kill -TERM -- "-$_sp" 2>/dev/null || true
+  _n=0
+  while kill -0 -- "-$_sp" 2>/dev/null && [ "$_n" -lt 10 ]; do sleep 1; _n=$((_n + 1)); done
+  kill -KILL -- "-$_sp" 2>/dev/null || true
+  rm -f "$1/order.pid"
+  echo stopped
+}
 case "$1" in
   update) /usr/bin/env TESS_FORCE=1 /bin/zsh "$T/updater.sh" ;;
   repair) V="$T/bin/patcher/tess-verify"; [ -x "$V" ] || { echo "Tess's verifier is missing; run the install line to repair Tess."; exit 1; }; exec /usr/bin/env TESS_CHANNEL="$(channel)" TESS_VERIFY="$V" /bin/sh "$T/installer.sh" ;;
@@ -672,11 +704,23 @@ case "$1" in
       off)
         touch "$T/rescue-off"
         lctl disable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
+        # Stop the order while rescue.sh (the job's main process) is still alive to log and report it; bootout TERMs it.
+        STOPPED=$(stop_order "$T/rescue")
+        if [ -n "$STOPPED" ]; then _w=0; while [ -f "$T/rescue/order.stop" ] && [ "$_w" -lt 40 ]; do sleep 1; _w=$((_w + 1)); done; fi
         lctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
         rm -f "$LA/music.tess.rescue.plist"
+        [ -n "$STOPPED" ] && echo "An order that had already started was stopped."
         echo "The Tess rescue line is off. Updates will not turn it back on." ;;
       on)
+        # Adoption reads a live order, so it fails with no network. A line that was already on must survive that: a person
+        # asking for "on" again is not asking to switch their working line off.
+        WAS_ON=""
+        if [ ! -f "$T/rescue-off" ] && [ -x "$T/rescue/rescue.sh" ] && [ -x "$T/rescue/tess-rescue-verify" ]; then WAS_ON=1; fi
         if [ ! -x "$T/rescue/rescue.sh" ] || ! /bin/zsh "$T/rescue/rescue.sh" --adopt >/dev/null 2>&1; then
+          if [ -n "$WAS_ON" ]; then
+            echo "Couldn't read the current rescue order. The rescue line was already on, so it was left as it was. Try again when online."
+            exit 1
+          fi
           touch "$T/rescue-off"
           lctl disable "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
           lctl bootout "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1 || true
@@ -715,6 +759,7 @@ case "$1" in
     lctl print "gui/$(id -u)/music.tess.wake" >/dev/null 2>&1 && echo "Wake check: running" || echo "Wake check: stopped"
     FP=$(shasum -a 256 "$T/rescue/tess-rescue-verify" 2>/dev/null | cut -d' ' -f1)
     [ -n "$FP" ] || FP=not-installed
+    ORD=$(order_group "$T/rescue")
     # Status is how a person checks the line. "On" with no verifier describes a line that is not there.
     if [ ! -x "$T/rescue/tess-rescue-verify" ]; then
       echo "Rescue: not installed"
@@ -725,11 +770,31 @@ case "$1" in
         echo "Rescue: off (verifier SHA-256 $FP)"
       fi
     elif lctl print "gui/$(id -u)/music.tess.rescue" >/dev/null 2>&1; then
-      echo "Rescue: on, running (verifier SHA-256 $FP)"
+      # "Loaded" is the launchd job. Whether an order is in progress is a different question, and the one a person
+      # asking status during a rescue actually has.
+      if [ -n "$ORD" ]; then
+        echo "Rescue: on, loaded; an order is running now (verifier SHA-256 $FP)"
+      else
+        echo "Rescue: on, loaded; no order is running (verifier SHA-256 $FP)"
+      fi
     else
       echo "Rescue: on, stopped (verifier SHA-256 $FP)"
     fi
     [ -f "$T/reports-off" ] && echo "Reports: off" || echo "Reports: on"
+    # Pending means the update did not pop the notice up (a test, or the popup did not run). Print it once.
+    # An older script is not limited to the five actions, so it gets the same words the installer uses.
+    if [ -f "$T/state/rescue-notice-pending" ]; then
+      rm -f "$T/state/rescue-notice-pending"
+      touch "$T/state/rescue-notice-shown"
+      if [ -f "$T/rescue/rescue.sh" ] && ! grep -q 'grep -qx "tess-rescue 2"' "$T/rescue/rescue.sh"; then
+        echo "Rescue notice: this Mac has an older Tess rescue line: orders signed by the owner's offline rescue key can run any script on this Mac as you, without asking."
+      else
+        echo "Rescue notice: Tess's maintainer can remotely run five Tess actions on this Mac, without asking: check, update, repair, restore Spotify, or uninstall Tess."
+        echo "  It accepts only orders signed by the owner's offline rescue key."
+      fi
+      echo "  Turn it off any time: \"$T/tess\" rescue off"
+      echo "  This notice is shown once."
+    fi
     # An older script is not limited to the five actions. Repair is not the only place that should say so.
     if [ -f "$T/rescue/rescue.sh" ] && ! grep -q 'grep -qx "tess-rescue 2"' "$T/rescue/rescue.sh"; then
       echo "Rescue format: older (a signed order can run any script as you; tess rescue off stops it)"

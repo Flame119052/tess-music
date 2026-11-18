@@ -544,6 +544,23 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   command refuses on anything else rather than falling back to a path. `apply` and `backup` keep the path-based swap,
   where the folder comes from the user's own Spicetify config. `tools/test-swap-recovery.mjs` builds the real binary,
   kills it during the copy and between the renames, and proves the next run restores Spotify's folder.
+- **D-87 · 18 Nov 2026 · Agent** — Extend `tools/check-safety.sh` (follow-up to D-86) to refuse five rare ways of
+  writing into `$APPS`/`$A0`: verbs glued to `(`, `$(`, or backticks (splitting on `(`, `)`, and `` ` `` while placing
+  a `$APPS` placeholder when a skipped nested word names the folder, so `ditto "$APPS" "$(dirname "$APPS")/Apps.bak"`
+  and `rm -rf "$(dirname "$APPS")"` are caught while nested reads like `out=$(ditto "$APPS" "$TMP/a")` stay allowed,
+  and quoted/unbalanced `(` cannot hide trailing words); `dd` with `of="$APPS/..."`; `find "$APPS"` with `-delete`,
+  `-fprint`/`-fprint0`/`-fprintf`/`-fls` naming the folder, or `-exec`/`-execdir`/`-ok`/`-okdir` scanning every word up
+  to `\;` or `+` for a write verb or shell (keeping escaped `\;`/`\(` intact so trailing `-delete` is not cut off);
+  `tar` extracting into `-C "$APPS"`, `--dir*="$APPS"`, or `--cd="$APPS"` (parsing old-style letter groups in order,
+  glued `-f`/`-C` values like getopt, and flagging unconsumed extract words) or creating/mutating an archive
+  `-f "$APPS/..."` (while allowing `-c`/`-t` reads such as `tar -czf "$TMP/bak.tgz" -C "$APPS" .`); and zsh `>!` / `>|`
+  or `$(…)`/backtick redirects naming the folder.
+  *Why:* Grok 4.7's sixth re-check on #110 and the Opus re-checks on #114 showed each of these bypassed the tokeniser or
+  verb checks on a fake folder, and POSIX/BSD+GNU awk keeps the gate runnable on both macOS and Linux CI. *Trade-off:*
+  `tar` and `find` flag parsing lives in awk rather than a full shell parser, so unmodelled flag combinations,
+  non-letter old-style `tar` flags, or nested `$(…)` inside redirects (which stop at the first `)`) can either be
+  conservative or slip past; reads out of `$APPS` remain covered by must-pass fixtures. The gate deliberately does not
+  check writes through a variable, through another working directory, or through `xargs`. (#111)
 - **D-95 · 18 Nov 2026 · Owner** — Support runs as **one shared Hermes bot (`tess-support`) on Krish's VPS**, under its
   own unprivileged system user and resource-capped systemd unit, using **OpenCode Go (`opencode-go/deepseek-v4.1-flash`)**
   with a **hard daily cap**. Reverses the "free tier" in D-77 and the "refuse the Paperclip host outright" rule in
@@ -629,20 +646,28 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   (#60), separate Blends and Playlists in Library (#61), rework vinyl tonearm edge-to-label geometry & sync (#63),
   fix blank right side in no-lyrics full-screen transitions (#65), and collect customization/design controls (#64).
 
-- **14 Nov 2026 · PR #75 review fixes (#53)** — Ship the Tess command as an optional signed `command` part so the
+- **D-88 · 14 Nov 2026 · Agent** — PR #75 review fixes (#53): ship the Tess command as an optional signed `command` part so the
   updater reaches existing Macs. Older channels can omit installer, uninstall, wake and command parts. Rescue off
   disables the launchd job and removes its login plist; ordinary updates preserve the independent rescue verifier.
   Part rollback requires a healthy doctor baseline so unrelated existing failures cannot ban good parts. Wake
   remembers the last rescue serial it triggered, including rejected or expired orders.
 
-- **14 Nov 2026 · PR #75 sixth review (#53)** — The wake check reads the release and the rescue order separately, and skips the rescue read when the line is off. A repair names an older rescue script as able to run scripts. `tess status` says when that agent is still loaded after off, and the doctor unloads it and removes its login plist.
-- **14 Nov 2026 · PR #75 seventh review (#53)** — Docs name the pre-13 Nov rescue scripts, which updates never replace and which can run a signed script. Existing Macs are not shown a new notice unless they repair or reinstall. #53's check is the install notice, the README, and SECURITY.md. That older format is the owner's Mac and one other (D-62); they see the plain wording the next time they repair. An unsolicited notice on every Mac is not part of this change. A sandbox calls launchctl only when a fake one is first on PATH, because the job label is the owner's real job.
-- **14 Nov 2026 · PR #75 eighth review (#53)** — When the doctor part itself changes, the updater takes a new health baseline from that doctor instead of judging it by the previous one. `tess status` says the rescue line is not installed when its verifier is missing, and names an older script that can run any script. The doctor removes a leftover rescue login file even when that job is not loaded. An update does not add a rescue line on a Mac whose install notice said the line was not there.
-- **14 Nov 2026 · PR #75 second review (#53, #71)** — Older channels retain the running installer and a built-in
+- **D-89 · 14 Nov 2026 · Agent** — PR #75 sixth review (#53): the wake check reads the release and the rescue order separately, and skips the rescue read when the line is off. A repair names an older rescue script as able to run scripts. `tess status` says when that agent is still loaded after off, and the doctor unloads it and removes its login plist.
+- **D-90 · 14 Nov 2026 · Agent** — PR #75 seventh review (#53): docs name the pre-13 Nov rescue scripts, which updates never replace and which can run a signed script. Existing Macs are not shown a new notice unless they repair or reinstall. #53's check is the install notice, the README, and SECURITY.md. That older format is the owner's Mac and one other (D-62); they see the plain wording the next time they repair. An unsolicited notice on every Mac is not part of this change. A sandbox calls launchctl only when a fake one is first on PATH, because the job label is the owner's real job. *(Overruled by D-93.)*
+- **D-91 · 14 Nov 2026 · Agent** — PR #75 eighth review (#53): when the doctor part itself changes, the updater takes a new health baseline from that doctor instead of judging it by the previous one. `tess status` says the rescue line is not installed when its verifier is missing, and names an older script that can run any script. The doctor removes a leftover rescue login file even when that job is not loaded. An update does not add a rescue line on a Mac whose install notice said the line was not there.
+- **D-92 · 14 Nov 2026 · Agent** — PR #75 second review (#53, #71): older channels retain the running installer and a built-in
   uninstaller when signed parts are absent, without claiming signed-part hashes. Rescue on creates its own plist
   and requires adoption success; wording permits an unexpired order sent while off because old rescue scripts
   cannot report adoption failure reliably. Reinstall and uninstall clear launchd's persistent rescue disable.
   Theme refresh runs with a copied config against staged Spotify files to preserve generated colors before swap.
+- **D-93 · 14 Nov 2026 · Owner** — An existing Mac is told about the rescue line **once, after its next update**.
+  The owner's words: "the rescue notice seems unnecessary as well but sure, just have it pop up".
+  The Macs that get it are the ones where `rescue.sh` is present and `state/rescue-notice-shown` is not: the line is
+  there, and the person was never told. The update shows the notice once as a macOS notification, the same `notify()`
+  the updater already uses (`osascript display notification`). A test run skips that popup and leaves
+  `state/rescue-notice-pending`. `tess status` prints the same notice if it has not been seen, and either showing
+  records `rescue-notice-shown`. An older script, one without the `tess-rescue 2` marker, gets the wording the installer
+  already uses for that script: a signed order can run any script. (#91)
 - **15 Nov 2026 · PR #87 second review (#71)** — A review is chosen by usage first and preference second: the agent
   reads both the 5-hour and the weekly window from the usage hub and skips a provider that is on pace to run out before
   its reset, even with usage left (Claude sat at 59% session and 16% weekly on 15 Nov). Pools are not shared even inside a
@@ -710,3 +735,15 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   (~1–4% of a 5-hour window typical, 7% ceiling on `sol`). Comment formatting now separates `Used:` and `Usage:` with a
   newline and strips any standalone `Verdict:` line regardless of trailing punctuation/markdown so exactly one verdict
   line is posted. (#103)
+- **D-94 · 18 Nov 2026 · Agent** — The six reviewer follow-ups from #75 (#91), each with the reason it exists: `tess rescue
+  on` while offline leaves an already-on line on, because adoption reads a live order and a person asking for "on" again
+  is not asking to switch their working line off. `tess rescue off` stops an order that has already started: the running
+  group and the time it started are written to `Tess/rescue/order.pid`, and `off` writes `off` to the order's stop file
+  before it TERMs then KILLs the group, and only when the number still leads its own group, the start time still matches,
+  and its command is one of Tess's (`AbandonProcessGroup` would otherwise leave it changing Spotify after the
+  person said stop). The stop file is how the log and the report say `rescue off` stopped the order. The wake check reads the rescue branch only when the verifier is installed as well as on, so a Mac
+  that never had the line makes one request every five minutes, not two. `tess status` says the job is **loaded** and
+  separately whether an order is running now, because "running" was being read as the job rather than the order. The
+  signed parts list writes the installer and uninstaller before the command, since a Mac gaining all three in one update
+  must never hold a command that points at nothing. The installer's inherited copy of the command is compared with
+  `tess-command.sh` byte for byte, because those older channels run the copy and not the signed part.
