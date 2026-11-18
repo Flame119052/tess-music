@@ -221,9 +221,10 @@ apps_write() {
     # The words after a verb up to the next operator at the same nesting level. Nested `$(...)` and backticks are
     # skipped except when a nested word names the folder (which adds a `$APPS` placeholder so the outer verb still sees
     # it), and only parens with a matching `)` enter depth > 0 so an unmatched `(` cannot hide trailing words.
-    function command_writes(verb, from, nt, bt_start,   k, w, nw, depth, in_bt, sp, open_exec, bverb, src, ok, hit, m, mode, pending, ch, idx, val, opt, c_hits, f_hits, stop_opts, rm_src, STACK, MATCHED) {
+    function command_writes(verb, from, nt, bt_start,   k, w, nw, depth, in_bt, sp, open_exec, bverb, src, ok, hit, m, mode, pending, ch, idx, val, opt, c_hits, f_hits, stop_opts, rm_src, STACK, MATCHED, FV) {
       delete STACK
       delete MATCHED
+      delete FV
       sp = 0
       for (k = from + 1; k <= nt; k++) {
         w = TOK[k]
@@ -275,7 +276,10 @@ apps_write() {
             opt = substr(pending, 1, 1)
             pending = substr(pending, 2)
             if (opt == "C" && (is_folder(strip_prefix(w)) || (w == "$" && k < nw && WARGS[k + 1] == "$APPS"))) c_hits = 1
-            if (opt == "f" && (is_folder(strip_prefix(w)) || (w == "$" && k < nw && WARGS[k + 1] == "$APPS"))) f_hits = 1
+            if (opt == "f") {
+              FV[k] = 1
+              if (is_folder(strip_prefix(w)) || (w == "$" && k < nw && WARGS[k + 1] == "$APPS")) f_hits = 1
+            }
             continue
           }
           if (!stop_opts && w == "--") { stop_opts = 1; continue }
@@ -305,20 +309,14 @@ apps_write() {
               else if (ch == "c" || ch == "r" || ch == "u" || ch == "A") mode = "c"
               else if (ch == "t") mode = "t"
               else if (ch == "d") mode = "d"
-              else if (ch == "C") {
-                if (idx < length(w) && substr(w, idx + 1, 1) ~ /[\/.$]/) {
+              else if (ch == "C" || ch == "f") {
+                if (idx < length(w)) {           # getopt: the rest of the word is the value
                   val = substr(w, idx + 1)
-                  if (is_folder(strip_prefix(val)) || (val == "$" && k < nw && WARGS[k + 1] == "$APPS")) c_hits = 1
+                  if (is_folder(strip_prefix(val)) || (val == "$" && k < nw && WARGS[k + 1] == "$APPS")) { if (ch == "C") c_hits = 1; else f_hits = 1 }
+                  if (val ~ /^[A-Za-z]+$/) pending = pending ch   # `-xCf "$APPS"`: also read the next word
                   break
                 }
-                pending = pending "C"
-              } else if (ch == "f") {
-                if (idx < length(w) && substr(w, idx + 1, 1) ~ /[\/.$]/) {
-                  val = substr(w, idx + 1)
-                  if (is_folder(strip_prefix(val)) || (val == "$" && k < nw && WARGS[k + 1] == "$APPS")) f_hits = 1
-                  break
-                }
-                pending = pending "f"
+                pending = pending ch
               }
             }
             continue
@@ -331,7 +329,11 @@ apps_write() {
           }
           return f_hits
         }
-        if (mode == "x") return c_hits
+        if (mode == "x") {
+          if (c_hits) return 1
+          for (k = 1; k <= nw; k++) if (!FV[k] && is_folder(strip_prefix(WARGS[k]))) return 1
+          return 0
+        }
         if (mode == "t" || mode == "d") return 0
         return c_hits || f_hits
       }
@@ -556,6 +558,8 @@ apps_write_fixture caught 'tar -xf - -C "$APPS"'
 apps_write_fixture caught 'tar -xzf a.tgz -C/"$APPS"'
 apps_write_fixture caught 'tar --extract --file=a.tar --directory="$APPS"'
 apps_write_fixture caught 'tar -xCf "$APPS" a.tar'
+apps_write_fixture caught 'tar -xfa.tar -C "$APPS"'
+apps_write_fixture caught 'tar -xvfarchive -C "$APPS"'
 apps_write_fixture caught 'tar xzf a.tgz -C "$APPS"'
 apps_write_fixture caught 'tar -cf "$APPS/bak.tar" "$TMP/x"'
 apps_write_fixture caught 'tar -Af "$APPS/a.tar" b.tar'
