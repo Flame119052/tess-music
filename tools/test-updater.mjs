@@ -261,10 +261,49 @@ try {
     writeFileSync(join(s.state, 'rescue-notice-shown'), '');
     s.run();
     assert.equal(readFileSync(join(s.tess, 'rescue', 'rescue.sh'), 'utf8'), '#!/bin/zsh\nexit 0\n', 'updater may restore a rescue line after the notice');
-    // A line that appeared on an existing Mac through an update is announced: status shows it once, then clears it.
-    assert.ok(existsSync(join(s.state, 'rescue-notice-pending')), 'an update that adds the rescue line leaves the one-time notice for status');
+    assert.ok(!existsSync(join(s.state, 'rescue-notice-pending')), 'a Mac that was already told is not told again');
     s.run();
-    assert.ok(existsSync(join(s.state, 'rescue-notice-pending')), 'a later update does not drop the unshown notice');
+    assert.ok(!existsSync(join(s.state, 'rescue-notice-pending')), 'a later update does not mark a Mac that was already told');
+  }
+
+  {
+    // The line is already on the Mac and rescue-notice-shown is absent: this person was never told.
+    // The updater marks that once. A test run does not pop a notification; status prints it, records
+    // that it was shown, and the next update does not mark it again.
+    const s = sandbox();
+    const src = join(s.tess, 'bin', 'patcher', 'rescue');
+    const dst = join(s.tess, 'rescue');
+    mkdirSync(src, { recursive: true });
+    mkdirSync(dst, { recursive: true });
+    const script = '#!/bin/zsh\ngrep -qx "tess-rescue 2" >/dev/null 2>&1 || true\nexit 0\n';
+    const verify = '#!/bin/sh\nexit 0\n';
+    for (const dir of [src, dst]) {
+      writeFileSync(join(dir, 'rescue.sh'), script);
+      writeFileSync(join(dir, 'tess-rescue-verify'), verify);
+      chmodSync(join(dir, 'rescue.sh'), 0o755);
+      chmodSync(join(dir, 'tess-rescue-verify'), 0o755);
+    }
+    const popped = join(s.box, 'popup');
+    writeFileSync(join(s.box, 'fake-bin', 'osascript'), `#!/bin/sh\ntouch ${JSON.stringify(popped)}\nexit 0\n`);
+    chmodSync(join(s.box, 'fake-bin', 'osascript'), 0o755);
+    const updater = readFileSync(join(root, 'installer', 'updater.sh'), 'utf8');
+    assert.match(updater, /notify "This Mac has an older Tess rescue line:/);
+    assert.match(updater, /notify "Tess's maintainer can remotely run five Tess actions/);
+    s.run();
+    assert.ok(existsSync(join(s.state, 'rescue-notice-pending')), 'a Mac that has the line and was never told is marked');
+    assert.ok(!existsSync(join(s.state, 'rescue-notice-shown')), 'the test run has not shown the notice yet');
+    assert.ok(!existsSync(popped), 'a test run does not pop the notice up');
+    writeFileSync(join(s.tess, 'tess'), readFileSync(join(root, 'installer', 'tess-command.sh')));
+    chmodSync(join(s.tess, 'tess'), 0o755);
+    const status = () => execFileSync('/bin/sh', [join(s.tess, 'tess'), 'status'], { env: s.env, encoding: 'utf8' });
+    const first = status();
+    assert.match(first, /Rescue notice: Tess's maintainer can remotely run five Tess actions on this Mac, without asking/);
+    assert.match(first, /This notice is shown once/);
+    assert.ok(!existsSync(join(s.state, 'rescue-notice-pending')), 'status clears the marker once it has printed the notice');
+    assert.ok(existsSync(join(s.state, 'rescue-notice-shown')), 'status records that this Mac was told');
+    assert.doesNotMatch(status(), /Rescue notice:/, 'status shows the notice once');
+    s.run();
+    assert.ok(!existsSync(join(s.state, 'rescue-notice-pending')), 'a later update does not mark a Mac that was already told');
   }
 
   {

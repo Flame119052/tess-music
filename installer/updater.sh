@@ -171,6 +171,26 @@ EOF
 }
 install_guard
 
+# D-92: the line is already on this Mac and rescue-notice-shown is absent, so this person was never told.
+# Pop the notice up once. A test run skips that and leaves the marker for `tess status`.
+mark_rescue_notice() { # <rescue.sh>
+  [ -f "$1" ] || return 0
+  [ -f "$STATE/rescue-notice-shown" ] && return 0
+  mkdir -p "$STATE"
+  touch "$STATE/rescue-notice-pending"
+  [ -n "$TESS_TEST" ] && return 0
+  local _note=0
+  if ! grep -q 'grep -qx "tess-rescue 2"' "$1"; then
+    notify "This Mac has an older Tess rescue line: orders signed by the owner's offline rescue key can run any script on this Mac as you, without asking." || _note=1
+  else
+    notify "Tess's maintainer can remotely run five Tess actions on this Mac, without asking: check, update, repair, restore Spotify, or uninstall Tess." || _note=1
+  fi
+  # A popup that did not run stays pending, so `tess status` can still say it.
+  [ "$_note" -eq 0 ] || return 0
+  rm -f "$STATE/rescue-notice-pending"
+  touch "$STATE/rescue-notice-shown"
+}
+
 # Rescue keeps an independent verifier so a broken patcher update cannot disable recovery.
 install_rescue() {
   local src="$HOME_TESS/bin/patcher/rescue" dst="$HOME_TESS/rescue" pl="$HOME/Library/LaunchAgents/music.tess.rescue.plist"
@@ -184,7 +204,7 @@ install_rescue() {
     log "rescue line stays off"
     return 0
   fi
-  [ -x "$src/tess-rescue-verify" ] && [ -f "$src/rescue.sh" ] || return 0
+  [ -x "$src/tess-rescue-verify" ] && [ -f "$src/rescue.sh" ] || { mark_rescue_notice "$dst/rescue.sh"; return 0; }
   # The install notice is the only place a person is told this line exists. Do not add it later on a Mac that was told it is not there.
   if [ ! -f "$dst/rescue.sh" ] && [ ! -f "$STATE/rescue-notice-shown" ]; then
     return 0
@@ -197,9 +217,8 @@ install_rescue() {
   [ -f "$dst/rescue.sh" ] || { cp "$src/rescue.sh" "$dst/rescue.sh"; fresh=1; }
   chmod +x "$dst/tess-rescue-verify" "$dst/rescue.sh"
   [ -n "$fresh" ] && /bin/zsh "$dst/rescue.sh" --adopt >/dev/null 2>&1
-  # The line appeared on a Mac that already had Tess, so the installer's notice never ran. Leave it for `tess status` to
-  # show once; a later update must not drop it unseen.
-  [ -n "$fresh" ] && touch "$STATE/rescue-notice-pending"
+  # A Mac that already has the line, and was never told, is told once. One that was already told is not told again.
+  mark_rescue_notice "$dst/rescue.sh"
   [ -f "$pl" ] && return 0
   mkdir -p "$(dirname "$pl")"
   local rescue_xml=$(xml_esc "$dst/rescue.sh")

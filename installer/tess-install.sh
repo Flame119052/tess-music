@@ -649,14 +649,19 @@ real_launchctl() { [ -n "$TESS_TEST" ] && [ "$(command -v launchctl)" = /bin/lau
 lctl() { real_launchctl && return 1; command launchctl "$@"; }
 # A folder name with & or < in it would otherwise produce a launchd file macOS refuses to load.
 xml_esc() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
-# The rescue line writes the process group of a running order to order.pid. A number left behind by a crash can belong
-# to another program by now, so it counts only when it leads its own group and its command is still one of Tess's own.
+# The rescue line writes the process group of a running order to order.pid, and the time that process started.
+# A number left behind by a crash can belong to another program by now, so it counts only when it still leads its own
+# group, that start time still matches, and its command is still one of Tess's own.
 order_group() {  # <rescue folder>
   _og="$1/order.pid"
   [ -f "$_og" ] || return 0
-  _op=$(cat "$_og" 2>/dev/null)
+  _op=$(sed -n '1p' "$_og" 2>/dev/null | tr -d '[:space:]')
+  _started=$(sed -n '2p' "$_og" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   case $_op in ''|*[!0-9]*) return 0 ;; esac
+  [ -n "$_started" ] || return 0
   [ "$(ps -o pgid= -p "$_op" 2>/dev/null | tr -d ' ')" = "$_op" ] || return 0
+  _now=$(ps -o lstart= -p "$_op" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  [ "$_now" = "$_started" ] || return 0
   case "$(ps -o command= -p "$_op" 2>/dev/null)" in
     *"$T"*) echo "$_op" ;;
   esac
@@ -667,6 +672,8 @@ order_group() {  # <rescue folder>
 stop_order() {  # <rescue folder> -> prints "stopped" when it stopped something
   _sp=$(order_group "$1")
   [ -n "$_sp" ] || { rm -f "$1/order.pid"; return 0; }
+  # The order reads this when the group dies. It has to be there before the signal, or the log only has the exit code.
+  printf '%s\n' off > "$1/order.stop"
   kill -TERM -- "-$_sp" 2>/dev/null || true
   _n=0
   while kill -0 -- "-$_sp" 2>/dev/null && [ "$_n" -lt 10 ]; do sleep 1; _n=$((_n + 1)); done
@@ -773,12 +780,18 @@ case "$1" in
       echo "Rescue: on, stopped (verifier SHA-256 $FP)"
     fi
     [ -f "$T/reports-off" ] && echo "Reports: off" || echo "Reports: on"
-    # A Mac that already had Tess is owed this once, after the update that gave it the line (D-92). It is not announced
-    # again on the next status.
+    # Pending means the update did not pop the notice up (a test, or the popup did not run). Print it once.
+    # An older script is not limited to the five actions, so it gets the same words the installer uses.
     if [ -f "$T/state/rescue-notice-pending" ]; then
       rm -f "$T/state/rescue-notice-pending"
-      echo "Rescue notice: Tess's maintainer can remotely run five Tess actions on this Mac, without asking: check, update, repair, restore Spotify, or uninstall Tess."
-      echo "  It accepts only orders signed by the owner's offline rescue key. Turn it off any time: \"$T/tess\" rescue off"
+      touch "$T/state/rescue-notice-shown"
+      if [ -f "$T/rescue/rescue.sh" ] && ! grep -q 'grep -qx "tess-rescue 2"' "$T/rescue/rescue.sh"; then
+        echo "Rescue notice: this Mac has an older Tess rescue line: orders signed by the owner's offline rescue key can run any script on this Mac as you, without asking."
+      else
+        echo "Rescue notice: Tess's maintainer can remotely run five Tess actions on this Mac, without asking: check, update, repair, restore Spotify, or uninstall Tess."
+        echo "  It accepts only orders signed by the owner's offline rescue key."
+      fi
+      echo "  Turn it off any time: \"$T/tess\" rescue off"
       echo "  This notice is shown once."
     fi
     # An older script is not limited to the five actions. Repair is not the only place that should say so.

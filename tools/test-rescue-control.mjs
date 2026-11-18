@@ -174,21 +174,39 @@ esac
   assert.ok(existsSync(loadedRescue), 'an offline "rescue on" keeps the agent loaded');
   writeFileSync(join(rescue, 'rescue.sh'), '#!/bin/zsh\nexit 0\n');
 
-  // A Mac that already had Tess is owed the notice once after the update that gave it the line; status shows it once.
+  // A current script: status prints the five-action notice once and records that this Mac was told.
+  writeFileSync(join(rescue, 'rescue.sh'), '#!/bin/zsh\ngrep -qx "tess-rescue 2" >/dev/null 2>&1 || true\nexit 0\n');
+  chmodSync(join(rescue, 'rescue.sh'), 0o755);
   writeFileSync(join(state, 'rescue-notice-pending'), '');
   const noticed = run('status');
-  assert.match(noticed, /maintainer can remotely run five Tess actions on this Mac, without asking/);
+  assert.match(noticed, /Rescue notice: Tess's maintainer can remotely run five Tess actions on this Mac, without asking/);
+  assert.match(noticed, /It accepts only orders signed by the owner's offline rescue key/);
   assert.match(noticed, /This notice is shown once/);
   assert.ok(!existsSync(join(state, 'rescue-notice-pending')), 'the notice is cleared once shown');
-  assert.doesNotMatch(run('status'), /maintainer can remotely run five Tess actions/);
+  assert.ok(existsSync(join(state, 'rescue-notice-shown')), 'showing the notice records that this Mac was told');
+  assert.doesNotMatch(run('status'), /Rescue notice:/);
+
+  // An older script gets the installer's older-script wording, not the five-action claim.
+  rmSync(join(state, 'rescue-notice-shown'));
+  writeFileSync(join(rescue, 'rescue.sh'), '#!/bin/zsh\nexit 0\n');
+  chmodSync(join(rescue, 'rescue.sh'), 0o755);
+  writeFileSync(join(state, 'rescue-notice-pending'), '');
+  const olderNotice = run('status');
+  assert.match(olderNotice, /Rescue notice: this Mac has an older Tess rescue line: orders signed by the owner's offline rescue key can run any script on this Mac as you, without asking/);
+  assert.doesNotMatch(olderNotice, /five Tess actions/);
+  assert.ok(existsSync(join(state, 'rescue-notice-shown')), 'the older notice records that this Mac was told');
+  assert.doesNotMatch(run('status'), /Rescue notice:/);
 
   // `rescue off` stops an order that had already started; a stale number that is not Tess's is never signalled.
+  const started = (pid) => execFileSync('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' }).trim();
+  const writeOrderPid = (pid, when = started(pid)) => writeFileSync(join(rescue, 'order.pid'), `${pid}\n${when}\n`);
   const foreign = spawn('/bin/sh', ['-c', 'sleep 300'], { detached: true, stdio: 'ignore' });
   kids.push(foreign);
-  writeFileSync(join(rescue, 'order.pid'), `${foreign.pid}\n`);
+  writeOrderPid(foreign.pid);
   const offForeign = run('rescue', 'off');
   assert.ok(alive(foreign.pid), 'a pid that is not one of Tess\'s is not signalled');
   assert.ok(!existsSync(join(rescue, 'order.pid')), 'a stale order number is removed');
+  assert.ok(!existsSync(join(rescue, 'order.stop')), 'a pid that is not Tess\'s does not record a stop');
   assert.doesNotMatch(offForeign, /had already started was stopped/);
   assert.match(run('rescue', 'on'), /rescue line is on/i);
 
@@ -203,10 +221,18 @@ esac
   kids.push(order);
   for (let i = 0; i < 40 && !existsSync(childPidFile); i++) pause(50);
   const childPid = Number(readFileSync(childPidFile, 'utf8').trim());
-  writeFileSync(join(rescue, 'order.pid'), `${order.pid}\n`);
+  writeOrderPid(order.pid, 'Thu Jan  1 00:00:00 1970');
+  const offStale = run('rescue', 'off');
+  assert.ok(alive(order.pid), 'a pid whose start time does not match is not signalled');
+  assert.ok(alive(childPid), 'a mismatched start time leaves the order\'s child alone');
+  assert.doesNotMatch(offStale, /had already started was stopped/);
+  assert.ok(!existsSync(join(rescue, 'order.stop')), 'a mismatched start time does not record a stop');
+  assert.match(run('rescue', 'on'), /rescue line is on/i);
+  writeOrderPid(order.pid);
   assert.match(run('status'), /an order is running now/, 'status says an order is in progress, not just that the job is loaded');
   const offRunning = run('rescue', 'off');
   assert.match(offRunning, /had already started was stopped/, 'off says it stopped the order');
+  assert.equal(readFileSync(join(rescue, 'order.stop'), 'utf8').trim(), 'off', 'off records the stop before the signal');
   assert.ok(gone(order.pid), 'the order that had already started is stopped');
   assert.ok(gone(childPid), 'the order stops its own child too');
   assert.ok(!existsSync(join(rescue, 'order.pid')), 'a stopped order leaves no number behind');

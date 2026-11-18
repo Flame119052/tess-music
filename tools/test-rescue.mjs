@@ -165,7 +165,10 @@ run_bounded 2 "$1" "$2" "$3" /bin/zsh -c 'sleep 60' _ 2>/dev/null
   const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
   for (let i = 0; i < 60 && !existsSync(groupPidFile); i++) pause(50);
   assert.ok(existsSync(groupPidFile), 'a running order writes its process group down for `tess rescue off`');
-  const groupPid = Number(readFileSync(groupPidFile, 'utf8').trim());
+  const groupLines = readFileSync(groupPidFile, 'utf8').split('\n');
+  const groupPid = Number(groupLines[0]);
+  const groupStart = execFileSync('/bin/ps', ['-o', 'lstart=', '-p', String(groupPid)], { encoding: 'utf8' }).trim();
+  assert.equal(groupLines[1], groupStart, 'order.pid records the pid and the start time');
   assert.equal(execFileSync('/bin/ps', ['-o', 'pgid=', '-p', String(groupPid)], { encoding: 'utf8' }).trim(), String(groupPid), 'the number written is the group leader');
   for (let i = 0; i < 100 && existsSync(groupPidFile); i++) pause(50);
   assert.ok(!existsSync(groupPidFile), 'a stopped order leaves no number behind');
@@ -193,6 +196,40 @@ sleep 600
     assert.ok(child > 1, 'the action recorded the child it started');
     assert.equal(alive(child), false, `the child the action started was stopped too (pid ${child} still ran)`);
   }
+  // 12e. `tess rescue off` writes "off" before the signal, so the log and the report name what stopped the order.
+  {
+    writeFileSync(join(T, 'doctor.sh'), '#!/bin/zsh\nsleep 300\n');
+    chmodSync(join(T, 'doctor.sh'), 0o755);
+    const agents = join(box, 'LaunchAgents');
+    mkdirSync(agents, { recursive: true });
+    writeFileSync(join(T, 'tess'), readFileSync(join(root, 'installer/tess-command.sh')));
+    chmodSync(join(T, 'tess'), 0o755);
+    publish(order(++s, 'check', ['timeout 60']));
+    const offRescue = spawn('/bin/zsh', [join(R, 'rescue.sh')], { env: { ...env, TESS_TEST_RUN: '1' }, stdio: 'ignore' });
+    const offOrderPid = join(box, 'off-order.pid');
+    try {
+      for (let i = 0; i < 50 && !existsSync(join(R, 'order.pid')); i++) pause(100);
+      assert.ok(existsSync(join(R, 'order.pid')), 'the order wrote its pid before rescue off');
+      const leader = Number(readFileSync(join(R, 'order.pid'), 'utf8').split('\n')[0]);
+      writeFileSync(offOrderPid, `${leader}\n`);
+      const offOut = execFileSync('/bin/sh', [join(T, 'tess'), 'rescue', 'off'], {
+        env: { ...env, TESS_LAUNCH_AGENTS: agents },
+        encoding: 'utf8',
+      });
+      assert.match(offOut, /had already started was stopped/);
+      const stoppedLine = `rescue order ${s} was stopped by rescue off`;
+      for (let i = 0; i < 40 && !log().includes(stoppedLine); i++) pause(250);
+      assert.match(log(), new RegExp(stoppedLine));
+      const offReport = JSON.parse(readFileSync(join(R, 'order-report.json'), 'utf8'));
+      assert.match(offReport.status, /stopped by rescue off/);
+      assert.match(offReport.body, /stopped by rescue off/);
+      assert.equal(alive(leader), false, 'rescue off stopped the order');
+    } finally {
+      try { offRescue.kill('SIGKILL'); } catch {}
+      const leader = pidIn(offOrderPid);
+      try { if (leader > 1) process.kill(-leader, 'SIGKILL'); } catch {}
+    }
+  }
   writeFileSync(join(T, 'rescue-off'), '');
   publish(order(++s, 'uninstall'));
   const beforeAdopt = log();
@@ -207,7 +244,7 @@ sleep 600
   console.log('rescue tests passed (5 actions; script, unknown, injected, bad signature, expired, replay, other Mac; the limit stops the action group; a running order records its group for `tess rescue off`)');
 } finally {
   // a failed run must not leave a long sleep of its own behind
-  for (const f of [join(box, 'held.pid'), join(box, 'stubborn.pid'), slowChild]) {
+  for (const f of [join(box, 'held.pid'), join(box, 'stubborn.pid'), slowChild, join(box, 'off-order.pid')]) {
     const pid = pidIn(f);
     try { if (pid > 1) process.kill(pid, 'SIGKILL'); } catch {}
   }
