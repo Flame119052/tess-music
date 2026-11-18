@@ -37,6 +37,7 @@ jobs:
           node tools/test-installer-legacy.mjs
           node tools/test-installer-legacy.mjs --command
           node tools/test-updater.mjs
+          node tools/test-upgrade.mjs
           node tools/test-wake.mjs
           node tools/test-rescue-control.mjs
           node tools/test-swap-recovery.mjs
