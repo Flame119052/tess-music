@@ -489,17 +489,21 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   remembers the last rescue serial it triggered, including rejected or expired orders.
 
 - **D-88 · 14 Nov 2026 · Agent** — PR #75 sixth review (#53): the wake check reads the release and the rescue order separately, and skips the rescue read when the line is off. A repair names an older rescue script as able to run scripts. `tess status` says when that agent is still loaded after off, and the doctor unloads it and removes its login plist.
-- **D-89 · 14 Nov 2026 · Agent** — PR #75 seventh review (#53): docs name the pre-13 Nov rescue scripts, which updates never replace and which can run a signed script. Existing Macs are not shown a new notice unless they repair or reinstall. #53's check is the install notice, the README, and SECURITY.md. That older format is the owner's Mac and one other (D-62); they see the plain wording the next time they repair. An unsolicited notice on every Mac is not part of this change. A sandbox calls launchctl only when a fake one is first on PATH, because the job label is the owner's real job.
+- **D-89 · 14 Nov 2026 · Agent** — PR #75 seventh review (#53): docs name the pre-13 Nov rescue scripts, which updates never replace and which can run a signed script. Existing Macs are not shown a new notice unless they repair or reinstall. #53's check is the install notice, the README, and SECURITY.md. That older format is the owner's Mac and one other (D-62); they see the plain wording the next time they repair. An unsolicited notice on every Mac is not part of this change. A sandbox calls launchctl only when a fake one is first on PATH, because the job label is the owner's real job. *(Overruled by D-92.)*
 - **D-90 · 14 Nov 2026 · Agent** — PR #75 eighth review (#53): when the doctor part itself changes, the updater takes a new health baseline from that doctor instead of judging it by the previous one. `tess status` says the rescue line is not installed when its verifier is missing, and names an older script that can run any script. The doctor removes a leftover rescue login file even when that job is not loaded. An update does not add a rescue line on a Mac whose install notice said the line was not there.
 - **D-91 · 14 Nov 2026 · Agent** — PR #75 second review (#53, #71): older channels retain the running installer and a built-in
   uninstaller when signed parts are absent, without claiming signed-part hashes. Rescue on creates its own plist
   and requires adoption success; wording permits an unexpired order sent while off because old rescue scripts
   cannot report adoption failure reliably. Reinstall and uninstall clear launchd's persistent rescue disable.
   Theme refresh runs with a copied config against staged Spotify files to preserve generated colors before swap.
-- **D-92 · 14 Nov 2026 · Owner** — An existing Mac is told about the rescue line **once, after its next update**, not only
-  when it repairs: the updater leaves `state/rescue-notice-pending` when it first installs the line, and `tess status`
-  prints the notice and clears the marker. The reason is that the line is on without the person choosing it, so staying
-  quiet about it is not honest; saying it once keeps it out of the way afterwards. (#91)
+- **D-92 · 14 Nov 2026 · Owner** — An existing Mac is told about the rescue line **once, after its next update**.
+  The owner's words: "the rescue notice seems unnecessary as well but sure, just have it pop up".
+  The Macs that get it are the ones where `rescue.sh` is present and `state/rescue-notice-shown` is not: the line is
+  there, and the person was never told. The update shows the notice once as a macOS notification, the same `notify()`
+  the updater already uses (`osascript display notification`). A test run skips that popup and leaves
+  `state/rescue-notice-pending`. `tess status` prints the same notice if it has not been seen, and either showing
+  records `rescue-notice-shown`. An older script, one without the `tess-rescue 2` marker, gets the wording the installer
+  already uses for that script: a signed order can run any script. (#91)
 - **15 Nov 2026 · PR #87 second review (#71)** — A review is chosen by usage first and preference second: the agent
   reads both the 5-hour and the weekly window from the usage hub and skips a provider that is on pace to run out before
   its reset, even with usage left (Claude sat at 59% session and 16% weekly on 15 Nov). Pools are not shared even inside a
@@ -570,9 +574,10 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
 - **D-93 · 18 Nov 2026 · Agent** — The six reviewer follow-ups from #75 (#91), each with the reason it exists: `tess rescue
   on` while offline leaves an already-on line on, because adoption reads a live order and a person asking for "on" again
   is not asking to switch their working line off. `tess rescue off` stops an order that has already started: the running
-  group is written to `Tess/rescue/order.pid`, and `off` TERMs then KILLs it only when the number still leads its own
-  group and its command is one of Tess's (`AbandonProcessGroup` would otherwise leave it changing Spotify after the
-  person said stop). The wake check reads the rescue branch only when the verifier is installed as well as on, so a Mac
+  group and the time it started are written to `Tess/rescue/order.pid`, and `off` writes `off` to the order's stop file
+  before it TERMs then KILLs the group, and only when the number still leads its own group, the start time still matches,
+  and its command is one of Tess's (`AbandonProcessGroup` would otherwise leave it changing Spotify after the
+  person said stop). The stop file is how the log and the report say `rescue off` stopped the order. The wake check reads the rescue branch only when the verifier is installed as well as on, so a Mac
   that never had the line makes one request every five minutes, not two. `tess status` says the job is **loaded** and
   separately whether an order is running now, because "running" was being read as the job rather than the order. The
   signed parts list writes the installer and uninstaller before the command, since a Mac gaining all three in one update
