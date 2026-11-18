@@ -96,6 +96,16 @@ try {
     assert.equal(row.kind, 'heartbeat');
     assert.equal(row.tess, '0.2.22');
     assert.equal(row.body, 'hello');
+  }
+  // 1b. a health report's machine numbers survive the inbox: the Mac filtered it already, and a timestamp or a byte
+  // count read as a phone number would make the report useless
+  {
+    const db = database();
+    const status = 'ok since 1763452800, free 123456789012 bytes, rescue serial 2026111801';
+    const res = await post({ ...report(), status, body: status }, { env: makeEnv(db) });
+    assert.equal(res.status, 204);
+    assert.equal(db.reports[0].status, status, 'a health status keeps its numbers');
+    assert.equal(db.reports[0].body, status, 'a health body keeps its numbers');
     assert.ok(db.limits.get('all'), 'the daily total is counted');
   }
 

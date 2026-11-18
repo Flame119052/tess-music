@@ -9,7 +9,7 @@
 // Cost: everything here stays inside Cloudflare's free allowances even under a flood. Requests over the per-IP limit
 // are refused by Cloudflare's rate limiter before any database work; past the daily total only one row is read per
 // request; at most DAILY_CAP reports are stored a day (~6 rows written each), kept 30 days, 24 KB each at most.
-import { clean as cleanText } from '../support/bot/skills/tess-support/scripts/privacy.mjs';
+import { clean as cleanText, stripInvisible } from '../support/bot/skills/tess-support/scripts/privacy.mjs';
 
 const MAX_BODY = 32 * 1024;
 // A support report carries the person's words, the bot's diagnosis and the finished write-up, so it is allowed more
@@ -37,6 +37,10 @@ const utf8 = (s) => new TextEncoder().encode(s);
 const cut = (s, n) => { const b = utf8(s); return b.length <= n ? s : new TextDecoder().decode(b.slice(0, n)); };
 const clean = (v) => cleanText(String(v));
 const short = (v, n) => (typeof v === 'string' ? cut(clean(v), n) : null);
+// A health report was already filtered on the Mac by installer/redact.sh, and its status and body are machine lines whose
+// numbers matter: epoch seconds, byte counts, rescue serials. The phone rule would turn each of those into "(number)", so
+// a health report only loses what a terminal would hide. A person's own words (a support report) get the full clean.
+const shortHealth = (v, n) => (typeof v === 'string' ? cut(stripInvisible(v), n) : null);
 
 // One statement, not a read and then a write: two requests that arrive together both used to see the same count, both
 // pass, and the counter finished one past the cap. The increment is the check here — a row is only touched while its
@@ -124,7 +128,7 @@ async function report(request, env) {
   if (!(await hit(env, `id:${r.install}`, 60, 86400))) return reply(429);
   if (!(await hit(env, 'all', DAILY_CAP, 86400))) return reply(429);
   await env.DB.prepare('INSERT INTO reports (at, install, kind, tess, spotify, macos, status, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .bind(Date.now(), r.install, r.kind, short(r.tess, 40), short(r.spotify, 40), short(r.macos, 40), short(r.status, 2000), short(r.body, 24 * 1024))
+    .bind(Date.now(), r.install, r.kind, shortHealth(r.tess, 40), shortHealth(r.spotify, 40), shortHealth(r.macos, 40), shortHealth(r.status, 2000), shortHealth(r.body, 24 * 1024))
     .run();
   return reply(204);
 }
