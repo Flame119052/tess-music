@@ -3,9 +3,9 @@
 // Refuses the real login home. Writes .env with the support token only — never an OpenCode key.
 // Uses `hermes profile install` when that command actually runs, and copies the profile otherwise.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
@@ -56,9 +56,31 @@ const inbox = inboxUrl.origin;
 
 const dest = join(home, 'profiles', 'tess-support');
 
+// distribution.yaml names what the person gets. install.mjs, chat.mjs and
+// .gitignore stay in the repo; they are not part of the running profile.
+const owned = () => {
+  const text = readFileSync(join(src, 'distribution.yaml'), 'utf8');
+  const lines = text.split('\n');
+  const start = lines.findIndex((line) => line === 'distribution_owned:');
+  if (start === -1) die('distribution.yaml has no distribution_owned list');
+  const names = [];
+  for (const line of lines.slice(start + 1)) {
+    if (!line.trim()) continue;
+    const item = line.match(/^  - (\S+)$/);
+    if (!item) break;
+    names.push(item[1]);
+  }
+  if (!names.length) die('distribution_owned is empty');
+  return names;
+};
+
 const stage = mkdtempSync(join(tmpdir(), 'tess-support-mac-'));
 try {
-  cpSync(src, stage, { recursive: true, filter: (path) => path === src || !path.endsWith('.env') });
+  for (const name of owned()) {
+    const from = join(src, name);
+    if (!existsSync(from)) die(`distribution_owned lists ${name}, which is not in support/mac`);
+    cpSync(from, join(stage, name), { recursive: true, filter: (path) => basename(path) !== '.env' });
+  }
   const scriptDir = join(stage, 'skills', 'tess-support', 'scripts');
   mkdirSync(scriptDir, { recursive: true });
   for (const name of scripts) {
