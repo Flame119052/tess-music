@@ -544,7 +544,7 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   command refuses on anything else rather than falling back to a path. `apply` and `backup` keep the path-based swap,
   where the folder comes from the user's own Spicetify config. `tools/test-swap-recovery.mjs` builds the real binary,
   kills it during the copy and between the renames, and proves the next run restores Spotify's folder.
-- **D-87 · 18 Nov 2026 · Owner** — Support runs as **one shared Hermes bot (`tess-support`) on Krish's VPS**, under its
+- **D-95 · 18 Nov 2026 · Owner** — Support runs as **one shared Hermes bot (`tess-support`) on Krish's VPS**, under its
   own unprivileged system user and resource-capped systemd unit, using **OpenCode Go (`opencode-go/deepseek-v4.1-flash`)**
   with a **hard daily cap**. Reverses the "free tier" in D-77 and the "refuse the Paperclip host outright" rule in
   D-76/D-78 (replacing it with user, systemd, and path-collision isolation). (#85)
