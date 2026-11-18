@@ -10,6 +10,9 @@ CREATE TABLE IF NOT EXISTS reports (
 CREATE INDEX IF NOT EXISTS reports_install ON reports(install, at);
 CREATE INDEX IF NOT EXISTS reports_at ON reports(at);
 CREATE TABLE IF NOT EXISTS limits (k TEXT PRIMARY KEY, n INTEGER NOT NULL, until INTEGER NOT NULL);
+-- Support chat reuses `limits` (no second counter table). Keys are chat:p:<token sha> and chat:s for requests,
+-- chat:tp:<token sha> and chat:ts for tokens taken from a parsed upstream `usage`. Windows end at UTC midnight.
+-- A malformed upstream body must not rewrite a row back to zero; token rows change only when usage parses.
 -- The newest rescue serial Macs should wake for. One row, written only by the owner's rescue tool.
 CREATE TABLE IF NOT EXISTS wake (id INTEGER PRIMARY KEY CHECK (id = 1), serial INTEGER NOT NULL);
 -- Support reports, from the one support bot people message. A row is everything needed to file an issue: what the

@@ -51,7 +51,9 @@ jobs:
       - name: Support bot triage and setup tests
         run: node tools/test-support.mjs
       - name: Inbox support endpoint tests
-        run: node tools/test-inbox-support.mjs
+        run: |
+          node tools/test-inbox-support.mjs
+          node tools/test-support-chat.mjs
       - name: Support session folder tests
         run: node tools/test-session.mjs
       - name: Mac support profile tests
