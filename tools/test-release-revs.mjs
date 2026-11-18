@@ -1,13 +1,22 @@
 // promote.mjs must refuse a beta whose rev is below stable's, or every stable Mac would reject it.
 // Run: node tools/test-release-revs.mjs
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
+// The signed parts list is installed in file order. The tess command runs installer.sh and uninstall.sh, so those must
+// be written first: on a Mac that has neither yet, a command written first would point at a script that is not there.
+const release = readFileSync(join(root, 'tools/release.mjs'), 'utf8');
+const partsBlock = release.match(/const parts = \{([\s\S]*?)\n\};/);
+assert.ok(partsBlock, 'release.mjs still lists the signed parts');
+const partNames = [...partsBlock[1].matchAll(/^  (\w+):/gm)].map((m) => m[1]);
+for (const name of ['command', 'installer', 'uninstall']) assert.ok(partNames.includes(name), `the list names ${name}`);
+assert.ok(partNames.indexOf('installer') < partNames.indexOf('command'), 'installer.sh is written before the tess command');
+assert.ok(partNames.indexOf('uninstall') < partNames.indexOf('command'), 'uninstall.sh is written before the tess command');
 const box = mkdtempSync(join(tmpdir(), 'tess-rev-guard-'));
 const origin = join(box, 'origin.git');
 const repo = join(box, 'repo');
@@ -59,7 +68,7 @@ try {
   git(repo, ['fetch', '-q', 'origin']);
   r = promote();
   assert.equal(r.status, 0, r.out);
-  console.log('release rev guard passed (beta 5 vs stable 10 refused; beta 11 allowed)');
+  console.log('release rev guard passed (beta 5 vs stable 10 refused; beta 11 allowed; installer and uninstaller parts precede the command)');
 } finally {
   rmSync(box, { recursive: true, force: true });
 }
