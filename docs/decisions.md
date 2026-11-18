@@ -419,6 +419,17 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   command refuses on anything else rather than falling back to a path. `apply` and `backup` keep the path-based swap,
   where the folder comes from the user's own Spicetify config. `tools/test-swap-recovery.mjs` builds the real binary,
   kills it during the copy and between the renames, and proves the next run restores Spotify's folder.
+- **D-87 · 18 Nov 2026 · Agent** — Extend `tools/check-safety.sh` (follow-up to D-86) to refuse five rare ways of
+  writing into `$APPS`/`$A0`: verbs glued to `(`, `$(`, or backticks (splitting on `(`, `)`, and `` ` `` while
+  keeping outer argument scans at depth 0 so nested reads like `ditto "$APPS" "$(dirname "$APPS")/Apps.bak"` stay
+  allowed); `dd` with `of="$APPS/..."`; `find "$APPS"` with `-delete` or `-exec`/`-execdir`/`-ok`/`-okdir` running a
+  write verb or shell (keeping escaped `\;`/`\(` intact so trailing `-delete` is not cut off); `tar` extracting into
+  `-C "$APPS"` / `--directory="$APPS"` or creating an archive `-f "$APPS/..."` (while allowing `-c`/`-t` reads such as
+  `tar -czf "$TMP/bak.tgz" -C "$APPS" .`); and zsh's `>!` / `>|` clobber redirects into `$APPS`.
+  *Why:* Grok 4.7's sixth re-check on #110 showed each of these bypassed the tokeniser or verb checks on a fake folder,
+  and POSIX/BSD+GNU awk keeps the gate runnable on both macOS and Linux CI. *Trade-off:* `tar` and `find` flag parsing
+  lives in awk rather than a full shell parser, so unusual multi-flag combinations could be conservative; reads out of
+  `$APPS` remain covered by must-pass fixtures. (#111)
 
 ## Releases and process
 
