@@ -1,0 +1,80 @@
+# Tess Support on a person's Mac. They open the chat in the app. There is no messaging platform here.
+# The model is reached only through the support gate. Hermes reads providers.<name>.base_url,
+# key_env and api_mode (hermes_cli/runtime_provider_custom.py). The bearer is the support token,
+# never an OpenCode key (D-104).
+
+model:
+  provider: tess-gate
+  default: deepseek-v4.1-flash
+  # The gate contract is this URL: POST a chat-completions body here. Hermes's own client appends
+  # /chat/completions to a base (agent/agent_runtime_helpers.py). The dry-run posts this URL as written.
+  base_url: ${TESS_INBOX}/v1/support/chat
+
+providers:
+  tess-gate:
+    name: tess-gate
+    base_url: ${TESS_INBOX}/v1/support/chat
+    key_env: TESS_SUPPORT_TOKEN
+    api_mode: chat_completions
+    default_model: deepseek-v4.1-flash
+
+agent:
+  # A picture of Spotify is evidence, so an attached image stays an image.
+  image_input_mode: auto
+  # The visit needs a terminal, the skills, and a look at the picture or the short recording.
+  # code_execution is off because a script can start a process without hitting the shell deny list.
+  disabled_toolsets:
+    - computer_use
+    - desktop_ui
+    - browser
+    - file
+    - web
+    - cronjob
+    - delegation
+    - code_execution
+    - image_gen
+    - video_gen
+    - x_search
+    - tts
+    - memory
+    - session_search
+    - connections
+    - discord
+    - discord_admin
+    - yuanbao
+    - kanban
+    - todo
+
+# Dangerous patterns that are already approved, so these do not stop to ask.
+# A safe command is not limited by this list: it already runs.
+command_allowlist:
+  - 'tess doctor'
+  - 'tess doctor *'
+  - '/usr/sbin/screencapture -x -l *'
+  - '/usr/sbin/screencapture -l *'
+  - 'node *privacy.mjs*'
+  - 'node *triage.mjs*'
+  - 'node *inbox.mjs*'
+  - 'node *session.mjs*'
+  - 'tail -* *Application Support/Tess/*'
+  - 'cat *Application Support/Tess/*'
+
+approvals:
+  mode: manual
+  cron_mode: deny
+  single_query_mode: deny
+  unattended_mode: deny
+  timeout: 300
+  deny:
+    - 'sudo *'
+    - 'rm -rf *'
+    - 'rm -fr *'
+    - 'chmod -R *'
+    - 'dd *'
+    - 'mkfs*'
+    - 'launchctl bootstrap*'
+    - 'launchctl submit*'
+    - '*curl*|*sh*'
+    - '*curl*|*bash*'
+    - '*/Applications/Spotify.app*'
+    - '*screencapture*-G*'
