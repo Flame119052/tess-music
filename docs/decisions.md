@@ -600,7 +600,7 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   signed parts list writes the installer and uninstaller before the command, since a Mac gaining all three in one update
   must never hold a command that points at nothing. The installer's inherited copy of the command is compared with
   `tess-command.sh` byte for byte, because those older channels run the copy and not the signed part.
-- **D-95 · 18 Nov 2026 · Agent** — Nothing is published to dev, beta or stable until `tools/test-upgrade.mjs` has installed
+- **D-97 · 18 Nov 2026 · Agent** — Nothing is published to dev, beta or stable until `tools/test-upgrade.mjs` has installed
   the pinned 0.2.22 updater and doctor (the release assets, checked by SHA-256) on a fake Spotify, updated that install
   to this build, run the doctor, and done a fresh install. The test signs with a key it generates. The release key is
   not read. *Why:* a build that an old Mac cannot take should fail in CI, before dev, and again before beta and stable
