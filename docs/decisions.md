@@ -482,20 +482,24 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   (#60), separate Blends and Playlists in Library (#61), rework vinyl tonearm edge-to-label geometry & sync (#63),
   fix blank right side in no-lyrics full-screen transitions (#65), and collect customization/design controls (#64).
 
-- **14 Nov 2026 · PR #75 review fixes (#53)** — Ship the Tess command as an optional signed `command` part so the
+- **D-87 · 14 Nov 2026 · Agent** — PR #75 review fixes (#53): ship the Tess command as an optional signed `command` part so the
   updater reaches existing Macs. Older channels can omit installer, uninstall, wake and command parts. Rescue off
   disables the launchd job and removes its login plist; ordinary updates preserve the independent rescue verifier.
   Part rollback requires a healthy doctor baseline so unrelated existing failures cannot ban good parts. Wake
   remembers the last rescue serial it triggered, including rejected or expired orders.
 
-- **14 Nov 2026 · PR #75 sixth review (#53)** — The wake check reads the release and the rescue order separately, and skips the rescue read when the line is off. A repair names an older rescue script as able to run scripts. `tess status` says when that agent is still loaded after off, and the doctor unloads it and removes its login plist.
-- **14 Nov 2026 · PR #75 seventh review (#53)** — Docs name the pre-13 Nov rescue scripts, which updates never replace and which can run a signed script. Existing Macs are not shown a new notice unless they repair or reinstall. #53's check is the install notice, the README, and SECURITY.md. That older format is the owner's Mac and one other (D-62); they see the plain wording the next time they repair. An unsolicited notice on every Mac is not part of this change. A sandbox calls launchctl only when a fake one is first on PATH, because the job label is the owner's real job.
-- **14 Nov 2026 · PR #75 eighth review (#53)** — When the doctor part itself changes, the updater takes a new health baseline from that doctor instead of judging it by the previous one. `tess status` says the rescue line is not installed when its verifier is missing, and names an older script that can run any script. The doctor removes a leftover rescue login file even when that job is not loaded. An update does not add a rescue line on a Mac whose install notice said the line was not there.
-- **14 Nov 2026 · PR #75 second review (#53, #71)** — Older channels retain the running installer and a built-in
+- **D-88 · 14 Nov 2026 · Agent** — PR #75 sixth review (#53): the wake check reads the release and the rescue order separately, and skips the rescue read when the line is off. A repair names an older rescue script as able to run scripts. `tess status` says when that agent is still loaded after off, and the doctor unloads it and removes its login plist.
+- **D-89 · 14 Nov 2026 · Agent** — PR #75 seventh review (#53): docs name the pre-13 Nov rescue scripts, which updates never replace and which can run a signed script. Existing Macs are not shown a new notice unless they repair or reinstall. #53's check is the install notice, the README, and SECURITY.md. That older format is the owner's Mac and one other (D-62); they see the plain wording the next time they repair. An unsolicited notice on every Mac is not part of this change. A sandbox calls launchctl only when a fake one is first on PATH, because the job label is the owner's real job.
+- **D-90 · 14 Nov 2026 · Agent** — PR #75 eighth review (#53): when the doctor part itself changes, the updater takes a new health baseline from that doctor instead of judging it by the previous one. `tess status` says the rescue line is not installed when its verifier is missing, and names an older script that can run any script. The doctor removes a leftover rescue login file even when that job is not loaded. An update does not add a rescue line on a Mac whose install notice said the line was not there.
+- **D-91 · 14 Nov 2026 · Agent** — PR #75 second review (#53, #71): older channels retain the running installer and a built-in
   uninstaller when signed parts are absent, without claiming signed-part hashes. Rescue on creates its own plist
   and requires adoption success; wording permits an unexpired order sent while off because old rescue scripts
   cannot report adoption failure reliably. Reinstall and uninstall clear launchd's persistent rescue disable.
   Theme refresh runs with a copied config against staged Spotify files to preserve generated colors before swap.
+- **D-92 · 14 Nov 2026 · Owner** — An existing Mac is told about the rescue line **once, after its next update**, not only
+  when it repairs: the updater leaves `state/rescue-notice-pending` when it first installs the line, and `tess status`
+  prints the notice and clears the marker. The reason is that the line is on without the person choosing it, so staying
+  quiet about it is not honest; saying it once keeps it out of the way afterwards. (#91)
 - **15 Nov 2026 · PR #87 second review (#71)** — A review is chosen by usage first and preference second: the agent
   reads both the 5-hour and the weekly window from the usage hub and skips a provider that is on pace to run out before
   its reset, even with usage left (Claude sat at 59% session and 16% weekly on 15 Nov). Pools are not shared even inside a
@@ -563,3 +567,14 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   (~1–4% of a 5-hour window typical, 7% ceiling on `sol`). Comment formatting now separates `Used:` and `Usage:` with a
   newline and strips any standalone `Verdict:` line regardless of trailing punctuation/markdown so exactly one verdict
   line is posted. (#103)
+- **D-93 · 18 Nov 2026 · Agent** — The six reviewer follow-ups from #75 (#91), each with the reason it exists: `tess rescue
+  on` while offline leaves an already-on line on, because adoption reads a live order and a person asking for "on" again
+  is not asking to switch their working line off. `tess rescue off` stops an order that has already started: the running
+  group is written to `Tess/rescue/order.pid`, and `off` TERMs then KILLs it only when the number still leads its own
+  group and its command is one of Tess's (`AbandonProcessGroup` would otherwise leave it changing Spotify after the
+  person said stop). The wake check reads the rescue branch only when the verifier is installed as well as on, so a Mac
+  that never had the line makes one request every five minutes, not two. `tess status` says the job is **loaded** and
+  separately whether an order is running now, because "running" was being read as the job rather than the order. The
+  signed parts list writes the installer and uninstaller before the command, since a Mac gaining all three in one update
+  must never hold a command that points at nothing. The installer's inherited copy of the command is compared with
+  `tess-command.sh` byte for byte, because those older channels run the copy and not the signed part.
