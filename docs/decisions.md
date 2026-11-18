@@ -423,14 +423,17 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   writing into `$APPS`/`$A0`: verbs glued to `(`, `$(`, or backticks (splitting on `(`, `)`, and `` ` `` while placing
   a `$APPS` placeholder when a skipped nested word names the folder, so `ditto "$APPS" "$(dirname "$APPS")/Apps.bak"`
   and `rm -rf "$(dirname "$APPS")"` are caught while nested reads like `out=$(ditto "$APPS" "$TMP/a")` stay allowed,
-  and quoted/unbalanced `(` cannot hide trailing words); `dd` with `of="$APPS/..."`; `find "$APPS"` with `-delete` or `-exec`/`-execdir`/`-ok`/`-okdir` running a
-  write verb or shell (keeping escaped `\;`/`\(` intact so trailing `-delete` is not cut off); `tar` extracting into
-  `-C "$APPS"` / `--directory="$APPS"` or creating an archive `-f "$APPS/..."` (while allowing `-c`/`-t` reads such as
-  `tar -czf "$TMP/bak.tgz" -C "$APPS" .`); and zsh's `>!` / `>|` clobber redirects into `$APPS`.
-  *Why:* Grok 4.7's sixth re-check on #110 showed each of these bypassed the tokeniser or verb checks on a fake folder,
-  and POSIX/BSD+GNU awk keeps the gate runnable on both macOS and Linux CI. *Trade-off:* `tar` and `find` flag parsing
-  lives in awk rather than a full shell parser, so unusual multi-flag combinations could be conservative; reads out of
-  `$APPS` remain covered by must-pass fixtures. (#111)
+  and quoted/unbalanced `(` cannot hide trailing words); `dd` with `of="$APPS/..."`; `find "$APPS"` with `-delete`,
+  `-fprint`/`-fprintf`/`-fls` naming the folder, or `-exec`/`-execdir`/`-ok`/`-okdir` scanning every word up to `\;` or
+  `+` for a write verb or shell (keeping escaped `\;`/`\(` intact so trailing `-delete` is not cut off); `tar`
+  extracting into `-C "$APPS"` / `--directory="$APPS"` (parsing glued `-f`/`-C` values like getopt and flagging
+  unconsumed extract words) or creating/mutating an archive `-f "$APPS/..."` (while allowing `-c`/`-t` reads such as
+  `tar -czf "$TMP/bak.tgz" -C "$APPS" .`); and zsh `>!` / `>|` or `$(…)`/backtick redirects naming the folder.
+  *Why:* Grok 4.7's sixth re-check on #110 and the Opus re-check on #114 showed each of these bypassed the tokeniser or
+  verb checks on a fake folder, and POSIX/BSD+GNU awk keeps the gate runnable on both macOS and Linux CI. *Trade-off:*
+  `tar` and `find` flag parsing lives in awk rather than a full shell parser, so unusual multi-flag combinations could
+  be conservative; reads out of `$APPS` remain covered by must-pass fixtures. The gate deliberately does not check
+  writes through a variable, through another working directory, or through `xargs`. (#111)
 
 ## Releases and process
 
