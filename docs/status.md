@@ -27,13 +27,15 @@ never files, and has no GitHub token or `gh` at all**. Access is an allowlist on
 over SSH (D-79).
 
 A Mac profile lives in `support/mac/` (D-104, #121). It has no Telegram and no gateway. The model base is
-`${TESS_INBOX}/v1/support` (Hermes posts to `/chat/completions` under it) and the bearer is the per-person support token. It is not installed on a Mac yet
-(that is the one-command installer). The VPS unit files are unchanged.
+`${TESS_INBOX}/v1/support` (Hermes posts to `/chat/completions` under it) and the bearer is the per-person support token.
+`support/mac/install.sh` is the one command that installs that profile and puts Tess Support in the Dock (D-105).
+Uninstall removes the profile, the icon, and the Dock tile. The checks run it in a scratch home with fake disk tools.
+They do not touch a real Mac. The VPS unit files are unchanged.
 
 **Not deployed, and not part of a release.** Before it can work: `inbox/schema.sql` applied to D1, the Worker deployed,
 and the R2 bucket created — all Krish's, none done here — plus a machine, a Telegram bot and a posting token. What can be
 run now: `node tools/test-inbox-support.mjs`, `node tools/test-session.mjs`, `node tools/test-reports.mjs`,
-`node tools/test-support.mjs`, `node tools/test-support-mac.mjs`.
+`node tools/test-support.mjs`, `node tools/test-support-mac.mjs`, `node tools/test-support-mac-install.mjs`.
 
 ## Open issues (GitHub, sorted by priority — see [`triage.md`](triage.md))
 

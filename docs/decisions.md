@@ -837,4 +837,23 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   gate serves `POST /v1/support/chat/completions` (D-103); the dry-run builds the same URL.
   *Trade-off:* none on the path; the bare `/v1/support/chat` is refused by the gate. `code_execution` is disabled as well as the toolsets in the plan, because a script
   can start a process without passing the shell deny list.
+- **D-105 · 18 Nov 2026 · Agent** — The one-command Mac install is `support/mac/install.sh` (#121). On Apple Silicon
+  the script downloads the bundled disk image named in Hermes's `stable-mac.yml` feed, checks the published SHA-512, then checks
+  the mounted app with `codesign` and `spctl`. The copy into Applications happens only after those checks. A failed
+  check leaves Applications unchanged. An Intel Mac does not download that image. It runs the Hermes command-line
+  installer with `--non-interactive --skip-browser --skip-computer-use`, and the script says macOS may ask once to
+  install Command Line Tools. The Dock icon is `~/Applications/Tess Support.app`. The script adds that icon to
+  `persistent-apps` once, and a second run does not add it again. When this script installed Hermes on Apple Silicon,
+  the icon opens `Hermes.app` with `--profile=tess-support`. On Intel, and when Hermes was already installed, the icon
+  runs `hermes -p tess-support webapp`. `webapp.enabled` is set, because `hermes webapp` stays off until it is. The
+  code is read from the environment or from `/dev/tty`, then written only to the profile `.env` at mode 600.
+  `--uninstall` removes the profile, the icon, and the Dock tile. It removes Hermes only when this script installed
+  Hermes and the person agrees. It then tells them to ask Krish to revoke the code. The profile files are copied in
+  the shell, not with `hermes profile install`, so the install does not need `hermes` on `PATH` and the tests never
+  start Hermes. The command-line sticky profile is set when it is empty, `default`, already `tess-support`, or this
+  script installed Hermes. A different existing profile is left alone. The desktop `active-profile.json` is written
+  when the icon will open the desktop app.
+  *Why:* one paste, Gatekeeper before Applications changes, and the code stays out of shell history and out of argv.
+  *Trade-off:* the Dock write is a private preference the script reads back before it adds a tile. An Intel chat
+  needs `webapp.enabled`, or the browser chat never starts.
 

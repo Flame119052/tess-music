@@ -6,6 +6,30 @@ Nobody needs a GitHub account. The VPS bot on this page is the one Krish runs.
 
 A person's own Mac uses a separate profile, [`mac/`](mac/). The unit files below stay on the VPS. On the Mac they open a chat, the agent runs `tess doctor` and can capture the Spotify window, and the model is reached only through the support gate with their own token.
 
+## For the person
+
+Paste this line into Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/support/mac/install.sh | sh
+```
+
+When Terminal asks, type the code Krish gave you and press Return. The code is not part of the line, so it does not stay in Terminal's history.
+
+**Tess Support** appears in the Dock. Click that icon, then type what went wrong.
+
+macOS asks once to allow screen recording the first time Tess Support needs to see Spotify. Turn it on for Tess Support in System Settings, under Privacy and Security, then click the Dock icon again.
+
+On an Intel Mac, macOS may ask once to install Command Line Tools. If a window opens, click Install.
+
+To remove Tess Support, paste this line. It removes the Dock icon and the Tess Support profile. It leaves Hermes unless this install put Hermes on the Mac and you type `yes`.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/support/mac/install.sh | sh -s -- --uninstall
+```
+
+Then ask Krish to revoke your code. Until he does, that code can still reach Tess support.
+
 ## For Krish: turn it on and give someone access
 
 ### 1. Gather four things (plus an optional tester id)
@@ -101,7 +125,7 @@ Paperclip owns its own directories and services on the VPS and always has priori
 4. Paste back what it printed.
 5. Get told what's happening, and that fixes arrive on their own.
 
-They never file anything, never need a GitHub account, and the bot never touches their Mac.
+They never file anything, never need a GitHub account, and the bot never touches their Mac. A person Krish set up on their own Mac follows [For the person](#for-the-person) instead of these Telegram steps.
 
 ## The proxy, skills, and plugin
 
@@ -160,7 +184,8 @@ person ──message──▶ tess-support on VPS ──127.0.0.1:4193──▶ 
 
 | Where | What |
 | --- | --- |
-| Their Mac | Nothing new. Spotify, Tess, and `tess report` which they start. |
+| Their Mac (Telegram) | Spotify, Tess, and `tess report`, which they start. The bot does not install anything. |
+| Their Mac (Dock) | **Tess Support** in the Dock and the `tess-support` profile. Hermes is added only when it was not already there (D-105). |
 | Krish's VPS (`tess-cap`) | Isolated `tess-cap` user + systemd service, real `OPENCODE_GO_API_KEY`, `cap-proxy/proxy.mjs`, enforced `StateDirectory=tess-cap`. |
 | Krish's VPS (`tess-support`) | Isolated `tess-support` user + systemd service, proxy token + Telegram/inbox `.env`, early-UX `daily-cap` plugin. |
 | Paperclip on VPS | Completely untouched (`/srv/paperclip`, PostgreSQL, Paperclip services, Tincan relay). |
@@ -178,6 +203,8 @@ node tools/test-cap-proxy.mjs        # route/host allowlist, cap persistence, ma
 node tools/test-inbox-support.mjs    # endpoint + D1 + privacy.mjs + token hashing (no deploy)
 node tools/test-session.mjs          # session caps, sweeping, symlink/hardlink checks
 node tools/test-support.mjs          # triage, inbox handoff, allowlist, daily-cap plugin, setup.sh
+node tools/test-support-mac.mjs      # Mac profile in a scratch home, and a refused token
+node tools/test-support-mac-install.mjs  # installer with a fake Dock, fake disk tools, and fake curl
 ```
 
 Once installed on the VPS, check in order:
