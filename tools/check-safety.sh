@@ -217,7 +217,7 @@ apps_write() {
     # The words after a verb up to the next operator at the same nesting level. Nested `$(...)` and backticks are
     # skipped except when a nested word names the folder (which adds a `$APPS` placeholder so the outer verb still sees
     # it), and only parens with a matching `)` enter depth > 0 so an unmatched `(` cannot hide trailing words.
-    function command_writes(verb, from, nt, bt_start,   k, w, nw, depth, in_bt, sp, bverb, src, ok, hit, m, mode, pending, ch, idx, val, opt, c_hits, f_hits, stop_opts, STACK, MATCHED) {
+    function command_writes(verb, from, nt, bt_start,   k, w, nw, depth, in_bt, sp, open_exec, bverb, src, ok, hit, m, mode, pending, ch, idx, val, opt, c_hits, f_hits, stop_opts, STACK, MATCHED) {
       delete STACK
       delete MATCHED
       sp = 0
@@ -230,7 +230,9 @@ apps_write() {
           MATCHED[k] = 1
         }
       }
-      nw = 0; depth = 0; in_bt = 0
+      nw = 0; depth = 0; in_bt = 0; open_exec = 0
+      bverb = verb
+      sub(/.*\//, "", bverb)
       for (k = from + 1; k <= nt; k++) {
         w = TOK[k]
         if (w == "`") {
@@ -247,11 +249,12 @@ apps_write() {
           if (is_folder(strip_prefix(w))) WARGS[++nw] = "$APPS"
           continue
         }
+        if (w == ";" && bverb == "find" && open_exec) { open_exec = 0; WARGS[++nw] = "\\;"; continue }
         if (w == ";" || w == "|" || w == "&" || w == "<" || w == ">") break
         WARGS[++nw] = w
+        if (bverb == "find" && w ~ /^-(exec|execdir|ok|okdir)$/) open_exec = 1
+        if (w == "\\;" || w == "+") open_exec = 0
       }
-      bverb = verb
-      sub(/.*\//, "", bverb)
       if (bverb == "dd") {
         for (k = 1; k <= nw; k++) {
           w = WARGS[k]
@@ -515,6 +518,10 @@ apps_write_fixture caught 'find "$APPS" -exec rm -rf {} +'
 apps_write_fixture caught 'find "$APPS" -exec /bin/rm -f {} \;'
 apps_write_fixture caught 'find "$TMP" -exec rm "$APPS/xpui.spa" \;'
 apps_write_fixture caught 'find "$APPS" -exec grep -l foo {} \; -delete'
+apps_write_fixture caught 'find "$APPS" -exec true {} '"';'"' -delete'
+apps_write_fixture caught 'find "$APPS" -exec true {} ";" -delete'
+apps_write_fixture allowed 'find "$APPS" -exec ls -la {} '"';'"''
+apps_write_fixture allowed 'find "$APPS" -exec ls -la {} '"';'"'; rm -rf "$TMP"'
 apps_write_fixture allowed 'find "$APPS" -name "*.spa"'
 apps_write_fixture allowed 'find "$APPS" -type f -print'
 apps_write_fixture allowed 'find "$APPS" -exec ls -la {} +'
