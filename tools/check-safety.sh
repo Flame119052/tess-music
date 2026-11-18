@@ -93,7 +93,7 @@ apps_write() {
   awk '
     BEGIN {
       QUOTE = sprintf("%c", 39)
-      VERBS = "rm mv cp ditto mkdir rmdir install ln touch chmod chown tee truncate rsync dd unlink sed"
+      VERBS = "rm mv cp ditto mkdir rmdir install ln touch chmod chown tee truncate rsync dd unlink sed find tar"
     }
     function is_folder(t) { return t ~ /^[$][{]?(APPS|A0)([^A-Za-z0-9_]|$)/ }
     # Strip what the shell ignores in front of a path word: `/`, `//` and `./` all name the same folder as the bare
@@ -107,15 +107,47 @@ apps_write() {
       }
     }
     # One normal form per logical line. Quotes come off, so `>"$APPS/x"` and `>"$APPS"/x` are the same text; `${APPS}`
-    # becomes `$APPS`; `//` becomes `/`; a comment is cut at its `#`. Everything after this matches the same way.
-    function norm_line(s,   i, n, c, q, o, name) {
-      o = ""; q = ""
+    # becomes `$APPS`; `//` becomes `/`; a comment is cut at its `#`. Quoted `(`, `)` (outside `$(...)`) and single-quoted
+    # backticks are escaped so literal characters like `"("` cannot unbalance subshell depth.
+    function norm_line(s,   i, n, c, nextc, q, o, name, sp, dollar, QSTACK) {
+      o = ""; q = ""; sp = 0; dollar = 0
+      delete QSTACK
       n = length(s)
       for (i = 1; i <= n; i++) {
         c = substr(s, i, 1)
-        if (q != "") { if (c == q) q = ""; else o = o c; continue }
-        if (c == "\"" || c == QUOTE) { q = c; continue }
+        if (q != "") {
+          if (c == q) { q = ""; dollar = 0; continue }
+          if (q == QUOTE) {
+            if (c == "(" || c == ")" || c == "`") o = o "\\" c
+            else o = o c
+            dollar = 0
+            continue
+          }
+          if (c == "\\" && i < n) {
+            nextc = substr(s, i + 1, 1)
+            if (nextc == "\"" || nextc == "\\" || nextc == "$" || nextc == "`") {
+              o = o c nextc; i++; dollar = 0; continue
+            }
+          }
+          if (c == "(") {
+            if (dollar) { QSTACK[++sp] = q; q = ""; o = o c }
+            else o = o "\\("
+            dollar = 0
+            continue
+          }
+          if (c == ")") { o = o "\\)"; dollar = 0; continue }
+          dollar = (c == "$")
+          o = o c
+          continue
+        }
+        if (c == "\\" && i < n) {
+          o = o c substr(s, i + 1, 1); i++; dollar = 0; continue
+        }
+        if (c == "\"" || c == QUOTE) { q = c; dollar = 0; continue }
         if (c == "#" && (o == "" || o ~ /[ \t;&|]$/)) break
+        if (c == "(") { QSTACK[++sp] = ""; o = o c; dollar = 0; continue }
+        if (c == ")") { if (sp > 0) q = QSTACK[sp--]; o = o c; dollar = 0; continue }
+        dollar = (c == "$")
         o = o c
       }
       while (match(o, /[$][{][A-Za-z_][A-Za-z0-9_]*[}]/)) {
@@ -126,13 +158,13 @@ apps_write() {
       return o
     }
     # A redirect writes the folder with no verb at all: `printf x >/"$APPS/xpui.spa"` replaced the live file in a probe.
-    # `>`, `>>`, `>|` and `>&` are all redirects, a space may follow, and the path may start with a slash or `./`.
-    function redirect_writes(s,   i, n, j) {
+    # `>`, `>>`, `>|`, `>!` (zsh clobber) and `>&` are all redirects, a space may follow, and the path may start with a slash or `./`.
+    function redirect_writes(s,   i, n, j, t) {
       n = length(s)
       for (i = 1; i <= n; i++) {
         if (substr(s, i, 1) != ">") continue
         j = i + 1
-        while (j <= n && substr(s, j, 1) ~ /[>|&]/) j++
+        while (j <= n && substr(s, j, 1) ~ /[>|&!]/) j++
         while (j <= n && substr(s, j, 1) ~ /[ \t]/) j++
         while (j <= n) {
           if (substr(s, j, 1) == "/") { j++; continue }
@@ -140,22 +172,35 @@ apps_write() {
           break
         }
         if (j <= n && is_folder(substr(s, j))) return 1
+        if (substr(s, j, 2) == "$(" || substr(s, j, 1) == "`") {
+          t = substr(s, j)
+          if (match(t, /^([$][(][^)]*[)]|`[^`]*`)/) && substr(t, 1, RLENGTH) ~ /[$](APPS|A0)([^A-Za-z0-9_]|$)/) return 1
+        }
       }
       return 0
     }
     # One logical line is several statements: `rm -rf "$bak"; ditto "$APPS" "$bak"` reads the folder and is fine. The
-    # operators split it; nothing here looks at the character before a word, so column 0 is an ordinary boundary.
-    function tokenise(s,   i, n, c, cur, nt) {
+    # operators split it, including `(`, `)` and backticks so `(ditto ...)` and `$(cp ...)` expose their verbs; escaped
+    # operators like `\;` and `\(` stay intact so `find ... -exec ... \; -delete` keeps its trailing flags.
+    function tokenise(s,   i, n, c, nextc, cur, nt) {
       delete TOK
       nt = 0; cur = ""
       n = length(s)
       for (i = 1; i <= n; i++) {
         c = substr(s, i, 1)
+        if (c == "\\" && i < n) {
+          nextc = substr(s, i + 1, 1)
+          if (nextc == "\\" || index(";|&<>()`", nextc) > 0) {
+            cur = cur c nextc
+            i++
+            continue
+          }
+        }
         if (c == " " || c == "\t") {
           if (cur != "") { TOK[++nt] = cur; cur = "" }
           continue
         }
-        if (c == ";" || c == "|" || c == "&" || c == "<" || c == ">") {
+        if (index(";|&<>()`", c) > 0) {
           if (cur != "") { TOK[++nt] = cur; cur = "" }
           TOK[++nt] = c
           continue
@@ -173,22 +218,157 @@ apps_write() {
       }
       return 0
     }
-    # The words after a verb up to the next operator. A source is a read and a destination is a write, so positions
-    # matter: `ditto "$APPS" "$TMP/a"` reads the folder out.
-    function command_writes(verb, from, nt,   k, w, nw, src, ok, hit) {
-      nw = 0
+    # The words after a verb up to the next operator at the same nesting level. Nested `$(...)` and backticks are
+    # skipped except when a nested word names the folder (which adds a `$APPS` placeholder so the outer verb still sees
+    # it), and only parens with a matching `)` enter depth > 0 so an unmatched `(` cannot hide trailing words.
+    function command_writes(verb, from, nt, bt_start,   k, w, nw, depth, in_bt, sp, open_exec, bverb, src, ok, hit, m, mode, pending, ch, idx, val, opt, c_hits, f_hits, stop_opts, rm_src, STACK, MATCHED, FV) {
+      delete STACK
+      delete MATCHED
+      delete FV
+      sp = 0
       for (k = from + 1; k <= nt; k++) {
         w = TOK[k]
+        if (w == "(") STACK[++sp] = k
+        else if (w == ")") {
+          if (sp == 0) break
+          MATCHED[STACK[sp--]] = 1
+          MATCHED[k] = 1
+        }
+      }
+      nw = 0; depth = 0; in_bt = 0; open_exec = 0
+      bverb = verb
+      sub(/.*\//, "", bverb)
+      for (k = from + 1; k <= nt; k++) {
+        w = TOK[k]
+        if (w == "`") {
+          if (bt_start && !in_bt) break
+          in_bt = !in_bt
+          continue
+        }
+        if (w == "(" && MATCHED[k]) { depth++; continue }
+        if (w == ")") {
+          if (depth == 0) break
+          if (MATCHED[k]) { depth--; continue }
+        }
+        if (depth > 0 || in_bt) {
+          if (is_folder(strip_prefix(w))) WARGS[++nw] = "$APPS"
+          continue
+        }
+        if (w == ";" && bverb == "find" && open_exec) { open_exec = 0; WARGS[++nw] = "\\;"; continue }
         if (w == ";" || w == "|" || w == "&" || w == "<" || w == ">") break
         WARGS[++nw] = w
+        if (bverb == "find" && w ~ /^-(exec|execdir|ok|okdir)$/) open_exec = 1
+        if (w == "\\;" || w == "+") open_exec = 0
+      }
+      if (bverb == "dd") {
+        for (k = 1; k <= nw; k++) {
+          w = WARGS[k]
+          if (substr(w, 1, 3) == "of=" && is_folder(strip_prefix(substr(w, 4)))) return 1
+          if (is_folder(strip_prefix(w))) return 1
+        }
+        return 0
+      }
+      if (bverb == "tar") {
+        mode = ""; pending = ""; c_hits = 0; f_hits = 0; stop_opts = 0; rm_src = 0
+        for (k = 1; k <= nw; k++) {
+          w = WARGS[k]
+          if (pending != "") {
+            opt = substr(pending, 1, 1)
+            pending = substr(pending, 2)
+            if (opt == "C" && (is_folder(strip_prefix(w)) || (w == "$" && k < nw && WARGS[k + 1] == "$APPS"))) c_hits = 1
+            if (opt == "f") {
+              FV[k] = 1
+              if (is_folder(strip_prefix(w)) || (w == "$" && k < nw && WARGS[k + 1] == "$APPS")) f_hits = 1
+            }
+            continue
+          }
+          if (!stop_opts && w == "--") { stop_opts = 1; continue }
+          if (!stop_opts && substr(w, 1, 2) == "--") {
+            if (w == "--extract" || w == "--get") mode = "x"
+            else if (w == "--create" || w == "--append" || w == "--update") mode = "c"
+            else if (w == "--delete" || w == "--concatenate" || w == "--catenate") mode = "c"
+            else if (w == "--remove-files") rm_src = 1
+            else if (w == "--list") mode = "t"
+            else if (w == "--diff" || w == "--compare") mode = "d"
+            else if (w ~ /^--(cd|dir[a-z]*)$/) pending = pending "C"
+            else if (w ~ /^--(cd|dir[a-z]*)=/) {
+              val = substr(w, index(w, "=") + 1)
+              if (is_folder(strip_prefix(val)) || (val == "$" && k < nw && WARGS[k + 1] == "$APPS")) c_hits = 1
+            } else if (w == "--file") pending = pending "f"
+            else if (w ~ /^--file=/) {
+              val = substr(w, 8)
+              if (is_folder(strip_prefix(val)) || (val == "$" && k < nw && WARGS[k + 1] == "$APPS")) f_hits = 1
+            }
+            continue
+          }
+          if (!stop_opts && k == 1 && w ~ /^[A-Za-z]+$/ && w ~ /[xtcrudA]/) {   # old-style group: each f/C takes the next word, in order
+            for (idx = 1; idx <= length(w); idx++) {
+              ch = substr(w, idx, 1)
+              if (ch == "x") mode = "x"
+              else if (ch == "c" || ch == "r" || ch == "u" || ch == "A") mode = "c"
+              else if (ch == "t") mode = "t"
+              else if (ch == "d") mode = "d"
+              else if (ch == "C" || ch == "f") pending = pending ch
+            }
+            continue
+          }
+          if (!stop_opts && substr(w, 1, 1) == "-" && length(w) > 1) {
+            for (idx = 2; idx <= length(w); idx++) {
+              ch = substr(w, idx, 1)
+              if (ch == "x") mode = "x"
+              else if (ch == "c" || ch == "r" || ch == "u" || ch == "A") mode = "c"
+              else if (ch == "t") mode = "t"
+              else if (ch == "d") mode = "d"
+              else if (ch == "C" || ch == "f") {
+                if (idx < length(w)) {           # getopt: the rest of the word is the value
+                  val = substr(w, idx + 1)
+                  if (is_folder(strip_prefix(val)) || (val == "$" && k < nw && WARGS[k + 1] == "$APPS")) { if (ch == "C") c_hits = 1; else f_hits = 1 }
+                  if (val ~ /^[A-Za-z]+$/) pending = pending ch   # `-xCf "$APPS"`: also read the next word
+                  break
+                }
+                pending = pending ch
+              }
+            }
+            continue
+          }
+        }
+        if (mode == "c") {
+          if (rm_src) {
+            if (c_hits) return 1
+            for (k = 1; k <= nw; k++) if (is_folder(strip_prefix(WARGS[k]))) return 1
+          }
+          return f_hits
+        }
+        if (mode == "x") {
+          if (c_hits) return 1
+          for (k = 1; k <= nw; k++) if (!FV[k] && is_folder(strip_prefix(WARGS[k]))) return 1
+          return 0
+        }
+        if (mode == "t" || mode == "d") return 0
+        return c_hits || f_hits
       }
       hit = 0
       for (k = 1; k <= nw; k++) if (is_folder(strip_prefix(WARGS[k]))) { hit = 1; break }
       if (!hit) return 0
+      if (bverb == "find") {
+        for (k = 1; k <= nw; k++) {
+          w = WARGS[k]
+          if (w == "-delete") return 1
+          if ((w == "-fprint" || w == "-fprint0" || w == "-fprintf" || w == "-fls") && k < nw) {
+            val = strip_prefix(WARGS[k + 1])
+            if (is_folder(val) || (val == "$" && k + 1 < nw && WARGS[k + 2] == "$APPS")) return 1
+          }
+          if (w == "-exec" || w == "-execdir" || w == "-ok" || w == "-okdir") {
+            for (m = k + 1; m <= nw && WARGS[m] != "\\;" && WARGS[m] != "+"; m++)
+              if (is_verb(WARGS[m]) || WARGS[m] ~ /(^|\/)(sh|zsh|bash|dash)$/) return 1
+          }
+        }
+        return 0
+      }
       # ditto is the one verb allowed to name the folder, and only as a source with nothing after it that names the
       # folder too: `ditto "$APPS" "$APPS/xpui"` and `ditto "$APPS/xpui" "$APPS"` write the live interface in place,
       # which a kill halfway leaves half-updated.
-      if (verb == "ditto") {
+      if (bverb == "ditto") {
         src = 0
         for (k = 1; k <= nw; k++) if (substr(WARGS[k], 1, 1) != "-") { src = k; break }
         ok = (src > 0 && is_folder(strip_prefix(WARGS[src])))
@@ -197,14 +377,16 @@ apps_write() {
       }
       return 1
     }
-    function line_writes(s,   nt, i, w) {
+    function line_writes(s,   nt, i, w, bt) {
       s = norm_line(s)
       if (redirect_writes(s)) return 1
       nt = tokenise(s)
+      bt = 0
       for (i = 1; i <= nt; i++) {
         w = TOK[i]
-        if (w == ";" || w == "|" || w == "&" || w == "<" || w == ">") continue
-        if (is_verb(w) && command_writes(w, i, nt)) return 1
+        if (w == "`") { bt = !bt; continue }
+        if (w == ";" || w == "|" || w == "&" || w == "<" || w == ">" || w == "(" || w == ")") continue
+        if (is_verb(w) && command_writes(w, i, nt, bt)) return 1
       }
       return 0
     }
@@ -329,6 +511,97 @@ apps_write_fixture caught 'printf pwned >./"$APPS"/xpui.spa'
 apps_write_fixture allowed 'printf pwned >"$TMP/x"'
 apps_write_fixture allowed 'printf pwned >/dev/null'
 apps_write_fixture allowed 'printf pwned 2>&1'
+# Rare write paths (#111): glued subshells/command substitutions, dd of=, find -delete/-exec rm, tar -C, and zsh >! / >|.
+apps_write_fixture caught '(ditto x "$APPS")'
+apps_write_fixture caught '$(cp a "$APPS/x")'
+apps_write_fixture caught 'out=$(ditto "$1" "$APPS")'
+apps_write_fixture caught 'out=$(cp -R "$1/." "$APPS/")'
+apps_write_fixture caught '`ditto "$1" "$APPS"`'
+apps_write_fixture caught 'out=`cp a "$APPS/x"`'
+apps_write_fixture caught 'cp "$(dirname "$0")/foo" "$APPS/bar"'
+apps_write_fixture allowed '(ditto "$APPS" "$TMP/a")'
+apps_write_fixture allowed 'out=$(ditto "$APPS" "$TMP/a")'
+apps_write_fixture allowed '`ditto "$APPS" "$TMP/a"`'
+apps_write_fixture caught 'ditto "$APPS" "$(dirname "$APPS")/Apps.bak"'
+apps_write_fixture caught 'rm -rf "$(dirname "$APPS")"'
+apps_write_fixture caught 'ditto "$1" "$(dirname "$APPS")/Apps"'
+apps_write_fixture caught 'find "$(dirname "$APPS")" -delete'
+apps_write_fixture caught 'mv "$(dirname "$APPS")" x'
+apps_write_fixture caught 'rm -rf "(" "$APPS"'
+apps_write_fixture caught 'find "$APPS" -name "(" -delete'
+apps_write_fixture caught 'tar -xf "(" -C "$APPS"'
+apps_write_fixture caught 'ditto "(" "$APPS"'
+apps_write_fixture caught 'find "$APPS" -name "$(echo "(")" -delete'
+apps_write_fixture allowed 'ditto "$APPS" "$(dirname "$TMP")/Apps.bak"'
+apps_write_fixture allowed 'ditto "$APPS" "("'
+apps_write_fixture caught 'dd if=src of="$APPS/xpui.spa"'
+apps_write_fixture caught 'dd if=src of=/"$APPS/xpui.spa"'
+apps_write_fixture caught 'dd bs=4096 of="${APPS}/xpui.spa" < src'
+apps_write_fixture caught 'dd if="$APPS/xpui.spa" of="$APPS/other.spa"'
+apps_write_fixture allowed 'dd if="$APPS/xpui.spa" of="$TMP/out.spa"'
+apps_write_fixture allowed 'dd if="$APPS/xpui.spa"'
+apps_write_fixture caught 'find "$APPS" -delete'
+apps_write_fixture caught 'find "$APPS" -name "*.spa" -delete'
+apps_write_fixture caught 'find "$APPS" \( -name "*.js" -o -name "*.css" \) -delete'
+apps_write_fixture caught 'find "$APPS" -exec rm {} \;'
+apps_write_fixture caught 'find "$APPS" -exec rm -rf {} +'
+apps_write_fixture caught 'find "$APPS" -exec /bin/rm -f {} \;'
+apps_write_fixture caught 'find "$APPS" -exec nice rm {} \;'
+apps_write_fixture caught 'find "$TMP" -exec rm "$APPS/xpui.spa" \;'
+apps_write_fixture caught 'find "$APPS" -exec grep -l foo {} \; -delete'
+apps_write_fixture caught 'find "$APPS" -exec true {} '"';'"' -delete'
+apps_write_fixture caught 'find "$APPS" -exec true {} ";" -delete'
+apps_write_fixture caught 'find "$TMP" -fprint "$APPS/list"'
+apps_write_fixture caught 'find "$TMP" -fprint0 "$APPS/list"'
+apps_write_fixture caught 'find "$TMP" -fprintf "$APPS/list" "%p\n"'
+apps_write_fixture caught 'find "$TMP" -fls "$APPS/list"'
+apps_write_fixture allowed 'find "$APPS" -exec ls -la {} '"';'"''
+apps_write_fixture allowed 'find "$APPS" -exec ls -la {} '"';'"'; rm -rf "$TMP"'
+apps_write_fixture allowed 'find "$APPS" -name "*.spa"'
+apps_write_fixture allowed 'find "$APPS" -type f -print'
+apps_write_fixture allowed 'find "$APPS" -fprint "$TMP/list"'
+apps_write_fixture allowed 'find "$APPS" -exec ls -la {} +'
+apps_write_fixture allowed 'find "$STATE" \( -name ".reapply-*" -o -name ".asked-*" \) -delete'
+apps_write_fixture caught 'tar -xf a.tar -C "$APPS"'
+apps_write_fixture caught 'tar -xzf "$TMP/p.tgz" -C "$APPS/xpui"'
+apps_write_fixture caught 'tar -C "$APPS" -xf a.tar'
+apps_write_fixture caught 'tar -xf - -C "$APPS"'
+apps_write_fixture caught 'tar -xzf a.tgz -C/"$APPS"'
+apps_write_fixture caught 'tar --extract --file=a.tar --directory="$APPS"'
+apps_write_fixture caught 'tar --extract --file=a.tar --dir="$APPS"'
+apps_write_fixture caught 'tar -xf a.tar --cd="$APPS"'
+apps_write_fixture caught 'tar -xCf "$APPS" a.tar'
+apps_write_fixture caught 'tar -xfa.tar -C "$APPS"'
+apps_write_fixture caught 'tar -xvfarchive -C "$APPS"'
+apps_write_fixture caught 'tar xzf a.tgz -C "$APPS"'
+apps_write_fixture caught 'tar Cxf "$APPS" a.tar'
+apps_write_fixture caught 'tar fxC a.tar "$APPS"'
+apps_write_fixture caught 'tar -cf "$APPS/bak.tar" "$TMP/x"'
+apps_write_fixture caught 'tar -Af "$APPS/a.tar" b.tar'
+apps_write_fixture caught 'tar --delete -f "$APPS/a.tar" x'
+apps_write_fixture caught 'tar --concatenate -f "$APPS/a.tar" b.tar'
+apps_write_fixture caught 'tar --catenate -f "$APPS/a.tar" b.tar'
+apps_write_fixture caught 'tar -czf "$TMP/b.tgz" --remove-files "$APPS"'
+apps_write_fixture caught 'tar -czf "$TMP/b.tgz" --remove-files --directory="$APPS" .'
+apps_write_fixture allowed 'tar -czf "$TMP/bak.tgz" "$APPS"'
+apps_write_fixture allowed 'tar -czf "$TMP/bak.tgz" -C "$APPS" .'
+apps_write_fixture allowed 'tar -C "$APPS" -czf "$TMP/bak.tgz" .'
+apps_write_fixture allowed 'tar cfC "$TMP/b.tar" "$APPS" .'
+apps_write_fixture allowed 'tar -xf "$APPS/bak.tar" -C "$TMP/out"'
+apps_write_fixture allowed 'tar -tf "$APPS/bak.tar"'
+apps_write_fixture caught 'printf pwned >!"$APPS/xpui.spa"'
+apps_write_fixture caught 'printf pwned >! "$APPS/xpui.spa"'
+apps_write_fixture caught 'printf pwned >! /"$APPS/xpui.spa"'
+apps_write_fixture caught 'printf pwned >>!"$APPS/xpui.spa"'
+apps_write_fixture caught 'printf pwned >&!"$APPS/xpui.spa"'
+apps_write_fixture caught 'printf pwned >| "$APPS/xpui.spa"'
+apps_write_fixture caught 'printf pwned >| /"$APPS/xpui.spa"'
+apps_write_fixture caught 'printf x >"$(dirname "$APPS")/Apps/xpui.spa"'
+apps_write_fixture caught 'printf x >`dirname "$APPS"`/Apps/xpui.spa'
+apps_write_fixture allowed 'printf x >"$(dirname "$TMP")/x"'
+apps_write_fixture allowed 'printf pwned >!"$TMP/x"'
+apps_write_fixture allowed 'printf pwned >|"$TMP/x"'
+apps_write_fixture allowed 'cat <"$APPS/xpui.spa" >!"$TMP/x"'
 # 8. the install line pins the committed verifier, and the verifier is stored under its own hash
 pin=$(sed -n "s/^VERIFY_SHA='\([0-9a-f]\{64\}\)'$/\1/p" installer/install.sh)
 [ -n "$pin" ] || fail "installer/install.sh has no VERIFY_SHA pin"
