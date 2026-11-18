@@ -1,0 +1,44 @@
+# Tess Support daily-cap and credential proxy on Krish's VPS.
+#
+# Runs as its own dedicated system user (tess-cap), isolated from both the support bot (tess-support) and Paperclip.
+# Holds the real OPENCODE_GO_API_KEY in __CAP_HOME__/.env (mode 600, owned by tess-cap) and stores daily usage state
+# inside systemd StateDirectory=tess-cap (/var/lib/tess-cap, mode 700), which tess-support cannot read or write.
+#
+# setup.sh fills in __CAP_USER__, __CAP_HOME__, __BOT_HOME__, and __NODE__ and installs this unit before tess-support.
+[Unit]
+Description=Tess support daily cap and key proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__CAP_USER__
+Group=__CAP_USER__
+WorkingDirectory=__CAP_HOME__
+Environment=HOME=__CAP_HOME__
+EnvironmentFile=__CAP_HOME__/.env
+ExecStart=__NODE__ __CAP_HOME__/cap-proxy/proxy.mjs
+# Tighter limits than the bot: small single-purpose Node proxy. Paperclip always comes first.
+MemoryMax=128M
+MemorySwapMax=0
+CPUQuota=25%
+TasksMax=32
+Nice=19
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# Dedicated systemd StateDirectory (/var/lib/tess-cap) writable only by tess-cap.
+StateDirectory=tess-cap
+StateDirectoryMode=0700
+# Proxy code and .env (holding OPENCODE_GO_API_KEY) are strictly read-only to the running proxy process.
+ReadOnlyPaths=__CAP_HOME__/cap-proxy __CAP_HOME__/.env
+# Never touch Paperclip, PostgreSQL, or the bot's own home/sessions.
+InaccessiblePaths=-/srv/paperclip -/home/paperclip -/var/lib/postgresql -/run/postgresql -__BOT_HOME__
+Restart=always
+RestartSec=5
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

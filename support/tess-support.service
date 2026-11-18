@@ -1,0 +1,54 @@
+# Tess Support on Krish's VPS: its own unprivileged system user (tess-support), hard CPU/memory/I/O limits so
+# Paperclip always comes first, filesystem isolation keeping it inside its own profile runtime dir, and a foreground
+# process that systemd supervises.
+#
+# setup.sh fills in __USER__, __HOME__, __CAP_HOME__, and __HERMES__ and installs this unit when run with root/sudo.
+# To install by hand, replace those placeholders and run:
+#
+#   sudo install -m 0644 support/tess-support.service.filled /etc/systemd/system/tess-support.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now tess-support
+#
+# If it is started this way, do NOT also run `hermes gateway start`: two gateways on one profile fight over the same
+# session store.
+[Unit]
+Description=Tess support bot (Hermes)
+After=network-online.target tess-cap.service
+Wants=network-online.target tess-cap.service
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__HOME__
+Environment=HERMES_HOME=__HOME__/.hermes
+Environment=HOME=__HOME__
+# Foreground, so systemd owns the process and the caps apply to it.
+ExecStart=__HERMES__ -p tess-support gateway run
+# Paperclip comes first: low memory/CPU/swap/task ceilings plus lowest scheduling and I/O priority.
+MemoryMax=512M
+MemorySwapMax=0
+CPUQuota=50%
+TasksMax=64
+Nice=19
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+# ProtectHome=read-only makes all home folders read-only except the narrowed profile runtime directory below.
+ProtectHome=read-only
+# Narrowed to the profile's runtime/session directory instead of the whole home.
+ReadWritePaths=__HOME__/.hermes/profiles/tess-support
+# Secrets, allowlist, plugin code, config, and skills are strictly read-only to the bot's own process. The bot's tools
+# cannot edit plugins, replace config.yaml, add a user, or overwrite keys because the kernel refuses the write.
+# OPENCODE_GO_API_KEY in .env is only a local proxy bearer token; the real key and enforced caps live in tess-cap.
+ReadOnlyPaths=__HOME__/.hermes/profiles/tess-support/.env __HOME__/.hermes/profiles/tess-support/allow.txt __HOME__/.hermes/profiles/tess-support/plugins __HOME__/.hermes/profiles/tess-support/config.yaml __HOME__/.hermes/profiles/tess-support/skills __HOME__/.hermes/profiles/tess-support/SOUL.md __HOME__/.hermes/profiles/tess-support/distribution.yaml
+# Never touch Paperclip, PostgreSQL, or the separate tess-cap proxy/state (leading "-" ignores absent paths).
+InaccessiblePaths=-/srv/paperclip -/home/paperclip -/var/lib/postgresql -/run/postgresql -__CAP_HOME__ -/var/lib/tess-cap
+# Always, not on-failure: a restart is how an allowlist change takes effect without root — the unit's job is to bring
+# the gateway back after the bot user signals it.
+Restart=always
+RestartSec=5
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

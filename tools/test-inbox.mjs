@@ -3,7 +3,7 @@
 // bytes, and cannot be pushed past a limit by requests that arrive together.
 // Run: node tools/test-inbox.mjs
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -11,10 +11,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const box = mkdtempSync(join(tmpdir(), 'tess-inbox-test-'));
 
-// worker.js is an ES module that Cloudflare loads by itself; Node reads a .js outside a "type": "module" package as
-// CommonJS, so the test loads a copy under a .mjs name rather than changing how the Worker is packaged.
-copyFileSync(join(root, 'inbox', 'worker.js'), join(box, 'worker.mjs'));
-const worker = (await import(pathToFileURL(join(box, 'worker.mjs')).href)).default;
+// The Worker is loaded where it lives: it imports the shared privacy rules by a relative path, which a copy elsewhere
+// would break. Node reads its ES module syntax without a "type": "module" package.
+const worker = (await import(pathToFileURL(join(root, 'inbox', 'worker.js')).href)).default;
 
 // The statements the Worker runs, and nothing else: an unexpected query fails the test instead of passing silently.
 function database() {
@@ -97,6 +96,16 @@ try {
     assert.equal(row.kind, 'heartbeat');
     assert.equal(row.tess, '0.2.22');
     assert.equal(row.body, 'hello');
+  }
+  // 1b. a health report's machine numbers survive the inbox: the Mac filtered it already, and a timestamp or a byte
+  // count read as a phone number would make the report useless
+  {
+    const db = database();
+    const status = 'ok since 1763452800, free 123456789012 bytes, rescue serial 2026111801';
+    const res = await post({ ...report(), status, body: status }, { env: makeEnv(db) });
+    assert.equal(res.status, 204);
+    assert.equal(db.reports[0].status, status, 'a health status keeps its numbers');
+    assert.equal(db.reports[0].body, status, 'a health body keeps its numbers');
     assert.ok(db.limits.get('all'), 'the daily total is counted');
   }
 

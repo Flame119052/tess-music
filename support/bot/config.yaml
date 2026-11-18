@@ -1,0 +1,58 @@
+# Tess Support. Runs on Krish's VPS as its own isolated system user (tess-support) using OpenCode Go
+# (opencode-go/deepseek-v4.1-flash) routed through the separate `tess-cap` proxy user (http://127.0.0.1:4193/v1),
+# which holds the real OPENCODE_GO_API_KEY and enforces the real daily caps. The bot's own .env only holds a local
+# proxy token at mode 600 — never the real Go key or GitHub credentials.
+
+model:
+  provider: opencode-go
+  default: deepseek-v4.1-flash
+  base_url: http://127.0.0.1:4193/v1
+
+plugins:
+  enabled:
+    - daily-cap
+
+# This profile gets its own gateway so it can't disturb another profile's bots on the same machine.
+gateway:
+  standalone: true
+  platforms:
+    telegram:
+      extra:
+        # Hermes' own gate, checked by the gateway before the model runs: only Krish may use Hermes' admin slash
+        # commands. setup.sh fills in his id here along with the allowlist; it is never left open.
+        allow_admin_from:
+          - "__OWNER_ID__"
+        # Everyone else on the allowlist keeps the read-only commands and nothing that changes state.
+        user_allowed_commands:
+          - status
+          - whoami
+          - help
+
+agent:
+  # A screenshot is the main evidence a person can give, so let images through as images.
+  image_input_mode: auto
+  # Nothing here needs to drive a desktop or a headless browser, and both are ways for a stranger's message to reach
+  # something other than its two scripts. Off, not "don't".
+  disabled_toolsets: [computer_use, desktop_ui, browser, file]
+
+# Only these. `cronjob` and `delegation` are left out because a support bot has nothing to schedule and nothing to
+# hand off, and every tool it does have is another way a pasted screenshot could try to steer it.
+platform_toolsets:
+  # No `web`: every fetch the bot needs is one curl to its own inbox, and a general fetch tool is one more way to send
+  # something out of a machine that holds a token.
+  telegram: [terminal, vision, skills, messaging]
+
+# Someone who isn't on the allowlist gets one polite refusal, then silence for 24 hours. No pairing code: there is no
+# self-service door into this bot.
+unauthorized_dm_behavior: decline
+unauthorized_dm_decline_message: >-
+  I can only talk to people the Tess maintainer has added. Reply to the message that gave you this bot and he'll add
+  you.
+
+approvals:
+  # Hermes' own gate. Being on the allowlist is not permission to run whatever the model suggests; anything it judges
+  # dangerous waits, and a cron or unattended context is denied outright.
+  mode: smart
+  cron_mode: deny
+  single_query_mode: deny
+  unattended_mode: deny

@@ -1,0 +1,49 @@
+name: tess-support
+version: 2.1.0
+description: "Tess Music support. Someone describes what broke, it reads Tess's own doctor report and their screenshots, and sends the problem with its priority and labels to Krish's inbox."
+hermes_requires: ">=0.12.0"
+author: "Tess Music"
+license: "MIT"
+
+distribution_owned:
+  - SOUL.md
+  - config.yaml
+  - distribution.yaml
+  - skills
+  - plugins
+
+# Declared so the install says what the bot needs, not so that it asks: setup.sh writes these after the install into
+# the profile's .env at mode 600, and every one of them is optional at install time.
+env_requires:
+  - name: TELEGRAM_BOT_TOKEN
+    description: "Telegram bot token from @BotFather"
+    required: false
+    default: ""
+  - name: OPENCODE_GO_API_KEY
+    description: "Local tess-cap proxy bearer token (real OpenCode Go key stays in tess-cap)"
+    required: false
+    default: ""
+  - name: OPENCODE_GO_BASE_URL
+    description: "Local tess-cap proxy base URL for opencode-go"
+    required: false
+    default: "http://127.0.0.1:4193/v1"
+  - name: TESS_OWNER_ID
+    description: "Krish's numeric Telegram id — the owner account"
+    required: false
+    default: ""
+  - name: TESS_SUPPORT_TOKEN
+    description: "Support posting token for the inbox"
+    required: false
+    default: ""
+  - name: TESS_INBOX
+    description: "Inbox base URL"
+    required: false
+    default: "https://tess-music-player.janus.ing"
+  - name: TESS_DAILY_REPLY_CAP
+    description: "Shared daily reply cap across all users"
+    required: false
+    default: "40"
+  - name: TESS_DAILY_USER_CAP
+    description: "Per-person daily reply cap"
+    required: false
+    default: "20"

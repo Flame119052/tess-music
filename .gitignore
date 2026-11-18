@@ -21,3 +21,7 @@ xcuserdata/
 *.dmg
 *.keychain
 *.keychain-db
+
+# The support bot writes these next to its own profile at run time; a committed one would be a real allowlist. 
+support/bot/allow.txt
+support/bot/allow.log

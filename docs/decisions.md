@@ -236,6 +236,131 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   missed this repository's own `## Made by` format, so an OpenCode review of a DeepSeek change was allowed. *Trade-off:*
   a tag now carries one more field, and the tagging agent has to state something the job cannot verify by itself.
   *Guard, not permission:* no wording anywhere can make a review run that a rule would refuse.
+- **D-76 · 14 Nov 2026 · Agent (owner set the requirements)** — Support is **one Hermes bot on Krish's server**, which
+  people message. It replaces both earlier directions in #70 — Instinct/tincan/Grok Bot, then a Telegram bot, then a
+  Hermes profile installed on each person's own Mac. Nothing of the first two was built; the third is what this reverses.
+  (#70)
+  - **Why a server, not the person's Mac.** Two of Krish's requirements can't both hold with a local bot: every report
+    has to be *filed with its P0–P3 and area labels*, which needs a token with triage rights, and a token inside an
+    install line can be pulled out of it; and *he* has to control the allowlist, which needs one list. He named the
+    answer: *"otherwise run the bot on a server and have the person paste only `tess report` output."*
+  - **It is still a Hermes bot** — a profile (`tess-support`) with its own persona, skill and model, started by
+    `support/setup.sh`. Hermes has no public chat link, so the one way a stranger reaches a Hermes bot is a messaging
+    gateway; that is Telegram here, and it is the only platform-specific part.
+  - **Access is Hermes' gate, not the model's judgement.** `TELEGRAM_ALLOWED_USERS` is checked in the gateway before
+    the model is called, and a gateway with no list denies everyone. Anyone else gets one polite refusal and 24 hours of
+    silence — `unauthorized_dm_behavior: decline`, never a pairing code. Krish adds and removes people with `/allow`,
+    `/deny` and `/who`; `scripts/allowlist.mjs` refuses a wildcard, a phone number, a request not from his id, and
+    removing himself, rewrites the list and the `.env` at 600 atomically, logs every change, and restarts the gateway.
+    The three admin actions are **their own skills invoked as slash commands** (`/tess-allow`, `/tess-deny`,
+    `/tess-who`), and they are deliberately absent from `user_allowed_commands`, so Hermes' gateway refuses them for
+    every id except those in `allow_admin_from` — before the model is called. That is the real gate; the script's
+    `--as` check is a second lock, because the model writes that argument.
+  - **Every report reaches him**: it lands in the inbox he already reads, and a one-line message goes to him on every
+    triage. Nothing is filed from a person's browser and the bot holds no GitHub token (D-77).
+  - **Nothing of Tess's runs on anyone's Mac** and no Node is needed there. The only command is `tess report`, which the
+    person starts (D-62 unchanged), and the bot has no route to their machine.
+  - **Never on the Paperclip machine.** `setup.sh` refuses when it finds `/srv/paperclip`, so Paperclip's files,
+    database and services are never shared with it.
+  - **The terminal is real, and that is stated, not hidden.** `config.yaml` removes the desktop, computer-use and
+    browser toolsets and denies dangerous commands in unattended contexts, but a shell on that machine is a shell. The
+    blast radius is one issues-only token on one public repo, and every access change is logged and echoed to Krish.
+  - Trade-off: it needs a machine, a Telegram bot and a GitHub token, and it is the one part of Tess that lives
+    outside a release. Revisit if Hermes grows a way for an outsider to reach a bot without a messaging gateway.
+
+- **D-77 · 14 Nov 2026 · Owner** — Support reports go to the **inbox**, not to GitHub, and the model is **OpenCode's
+  free tier**. The bot posts one JSON payload to a new `POST /v1/support` on the Worker at `tess-music-player.janus.ing`;
+  the owner's side reads it with `tools/reports.mjs support list|show|filed` and files the issue with the P0–P3 and area
+  labels from `docs/triage.md`. (#70)
+  - **Why:** the person's side must never need a GitHub account, a token or a browser, the labels have to be applied by
+    something with triage rights, and the owner already has one private place that stores reports anonymously. This is
+    that place.
+  - **Authenticated, unlike a health report.** Reporting is public by design (an installer can't hold a secret); a
+    support report carries someone's own words, so it needs a token. Only a SHA-256 of each token is stored, every token
+    has a label, and revoking is one command. An unknown, revoked or absent token is refused.
+  - **No read endpoint**, unchanged: `GET` on the path is a 404, and reading needs the owner's Cloudflare login.
+  - **The labels are validated twice** — in `triage.mjs` on the server and again in the Worker — because they become
+    GitHub labels, and a made-up one would fail the filing instead of the report.
+  - **The bot gets no GitHub token at all**, so a bot talked into something by a stranger can write to one inbox and
+    nothing else. Filing happens with the owner's login, on the owner's machine.
+  - Trade-off: two things on the owner's side before it works — applying `inbox/schema.sql` and deploying the Worker —
+    and filing is a step he (or his agent) takes rather than something that happens on its own. Revisit if the inbox
+    ever grows a read API; today that would undo D-14's rule.
+
+- **D-78 · 14 Nov 2026 · Owner** — The support bot keeps a hard resource budget and cleans up after itself, and it is
+  made of seven small skills rather than one long playbook. (#70)
+  - **One session folder per visit**, capped at 60 MB, holding the screenshots, the recording, the doctor output and the
+    chat scratch. Anything older than 24 hours is swept on the same run, and the whole scratch space stays under 500 MB.
+  - **Recordings are capped at 50 MB and 2 minutes.** Over the cap they are re-encoded down when `ffmpeg` exists and
+    refused when it does not — never stored "to sort out later".
+  - **The folder is deleted the moment the inbox accepts the report.** Only a one-line receipt survives: report id,
+    time, file count, size — no file names, no paths. *A person's screen is a liability to keep, and "it vanished" is not
+    an answer to what happened to their file.*
+  - **On the inbox side**, a recording goes to R2, never to the database, and is deleted when the report is filed or at
+    14 days — by the scheduled job and by an R2 lifecycle rule, so an unapplied rule can't leave it lying there. There is
+    no way to read one back.
+  - **The process is capped where systemd can cap it**: `support/tess-support.service` gives it its own unprivileged
+    user with `MemoryMax=1G` and `CPUQuota=50%`, and `setup.sh` starts it through that unit when it runs as root on a
+    systemd machine. Where that isn't possible it starts the gateway plainly and says the process is uncapped rather
+    than claiming otherwise. No background processes either way. It still refuses to run on paperclip-vps.
+  - **Seven skills, one job each**: `tess-support` (front door), `tess-evidence`, `tess-repro`, `tess-duplicate`,
+    `tess-gather`, `tess-triage`, `tess-handoff` — each with its own trigger, so the model loads one thing at a time
+    instead of one long playbook and hoping it remembers the middle.
+  - Trade-off: caps mean a genuinely large recording is refused rather than examined, so the bot asks for a shorter one.
+    Revisit if R2 or Telegram raise their limits enough for that to stop mattering.
+
+- **D-79 · 15 Nov 2026 · Agent (review of #85)** — Who may talk to the support bot is changed on the server, over SSH,
+  and the bot's own process cannot change it; the caps are installed by the machine's admin, never through the bot's
+  account. Replaces the in-chat `/tess-allow` idea in D-76 and corrects the "starts it through that unit when it runs as
+  root" wording in D-78. (#70)
+  - **Why:** an allowlisted person can steer the model, and the model has a terminal. A chat command for the allowlist
+    was therefore a gate made of the thing being attacked — the same objection applies to any argument the model types.
+    The gate is now shell access to the machine, plus the kernel: the unit marks the profile's `.env` and `allow.txt`
+    read-only to the bot, so even a fully steered shell cannot add a friend.
+  - **No passwordless sudo, ever.** `setup.sh` prints two lines for the admin instead of running `sudo -n`, because
+    granting a bot account passwordless sudo to get `MemoryMax` would hand it root — which is the opposite of the point.
+    Without those two lines the bot runs uncapped and the docs say so.
+  - **Removal takes effect without root.** `allowlist.mjs --restart` reads the unit's `MainPID` and signals it;
+    `Restart=always` brings the gateway back with the new list. `systemctl restart` as the bot user would hit polkit and
+    would also kill the process group doing the asking.
+  - **What is left, said plainly:** with a terminal, the bot's own Telegram token is in its environment and a fully
+    compromised bot could post as the bot until it is revoked. Nothing else of Krish's is on that machine — no GitHub
+    token, and the inbox token is revocable in one command. The `web` toolset is gone so there is no general fetch tool
+    to send it with; `curl` remains, because the bot uses it. A bot with no shell could not gather anything, so this is
+    the floor rather than a gap.
+  - **Skill paths**: every skill now derives the profile from its own location or from `TESS_PROFILE_DIR`, never from an
+    assumed `$HERMES_HOME`.
+
+- **D-80 · 16 Nov 2026 · Agent (second review of #85)** — The bot reaches the inbox through one script, not through
+  `curl` with its token in the command. A message that points `TESS_INBOX` somewhere else has nothing to point at:
+  `scripts/inbox.mjs` reads the address and the token from the bot's own environment, posts only to the Tess inbox
+  (https, that one host), reads a payload only from the visit's session folder, and refuses a payload that carries a
+  token shape. The two skills that used `curl` (`tess-handoff`, `tess-duplicate`) now call it, and a test runs a real
+  POST against a loopback server to prove the token travels in a header and never in output. (#85)
+  - **Same review, the rest of the floor:** a symlink in the uploads folder is resolved before it is copied, so it can
+    no longer launder the profile's `.env` into a session; the Worker strips bidi and zero-width characters and
+    redacts emails, home folders, `~` paths and Mac names before anything is stored, and judges a title after that
+    cleaning; a health report with no salt (or one under 16 characters) is refused rather than hashing an IP weakly;
+    the per-token counter is one statement that only increments under the cap, so two overlapping posts store one; and
+    the 50 MB recording cap counts the bytes that arrive instead of the `Content-Length` claim. Trade-off: a bot with a
+    shell can still read its own token — that is why the token is scoped to one revocable, hashed-at-rest permission,
+    the destination is fixed in code, and every path out of the machine scrubs. (#85)
+
+- **D-81 · 16 Nov 2026 · Agent (third review of #85)** — The personal-detail rules are one function, not two copies.
+  `support/bot/skills/tess-support/scripts/privacy.mjs` holds every rule the bot's triage step and the inbox both
+  apply, and both import it; the Worker bundles the same file. Two copies had drifted, and the side a rule is missing
+  from is the side a stranger uses. The rules themselves grew the cases the review found: a home folder is caught
+  quoted, after an `=`, in lowercase, under `/var/folders`, and in the `~bob` form; every format character is removed
+  — all of Cf, not a hand-picked list — plus the invisible marks that are not Cf (the combining grapheme joiner, the
+  variation selectors, the fillers), *before* any pattern runs, so a token split by one is one token again; and the
+  secret shapes now include GitHub, AWS, Slack, `sk-`/`pk-`, a JWT, an uppercase `tess_` and a private-key block, with
+  the phone number the bot already knew about. The hand-off script (`scripts/inbox.mjs`) resolves a path and refuses
+  the file when the real path is outside the visit's folder or when it has a second name, then reads from the handle it
+  checked, so a recording or a payload cannot be swapped or aimed at the bot's own `.env`; `session.mjs` refuses a hard
+  link for the same reason `realpath` alone could not see it. Tests: `tools/test-support.mjs` (quoted paths, split
+  tokens, links), `tools/test-inbox-support.mjs` (the stored row equals the shared clean), `tools/test-session.mjs` (hard link).
+  Trade-off: the bot's cleaning is now lossy in more places — `~bob` and a pasted phone number are replaced — which is
+  the right direction for a public issue. (#85)
 
 - **D-76 · 15 Nov 2026 · Owner** — One review tag names the model, the **machine** and an optional focus:
   `@tess-review pr provider=… model=… effort=… author=… machine=github|mac|omarchy prompt="…"`. `machine=` omitted means
@@ -458,6 +583,28 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   the first promote. *Trade-off:* an unauthenticated contents read counts against GitHub's 60 reads an hour, so a
   rate limit falls back to the raw pair and one retry. CI no longer proves the vendored tree against the live
   archive on every push. A person does that with `TESS_UPSTREAM_LIVE=1`.
+- **D-95 · 18 Nov 2026 · Owner** — Support runs as **one shared Hermes bot (`tess-support`) on Krish's VPS**, under its
+  own unprivileged system user and resource-capped systemd unit, using **OpenCode Go (`opencode-go/deepseek-v4.1-flash`)**
+  with a **hard daily cap**. Reverses the "free tier" in D-77 and the "refuse the Paperclip host outright" rule in
+  D-76/D-78 (replacing it with user, systemd, and path-collision isolation). (#85)
+  - **Why per-person Hermes on each Mac was rejected:** Hermes requires bash, git, Node, and macOS Developer Tools —
+    far too heavy for a casual user, and it cannot run inside the `.dmg`/Mac setup without leaving Intel/non-dev Macs
+    behind. Moving to one bot on the VPS keeps user Macs completely untouched except `tess report`.
+  - **Why OpenCode Go + daily cap:** OpenCode's free tier returned `403` from Hermes. Moving to Krish's personal
+    OpenCode Go plan works reliably, and a Hermes `pre_llm_call` plugin (`support/bot/plugins/daily-cap/`) enforces a
+    hard daily ceiling (default `40` shared replies/day across users, `20`/day per person, plus optional
+    `TESS_DAILY_TOKEN_CAP`, resetting at `00:00 UTC`, failing closed on lock/corrupt state) before any model inference
+    runs. Kept strictly to **Krish and one trusted tester** to stay inside personal plan terms.
+  - **Why the shared VPS is safe alongside Paperclip:** Paperclip always comes first. `setup.sh` creates the dedicated
+    `tess-support` account with its own `/home/tess-support` (`nologin`), refuses to install inside or alongside Paperclip
+    or PostgreSQL paths/users, writes secrets (`OPENCODE_GO_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TESS_SUPPORT_TOKEN`) to
+    `.env` at mode `600` via shell builtins with zero secrets on any command line, and installs `tess-support.service`
+    with `MemoryMax=512M`, `CPUQuota=50%`, `TasksMax=64`, `Nice=19`, `IOSchedulingClass=idle`, `NoNewPrivileges=yes`,
+    `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=read-only`, `ReadOnlyPaths` over `.env` and `allow.txt`, and
+    `InaccessiblePaths` blocking `/srv/paperclip`, `/home/paperclip`, `/var/lib/postgresql`, and `/run/postgresql`.
+    It never touches Paperclip, PostgreSQL, or the Tincan relay. *Trade-off:* running on the same host means `setup.sh`
+    runs once with `sudo -E` to create the user and unit, and OpenCode Go API quota is shared with other personal Go
+    usage, mitigated by the daily cap.
 
 ## Releases and process
 
@@ -649,3 +796,17 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   for those calls, so it sends the token on the query string after one CORS read. *Trade-off:* the token lives in the
   page for that Spotify session, not in localStorage, because Mini mints a new one every launch. A Mini and a theme
   from different versions do not talk until both have updated.
+- **D-102 · 18 Nov 2026 · Agent** — The Tess support bot isolates `OPENCODE_GO_API_KEY` and enforces daily caps in a
+  separate unprivileged local HTTP proxy (`support/cap-proxy/proxy.mjs`) running as user `tess-cap` under
+  `tess-cap.service` (`StateDirectory=tess-cap`, `/home/tess-cap/.env` mode `600`, `127.0.0.1:4193` only), rather
+  than inside the bot's own `tess-support` process (#85). Because `tess-support` keeps `terminal` enabled, anything
+  writable or readable by `tess-support` (including `StateDirectory=tess-support` or an `.env` key) could be reached by
+  constructing paths or commands in pieces around `pre_tool_call`; moving the key and `daily-cap.json` into `tess-cap`
+  closes both counter resets and key exfiltration. `cap-proxy` reuses `tools/review-proxy.mjs`'s strict allowlist
+  (only `POST /v1/chat/completions`, loopback `Host` only, `CONNECT`/`Upgrade`/query/dot-segment/escape refusal, bearer
+  token verification via `timingSafeEqual`), enforces global, per-person (when carrying Telegram user id), and optional
+  response-`usage` token caps, and leaves counters intact on malformed upstream responses. The in-bot `daily-cap` plugin
+  remains only for a friendly early UX message, while `support/setup.sh` uses `O_NOFOLLOW` + `fchmodSync` instead of
+  path-following `chmod` and refuses `TESS_TEST=1` as root unless both an explicit scratch `TESS_TEST_ROOT` and faked
+  system tools are present.
+

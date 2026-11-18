@@ -104,6 +104,8 @@ const docsPath = (path) => !reviewerPolicy.includes(path) && (path.startsWith('d
 const sensitivePath = (path) => path.startsWith('installer/')
   || path.startsWith('inbox/')
   || path.startsWith('patcher/')
+  // support/ ships a bot and its setup script, which run a server and touch an inbox, so it gets installer-tier review.
+  || path.startsWith('support/')
   || path.startsWith('.github/')
   || ['tools/release.mjs', 'tools/promote.mjs', 'tools/rescue.mjs', 'tools/check-safety.sh', ...reviewerPolicy].includes(path)
   || /(^|[/.-])(signing|rescue)([/.-]|$)/i.test(path);

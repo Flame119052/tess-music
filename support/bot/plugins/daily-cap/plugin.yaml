@@ -1,0 +1,8 @@
+name: daily-cap
+version: 1.0.0
+description: Hard shared and per-person daily reply and token budget enforced before any model call
+author: Tess Music
+provides_hooks:
+  - pre_llm_call
+  - post_api_request
+  - pre_tool_call
