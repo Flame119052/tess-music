@@ -32,7 +32,7 @@ writeFileSync(join(dist, 'install.sh'), installer);
 writeFileSync(join(dist, 'install.sig'), 'good\n');
 
 let serverStatus = 0;
-// normal | skew-once | skew-always | api-down | api-missing
+// normal | skew-once | skew-always | api-down | api-missing | raw-sig-down | raw-sig-missing
 // skew: the first contents-API signature is from the previous release. raw stays poisoned so a
 // raw fallback cannot look like a recovered install.
 let mode = 'normal';
@@ -57,7 +57,9 @@ const server = createServer((req, res) => {
     if (api) { if (sig) hits.apiSig++; else hits.apiSh++; }
     else if (sig) hits.rawSig++; else hits.rawSh++;
     if (!sig && serverStatus) { send(serverStatus); return; }
-    if (api && mode === 'api-down') { send(503); return; }
+    if (api && (mode === 'api-down' || mode === 'raw-sig-down' || mode === 'raw-sig-missing')) { send(503); return; }
+    if (!api && sig && mode === 'raw-sig-down') { send(500); return; }
+    if (!api && sig && mode === 'raw-sig-missing') { send(404); return; }
     if (api && mode === 'api-missing') { send(404); return; }
     if (api && sig && mode === 'skew-always') { send(200, 'stale\n'); return; }
     if (api && sig && mode === 'skew-once' && hits.apiSig === 1) { send(200, 'stale\n'); return; }
@@ -149,6 +151,7 @@ try {
   r = await run();
   assert.notEqual(r.status, 0, 'a missing signature exits non-zero');
   assert.equal(outcome(), '', 'nothing ran without a signature');
+  assert.match(r.stdout, /no signature/, 'a missing signature says the channel has none');
 
   // 6. a live contents-API pair is used even when the raw files are from two releases
   writeFileSync(join(dist, 'install.sig'), 'good\n');
@@ -183,6 +186,28 @@ try {
   assert.equal(hits.rawSh, 1, 'one raw installer download covers the outage');
   assert.equal(hits.rawSig, 1, 'the signature comes from raw with the installer');
 
+  // 8b. the raw signature is absent: that is "no signature", not a dropped connection
+  mode = 'raw-sig-missing';
+  resetHits();
+  rmSync(marker, { force: true });
+  r = await run();
+  assert.notEqual(r.status, 0, 'a raw 404 for the signature exits non-zero');
+  assert.equal(outcome(), '', 'a raw 404 for the signature runs nothing');
+  assert.match(r.stdout, /no signature on stable/, 'a raw 404 says the channel has no signature');
+  assert.doesNotMatch(r.stdout, /Couldn't download/, 'a raw 404 is not reported as a download failure');
+
+  // 8c. the raw signature download fails (5xx, or the connection drops): say so
+  mode = 'raw-sig-down';
+  resetHits();
+  rmSync(marker, { force: true });
+  r = await run();
+  assert.notEqual(r.status, 0, 'a raw signature download failure exits non-zero');
+  assert.equal(outcome(), '', 'a raw signature download failure runs nothing');
+  assert.match(r.stdout, /Couldn't download Tess's installer \(HTTP 500\)/, 'a raw signature download failure names the HTTP status');
+  assert.doesNotMatch(r.stdout, /no signature/, 'a download failure is not reported as a missing signature');
+  assert.equal(hits.rawSig, 1, 'the raw signature was fetched once');
+  mode = 'normal';
+
   // 9. a live 404 is the channel having no installer, not a reason to run a cached raw copy
   mode = 'api-missing';
   resetHits();
@@ -201,7 +226,7 @@ try {
   assert.notEqual(r.status, 0, 'network failure exits non-zero');
   assert.equal(outcome(), '', 'network failure runs nothing');
 
-  console.log('install-line tests passed (pin, signature, tamper, missing signature, no-installer refusal, 503, mixed pair retry, API outage, live 404, network failure)');
+  console.log('install-line tests passed (pin, signature, tamper, missing signature, no-installer refusal, 503, mixed pair retry, API outage, raw signature 404, raw signature download failure, live 404, network failure)');
 } finally {
   await new Promise((r) => server.close(r));
   rmSync(box, { recursive: true, force: true });

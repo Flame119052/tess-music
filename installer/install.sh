@@ -113,7 +113,9 @@ pair_from_raw() {
   code=$(curl -sS -L --max-time 60 -w '%{http_code}' -o "$D/install.sh" "$BASE/$CH/dist/install.sh" 2>/dev/null) || code=000
   if [ "$code" = 404 ]; then pair_err=missing; return 1; fi
   if [ "$code" != 200 ]; then pair_err="HTTP $code"; return 1; fi
-  if ! curl -fsSL --max-time 60 "$BASE/$CH/dist/install.sig" -o "$D/install.sig"; then pair_err=nosig; return 1; fi
+  code=$(curl -sS -L --max-time 60 -w '%{http_code}' -o "$D/install.sig" "$BASE/$CH/dist/install.sig" 2>/dev/null) || code=000
+  if [ "$code" = 404 ]; then pair_err=nosig; return 1; fi
+  if [ "$code" != 200 ]; then pair_err="HTTP $code"; return 1; fi
   return 0
 }
 
