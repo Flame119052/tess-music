@@ -2,7 +2,9 @@
 
 A support bot people message, built as a **Hermes bot** — a profile called `tess-support` — running on **Krish's VPS** as its own isolated system user (`tess-support`) on **OpenCode Go** (`opencode-go/deepseek-v4.1-flash`) with a **daily cap**. Someone says what broke, it reads Tess's own doctor report and their screenshots, works out what it is, and sends the whole thing to the **inbox** Krish already runs (`tess-music-player.janus.ing`). Krish's side (or his agents) turns that into a GitHub issue with its priority and labels.
 
-Nobody installs anything, nobody needs a GitHub account, and nothing of Tess's runs on their Mac.
+Nobody needs a GitHub account. The VPS bot on this page is the one Krish runs.
+
+A person's own Mac uses a separate profile, [`mac/`](mac/). The unit files below stay on the VPS. On the Mac they open a chat, the agent runs `tess doctor` and can capture the Spotify window, and the model is reached only through the support gate with their own token.
 
 ## For Krish: turn it on and give someone access
 

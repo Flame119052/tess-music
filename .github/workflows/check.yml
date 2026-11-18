@@ -54,6 +54,8 @@ jobs:
         run: node tools/test-inbox-support.mjs
       - name: Support session folder tests
         run: node tools/test-session.mjs
+      - name: Mac support profile tests
+        run: node tools/test-support-mac.mjs
       - name: Support filing line tests
         run: node tools/test-reports.mjs
       - name: Reviewer agent tests
