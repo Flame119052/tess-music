@@ -561,6 +561,28 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   non-letter old-style `tar` flags, or nested `$(…)` inside redirects (which stop at the first `)`) can either be
   conservative or slip past; reads out of `$APPS` remain covered by must-pass fixtures. The gate deliberately does not
   check writes through a variable, through another working directory, or through `xargs`. (#111)
+- **D-96 · 18 Nov 2026 · Agent** — The public install line fetches `install.sh` and `install.sig` as one pair from
+  GitHub's contents API, and fetches that pair once more when the signature check fails. Both files of a try come
+  from the same place. The raw address is used only when the API is unavailable, not when the API says the file is
+  missing. A raw signature fetch that returns 404 is reported as no signature on that channel. Any other failure of
+  that fetch, including a dropped connection or a 5xx, is reported as a download failure. The install-line gate
+  refuses any fetch from `main`. The one allowed fetch is the pinned verifier download written to `$D/tess-verify`.
+  A verifier path written over the installer, and a `ref` variable set to `main`, are refused. `tools/promote.mjs`
+  refuses a beta whose `dist/` lacks `install.sh` or `install.sig`, including on a dry run, so a promote cannot
+  publish a channel that refuses every new install. `tools/check-safety.sh` prints a notice when `origin/stable` has
+  no `dist/install.sh` and does not fail the check. The workflow comment that said the safety check judges what
+  users get was wrong, and now says the fetch is for that notice. `tools/check-spicetify-upstream.sh` downloads the
+  Spicetify v2.46.4 archive, requires SHA-256 `d217bcf3b780136d66dee9b3548b3689f6004263a958c57d96ad73d7f6fcdd5b`,
+  and diffs the vendored files. A person runs it. The release does not. CI runs the offline fixtures. The live
+  download runs only when `TESS_UPSTREAM_LIVE=1`. A promotion key that signs the channel name, and a `rev` floor the
+  page cannot rewrite, stay the owner's decision. This change does not add a key or a new store. (#92)
+  *Why:* raw.githubusercontent caches each file on its own, so just after a promote a new installer can arrive with
+  the previous signature and a good install fails closed. The vendored Spicetify checksum only proves the committed
+  files still match each other. Stable is still 0.2.22, from before Release B, and promoting is paused. A check that
+  failed whenever stable lacked `dist/install.sh` would turn every pull request red. New installs are refused until
+  the first promote. *Trade-off:* an unauthenticated contents read counts against GitHub's 60 reads an hour, so a
+  rate limit falls back to the raw pair and one retry. CI no longer proves the vendored tree against the live
+  archive on every push. A person does that with `TESS_UPSTREAM_LIVE=1`.
 - **D-95 · 18 Nov 2026 · Owner** — Support runs as **one shared Hermes bot (`tess-support`) on Krish's VPS**, under its
   own unprivileged system user and resource-capped systemd unit, using **OpenCode Go (`opencode-go/deepseek-v4.1-flash`)**
   with a **hard daily cap**. Reverses the "free tier" in D-77 and the "refuse the Paperclip host outright" rule in
@@ -747,7 +769,14 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   signed parts list writes the installer and uninstaller before the command, since a Mac gaining all three in one update
   must never hold a command that points at nothing. The installer's inherited copy of the command is compared with
   `tess-command.sh` byte for byte, because those older channels run the copy and not the signed part.
-- **D-95 · 18 Nov 2026 · Agent** — The Tess support bot isolates `OPENCODE_GO_API_KEY` and enforces daily caps in a
+- **D-97 · 18 Nov 2026 · Agent** — Nothing is published to dev, beta or stable until `tools/test-upgrade.mjs` has installed
+  the pinned 0.2.22 updater and doctor (the release assets, checked by SHA-256) on a fake Spotify, updated that install
+  to this build, run the doctor, and done a fresh install. The test signs with a key it generates. The release key is
+  not read. *Why:* a build that an old Mac cannot take should fail in CI, before dev, and again before beta and stable
+  (#80). *Trade-off:* the old patcher binary is not the 0.2.22 archive (that binary only accepts the release key); the
+  scripts an old Mac runs are the pinned ones, and the swap is the same checked folder switch the installer and the
+  current updater call.
+- **D-102 · 18 Nov 2026 · Agent** — The Tess support bot isolates `OPENCODE_GO_API_KEY` and enforces daily caps in a
   separate unprivileged local HTTP proxy (`support/cap-proxy/proxy.mjs`) running as user `tess-cap` under
   `tess-cap.service` (`StateDirectory=tess-cap`, `/home/tess-cap/.env` mode `600`, `127.0.0.1:4193` only), rather
   than inside the bot's own `tess-support` process (#85). Because `tess-support` keeps `terminal` enabled, anything

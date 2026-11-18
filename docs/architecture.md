@@ -97,7 +97,7 @@ Its files go back to stock (`Apps/xpui.spa`). The updater notices (LaunchAgent W
 
 ## Release pipeline
 
-`push to main` → `.github/workflows/release.yml`: `tools/check-safety.sh` → `tools/release.mjs auto dev`:
+`push to main` → `.github/workflows/release.yml`: `tools/check-safety.sh` → `node tools/test-upgrade.mjs` (install the pinned 0.2.22 updater and doctor on a fake Spotify, update to this build, run the doctor, and install fresh; a failure stops the job) → `tools/release.mjs auto dev`:
 build theme → sign → build patcher (+ tess-verify, rescue verify), Tess Mini (universal), sign binaries with the
 "Tess Music" identity → write `dist/` (manifest with `rev` and a signed envelope binding both file hashes, theme, components list +
 signature + `rev`, `install.sh`, `install.sig`, `uninstall.sh`) to the
@@ -107,13 +107,18 @@ Declaration (`tools/declare.mjs`): copy `dev`'s `dist/` byte for byte to `beta` 
 changes; it is outside the signed envelope), copy the install line to the channel root, record the source `main`
 commit, and write release notes from every PR merged since the previous beta. Promotion (`tools/promote.mjs`): copy
 that exact beta to `stable`, including its notes and channel-root install line, mirror it, and mark the release latest.
-Both public-channel jobs use the protected GitHub `release` environment and support a no-write `--dry-run`.
+Both public-channel jobs use the protected GitHub `release` environment and support a no-write `--dry-run`. Each runs the same upgrade gate before it copies anything, and a failure means beta or stable is left as it was.
 
 Install line: `installer/install.sh` (forwarder on `main`) pins the committed verifier's SHA-256, downloads
-`main/installer/verify/<sha>`, checks it, then downloads `$CH/dist/install.sh` and `dist/install.sig` and verifies the
-installer before running it with that verifier → the installer checks `components.txt` before unpacking the patcher.
-A channel with no signed installer refuses to install: the forwarder checks the verifier's pin and then stops with a
-clear message. There is no fallback to `main`; after the first promote stable carries its own signed installer.
+`main/installer/verify/<sha>`, checks it, then downloads the channel's `dist/install.sh` and `dist/install.sig` as one
+pair from GitHub's contents API, which is live. If that API is down or rate-limited, both files come from the raw
+address together, never one from each. A signature miss fetches the pair once more and then stops. The installer
+runs only after the pinned verifier accepts it, then checks `components.txt` before unpacking the patcher.
+A channel with no signed installer refuses to install: a live 404 stops there and does not use a cached raw copy.
+A raw signature fetch that fails for any other reason says the download failed, not that the signature is missing.
+There is no fallback to `main` except the pinned verifier download. Stable does not carry `dist/install.sh` until
+the first promote, and until then a new install refuses. `tools/check-safety.sh` prints that notice and does not
+fail, because promoting is paused. `tools/promote.mjs` refuses a beta whose `dist/` lacks `install.sh` or `install.sig`.
 
 Every script that can act on a Mac — `install.sh`, `tess-install.sh`, `updater.sh`, `doctor.sh`, `rescue.sh`,
 `uninstall.sh`, `wake.sh`, `tess-command.sh` — refuses to act when it is sourced or handed to a shell as text (`sh -c

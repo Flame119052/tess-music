@@ -14,7 +14,7 @@ jobs:
         with: { go-version-file: patcher/go.mod, cache: false }
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
-      - name: Fetch the stable channel (the safety gate checks what users get)
+      - name: Fetch the stable channel (a notice if it has no installer yet, not a failure)
         run: git fetch --depth=1 origin stable:refs/remotes/origin/stable || true
       - name: Safety checks (installer, updater, doctor, rescue, patcher swap)
         run: tools/check-safety.sh
@@ -37,6 +37,7 @@ jobs:
           node tools/test-installer-legacy.mjs
           node tools/test-installer-legacy.mjs --command
           node tools/test-updater.mjs
+          node tools/test-upgrade.mjs
           node tools/test-wake.mjs
           node tools/test-rescue-control.mjs
           node tools/test-swap-recovery.mjs
@@ -66,6 +67,8 @@ jobs:
           node tools/test-manifest.mjs
           node tools/test-loader.mjs
           node tools/test-install-line.mjs
+          node tools/test-forwarder-gate.mjs
+          node tools/test-spicetify-upstream.mjs
           node tools/test-install.mjs
           node tools/test-release-revs.mjs
           node tools/test-loader-perf.mjs

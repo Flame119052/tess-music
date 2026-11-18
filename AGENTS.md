@@ -83,7 +83,7 @@ before/after, a failing then passing test, or a log. "Should work" is not done.
 | --- | --- |
 | Look / layout | `tools/hot.mjs`, then screenshots of every affected page/state via `tools/cdp.mjs shot` |
 | Anything that moves, or perf | Window visible: `tools/cpu-ab.mjs "<css>"` (real CPU), `tools/ab.mjs` (main-thread work), `/tmp`-free traces via `tools/trace-idle.mjs`, `tools/trace-style.mjs`; full run `tools/bench.mjs <label>` (memory, clicks, long tasks; appends to `.build/bench.jsonl`) |
-| Installer / updater / doctor / rescue | Sandbox copy of Spotify with `TESS_TEST=1`; cover success, a blocked write, a failure mid-way, and a fresh Mac; `tools/check-safety.sh` |
+| Installer / updater / doctor / rescue | Sandbox copy of Spotify with `TESS_TEST=1`; cover success, a blocked write, a failure mid-way, and a fresh Mac; `tools/check-safety.sh`. An upgrade from the pinned 0.2.22 build is `node tools/test-upgrade.mjs` |
 | Any installer script's guard | `node tools/test-script-guards.mjs` (in a scratch copy of the checkout: sourcing and `sh -c "$(cat …)"`/`eval` do nothing, a checkout and worktree copy refuse, `TESS_REAL_INSTALL=0`/`false` refuse, the piped install line and installed copies still run) |
 | Patcher (Go) | `cd patcher && go test ./src/cmd/` plus an apply → restore cycle on a sandbox copy |
 | Dial picking | `node tools/test-dial-pick.mjs` |
