@@ -115,7 +115,10 @@ pair from GitHub's contents API, which is live. If that API is down or rate-limi
 address together, never one from each. A signature miss fetches the pair once more and then stops. The installer
 runs only after the pinned verifier accepts it, then checks `components.txt` before unpacking the patcher.
 A channel with no signed installer refuses to install: a live 404 stops there and does not use a cached raw copy.
-There is no fallback to `main`; after the first promote stable carries its own signed installer.
+A raw signature fetch that fails for any other reason says the download failed, not that the signature is missing.
+There is no fallback to `main` except the pinned verifier download. Stable does not carry `dist/install.sh` until
+the first promote, and until then a new install refuses. `tools/check-safety.sh` prints that notice and does not
+fail, because promoting is paused. `tools/promote.mjs` refuses a beta whose `dist/` lacks `install.sh` or `install.sig`.
 
 Every script that can act on a Mac — `install.sh`, `tess-install.sh`, `updater.sh`, `doctor.sh`, `rescue.sh`,
 `uninstall.sh`, `wake.sh`, `tess-command.sh` — refuses to act when it is sourced or handed to a shell as text (`sh -c
