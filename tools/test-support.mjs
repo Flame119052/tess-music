@@ -530,8 +530,9 @@ exit 0
   rmSync(join(state, 'installed'), { force: true });
   rmSync(join(state, 'gateway'), { force: true });
   stub('id', `
-if [ "$1" = "-u" ]; then echo 0; exit 0; fi
-if [ "$1" = "-un" ]; then echo root; exit 0; fi
+if [ "$1" = "-u" ] && [ -z "$2" ]; then echo 0; exit 0; fi
+if [ "$1" = "-u" ] && [ "$2" = "tess-support" ]; then [ -f "${vpsState}/user-created" ] && { echo "\${TESS_TEST_BOT_UID:-998}"; exit 0; }; exit 1; fi
+if [ "$1" = "-un" ] && [ -z "$2" ]; then echo root; exit 0; fi
 if [ "$1" = "tess-support" ]; then [ -f "${vpsState}/user-created" ] && exit 0; exit 1; fi
 exit 0
 `, vpsBin);
@@ -553,11 +554,17 @@ exec "$@"
 `, vpsBin);
   stub('systemctl', `echo "systemctl $*" >> "${vpsState}/sys"; exit 0`, vpsBin);
 
+  const adminHome = join(vpsBox, 'admin-home');
+  mkdirSync(join(adminHome, '.hermes'), { recursive: true });
+  writeFileSync(join(adminHome, '.hermes', 'keep.txt'), 'admin-secret');
   const vpsEnv = {
     ...senv,
     PATH: `${vpsBin}:${senv.PATH}`,
+    HOME: adminHome,
+    HERMES_HOME: join(adminHome, '.hermes'),
+    TESS_TEST_ROOT: vpsBox,
+    TESS_TEST_ALLOW_UID: String(process.getuid()),
     TESS_BOT_HOME: vpsHome,
-    HERMES_HOME: join(vpsHome, '.hermes'),
     TESS_SYSTEMD_DIR: vpsUnitDir,
     TESS_ALLOW_IDS: '333333333',
   };
@@ -575,13 +582,98 @@ exec "$@"
   const installedUnit = readFileSync(join(vpsUnitDir, 'tess-support.service'), 'utf8');
   assert.match(installedUnit, /^User=tess-support$/m);
   assert.match(installedUnit, /^MemoryMax=512M$/m);
+  assert.match(installedUnit, /^MemorySwapMax=0$/m);
   assert.match(installedUnit, /^CPUQuota=50%$/m);
+  assert.match(installedUnit, /^StateDirectory=tess-support$/m);
+  assert.match(installedUnit, /^StateDirectoryMode=0700$/m);
+  assert.match(installedUnit, /^ReadWritePaths=.*\/\.hermes\/profiles\/tess-support(?:\s|$)/m);
+  assert.ok(!/^ReadWritePaths=.*\/vps\/home\/tess-support(?:\s|$)/m.test(installedUnit), 'ReadWritePaths no longer exposes the whole home');
+  assert.match(installedUnit, /^ReadOnlyPaths=.*\/plugins\b/m);
+  assert.match(installedUnit, /^ReadOnlyPaths=.*\/config\.yaml\b/m);
   assert.match(installedUnit, /^InaccessiblePaths=.*\/srv\/paperclip/m);
-  assert.equal(statSync(join(vpsHome, '.hermes', 'profiles', 'tess-support', '.env')).mode & 0o777, 0o600);
+  const vpsProfDir = join(vpsHome, '.hermes', 'profiles', 'tess-support');
+  assert.equal(statSync(join(vpsProfDir, '.env')).mode & 0o777, 0o600);
+  assert.equal(statSync(join(vpsProfDir, 'plugins')).mode & 0o777, 0o755, 'plugins dir is 0755');
+  assert.equal(statSync(join(vpsProfDir, 'plugins', 'daily-cap')).mode & 0o777, 0o755, 'daily-cap dir is 0755');
+  assert.equal(statSync(join(vpsProfDir, 'plugins', 'daily-cap', '__init__.py')).mode & 0o777, 0o644, 'plugin __init__.py is 0644');
+  assert.equal(statSync(join(vpsProfDir, 'plugins', 'daily-cap', 'plugin.yaml')).mode & 0o777, 0o644, 'plugin.yaml is 0644');
+  assert.match(sysLog, /chown -h /, 'uses chown -h without following symlinks');
+  assert.match(sysLog, /chown -h (?:root:root|0:0) .*\/plugins\/daily-cap\/__init__\.py/, 'plugin code is chowned to root');
+  assert.ok(!/chown\s+-R|chmod\s+-R/.test(setupText), 'setup.sh never uses recursive chown -R or chmod -R');
+  // Inherited admin HOME/HERMES_HOME were ignored completely when running as root.
+  assert.equal(readFileSync(join(adminHome, '.hermes', 'keep.txt'), 'utf8'), 'admin-secret');
+  assert.ok(!existsSync(join(adminHome, '.hermes', 'profiles', 'tess-support')), 'admin HERMES_HOME was untouched');
+
   // Idempotent second run as simulated root: user already exists so useradd is not called again.
   rmSync(join(vpsState, 'sys'), { force: true });
   out('/bin/sh', [SETUP], vpsEnv);
   assert.ok(!/useradd/.test(readFileSync(join(vpsState, 'sys'), 'utf8')), 'second run skips useradd');
+
+  // Root without TESS_TEST=1 ignores inherited HOME, HERMES_HOME, TESS_BOT_HOME, TESS_SYSTEMD_DIR and uses fixed /home/tess-support.
+  const realRootBin = join(vpsBox, 'real-root-bin');
+  mkdirSync(realRootBin, { recursive: true });
+  stub('id', '[ "$1" = "-u" ] && [ -z "$2" ] && { echo 0; exit 0; }; [ "$1" = "-un" ] && { echo root; exit 0; }; exit 1', realRootBin);
+  stub('useradd', `echo "useradd $*" > "${vpsState}/real-root-useradd"; exit 1`, realRootBin);
+  let realRootOut = '';
+  try {
+    out('/bin/sh', [SETUP], {
+      ...senv,
+      TESS_TEST: '0',
+      PATH: `${realRootBin}:${vpsBin}:${senv.PATH}`,
+      HOME: adminHome,
+      HERMES_HOME: join(adminHome, '.hermes'),
+      TESS_BOT_HOME: '/tmp/nope/../../var/lib/postgresql',
+      TESS_SYSTEMD_DIR: '/tmp/nope/../../etc',
+    });
+    assert.fail('expected stubbed useradd failure');
+  } catch (e) { if (e.code === 'ERR_ASSERTION') throw e; realRootOut = String(e.stderr) + String(e.stdout); }
+  assert.match(realRootOut, /couldn't create system user tess-support/);
+  assert.match(readFileSync(join(vpsState, 'real-root-useradd'), 'utf8'), /--home-dir \/home\/tess-support /, 'real root ignores env overrides and always uses /home/tess-support');
+
+  // Root test mode refuses .. traversal, symlinks pointing outside scratch root, and foreign-owned targets.
+  const outsideDir = join(box, 'outside-target');
+  mkdirSync(outsideDir, { recursive: true });
+  writeFileSync(join(outsideDir, 'sentinel.txt'), 'keep');
+  const linkParent = join(vpsBox, 'link-parent');
+  symlinkSync(outsideDir, linkParent);
+  const linkHome = join(vpsBox, 'link-home');
+  symlinkSync(outsideDir, linkHome);
+  const linkHermes = join(vpsBox, 'link-hermes');
+  symlinkSync(outsideDir, linkHermes);
+  const foreignHome = join(vpsBox, 'foreign-home');
+  mkdirSync(foreignHome, { recursive: true });
+
+  for (const [label, extra] of [
+    ['.. in TESS_BOT_HOME', { TESS_BOT_HOME: '/tmp/nope/../../var/lib/postgresql' }],
+    ['.. in TESS_BOT_HOME under scratch', { TESS_BOT_HOME: `${vpsBox}/home/sub/../../outside` }],
+    ['.. in TESS_SYSTEMD_DIR', { TESS_SYSTEMD_DIR: '/tmp/nope/../../etc' }],
+    ['symlink parent in TESS_BOT_HOME', { TESS_BOT_HOME: join(linkParent, 'tess-support') }],
+    ['symlinked TESS_BOT_HOME', { TESS_BOT_HOME: linkHome }],
+    ['symlinked TESS_BOT_HERMES_HOME', { TESS_BOT_HERMES_HOME: linkHermes }],
+    ['foreign-owned TESS_BOT_HOME', { TESS_BOT_HOME: foreignHome, TESS_TEST_ALLOW_UID: '', TESS_TEST_BOT_UID: '998' }],
+  ]) {
+    rmSync(join(vpsState, 'sys'), { force: true });
+    let badOut = '';
+    try {
+      out('/bin/sh', [SETUP], { ...vpsEnv, ...extra });
+      assert.fail(`expected refusal for ${label}`);
+    } catch (e) { if (e.code === 'ERR_ASSERTION') throw e; badOut = String(e.stderr) + String(e.stdout); }
+    assert.ok(!existsSync(join(vpsState, 'sys')) || !/chown|useradd/.test(readFileSync(join(vpsState, 'sys'), 'utf8')), `${label} never runs useradd or chown`);
+    assert.ok(badOut.length > 0, `${label} explains refusal`);
+  }
+  assert.equal(readFileSync(join(outsideDir, 'sentinel.txt'), 'utf8'), 'keep', 'symlink target outside root untouched');
+
+  // Symlinked plugin file inside profile is refused on root re-run.
+  rmSync(join(vpsProfDir, 'plugins', 'daily-cap', '__init__.py'));
+  symlinkSync(join(outsideDir, 'sentinel.txt'), join(vpsProfDir, 'plugins', 'daily-cap', '__init__.py'));
+  // Note: setup removes/re-installs plugins on force update only if real dir with no symlinks; a symlinked plugin must be refused!
+  let symPluginOut = '';
+  try {
+    out('/bin/sh', [SETUP], vpsEnv);
+    assert.fail('expected refusal for symlinked plugin file');
+  } catch (e) { if (e.code === 'ERR_ASSERTION') throw e; symPluginOut = String(e.stderr) + String(e.stdout); }
+  assert.match(symPluginOut, /symlink/i);
+  assert.equal(readFileSync(join(outsideDir, 'sentinel.txt'), 'utf8'), 'keep', 'symlinked plugin target untouched');
 
   // Non-root on a systemd+useradd machine without TESS_TEST refuses and directs operator to sudo -E sh.
   const linuxBin = join(box, 'linux-bin');
@@ -598,6 +690,10 @@ exec "$@"
 
   // 7b. No advice to grant the bot passwordless sudo, and never two gateways: when a unit is generated non-root (TESS_TEST=1),
   // setup does not start a standalone gateway.
+  const botCfg = readFileSync(join(root, 'support/bot/config.yaml'), 'utf8');
+  assert.match(botCfg, /^  disabled_toolsets:.*\bfile\b/m, 'config.yaml disables file toolset');
+  assert.ok(!/^  telegram:.*\bfile\b/m.test(botCfg), 'config.yaml removes file from telegram platform_toolsets');
+
   assert.ok(!/passwordless sudo for systemctl|give this account passwordless sudo/i.test(setupText), 'setup never suggests granting the bot sudo');
   const sysDir = join(box, 'sysonly');
   mkdirSync(sysDir, { recursive: true });
@@ -692,8 +788,87 @@ with tempfile.TemporaryDirectory() as td:
     blk_sym = mod.pre_llm_call(sender_id="1002")
     assert blk_sym and blk_sym["action"] == "block"
     assert secret_target.read_text(encoding="utf-8") == "keep-me"
+
+    # STATE_DIRECTORY places daily-cap state outside sessions/ and cache/.
+    state_dir = pathlib.Path(td) / "systemd-state"
+    state_dir.mkdir()
+    os.environ.pop("TESS_DAILY_CAP_FILE", None)
+    os.environ["STATE_DIRECTORY"] = str(state_dir)
+    resolved_state = mod._state_path()
+    assert resolved_state == state_dir / "daily-cap.json"
+    assert "sessions" not in resolved_state.parts and "cache" not in resolved_state.parts
+
+    # Trying to reset the counter or edit the plugin via bot tools (file or terminal) is refused by pre_tool_call.
+    assert "pre_tool_call" in ctx.hooks
+    os.environ["TESS_DAILY_REPLY_CAP"] = "1"
+    os.environ["TESS_DAILY_USER_CAP"] = "1"
+    os.environ["TESS_DAILY_TOKEN_CAP"] = "0"
+    assert mod.pre_llm_call(sender_id="2001") is None
+    assert mod.pre_llm_call(sender_id="2001")["action"] == "block"
+
+    payload_zero = '{"date":"2026-11-19","replies":0}'
+    for tname, targs in [
+        ("write_file", {"path": str(resolved_state), "content": "{}"}),
+        ("read_file", {"path": str(resolved_state)}),
+        ("patch", {"path": str(plugin_path), "old": "block", "new": "allow"}),
+        ("terminal", {"command": "echo " + payload_zero + " > " + str(resolved_state)}),
+        ("terminal", {"command": "rm -f /var/lib/tess-support/daily-cap.json"}),
+        ("terminal", {"command": "printf x > " + str(plugin_path)}),
+        ("terminal", {"command": "python3 -c 'import pathlib; pathlib.Path(\\"/var/lib/tess-support/daily-cap.json\\").write_text(\\"{}\\")'"}),
+    ]:
+        blk_tool = mod.pre_tool_call(tool_name=tname, args=targs)
+        assert blk_tool and blk_tool["action"] == "block", f"expected tool block for {tname}: {targs}"
+
+    # Counter is still intact and still blocks user 2001.
+    assert mod.pre_llm_call(sender_id="2001")["action"] == "block"
+
+    # Low finding: once TESS_DAILY_TOKEN_CAP is exceeded mid-turn, pre_tool_call blocks further tool calls in the loop.
+    os.environ["TESS_DAILY_TOKEN_CAP"] = "500"
+    mod.post_api_request(usage={"total_tokens": 600})
+    blk_loop_tok = mod.pre_tool_call(tool_name="terminal", args={"command": "node triage.mjs --help"})
+    assert blk_loop_tok and blk_loop_tok["action"] == "block"
+
+    # Unprivileged OS write attempt against read-only (0444) counter or plugin fails with PermissionError, and pre_llm_call fails closed.
+    ro_plugin = pathlib.Path(td) / "ro-plugin.py"
+    ro_plugin.write_text("# plugin", encoding="utf-8")
+    ro_plugin.chmod(0o444)
+    try:
+        ro_plugin.write_text("# hijacked", encoding="utf-8")
+        raise AssertionError("expected PermissionError editing read-only plugin")
+    except PermissionError:
+        pass
+
+    resolved_state.chmod(0o444)
+    state_dir.chmod(0o555)
+    try:
+        try:
+            resolved_state.write_text('{"date":"2026-11-19","replies":0,"tokens":0,"users":{}}', encoding="utf-8")
+            raise AssertionError("expected PermissionError resetting read-only counter")
+        except PermissionError:
+            pass
+        blk_ro = mod.pre_llm_call(sender_id="3001")
+        assert blk_ro and blk_ro["action"] == "block"
+    finally:
+        state_dir.chmod(0o700)
+        resolved_state.chmod(0o600)
+
+    # Holding daily-cap.lock triggers bounded lock timeout and fails closed rather than hanging until Hermes fails open.
+    import fcntl
+    lock_file = state_dir / "daily-cap.lock"
+    hold_fd = os.open(lock_file, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(hold_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.environ["TESS_CAP_LOCK_TIMEOUT"] = "0.05"
+        os.environ["TESS_DAILY_REPLY_CAP"] = "40"
+        os.environ["TESS_DAILY_USER_CAP"] = "20"
+        blk_lock = mod.pre_llm_call(sender_id="4001")
+        assert blk_lock and blk_lock["action"] == "block"
+    finally:
+        fcntl.flock(hold_fd, fcntl.LOCK_UN)
+        os.close(hold_fd)
+        os.environ.pop("TESS_CAP_LOCK_TIMEOUT", None)
 `;
-  out('python3', ['-c', capScript]);
+  out('python3', ['-B', '-c', capScript], { PYTHONDONTWRITEBYTECODE: '1' });
 
   console.log('support bot: all checks passed\n');
   console.log([
