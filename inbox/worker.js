@@ -20,6 +20,18 @@ const MAX_SUPPORT = 48 * 1024;
 const MAX_RECORDING = 50 * 1024 * 1024;
 const RECORDING_DAYS = 14;
 const DAILY_CAP = 2000;
+// One model, one URL. The client does not get to choose either. Defaults match the support chat plan; wrangler
+// vars override the numbers. The Go key is a secret, never a var.
+const CHAT_UPSTREAM = 'https://opencode.ai/zen/go/v1/chat/completions';
+const CHAT_MODEL = 'deepseek-v4.1-flash';
+const CHAT_PERSON_REQUESTS = 80;
+const CHAT_SHARED_REQUESTS = 400;
+const CHAT_PERSON_TOKENS = 300000;
+const CHAT_SHARED_TOKENS = 2000000;
+const CHAT_MAX_REQUEST = 8 * 1024 * 1024;
+const CHAT_MAX_RESPONSE = 8 * 1024 * 1024;
+// A single reply cannot move the token counters by more than this. A larger `usage` is ignored, not written as zero.
+const CHAT_MAX_USAGE = 2000000;
 const KINDS = new Set(['heartbeat', 'problem', 'doctor', 'rescue', 'install']);
 const PRIORITIES = new Set(['P0', 'P1', 'P2', 'P3']);
 const AREAS = new Set(['area: theme', 'area: patcher', 'area: installer', 'area: mini', 'area: companion', 'area: release-ci', 'area: docs']);
@@ -252,8 +264,387 @@ async function recording(request, env, id) {
   return reply(204);
 }
 
+// --- support chat: POST /v1/support/chat only.
+
+function chatJson(status, message, type, code, extraHeaders = {}) {
+  return new Response(JSON.stringify({ error: { message, type, code } }), {
+    status,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      ...extraHeaders,
+    },
+  });
+}
+
+function secondsUntilUtcMidnight(nowMs = Date.now()) {
+  const now = new Date(nowMs);
+  const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+  return Math.max(1, Math.ceil((next - nowMs) / 1000));
+}
+
+function quotaReached(kind) {
+  const resets = secondsUntilUtcMidnight();
+  const tokens = kind === 'person_tokens' || kind === 'shared_tokens';
+  const message = tokens
+    ? "This support chat has reached today's token limit. It resets at 00:00 UTC."
+    : "This support chat has reached today's limit. It resets at 00:00 UTC.";
+  return new Response(JSON.stringify({
+    error: {
+      message,
+      type: 'usage_limit_reached',
+      code: 'terminal_quota_exhausted',
+      resets_in_seconds: resets,
+      limit_type: kind,
+    },
+  }), {
+    status: 429,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      'retry-after': String(resets),
+    },
+  });
+}
+
+// A missing or garbage cap var fails closed. An unset var uses the default. Token budget 0 means "do not enforce".
+function capValue(raw, fallback) {
+  if (raw === undefined || raw === null || raw === '') return fallback;
+  if (typeof raw === 'number') return Number.isSafeInteger(raw) && raw >= 0 ? raw : null;
+  const s = String(raw).trim();
+  if (!/^\d+$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+function byteCap(raw, fallback, hard) {
+  const n = capValue(raw, fallback);
+  if (n === null || n < 1) return null;
+  return Math.min(n, hard);
+}
+
+function allowedModel(env) {
+  const raw = env.SUPPORT_MODEL;
+  if (raw === undefined || raw === null || String(raw).trim() === '') return CHAT_MODEL;
+  const s = String(raw).trim();
+  if (!/^[A-Za-z0-9._:-]{1,64}$/.test(s)) return null;
+  return s;
+}
+
+function rawPathAndQuery(request) {
+  const url = String(request.url || '');
+  const m = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*([^?#]*)(\?[^#]*)?/i.exec(url);
+  if (!m) return { path: '', query: '?', encoded: true };
+  const path = m[1] || '/';
+  let encoded = false;
+  try {
+    encoded = decodeURIComponent(path) !== path;
+  } catch {
+    encoded = true;
+  }
+  return { path, query: m[2] || '', encoded };
+}
+
+// Exact POST /v1/support/chat, or a refusal for anything that is trying to be that route. Null means some other route.
+function classifySupportChat(request) {
+  const raw = rawPathAndQuery(request);
+  let pathname = '';
+  try { pathname = new URL(request.url).pathname; } catch { return null; }
+  const clean = raw.path === '/v1/support/chat' && !raw.query && !raw.encoded
+    && !raw.path.split('/').includes('.') && !raw.path.split('/').includes('..');
+  if (clean && request.method === 'POST') return 'handle';
+  if (clean || raw.path === '/v1/support/chat' || pathname === '/v1/support/chat') return 'refuse';
+  return null;
+}
+
+function tokensFromUsage(usage) {
+  if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return 0;
+  const total = usage.total_tokens;
+  if (Number.isSafeInteger(total) && total > 0 && total <= CHAT_MAX_USAGE) return total;
+  const inn = Number.isSafeInteger(usage.prompt_tokens) ? usage.prompt_tokens
+    : (Number.isSafeInteger(usage.input_tokens) ? usage.input_tokens : 0);
+  const out = Number.isSafeInteger(usage.completion_tokens) ? usage.completion_tokens
+    : (Number.isSafeInteger(usage.output_tokens) ? usage.output_tokens : 0);
+  const sum = (inn > 0 ? inn : 0) + (out > 0 ? out : 0);
+  return Number.isSafeInteger(sum) && sum > 0 && sum <= CHAT_MAX_USAGE ? sum : 0;
+}
+
+function chatBodyOk(obj, model) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
+  if (obj.model !== model) return false;
+  if (!Array.isArray(obj.messages) || obj.messages.length === 0 || obj.messages.length > 500) return false;
+  for (const message of obj.messages) {
+    if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+    if (typeof message.role !== 'string' || !message.role || message.role.length > 32) return false;
+    if (message.role.includes('\n') || message.role.includes('\r')) return false;
+    const content = message.content;
+    const contentOk = content === undefined || content === null || typeof content === 'string' || Array.isArray(content);
+    if (!contentOk) return false;
+  }
+  if ('stream' in obj && typeof obj.stream !== 'boolean') return false;
+  return true;
+}
+
+// Adds a parsed usage total. Never writes zero, and a closed window starts at `amount` rather than wiping the row.
+async function addUsage(env, key, amount, seconds) {
+  if (!Number.isSafeInteger(amount) || amount <= 0) return;
+  const now = Math.floor(Date.now() / 1000);
+  const until = now + seconds;
+  await env.DB.prepare(
+    `INSERT INTO limits (k, n, until) VALUES (?, ?, ?)
+     ON CONFLICT(k) DO UPDATE SET
+       n = CASE WHEN limits.until <= ? THEN ? ELSE limits.n + ? END,
+       until = CASE WHEN limits.until <= ? THEN ? ELSE limits.until END`,
+  ).bind(key, amount, until, now, amount, amount, now, until).run();
+}
+
+async function tokenBudgetOpen(env, key, max) {
+  if (!(max > 0)) return true;
+  const now = Math.floor(Date.now() / 1000);
+  const row = await env.DB.prepare('SELECT n, until FROM limits WHERE k = ?').bind(key).first();
+  if (!row || row.until <= now) return true;
+  return row.n < max;
+}
+
+function containsSecret(text, secrets) {
+  return secrets.some((secret) => secret && text.includes(secret));
+}
+
+function headerText(value, max) {
+  if (typeof value !== 'string') return '';
+  const clean = value.replace(/[\r\n]/g, '').trim();
+  if (!clean || clean.length > max) return '';
+  return clean;
+}
+
+// Fresh headers: the client's bearer, cookie, and forwarding headers never ride along. The Go key is set here only.
+function upstreamHeaders(request, apiKey, stream) {
+  const headers = new Headers();
+  headers.set('authorization', `Bearer ${apiKey}`);
+  headers.set('content-type', 'application/json');
+  headers.set('accept', stream ? 'text/event-stream, application/json' : 'application/json');
+  const agent = headerText(request.headers.get('user-agent'), 256);
+  if (agent) headers.set('user-agent', agent);
+  const session = headerText(request.headers.get('x-opencode-session'), 200);
+  if (session) headers.set('x-opencode-session', session);
+  return headers;
+}
+
+function safeContentType(upstream, fallback) {
+  const raw = String(upstream.headers.get('content-type') || '').split(/[\r\n]/)[0].trim();
+  if (!raw || raw.length > 120 || /[^\w!#$&^.+/=; -]/.test(raw)) return fallback;
+  return raw;
+}
+
+// Stream the upstream body through with a byte cap. Usage is read off SSE lines. A body that does not parse, or that
+// contains a secret, does not write the token counters (the request counter was already spent and is left as it is).
+function streamUpstream(body, maxBytes, secrets, onTokens) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  const hold = secrets.reduce((n, secret) => Math.max(n, secret ? secret.length - 1 : 0), 0);
+  let pending = '';
+  let lineBuf = '';
+  let seen = 0;
+  let maxTokens = 0;
+  let done = false;
+
+  const note = (text) => {
+    lineBuf += text;
+    const lines = lineBuf.split(/\r?\n/);
+    lineBuf = lines.pop() ?? '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      try {
+        const tok = tokensFromUsage(JSON.parse(payload)?.usage);
+        if (tok > maxTokens) maxTokens = tok;
+      } catch { /* a bad line must not change the counters */ }
+    }
+  };
+
+  const finish = async (controller, tokens) => {
+    if (done) return;
+    done = true;
+    try { await reader.cancel(); } catch { /* already finished */ }
+    try { await onTokens(tokens); } catch { /* leave the counters alone */ }
+    try { controller.close(); } catch { /* the client may already be gone */ }
+  };
+
+  return new ReadableStream({
+    async pull(controller) {
+      if (done) return;
+      let next;
+      try { next = await reader.read(); } catch {
+        await finish(controller, 0);
+        return;
+      }
+      if (next.done) {
+        const rest = pending + decoder.decode();
+        pending = '';
+        if (rest && !containsSecret(rest, secrets)) {
+          note(rest);
+          if (lineBuf.trim()) note('\n');
+          controller.enqueue(encoder.encode(rest));
+          await finish(controller, maxTokens);
+        } else {
+          await finish(controller, rest && containsSecret(rest, secrets) ? 0 : maxTokens);
+        }
+        return;
+      }
+      const chunk = next.value instanceof Uint8Array ? next.value : new Uint8Array(next.value);
+      const room = maxBytes - seen;
+      if (room <= 0) {
+        await finish(controller, maxTokens);
+        return;
+      }
+      const slice = chunk.byteLength > room ? chunk.subarray(0, room) : chunk;
+      seen += slice.byteLength;
+      const text = decoder.decode(slice, { stream: true });
+      const inspect = pending + text;
+      if (containsSecret(inspect, secrets)) {
+        pending = '';
+        await finish(controller, 0);
+        return;
+      }
+      const emit = hold > 0 && inspect.length > hold ? inspect.slice(0, inspect.length - hold) : (hold > 0 ? '' : inspect);
+      pending = hold > 0 ? inspect.slice(emit.length) : '';
+      if (emit) {
+        note(emit);
+        controller.enqueue(encoder.encode(emit));
+      }
+      if (slice.byteLength < chunk.byteLength) await finish(controller, maxTokens);
+    },
+  });
+}
+
+async function supportChat(request, env) {
+  let limited = false;
+  try {
+    const gate = await env.LIMIT.limit({ key: request.headers.get('cf-connecting-ip') || '' });
+    limited = !gate?.success;
+  } catch { return chatJson(503, 'Support chat is unavailable.', 'server_error', 'unavailable'); }
+  if (limited) return reply(429);
+  if (!env.DB) return chatJson(503, 'Support chat is unavailable.', 'server_error', 'unavailable');
+
+  const token = /^Bearer (.+)$/i.exec((request.headers.get('authorization') || '').trim())?.[1] || '';
+  if (!token) return reply(401);
+  const digest = await shaFull(token);
+  let who;
+  try {
+    who = await env.DB.prepare('SELECT id FROM support_tokens WHERE sha = ? AND revoked IS NULL').bind(digest).first();
+  } catch { return chatJson(503, 'Support chat is unavailable.', 'server_error', 'unavailable'); }
+  if (!who) return reply(401);
+
+  const ctype = (request.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+  if (ctype !== 'application/json') return chatJson(415, 'Content-Type must be application/json.', 'invalid_request_error', 'unsupported_media_type');
+  const maxReq = byteCap(env.SUPPORT_CHAT_REQUEST_BYTES, CHAT_MAX_REQUEST, CHAT_MAX_REQUEST);
+  const maxRes = byteCap(env.SUPPORT_CHAT_RESPONSE_BYTES, CHAT_MAX_RESPONSE, CHAT_MAX_RESPONSE);
+  if (maxReq === null || maxRes === null) return chatJson(503, 'Support chat is unavailable.', 'server_error', 'unavailable');
+  const claimed = Number(request.headers.get('content-length') || 0);
+  if (claimed > maxReq) return chatJson(413, 'The request is too large.', 'invalid_request_error', 'request_too_large');
+
+  const model = allowedModel(env);
+  const personRequests = capValue(env.SUPPORT_CHAT_PERSON_REQUESTS, CHAT_PERSON_REQUESTS);
+  const sharedRequests = capValue(env.SUPPORT_CHAT_SHARED_REQUESTS, CHAT_SHARED_REQUESTS);
+  const personTokens = capValue(env.SUPPORT_CHAT_PERSON_TOKENS, CHAT_PERSON_TOKENS);
+  const sharedTokens = capValue(env.SUPPORT_CHAT_SHARED_TOKENS, CHAT_SHARED_TOKENS);
+  if (!model || personRequests === null || sharedRequests === null || personTokens === null || sharedTokens === null) {
+    return chatJson(503, 'Support chat is unavailable.', 'server_error', 'unavailable');
+  }
+
+  const bytes = await readCapped(request, maxReq);
+  if (!bytes) return chatJson(413, 'The request is too large.', 'invalid_request_error', 'request_too_large');
+  let obj;
+  try { obj = JSON.parse(new TextDecoder().decode(bytes)); } catch {
+    return chatJson(400, 'The body must be a chat completion.', 'invalid_request_error', 'invalid_json');
+  }
+  if (!chatBodyOk(obj, model)) {
+    return chatJson(400, 'The body must be a chat completion for the allowed model.', 'invalid_request_error', 'invalid_chat');
+  }
+
+  const apiKey = typeof env.OPENCODE_GO_API_KEY === 'string' ? env.OPENCODE_GO_API_KEY : '';
+  if (!apiKey) return chatJson(503, 'Support chat is unavailable.', 'server_error', 'unavailable');
+
+  obj.model = model;
+  const payload = JSON.stringify(obj);
+  if (utf8(payload).byteLength > maxReq) return chatJson(413, 'The request is too large.', 'invalid_request_error', 'request_too_large');
+
+  const personKey = `chat:p:${digest}`;
+  const sharedKey = 'chat:s';
+  const personTokenKey = `chat:tp:${digest}`;
+  const sharedTokenKey = 'chat:ts';
+  const window = secondsUntilUtcMidnight();
+  try {
+    if (!(await tokenBudgetOpen(env, personTokenKey, personTokens))) return quotaReached('person_tokens');
+    if (!(await tokenBudgetOpen(env, sharedTokenKey, sharedTokens))) return quotaReached('shared_tokens');
+    // Spend both request caps before any upstream call. hit() is one statement, so two requests cannot share the last slot.
+    if (personRequests < 1 || !(await hit(env, personKey, personRequests, window))) return quotaReached('person');
+    if (sharedRequests < 1 || !(await hit(env, sharedKey, sharedRequests, window))) return quotaReached('shared');
+  } catch { return chatJson(503, 'Support chat is unavailable.', 'server_error', 'unavailable'); }
+  const secrets = [apiKey, token].filter(Boolean);
+  const record = async (amount) => {
+    if (!Number.isSafeInteger(amount) || amount <= 0) return;
+    try {
+      if (personTokens > 0) await addUsage(env, personTokenKey, amount, window);
+      if (sharedTokens > 0) await addUsage(env, sharedTokenKey, amount, window);
+    } catch { /* a failed usage write must not zero the request counters */ }
+  };
+
+  let upstream;
+  try {
+    upstream = await globalThis.fetch(CHAT_UPSTREAM, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: upstreamHeaders(request, apiKey, obj.stream === true),
+      body: payload,
+    });
+  } catch {
+    return chatJson(502, 'Support chat could not reach the model.', 'upstream_error', 'upstream_failed');
+  }
+  // redirect: 'manual' leaves a 3xx as a response. Anything but a 2xx fails closed, and the upstream body is not forwarded.
+  if (!upstream || upstream.status < 200 || upstream.status >= 300) {
+    try { await upstream?.body?.cancel(); } catch { /* ignore */ }
+    return chatJson(502, 'Support chat could not reach the model.', 'upstream_error', 'upstream_failed');
+  }
+
+  const fallbackType = obj.stream === true ? 'text/event-stream' : 'application/json';
+  const type = safeContentType(upstream, fallbackType);
+  const headers = {
+    'content-type': containsSecret(type, secrets) ? fallbackType : type,
+    'cache-control': 'no-store',
+  };
+  if (obj.stream === true) {
+    const readable = streamUpstream(upstream.body || new ReadableStream(), maxRes, secrets, record);
+    return new Response(readable, { status: 200, headers });
+  }
+
+  const buffered = await readCapped(upstream, maxRes);
+  if (!buffered) {
+    try { await upstream.body?.cancel(); } catch { /* ignore */ }
+    return chatJson(502, 'Support chat could not reach the model.', 'upstream_error', 'upstream_failed');
+  }
+  const text = new TextDecoder().decode(buffered);
+  if (containsSecret(text, secrets)) {
+    return chatJson(502, 'Support chat could not reach the model.', 'upstream_error', 'upstream_failed');
+  }
+  let usage = 0;
+  try { usage = tokensFromUsage(JSON.parse(text)?.usage); } catch { usage = 0; }
+  await record(usage);
+  return new Response(buffered, { status: 200, headers });
+}
+
 export default {
   async fetch(request, env) {
+    const chat = classifySupportChat(request);
+    if (chat === 'handle') return supportChat(request, env);
+    if (chat === 'refuse') {
+      const exact = rawPathAndQuery(request).path === '/v1/support/chat' && !rawPathAndQuery(request).query;
+      if (exact && request.method !== 'POST') return chatJson(405, 'Only POST is accepted.', 'invalid_request_error', 'method_not_allowed');
+      return reply(404);
+    }
     const { pathname } = new URL(request.url);
     if (request.method === 'POST' && pathname === '/v1/report') return report(request, env);
     if (request.method === 'POST' && pathname === '/v1/support') return support(request, env);

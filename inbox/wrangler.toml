@@ -2,6 +2,7 @@
 #
 # Required secret, without which /v1/report answers 503 and stores nothing (the stored per-IP keys would otherwise be a
 # plain hash of an IP address):  npx wrangler@4 secret put SALT
+# Support chat secret, sent only upstream. Never put the value in this file:  npx wrangler@4 secret put OPENCODE_GO_API_KEY
 name = "tess-inbox"
 main = "worker.js"
 compatibility_date = "2026-10-01"
@@ -29,6 +30,15 @@ crons = ["17 4 * * *"]
 
 [observability]
 enabled = false
+
+# Support chat. OPENCODE_GO_API_KEY is a Worker secret (`wrangler secret put`), never a var and never in this file.
+# Caps are UTC-day counters in D1. Token caps of 0 turn that budget off. Request caps apply before the upstream call.
+[vars]
+SUPPORT_MODEL = "deepseek-v4.1-flash"
+SUPPORT_CHAT_PERSON_REQUESTS = "80"
+SUPPORT_CHAT_SHARED_REQUESTS = "400"
+SUPPORT_CHAT_PERSON_TOKENS = "300000"
+SUPPORT_CHAT_SHARED_TOKENS = "2000000"
 
 # Cloudflare's own per-IP limiter (no database work): 6 reports a minute per IP
 [[ratelimits]]
