@@ -1,10 +1,12 @@
 // The vendored Spicetify 2.46.4 files match that upstream archive. The script checks the pinned
-// SHA-256 before it diffs, and nothing in the release runs it. Run: node tools/test-spicetify-upstream.mjs
+// SHA-256 before it diffs, and nothing in the release runs it. CI runs the offline fixtures.
+// The live download runs only when TESS_UPSTREAM_LIVE=1.
+// Run: node tools/test-spicetify-upstream.mjs
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -45,24 +47,48 @@ try {
   assert.match(r.out, new RegExp(pin), 'the refusal names the pinned SHA-256');
   assert.doesNotMatch(r.out, /does not match the upstream archive/, 'a bad checksum is refused before the diff');
 
-  const tarball = join(box, 'spicetify-2.46.4-darwin-arm64.tar.gz');
-  execFileSync('curl', ['-fsSL', '--max-time', '120', '-o', tarball, url], { stdio: 'ignore' });
-  const got = execFileSync('shasum', ['-a', '256', tarball], { encoding: 'utf8' }).split(/\s+/)[0];
-  assert.equal(got, pin, 'the downloaded archive is the pinned v2.46.4 tarball');
+  const live = process.env.TESS_UPSTREAM_LIVE === '1';
+  if (!live && !process.env.TESS_SPICETIFY_CURL_GUARD) {
+    const bin = join(box, 'bin');
+    mkdirSync(bin);
+    const curlBin = join(bin, 'curl');
+    writeFileSync(curlBin, '#!/bin/sh\necho "CI tried to download Spicetify" >&2\nexit 97\n');
+    chmodSync(curlBin, 0o755);
+    const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
+        TESS_SPICETIFY_CURL_GUARD: '1',
+        TESS_UPSTREAM_LIVE: '',
+      },
+    });
+    assert.equal(child.status, 0, `the offline run must not download Spicetify\n${child.stdout}\n${child.stderr}`);
+    assert.match(child.stdout, /live download only when TESS_UPSTREAM_LIVE=1/, 'the offline run reports that it skipped the download');
+  }
 
-  r = run({ TESS_SPICETIFY_TARBALL: tarball, TESS_SPICETIFY_PREBUILT: prebuilt });
-  assert.equal(r.status, 0, r.out);
-  assert.match(r.out, /matches the upstream archive/, 'the committed tree matches upstream');
+  if (live) {
+    const tarball = join(box, 'spicetify-2.46.4-darwin-arm64.tar.gz');
+    execFileSync('curl', ['-fsSL', '--max-time', '120', '-o', tarball, url], { stdio: 'ignore' });
+    const got = execFileSync('shasum', ['-a', '256', tarball], { encoding: 'utf8' }).split(/\s+/)[0];
+    assert.equal(got, pin, 'the downloaded archive is the pinned v2.46.4 tarball');
 
-  const changed = join(box, 'changed');
-  cpSync(prebuilt, changed, { recursive: true });
-  writeFileSync(join(changed, 'css-map.json'), `${readFileSync(join(changed, 'css-map.json'), 'utf8')}\n`);
-  r = run({ TESS_SPICETIFY_TARBALL: tarball, TESS_SPICETIFY_PREBUILT: changed });
-  assert.notEqual(r.status, 0, 'a changed vendored file exits non-zero');
-  assert.match(r.out, /css-map\.json/, 'the refusal names the file that differs');
-  assert.match(r.out, /does not match the upstream archive/, 'the refusal is a diff, not a checksum miss');
+    r = run({ TESS_SPICETIFY_TARBALL: tarball, TESS_SPICETIFY_PREBUILT: prebuilt });
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /matches the upstream archive/, 'the committed tree matches upstream');
 
-  console.log('spicetify upstream tests passed (pin, committed tree, changed file, release path)');
+    const changed = join(box, 'changed');
+    cpSync(prebuilt, changed, { recursive: true });
+    writeFileSync(join(changed, 'css-map.json'), `${readFileSync(join(changed, 'css-map.json'), 'utf8')}\n`);
+    r = run({ TESS_SPICETIFY_TARBALL: tarball, TESS_SPICETIFY_PREBUILT: changed });
+    assert.notEqual(r.status, 0, 'a changed vendored file exits non-zero');
+    assert.match(r.out, /css-map\.json/, 'the refusal names the file that differs');
+    assert.match(r.out, /does not match the upstream archive/, 'the refusal is a diff, not a checksum miss');
+    console.log('spicetify upstream tests passed (pin, committed tree, changed file, release path)');
+  } else {
+    console.log('spicetify upstream tests passed (offline fixtures; live download only when TESS_UPSTREAM_LIVE=1)');
+  }
 } finally {
   rmSync(box, { recursive: true, force: true });
 }
