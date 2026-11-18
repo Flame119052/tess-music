@@ -6,14 +6,14 @@
 model:
   provider: tess-gate
   default: deepseek-v4.1-flash
-  # The gate contract is this URL: POST a chat-completions body here. Hermes's own client appends
-  # /chat/completions to a base (agent/agent_runtime_helpers.py). The dry-run posts this URL as written.
-  base_url: ${TESS_INBOX}/v1/support/chat
+  # The base of the gate. Hermes's own client appends /chat/completions (agent/agent_runtime_helpers.py),
+  # which is the gate's route, POST /v1/support/chat/completions (D-103). The dry-run builds the same URL.
+  base_url: ${TESS_INBOX}/v1/support
 
 providers:
   tess-gate:
     name: tess-gate
-    base_url: ${TESS_INBOX}/v1/support/chat
+    base_url: ${TESS_INBOX}/v1/support
     key_env: TESS_SUPPORT_TOKEN
     api_mode: chat_completions
     default_model: deepseek-v4.1-flash

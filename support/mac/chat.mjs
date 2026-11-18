@@ -43,7 +43,9 @@ const gate = () => {
   const local = process.env.TESS_TEST === '1' && url.protocol === 'http:' && ['127.0.0.1', 'localhost', '::1'].includes(url.hostname);
   const live = url.protocol === 'https:' && url.hostname === 'tess-music-player.janus.ing';
   if (!local && !live) die(`${url.hostname} is not the Tess support gate`);
-  if (url.pathname !== '/v1/support/chat') die(`the gate URL is not the support chat endpoint: ${url.pathname}`);
+  // The profile stores the base, as Hermes expects; Hermes appends /chat/completions, so this does the same.
+  if (url.pathname.replace(/\/$/, '') !== '/v1/support') die(`the gate URL is not the support chat base: ${url.pathname}`);
+  url.pathname = '/v1/support/chat/completions';
   return url;
 };
 

@@ -19,6 +19,6 @@ env_requires:
     required: false
     default: ""
   - name: TESS_INBOX
-    description: "Inbox origin. The gate is this origin plus /v1/support/chat."
+    description: "Inbox origin. The gate base is this origin plus /v1/support; Hermes adds /chat/completions."
     required: false
     default: "https://tess-music-player.janus.ing"

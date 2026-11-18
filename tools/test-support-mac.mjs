@@ -94,7 +94,7 @@ try {
   assert.match(installed, /^via (copy|hermes)\n$/);
   const profile = join(hermesHome, 'profiles', 'tess-support');
   const cfg = readFileSync(join(profile, 'config.yaml'), 'utf8');
-  assert.match(cfg, /base_url:\s*\$\{TESS_INBOX\}\/v1\/support\/chat/);
+  assert.match(cfg, /base_url:\s*\$\{TESS_INBOX\}\/v1\/support\s*$/m);
   assert.match(cfg, /provider:\s*tess-gate/);
   assert.match(cfg, /default:\s*deepseek-v4\.1-flash/);
   assert.match(cfg, /key_env:\s*TESS_SUPPORT_TOKEN/);
@@ -141,7 +141,7 @@ try {
   assert.ok(!badOut.includes(decoy), 'the 401 reply printed the decoy key');
   assert.equal(seen.length, 1);
   assert.equal(seen[0].method, 'POST');
-  assert.equal(seen[0].url, '/v1/support/chat');
+  assert.equal(seen[0].url, '/v1/support/chat/completions');
   assert.equal(seen[0].authorization, `Bearer ${token}`);
   assert.equal(JSON.parse(seen[0].body).model, 'deepseek-v4.1-flash');
 

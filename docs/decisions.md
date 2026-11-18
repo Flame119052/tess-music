@@ -811,16 +811,15 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   system tools are present.
 - **D-104 · 18 Nov 2026 · Agent** — Support on a person's own Mac is a separate Hermes profile, `support/mac/`, and
   it does not change the VPS unit files (#121). The model is a custom provider named `tess-gate`: `model.provider`,
-  `model.default: deepseek-v4.1-flash`, `providers.tess-gate.base_url: ${TESS_INBOX}/v1/support/chat`,
+  `model.default: deepseek-v4.1-flash`, `providers.tess-gate.base_url: ${TESS_INBOX}/v1/support`,
   `providers.tess-gate.key_env: TESS_SUPPORT_TOKEN`, `api_mode: chat_completions`. Those are the keys Hermes reads
   (`hermes_cli/runtime_provider_custom.py`). It is not `opencode-go`, whose key variable is `OPENCODE_GO_API_KEY`.
   The profile `.env` holds the per-person support token and the inbox origin, and nothing that looks like an OpenCode
   key. Approvals stay `manual`, with `cron_mode`, `single_query_mode` and `unattended_mode` set to `deny`.
   *Why:* the VPS bot can read its own environment (D-102). On someone else's Mac the same is true, so the only
   credential there is a token Krish can revoke. The gate holds the Go key. Hermes appends `/chat/completions` to a
-  base URL (`agent/agent_runtime_helpers.py`). The gate's contract is that URL itself — a chat-completions body posted
-  to `${TESS_INBOX}/v1/support/chat` — so the profile stores that URL and the dry-run posts it unchanged.
-  *Trade-off:* a stock Hermes chat will request `{that URL}/chat/completions`, which is a different path. This ticket
-  does not invent a second route. `code_execution` is disabled as well as the toolsets in the plan, because a script
+  base URL (`agent/agent_runtime_helpers.py`), so the profile stores the base `${TESS_INBOX}/v1/support` and the
+  gate serves `POST /v1/support/chat/completions` (D-103); the dry-run builds the same URL.
+  *Trade-off:* none on the path; the bare `/v1/support/chat` is refused by the gate. `code_execution` is disabled as well as the toolsets in the plan, because a script
   can start a process without passing the shell deny list.
 

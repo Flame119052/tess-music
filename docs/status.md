@@ -27,7 +27,7 @@ never files, and has no GitHub token or `gh` at all**. Access is an allowlist on
 over SSH (D-79).
 
 A Mac profile lives in `support/mac/` (D-104, #121). It has no Telegram and no gateway. The model base is
-`${TESS_INBOX}/v1/support/chat` and the bearer is the per-person support token. It is not installed on a Mac yet
+`${TESS_INBOX}/v1/support` (Hermes posts to `/chat/completions` under it) and the bearer is the per-person support token. It is not installed on a Mac yet
 (that is the one-command installer). The VPS unit files are unchanged.
 
 **Not deployed, and not part of a release.** Before it can work: `inbox/schema.sql` applied to D1, the Worker deployed,
