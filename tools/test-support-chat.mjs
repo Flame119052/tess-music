@@ -59,6 +59,7 @@ const DB = {
 
 let rescueReads = 0;
 const calls = [];
+const hits = { limit: 0, chat: 0 };
 const realFetch = globalThis.fetch;
 let upstreamImpl = async () => jsonReply({ choices: [{ message: { content: 'ok' } }], usage: { total_tokens: 5 } });
 
@@ -66,7 +67,8 @@ const shaOf = (t) => createHash('sha256').update(t).digest('hex');
 const env = (extra = {}) => ({
   DB,
   SALT: 'test-salt-test-salt',
-  LIMIT: { limit: async () => ({ success: true }) },
+  LIMIT: { limit: async () => { hits.limit += 1; return { success: true }; } },
+  CHAT_LIMIT: { limit: async () => { hits.chat += 1; return { success: true }; } },
   RESCUE: { get: async () => { rescueReads += 1; return null; } },
   OPENCODE_GO_API_KEY: KEY,
   SUPPORT_MODEL: MODEL,
@@ -107,7 +109,9 @@ function installFetch() {
 }
 
 const limitOf = (key) => query(`SELECT n, until FROM limits WHERE k = '${key}'`)[0] ?? null;
+const tokenCount = () => limitOf(`chat:tp:${shaOf(TOKEN)}`)?.n ?? 0;
 const clearCaps = () => execFileSync('sqlite3', [dbFile, "DELETE FROM limits WHERE k LIKE 'chat:%'"]);
+const DATA_URL_CAP = 4 * 1024 * 1024;
 
 const logs = [];
 const origLog = console.log;
@@ -138,14 +142,19 @@ try {
   let release;
   const blocked = new Promise((resolve) => { release = resolve; });
   const enc = new TextEncoder();
-  upstreamImpl = async () => new Response(new ReadableStream({
-    async pull(controller) {
-      await blocked;
-      controller.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'));
-      controller.enqueue(enc.encode('data: {"usage":{"total_tokens":17}}\n\ndata: [DONE]\n\n'));
-      controller.close();
-    },
-  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  // Usage is sent only when the request asks for it. A fake that always sends it would hide a gate that never sets the flag.
+  upstreamImpl = async (_url, init) => {
+    const asked = JSON.parse(init.body).stream_options?.include_usage === true;
+    return new Response(new ReadableStream({
+      async pull(controller) {
+        await blocked;
+        controller.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'));
+        if (asked) controller.enqueue(enc.encode('data: {"usage":{"total_tokens":17}}\n\n'));
+        controller.enqueue(enc.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
   calls.length = 0;
   const pending = worker.fetch(req('/v1/support/chat', { body: chatBody({ stream: true }) }), env());
   const raced = await Promise.race([
@@ -173,7 +182,9 @@ try {
   assert.equal(sent.get('user-agent'), 'Hermes/0.22.6');
   assert.equal(sent.get('x-opencode-session'), 'support:visit-1');
   assert.equal(calls[0].init.body.includes(TOKEN), false);
-  assert.equal(JSON.parse(calls[0].init.body).model, MODEL);
+  const streamedSent = JSON.parse(calls[0].init.body);
+  assert.equal(streamedSent.model, MODEL);
+  assert.equal(streamedSent.stream_options?.include_usage, true, 'a stream asks upstream for usage');
   const person = limitOf(`chat:p:${shaOf(TOKEN)}`);
   const tokens = limitOf(`chat:tp:${shaOf(TOKEN)}`);
   const shared = limitOf('chat:s');
@@ -244,6 +255,8 @@ try {
   const sharedCap = await worker.fetch(req('/v1/support/chat'), env({ SUPPORT_CHAT_SHARED_REQUESTS: '2' }));
   assert.equal(sharedCap.status, 429);
   assert.equal(calls.length, 0, 'a shared-cap request opened an upstream socket');
+  assert.equal(limitOf(`chat:p:${shaOf(TOKEN)}`)?.n ?? 0, 0, 'a shared-cap refusal does not spend the person slot');
+  assert.equal(limitOf('chat:s').n, 2, 'a shared-cap refusal does not move the shared counter');
 
   // A malformed upstream body does not reset the token counter.
   clearCaps();
@@ -265,13 +278,14 @@ try {
     status: 200, headers: { 'content-type': 'application/json' },
   });
   calls.length = 0;
-  const leaked = await worker.fetch(req('/v1/support/chat'), env());
+  const beforeWithheld = tokenCount();
+  const leaked = await worker.fetch(req('/v1/support/chat', { body: chatBody({ max_tokens: 64 }) }), env());
   const leakedText = await leaked.text();
   assert.equal(leaked.status, 502);
   assert.equal(leakedText.includes(KEY), false);
   assert.equal(leakedText.includes(TOKEN), false);
   assert.equal(new Headers(calls[0].init.headers).get('authorization'), `Bearer ${KEY}`);
-  assert.equal(limitOf(`chat:tp:${shaOf(TOKEN)}`).n, 40, 'a secret-bearing body did not rewrite the token counter');
+  assert.equal(tokenCount(), beforeWithheld + 64, 'a withheld reply with no usage still counts max_tokens');
 
   upstreamImpl = async () => new Response(new ReadableStream({
     start(controller) {
@@ -317,12 +331,193 @@ try {
   assert.equal(down.status, 502);
   assert.equal((await down.text()).includes(KEY), false);
 
+  // A withheld JSON reply keeps the secret off the wire and still counts the parsed usage, not the clamped max_tokens.
+  clearCaps();
+  upstreamImpl = async () => jsonReply({
+    choices: [{ message: { content: `leak ${KEY}` } }],
+    usage: { total_tokens: 33 },
+  });
+  calls.length = 0;
+  const withheldUsage = await worker.fetch(req('/v1/support/chat', { body: chatBody({ max_tokens: 64 }) }), env());
+  const withheldUsageText = await withheldUsage.text();
+  assert.equal(withheldUsage.status, 502);
+  assert.equal(withheldUsageText.includes(KEY), false, 'a withheld reply showed the key');
+  assert.equal(calls.length, 1);
+  assert.equal(tokenCount(), 33, 'a withheld reply counted the parsed usage');
+
+  // A streamed secret is not forwarded. Reading continues so the later usage frame is what moves the cap.
+  clearCaps();
+  upstreamImpl = async () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(enc.encode(`data: {"choices":[{"delta":{"content":"${KEY}"}}]}\n\n`));
+      controller.enqueue(enc.encode('data: {"usage":{"total_tokens":15}}\n\ndata: [DONE]\n\n'));
+      controller.close();
+    },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const withheldStream = await worker.fetch(req('/v1/support/chat', { body: chatBody({ stream: true, max_tokens: 64 }) }), env());
+  const withheldStreamText = await withheldStream.text();
+  assert.equal(withheldStreamText.includes(KEY), false, 'a streamed secret reached the client');
+  assert.equal(tokenCount(), 15, 'a withheld stream counted the usage frame');
+
+  // The client leaves before the usage frame. The gate keeps reading it, on ctx.waitUntil, and cancels the upstream.
+  clearCaps();
+  let upstreamCancelled = false;
+  let streamPulls = 0;
+  upstreamImpl = async () => new Response(new ReadableStream({
+    pull(controller) {
+      streamPulls += 1;
+      if (streamPulls === 1) {
+        controller.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"Hello from the support chat"}}]}\n\n'));
+        return;
+      }
+      if (streamPulls === 2) {
+        controller.enqueue(enc.encode('data: {"usage":{"total_tokens":21}}\n\n'));
+        return;
+      }
+      return new Promise(() => {});
+    },
+    cancel() { upstreamCancelled = true; },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const jobs = [];
+  const ctx = { waitUntil(p) { jobs.push(Promise.resolve(p)); } };
+  const leaving = await worker.fetch(req('/v1/support/chat', { body: chatBody({ stream: true, max_tokens: 64 }) }), env(), ctx);
+  const leavingReader = leaving.body.getReader();
+  const firstChunk = await leavingReader.read();
+  const firstText = new TextDecoder().decode(firstChunk.value);
+  assert.equal(firstChunk.done, false);
+  assert.equal(firstText.includes('total_tokens'), false, 'the usage frame was sent before the client left');
+  await leavingReader.cancel();
+  assert.equal(jobs.length, 1, 'a disconnect finishes usage on ctx.waitUntil');
+  await Promise.all(jobs);
+  assert.equal(upstreamCancelled, true, 'a disconnect cancels the upstream reader');
+  assert.equal(tokenCount(), 21, 'a disconnect counted the usage frame it kept reading');
+
+  // The upstream ends without a usage frame. The disconnect is charged the clamped max_tokens.
+  clearCaps();
+  upstreamImpl = async () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"Hello from the support chat"}}]}\n\n'));
+      controller.close();
+    },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const quietJobs = [];
+  const quietCtx = { waitUntil(p) { quietJobs.push(Promise.resolve(p)); } };
+  const quiet = await worker.fetch(req('/v1/support/chat', { body: chatBody({ stream: true, max_tokens: 128 }) }), env(), quietCtx);
+  const quietReader = quiet.body.getReader();
+  await quietReader.read();
+  await quietReader.cancel();
+  await Promise.all(quietJobs);
+  assert.equal(tokenCount(), 128, 'a disconnect with no usage counted max_tokens');
+
+  // Chat has its own limiter. A reports refusal does not block chat, and a chat refusal is JSON the client can read.
+  clearCaps();
+  calls.length = 0;
+  const limitBefore = hits.limit;
+  const openDespiteReports = await worker.fetch(req('/v1/support/chat'), env({
+    LIMIT: { limit: async () => { hits.limit += 1; return { success: false }; } },
+  }));
+  assert.equal(openDespiteReports.status, 200, 'chat was refused by the reports limiter');
+  await openDespiteReports.text();
+  assert.equal(hits.limit, limitBefore, 'chat called the reports limiter');
+  calls.length = 0;
+  const chatBefore = hits.chat;
+  const spentBeforePace = limitOf(`chat:p:${shaOf(TOKEN)}`)?.n ?? 0;
+  const paced = await worker.fetch(req('/v1/support/chat'), env({
+    CHAT_LIMIT: { limit: async () => { hits.chat += 1; return { success: false }; } },
+  }));
+  assert.equal(paced.status, 429);
+  assert.equal(calls.length, 0, 'a rate-limited chat opened an upstream socket');
+  const pacedBody = await paced.json();
+  assert.equal(pacedBody.error.type, 'rate_limit_error');
+  assert.equal(pacedBody.error.code, 'rate_limit_exceeded');
+  assert.match(paced.headers.get('content-type'), /application\/json/);
+  assert.equal(hits.chat, chatBefore + 1);
+  assert.equal(limitOf(`chat:p:${shaOf(TOKEN)}`)?.n ?? 0, spentBeforePace, 'a rate-limited chat spent a daily slot');
+
+  // The payload is an allowlist. Hermes tool calls stay. n, remote images, and unknown fields do not.
+  clearCaps();
+  const tools = [{ type: 'function', function: { name: 'read_file', description: 'Read a file', parameters: { type: 'object', properties: { path: { type: 'string' } } } } }];
+  const toolMessages = [
+    { role: 'user', content: [{ type: 'text', text: 'read the theme' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,aaaa' } }] },
+    { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{"path":"theme.js"}' } }] },
+    { role: 'tool', tool_call_id: 'call_1', content: 'theme body' },
+  ];
+  upstreamImpl = async () => jsonReply({
+    choices: [{ message: { content: null, tool_calls: [{ id: 'call_2', type: 'function', function: { name: 'read_file', arguments: '{"path":"theme.js"}' } }] } }],
+    usage: { total_tokens: 11 },
+  });
+  calls.length = 0;
+  const tooled = await worker.fetch(req('/v1/support/chat', {
+    body: chatBody({
+      messages: toolMessages,
+      tools,
+      tool_choice: 'auto',
+      temperature: 0.2,
+      top_p: 0.9,
+      max_tokens: 100000,
+      stop: ['\n'],
+      n: 1,
+      user: 'drop-me',
+      extra_body: { reasoning: { enabled: true } },
+      stream_options: { include_usage: false },
+    }),
+  }), env());
+  assert.equal(tooled.status, 200);
+  const tooledBody = await tooled.json();
+  assert.equal(tooledBody.choices[0].message.tool_calls[0].id, 'call_2');
+  const sentTool = JSON.parse(calls[0].init.body);
+  assert.deepEqual(sentTool.tools, tools);
+  assert.equal(sentTool.tool_choice, 'auto');
+  assert.equal(sentTool.messages[1].tool_calls[0].function.name, 'read_file');
+  assert.equal(sentTool.messages[2].tool_call_id, 'call_1');
+  assert.equal(sentTool.messages[0].content[1].image_url.url, 'data:image/png;base64,aaaa');
+  assert.equal(sentTool.temperature, 0.2);
+  assert.equal(sentTool.top_p, 0.9);
+  assert.equal(sentTool.max_tokens, 8192, 'max_tokens was not clamped');
+  assert.deepEqual(sentTool.stop, ['\n']);
+  assert.equal('user' in sentTool, false, 'an unknown field was forwarded');
+  assert.equal('extra_body' in sentTool, false, 'extra_body was forwarded');
+  assert.equal('n' in sentTool, false, 'n was forwarded');
+  assert.equal(sentTool.stream_options, undefined);
+
+  const refused = async (label, body) => {
+    const before = calls.length;
+    const spent = limitOf(`chat:p:${shaOf(TOKEN)}`)?.n ?? 0;
+    const res = await worker.fetch(req('/v1/support/chat', { body }), env());
+    assert.equal(res.status, 400, `${label} was accepted`);
+    assert.equal(calls.length, before, `${label} opened an upstream socket`);
+    assert.equal(limitOf(`chat:p:${shaOf(TOKEN)}`)?.n ?? 0, spent, `${label} spent a request slot`);
+    await res.text();
+  };
+  await refused('n other than 1', chatBody({ n: 50, max_tokens: 100000 }));
+  await refused('remote image', chatBody({
+    messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://evil.example/a.png' } }] }],
+  }));
+  await refused('remote input_image', chatBody({
+    messages: [{ role: 'user', content: [{ type: 'input_image', image_url: 'http://evil.example/a.png' }] }],
+  }));
+  await refused('oversized data url', chatBody({
+    messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${'a'.repeat(DATA_URL_CAP)}` } }] }],
+  }));
+  await refused('max_tokens of 0', chatBody({ max_tokens: 0 }));
+  assert.ok(workerSrc.includes('CHAT_MAX_DATA_URL = 4 * 1024 * 1024'), 'the data-url cap the test uses is the one in the Worker');
+  assert.match(readFileSync(join(root, 'inbox/wrangler.toml'), 'utf8'), /name = "CHAT_LIMIT"[\s\S]*namespace_id = "7302"[\s\S]*limit = 30, period = 60/);
+
+  const decisions = readFileSync(join(root, 'docs/decisions.md'), 'utf8');
+  const secretsDoc = readFileSync(join(root, 'docs/secrets-and-env.md'), 'utf8');
+  assert.match(decisions, /token cap is soft by up to about one reply per parallel request/);
+  assert.match(secretsDoc, /token cap is soft by up to about one reply per parallel request/);
+
   assert.equal(rescueReads, 0, 'chat handling read the rescue binding');
   assert.equal(logs.some((line) => line.includes(KEY) || line.includes(TOKEN)), false, 'a log line contained a secret');
 
   // The existing support post route is still the report endpoint.
+  const limitBeforeReport = hits.limit;
+  const chatBeforeReport = hits.chat;
   const support = await worker.fetch(req('/v1/support', { body: { title: 'nope' }, token: '' }), env());
   assert.equal(support.status, 401);
+  assert.equal(hits.limit, limitBeforeReport + 1, 'a support report did not use the reports limiter');
+  assert.equal(hits.chat, chatBeforeReport, 'a support report used the chat limiter');
   assert.equal(calls.filter((c) => c.url === UPSTREAM).length, calls.length);
 } finally {
   globalThis.fetch = realFetch;
