@@ -6,6 +6,23 @@ set -e
 cd "$(dirname "$0")/.."
 fail() { echo "SAFETY CHECK FAILED: $1"; exit 1; }
 
+# Stable is still the build from before Release B, so it has no dist/install.sh and the public
+# install line refuses a new install. Promoting is paused. Failing here would turn every pull
+# request red, so this is a notice. tools/promote.mjs is what refuses a beta that lacks the pair.
+stable_installer_notice() {
+  _repo=${1:-.}
+  if git -C "$_repo" rev-parse -q --verify refs/remotes/origin/stable >/dev/null 2>&1; then
+    if ! git -C "$_repo" cat-file -e refs/remotes/origin/stable:dist/install.sh 2>/dev/null; then
+      echo "notice: origin/stable has no dist/install.sh; new installs are refused until the first promote"
+    fi
+  fi
+}
+
+if [ "${1:-}" = "--stable-notice" ]; then
+  stable_installer_notice "${2:-.}"
+  exit 0
+fi
+
 # Quoted words are not commands: the install line's own messages mention a shell inside quotes.
 # A downloaded file may be run only as sh of the installer, and only after a tess-verify of that
 # same file whose failure exits. An installer fetched from main is refused, including paths the
@@ -214,6 +231,7 @@ forwarder_fixture blocked 'curl -fsSL "$API/contents/dist/install.sh?ref=main" -
 '"$forwarder_ok" "ref=main"
 forwarder_fixture blocked 'curl -fsSL "$BASE/$CH/dist/install.sh" | sh
 '"$forwarder_ok" "pipe into a shell"
+stable_installer_notice
 
 # The folder swap runs inside tess-patcher, never in a shell: macOS's App Management protection denies /usr/bin/ditto
 # when launchd starts a script under /bin/zsh, so a background theme update could never reach Spotify that way. Each

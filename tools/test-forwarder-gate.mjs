@@ -3,7 +3,7 @@
 // them. Run: node tools/test-forwarder-gate.mjs
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -53,5 +53,59 @@ blocked('curl -fsSL "$BASE/$CH/dist/install.sh" | sh\n' + accepted, 'a pipe into
 r = run(readFileSync(join(root, 'installer/install.sh'), 'utf8'));
 assert.equal(r.status, 0, r.out);
 assert.match(r.out, /forwarder-ok/, 'installer/install.sh passes the gate');
+
+// origin/stable is still the pre-Release-B build, so a missing installer is a notice.
+// A missing ref stays quiet. A channel that already has dist/install.sh stays quiet.
+const notice = (repo) => {
+  try {
+    const out = execFileSync('sh', [join(root, 'tools/check-safety.sh'), '--stable-notice', repo], { encoding: 'utf8' });
+    return { status: 0, out };
+  } catch (e) {
+    return { status: e.status ?? 1, out: `${e.stdout || ''}${e.stderr || ''}` };
+  }
+};
+const initStable = (withInstaller) => {
+  const box = mkdtempSync(join(tmpdir(), 'tess-stable-notice-'));
+  const origin = join(box, 'origin.git');
+  const repo = join(box, 'repo');
+  const git = (cwd, args) => execFileSync('git', args, { cwd, encoding: 'utf8' });
+  git(box, ['init', '-q', '--bare', origin]);
+  git(box, ['init', '-q', repo]);
+  writeFileSync(join(repo, 'README.md'), 'x\n');
+  if (withInstaller) {
+    mkdirSync(join(repo, 'dist'));
+    writeFileSync(join(repo, 'dist/install.sh'), '#!/bin/sh\nexit 0\n');
+  }
+  git(repo, ['add', '.']);
+  git(repo, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'stable']);
+  git(repo, ['branch', '-M', 'stable']);
+  git(repo, ['remote', 'add', 'origin', origin]);
+  git(repo, ['push', '-q', 'origin', 'stable']);
+  git(repo, ['fetch', '-q', 'origin']);
+  return { box, repo };
+};
+
+const missing = initStable(false);
+let n = notice(missing.repo);
+rmSync(missing.box, { recursive: true, force: true });
+assert.equal(n.status, 0, n.out);
+assert.match(n.out, /new installs are refused until the first promote/, 'a stable channel with no installer is a notice, not a failure');
+assert.doesNotMatch(n.out, /SAFETY CHECK FAILED/, 'the notice does not fail the check');
+
+const present = initStable(true);
+n = notice(present.repo);
+rmSync(present.box, { recursive: true, force: true });
+assert.equal(n.status, 0, n.out);
+assert.doesNotMatch(n.out, /notice:/, 'a stable channel that has dist/install.sh stays quiet');
+
+const bare = mkdtempSync(join(tmpdir(), 'tess-stable-noref-'));
+try {
+  execFileSync('git', ['init', '-q', bare]);
+  n = notice(bare);
+  assert.equal(n.status, 0, n.out);
+  assert.equal(n.out.trim(), '', 'no origin/stable means no notice');
+} finally {
+  rmSync(bare, { recursive: true, force: true });
+}
 
 console.log('forwarder gate tests passed');

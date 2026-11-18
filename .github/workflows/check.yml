@@ -14,7 +14,7 @@ jobs:
         with: { go-version-file: patcher/go.mod, cache: false }
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
-      - name: Fetch the stable channel (the safety gate checks what users get)
+      - name: Fetch the stable channel (a notice if it has no installer yet, not a failure)
         run: git fetch --depth=1 origin stable:refs/remotes/origin/stable || true
       - name: Safety checks (installer, updater, doctor, rescue, patcher swap)
         run: tools/check-safety.sh
