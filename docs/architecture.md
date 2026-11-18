@@ -32,7 +32,7 @@ Inside Spotify (`Spotify.app/Contents/Resources/Apps/xpui`): Spicetify's wrapper
 1. **Look and features** (the theme): on every Spotify start the loader fetches `dist/manifest.json` for its channel
    (`tess:settings.channel` in Spotify's localStorage; default `stable`) from GitHub's API, falling back to jsDelivr;
    checks the signed envelope (`version`, `js`, `css`, `jsSha`, `cssSha`, `rev`) and the Ed25519 signatures of `theme.js` and
-   `user.css`; runs it. `rev` only goes up per channel: a correctly signed but older release served by a mirror is
+   `user.css`, and refuses a part name that is not one file inside `dist/`; runs it. `rev` only goes up per channel: a correctly signed but older release served by a mirror is
    refused. The cached copy is verified again on every read, so writing `tess:bundle` by hand no longer runs code. If a
    new release fails to start (`window.__tessReady` not set within 20 s), it's marked bad and the last good one (or the
    baseline) runs.

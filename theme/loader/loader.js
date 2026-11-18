@@ -69,6 +69,10 @@
         }
         const cached = ls('tess:bundle');
         if (cached && cached.version === m.version && cached.channel === channel && (Number(cached.rev) || 0) === rev && (await verified(cached))) return cached;
+        // The manifest names a file inside dist/ and nothing else. A `../` or a second path segment would be fetched
+        // and, if those bytes were ever signed, run. One segment, no slash, no query.
+        const partFile = (name) => typeof name === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name);
+        if (!partFile(m.js) || !partFile(m.css)) continue;
         const [js, css] = await Promise.all([get(m.js), get(m.css)]);
         if (!(await verify(js, m.sig.js)) || !(await verify(css, m.sig.css))) continue;
         // The signatures prove each file, the envelope proves which files this rev is allowed to use.

@@ -133,6 +133,15 @@ r = await runLoader({
 });
 assert.ok(!r.ran.includes('old') && r.ran.includes('v5'), 'a relabelled old cache is refetched');
 
+// 4d. a legacy manifest may only name a file inside dist/. A path that leaves that folder is refused
+// even when the bytes it names are genuinely signed, so the manifest cannot point the loader elsewhere.
+const escaped = await legacy('escaped');
+escaped.manifest.js = '../secrets.js';
+escaped.files['../secrets.js'] = escaped.files['theme.js'];
+delete escaped.files['theme.js'];
+r = await runLoader({ served: await serve(escaped) });
+assert.ok(!r.ran.includes('escaped'), 'a part name that leaves dist/ is refused');
+
 // 5. a legacy manifest (no envelope, no rev) still runs on a Mac that has no rev floor yet
 r = await runLoader({ served: await serve(await legacy('legacy')) });
 assert.deepEqual(r.ran, ['legacy'], 'a legacy manifest still runs');
@@ -158,4 +167,4 @@ r = await runLoader({
 });
 assert.ok(!r.ran.some((x) => String(x).includes('evil')), 'a forged tess:good is not run');
 
-console.log('loader tests passed (fresh, floor, forged cache, envelope, legacy, last-good, forged good)');
+console.log('loader tests passed (fresh, floor, forged cache, envelope, part name, legacy, last-good, forged good)');

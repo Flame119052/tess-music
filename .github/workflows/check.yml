@@ -58,6 +58,7 @@ jobs:
         run: |
           node tools/test-manifest.mjs
           node tools/test-loader.mjs
+          node tools/test-mini-gate.mjs
           node tools/test-install-line.mjs
           node tools/test-forwarder-gate.mjs
           node tools/test-spicetify-upstream.mjs

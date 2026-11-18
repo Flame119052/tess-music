@@ -22,10 +22,11 @@ as you, and updates never replace that script. Repair tells you if this Mac has 
 `~/Library/Application\ Support/Tess/tess rescue log`, and turn it off with
 `~/Library/Application\ Support/Tess/tess rescue off`.
 
-Update or repair with the same line. Remove everything and put Spotify back to stock:
+Update or repair with the same line. Remove everything and put Spotify back to stock with the
+signed uninstaller already on this Mac:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/uninstall.sh | sh
+"$HOME/Library/Application Support/Tess/tess" uninstall
 ```
 
 ## What's in it

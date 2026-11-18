@@ -51,7 +51,7 @@ esac
 `);
   script(join(bin, 'pgrep'), '#!/bin/sh\nexit 1\n');
   script(join(bin, 'launchctl'), '#!/bin/sh\necho "$@" >> "$FIXTURES/launchctl.log"\nexit 0\n');
-  const output = execFileSync('/bin/sh', [join(root, 'installer/tess-install.sh')], { env: { ...process.env, HOME: home, TESS_TEST: '1', TESS_HOME: tess, TESS_CONFIG: config, TESS_SPOTIFY: spotify, FIXTURES: fixtures, PATH: `${bin}:${process.env.PATH}` }, encoding: 'utf8' });
+  const output = execFileSync('/bin/sh', [join(root, 'installer/tess-install.sh')], { env: { ...process.env, HOME: home, TESS_TEST: '1', TESS_HOME: tess, TESS_CONFIG: config, TESS_SPOTIFY: spotify, TESS_VERIFY: join(fixtures, 'p/tess-verify'), FIXTURES: fixtures, PATH: `${bin}:${process.env.PATH}` }, encoding: 'utf8' });
   assert.match(output, /Test install.*finished/);
   assert.match(output, /The Tess rescue line isn't set up on this Mac\./, 'no rescue line yet: the notice says so');
   assert.ok(!existsSync(join(tess, 'state', 'rescue-notice-shown')), 'a missing rescue line is not marked as disclosed');
