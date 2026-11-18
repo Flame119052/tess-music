@@ -1,0 +1,14 @@
+{
+  "version": "0.2.22",
+  "release": "https://github.com/Flame119052/tess-music/releases/tag/v0.2.22",
+  "files": {
+    "tess-updater.sh": {
+      "sha256": "7ef6c380381937c5c89401bcb8ad019131ba608e09c77cf4c6cae769a391c896",
+      "url": "https://github.com/Flame119052/tess-music/releases/download/v0.2.22/tess-updater.sh"
+    },
+    "tess-doctor.sh": {
+      "sha256": "9aadfdda12bf0c18f2f1914c986e45200fe96e9fd88d1c21a1f8af2da2cf2038",
+      "url": "https://github.com/Flame119052/tess-music/releases/download/v0.2.22/tess-doctor.sh"
+    }
+  }
+}
