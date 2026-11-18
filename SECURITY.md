@@ -40,4 +40,4 @@ How Tess protects users (details in [`docs/architecture.md`](docs/architecture.m
   release, not arbitrary code. Hardening this needs storage the page cannot rewrite; it is tracked separately.
 - **The trust root is the GitHub account.** The release key shows that this repository's CI built a release. It does
   not protect against that account, or a workflow that account runs, being taken over. Two-factor authentication and
-  branch protection are set in GitHub, not in this repository.
+  branch protection are GitHub settings, not files in this repository, and they guard the whole chain.

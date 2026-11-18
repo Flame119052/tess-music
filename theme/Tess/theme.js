@@ -1065,6 +1065,7 @@
   function miniURL(path) { return `${MINI}${path}?k=${encodeURIComponent(miniKey)}`; }
   async function openMini() {
     try {
+      miniKey = ''; // an update restarts Mini with a new token, so the handshake is redone on each click
       if (!await miniReady()) throw new Error('no mini');
       await fetch(miniURL('/toggle'), { mode: 'no-cors' });
       nativeMini = true; pushedLinesFor = ''; pushedLine = null; renderRibbon(); return;
