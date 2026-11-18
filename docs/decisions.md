@@ -809,4 +809,19 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   remains only for a friendly early UX message, while `support/setup.sh` uses `O_NOFOLLOW` + `fchmodSync` instead of
   path-following `chmod` and refuses `TESS_TEST=1` as root unless both an explicit scratch `TESS_TEST_ROOT` and faked
   system tools are present.
+- **D-103 · 18 Nov 2026 · Agent** — Support chat goes through the inbox Worker, not the VPS cap proxy (#121).
+  `POST /v1/support/chat/completions` checks the same `support_tokens` row as `POST /v1/support`. It accepts one model
+  (`SUPPORT_MODEL`, default `deepseek-v4.1-flash`) and forwards only to
+  `https://opencode.ai/zen/go/v1/chat/completions`. `OPENCODE_GO_API_KEY` is a Worker secret and is attached on that
+  upstream request alone. Per-person and shared request caps are spent in D1 with the existing one-statement `hit()`
+  before the call, so two requests cannot both take the last slot. If the shared request cap is the one that
+  refuses, the person's slot is refunded. A normal reply moves token totals only when `usage` parses, and a
+  malformed upstream body does not write them back to zero. A reply withheld because it contains a secret, and a
+  client that disconnects mid-stream, still count: the parsed usage, or that request's max_tokens when none can be
+  read. The token cap is soft by up to about one reply per parallel request, because the budget is read before the
+  call and written after. A missing secret, a missing database, or
+  an upstream error answers 503 or 502 and does not open a second path. The route does not read the rescue order.
+  *Why:* a person's Mac must not hold the Go key or be able to reset a counter, and the public internet must not reach
+  `support/cap-proxy/`. *Trade-off:* chat and rescue share a Worker process. The route's code does not touch rescue
+  state; splitting them into a second Worker can wait. This decision does not deploy the Worker.
 
