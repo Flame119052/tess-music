@@ -110,10 +110,12 @@ that exact beta to `stable`, including its notes and channel-root install line, 
 Both public-channel jobs use the protected GitHub `release` environment and support a no-write `--dry-run`.
 
 Install line: `installer/install.sh` (forwarder on `main`) pins the committed verifier's SHA-256, downloads
-`main/installer/verify/<sha>`, checks it, then downloads `$CH/dist/install.sh` and `dist/install.sig` and verifies the
-installer before running it with that verifier → the installer checks `components.txt` before unpacking the patcher.
-A channel with no signed installer refuses to install: the forwarder checks the verifier's pin and then stops with a
-clear message. There is no fallback to `main`; after the first promote stable carries its own signed installer.
+`main/installer/verify/<sha>`, checks it, then downloads the channel's `dist/install.sh` and `dist/install.sig` as one
+pair from GitHub's contents API, which is live. If that API is down or rate-limited, both files come from the raw
+address together, never one from each. A signature miss fetches the pair once more and then stops. The installer
+runs only after the pinned verifier accepts it, then checks `components.txt` before unpacking the patcher.
+A channel with no signed installer refuses to install: a live 404 stops there and does not use a cached raw copy.
+There is no fallback to `main`; after the first promote stable carries its own signed installer.
 
 Every script that can act on a Mac — `install.sh`, `tess-install.sh`, `updater.sh`, `doctor.sh`, `rescue.sh`,
 `uninstall.sh`, `wake.sh`, `tess-command.sh` — refuses to act when it is sourced or handed to a shell as text (`sh -c

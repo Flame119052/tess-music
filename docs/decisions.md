@@ -436,6 +436,17 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   non-letter old-style `tar` flags, or nested `$(…)` inside redirects (which stop at the first `)`) can either be
   conservative or slip past; reads out of `$APPS` remain covered by must-pass fixtures. The gate deliberately does not
   check writes through a variable, through another working directory, or through `xargs`. (#111)
+- **D-95 · 18 Nov 2026 · Agent** — The public install line fetches `install.sh` and `install.sig` as one pair from
+  GitHub's contents API, and fetches that pair once more when the signature check fails. Both files of a try come
+  from the same place. The raw address is used only when the API is unavailable, not when the API says the file is
+  missing. `tools/check-spicetify-upstream.sh` downloads the Spicetify v2.46.4 archive, requires SHA-256
+  `d217bcf3b780136d66dee9b3548b3689f6004263a958c57d96ad73d7f6fcdd5b`, and diffs the vendored files. A person runs it.
+  The release does not. A promotion key that signs the channel name, and a `rev` floor the page cannot rewrite, stay
+  the owner's decision. This change does not add a key or a new store. (#92)
+  *Why:* raw.githubusercontent caches each file on its own, so just after a promote a new installer can arrive with
+  the previous signature and a good install fails closed. The vendored Spicetify checksum only proves the committed
+  files still match each other. *Trade-off:* an unauthenticated contents read counts against GitHub's 60 reads an
+  hour, so a rate limit falls back to the raw pair and one retry.
 
 ## Releases and process
 

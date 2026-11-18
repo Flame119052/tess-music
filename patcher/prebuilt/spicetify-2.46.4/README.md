@@ -15,4 +15,5 @@ Tess does not modify these files. To move to a new Spicetify version, add a new 
 the extracted files, record the archive's SHA-256 here, and point `tools/release.mjs` at it in a reviewed change.
 
 `SHA256SUMS` records every extracted file. `tools/check-safety.sh` checks it on every push, so a change to the
-committed bytes without a matching manifest fails CI.
+committed bytes without a matching manifest fails CI. `tools/check-spicetify-upstream.sh` downloads the archive,
+checks the SHA-256 above, and diffs these files against it. A person runs that script. The release does not.

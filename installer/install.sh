@@ -87,15 +87,60 @@ curl -fsSL --max-time 60 "$BASE/main/installer/verify/$VERIFY_SHA" -o "$D/tess-v
   || fail "Tess's signature checker didn't match its published checksum, so nothing was installed."
 chmod +x "$D/tess-verify" || fail "Couldn't prepare Tess's signature checker."
 
-# 2. The channel's installer and its signature. Both must come from the promoted channel; there is no fallback.
-code=$(curl -sS -L --max-time 60 -w '%{http_code}' -o "$D/install.sh" "$BASE/$CH/dist/install.sh" 2>/dev/null) || code=000
-if [ "$code" = 404 ]; then
-  fail "Tess's $CH channel has no signed installer ready, so nothing was installed. Try again after Tess is released for this channel."
-elif [ "$code" != 200 ]; then
-  fail "Couldn't download Tess's installer (HTTP $code). Check your connection and try again."
+# 2. The channel's installer and its signature, as one pair. raw.githubusercontent caches each file on
+# its own, so just after a promote one can be the new release and the other the old one, and a good
+# install fails its signature check. The contents API is live. Both files of one try come from the same
+# place. A signature miss fetches the pair once more. A live 404 is not replaced with the raw cache.
+API=""
+if [ -z "${TESS_TEST-}" ] || [ -n "${TESS_TEST_API-}" ]; then
+  API="${TESS_TEST_API:-https://api.github.com/repos/Flame119052/tess-music}"
 fi
-curl -fsSL --max-time 60 "$BASE/$CH/dist/install.sig" -o "$D/install.sig" \
-  || fail "Tess's installer has no signature on $CH, so nothing was installed."
-"$D/tess-verify" "$D/install.sh" "$(tr -d '\n' < "$D/install.sig")" \
-  || fail "Tess's installer didn't pass its signature check, so nothing was installed."
+
+pair_from_api() {
+  [ -n "$API" ] || return 2
+  rm -f "$D/install.sh" "$D/install.sig"
+  code=$(curl -sS -L --max-time 60 -H "Accept: application/vnd.github.raw" -w '%{http_code}' -o "$D/install.sh" "$API/contents/dist/install.sh?ref=$CH" 2>/dev/null) || code=000
+  if [ "$code" = 404 ]; then pair_err=missing; return 1; fi
+  if [ "$code" != 200 ]; then rm -f "$D/install.sh"; return 2; fi
+  code=$(curl -sS -L --max-time 60 -H "Accept: application/vnd.github.raw" -w '%{http_code}' -o "$D/install.sig" "$API/contents/dist/install.sig?ref=$CH" 2>/dev/null) || code=000
+  if [ "$code" = 404 ]; then pair_err=nosig; return 1; fi
+  if [ "$code" != 200 ]; then rm -f "$D/install.sh" "$D/install.sig"; return 2; fi
+  return 0
+}
+
+pair_from_raw() {
+  rm -f "$D/install.sh" "$D/install.sig"
+  code=$(curl -sS -L --max-time 60 -w '%{http_code}' -o "$D/install.sh" "$BASE/$CH/dist/install.sh" 2>/dev/null) || code=000
+  if [ "$code" = 404 ]; then pair_err=missing; return 1; fi
+  if [ "$code" != 200 ]; then pair_err="HTTP $code"; return 1; fi
+  if ! curl -fsSL --max-time 60 "$BASE/$CH/dist/install.sig" -o "$D/install.sig"; then pair_err=nosig; return 1; fi
+  return 0
+}
+
+fetch_pair() {
+  pair_err=
+  if [ -n "$API" ]; then
+    pair_from_api
+    api_st=$?
+    if [ "$api_st" -eq 0 ]; then return 0; fi
+    if [ "$api_st" -eq 1 ]; then return 1; fi
+  fi
+  pair_from_raw
+}
+
+explain_pair() {
+  case "$pair_err" in
+    missing) fail "Tess's $CH channel has no signed installer ready, so nothing was installed. Try again after Tess is released for this channel." ;;
+    nosig) fail "Tess's installer has no signature on $CH, so nothing was installed." ;;
+    HTTP*) fail "Couldn't download Tess's installer ($pair_err). Check your connection and try again." ;;
+    *) fail "Couldn't download Tess's installer. Check your connection and try again." ;;
+  esac
+}
+
+fetch_pair || explain_pair
+if ! "$D/tess-verify" "$D/install.sh" "$(tr -d '\n' < "$D/install.sig")"; then
+  fetch_pair || explain_pair
+  "$D/tess-verify" "$D/install.sh" "$(tr -d '\n' < "$D/install.sig")" \
+    || fail "Tess's installer didn't pass its signature check, so nothing was installed."
+fi
 TESS_CHANNEL="$CH" TESS_VERIFY="$D/tess-verify" sh "$D/install.sh"
