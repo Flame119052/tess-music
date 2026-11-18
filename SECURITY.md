@@ -24,6 +24,10 @@ How Tess protects users (details in [`docs/architecture.md`](docs/architecture.m
   read them back over the web, and the inbox refuses reports rather than store unsalted per-IP keys.
 - The one password prompt Tess can show is to let it update a Spotify that belongs to another account, and only after
   macOS confirms the app is Spotify's own signed build; otherwise it stops and says to reinstall Spotify.
+- Removing Tess runs the signed uninstaller already on the Mac (`tess uninstall`). Downloading that script from `main`
+  stops and says so.
+- Tess Mini listens on localhost and does nothing unless the request carries the token it minted at launch. Only
+  Spotify's page (`https://xpui.app.spotify.com`) can read that token. Another website cannot.
 
 ## Limits
 
@@ -34,3 +38,6 @@ How Tess protects users (details in [`docs/architecture.md`](docs/architecture.m
 - **The `rev` floor lives in Spotify's localStorage**, next to the cached theme. Code that can already write that storage
   can lower or delete the floor. The signed copies still have to verify, so this re-opens replay of an older signed
   release, not arbitrary code. Hardening this needs storage the page cannot rewrite; it is tracked separately.
+- **The trust root is the GitHub account.** The release key shows that this repository's CI built a release. It does
+  not protect against that account, or a workflow that account runs, being taken over. Two-factor authentication and
+  branch protection are GitHub settings, not files in this repository, and they guard the whole chain.

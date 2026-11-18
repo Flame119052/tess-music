@@ -100,7 +100,7 @@ run('tar', ['-C', build, '-czf', `${build}tess-theme.tar.gz`, 'Tess']);
 const mini = `${build}Tess Mini.app/Contents/`;
 mkdirSync(`${mini}MacOS`, { recursive: true });
 for (const arch of ['arm64', 'x86_64']) {
-  run('swiftc', ['-O', '-parse-as-library', '-target', `${arch}-apple-macos13.0`, `${root}mini/TessMini.swift`, '-o', `${build}TessMini-${arch}`]);
+  run('swiftc', ['-O', '-parse-as-library', '-target', `${arch}-apple-macos13.0`, `${root}mini/MiniGate.swift`, `${root}mini/TessMini.swift`, '-o', `${build}TessMini-${arch}`]);
 }
 run('lipo', ['-create', `${build}TessMini-arm64`, `${build}TessMini-x86_64`, '-output', `${mini}MacOS/TessMini`]);
 writeFileSync(`${mini}Info.plist`, readFileSync(`${root}mini/Info.plist`, 'utf8').replace('__VERSION__', version));
@@ -162,7 +162,7 @@ const parts = {
   installer: { file: `${build}tess-installer.sh`, src: hashFiles([`${root}installer/tess-install.sh`]) },
   uninstall: { file: `${build}tess-uninstall.sh`, src: hashFiles([`${root}installer/uninstall.sh`]) },
   command: { file: `${build}tess-command.sh`, src: hashFiles([`${root}installer/tess-command.sh`]) },
-  mini: { file: `${build}tess-mini.zip`, src: hashFiles([`${root}mini/TessMini.swift`, `${root}mini/Info.plist`]).slice(0, 56) + 'sig1' },
+  mini: { file: `${build}tess-mini.zip`, src: hashFiles([`${root}mini/MiniGate.swift`, `${root}mini/TessMini.swift`, `${root}mini/Info.plist`]).slice(0, 56) + 'sig1' },
   theme: { file: `${build}tess-theme.tar.gz`, src: hashFiles([`${root}theme/loader/loader.js`]) },
 };
 const prev = {};

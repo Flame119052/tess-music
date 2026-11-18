@@ -776,6 +776,26 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   (#80). *Trade-off:* the old patcher binary is not the 0.2.22 archive (that binary only accepts the release key); the
   scripts an old Mac runs are the pinned ones, and the swap is the same checked folder switch the installer and the
   current updater call.
+- **D-98 · 18 Nov 2026 · Agent** — The loader refuses a manifest part name that is not one file inside `dist/`.
+  *Why:* `js` and `css` are concatenated into the fetch URL (SEC-24). A name such as `../secrets.js` could leave that
+  folder and, on a legacy manifest, run other bytes that still had a valid signature. *Trade-off:* a release cannot
+  point the loader at a nested path. The signed names today are `theme.js` and `user.css`.
+- **D-99 · 18 Nov 2026 · Agent** — An install with no verifier from the install line stops before it fetches the patcher.
+  *Why:* the public line pins a verifier and passes it in. The old fallback checked the parts list with the verifier
+  packed inside that same download, which approves whatever it arrived with (SEC-02). *Trade-off:* running
+  `tess-install.sh` by hand, without that verifier, no longer installs. The install line is the way in.
+- **D-100 · 18 Nov 2026 · Agent** — `curl … | sh` of `main`'s `uninstall.sh` does not remove Tess. Removal runs the
+  signed `uninstall.sh` already on the Mac, via `tess uninstall`.
+  *Why:* the README line was still an unsigned script from `main` (SEC-03). A push to `main` was code execution for
+  anyone who followed it. The signed part already existed. *Trade-off:* an old copied uninstall line stops and prints
+  the installed command. A person who runs the file itself, including `TESS_REAL_INSTALL=1` on a checkout, still can.
+- **D-101 · 18 Nov 2026 · Agent** — Tess Mini mints a token at launch. Only `https://xpui.app.spotify.com` can read it.
+  Toggle, show, hide, lyric and line timings do nothing without that token, and Mini no longer sends
+  `Access-Control-Allow-Origin: *` or a private-network opt-in to other callers (SEC-18).
+  *Why:* any page could `fetch` localhost and show, hide, or write the lyric line. The theme already uses `no-cors`
+  for those calls, so it sends the token on the query string after one CORS read. *Trade-off:* the token lives in the
+  page for that Spotify session, not in localStorage, because Mini mints a new one every launch. A Mini and a theme
+  from different versions do not talk until both have updated.
 - **D-102 · 18 Nov 2026 · Agent** — The Tess support bot isolates `OPENCODE_GO_API_KEY` and enforces daily caps in a
   separate unprivileged local HTTP proxy (`support/cap-proxy/proxy.mjs`) running as user `tess-cap` under
   `tess-cap.service` (`StateDirectory=tess-cap`, `/home/tess-cap/.env` mode `600`, `127.0.0.1:4193` only), rather

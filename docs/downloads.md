@@ -1,5 +1,7 @@
 # Spotify downloads: what was wrong and what changed
 
+This is Krish's own download folder on one Mac. It is not a Tess feature, and installing Tess does not install it.
+
 ## The cause
 
 Downloads were pointed at the wrong kind of disk.

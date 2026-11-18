@@ -202,10 +202,13 @@ try {
   const piped = run('sh', [], { cwd: checkoutDir, input: readFileSync(join(checkoutDir, 'installer', 'install.sh'), 'utf8') });
   assert.doesNotMatch(piped.out, /was sourced|is inside a git checkout|was handed to a shell/, 'a piped install line is not refused');
   assert.match(piped.out, /Couldn't download Tess's signature checker/, 'a piped install line starts its own work');
-  // The uninstall line in the README is the same shape, and must stay open too.
+  // The old README uninstall line is the same shape as the install line, but it must not run: that file is whatever
+  // is on main. Removal is the signed script already on the Mac.
   const pipedUninstall = run('sh', [], { cwd: checkoutDir, input: readFileSync(join(checkoutDir, 'installer', 'uninstall.sh'), 'utf8') });
-  assert.doesNotMatch(pipedUninstall.out, /was sourced|is inside a git checkout|was handed to a shell/, 'a piped uninstall line is not refused');
-  assert.match(pipedUninstall.out, /Removing Tess Music/, 'a piped uninstall line starts its own work');
+  assert.notEqual(pipedUninstall.status, 0, 'a piped uninstall line is refused');
+  assert.match(pipedUninstall.out, /does not remove Tess/, 'a piped uninstall line says it did not run');
+  assert.doesNotMatch(pipedUninstall.out, /Removing Tess Music/, 'a piped uninstall line does not start removing anything');
+  untouched('a piped uninstall line');
 
   // 6. The library file is the one thing that is safe to source, and it acts on nothing.
   const library = run('sh', ['-c', `. "${join(checkoutDir, 'installer', 'redact.sh')}"; type tess_redact >/dev/null 2>&1 && echo TESS-LIBRARY-READY`]);

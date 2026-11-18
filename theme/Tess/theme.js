@@ -1048,8 +1048,28 @@
   // Tess Mini (the native app) floats over every app and Space; fall back to the in-app window if it isn't installed
   const MINI = 'http://127.0.0.1:38411';
   let nativeMini = false;
+  let miniKey = '';
+  // Mini mints a token at launch. Only Spotify's page can read it; every later call sends it back.
+  async function miniReady() {
+    if (miniKey) return true;
+    try {
+      const res = await fetch(MINI + '/token', { mode: 'cors' });
+      if (!res.ok) return false;
+      const body = await res.json();
+      if (typeof body.k !== 'string' || !body.k) return false;
+      miniKey = body.k;
+      nativeMini = true;
+      return true;
+    } catch { return false; }
+  }
+  function miniURL(path) { return `${MINI}${path}?k=${encodeURIComponent(miniKey)}`; }
   async function openMini() {
-    try { await fetch(MINI + '/toggle', { mode: 'no-cors' }); nativeMini = true; pushedLinesFor = ''; pushedLine = null; renderRibbon(); return; } catch { nativeMini = false; }
+    try {
+      miniKey = ''; // an update restarts Mini with a new token, so the handshake is redone on each click
+      if (!await miniReady()) throw new Error('no mini');
+      await fetch(miniURL('/toggle'), { mode: 'no-cors' });
+      nativeMini = true; pushedLinesFor = ''; pushedLine = null; renderRibbon(); return;
+    } catch { nativeMini = false; }
     if (mini && !mini.closed) { mini.focus(); return; }
     if (!window.documentPictureInPicture) { spotifyButton('[data-testid="pip-toggle-button"]')?.click(); return; }
     mini = await documentPictureInPicture.requestWindow({ width: 340, height: 380 });
@@ -1251,7 +1271,7 @@
     if (!nativeMini || pushedLinesFor === lyrics.uri) return;
     pushedLinesFor = lyrics.uri;
     const body = JSON.stringify({ d: dur, l: lines.map((l) => [l.start, Math.min(l.end, l.start + 9000)]) });
-    fetch(MINI + '/lines', { method: 'POST', mode: 'no-cors', body }).catch(() => {});
+    fetch(miniURL('/lines'), { method: 'POST', mode: 'no-cors', body }).catch(() => {});
   }
 
   function lineAt(ms) {
@@ -1267,10 +1287,10 @@
   function pushMiniLyric(text) {
     if (!nativeMini || text === pushedLine) return;
     pushedLine = text;
-    fetch(MINI + '/lyric', { method: 'POST', mode: 'no-cors', body: text }).catch(() => { nativeMini = false; });
+    fetch(miniURL('/lyric'), { method: 'POST', mode: 'no-cors', body: text }).catch(() => { nativeMini = false; });
   }
-  // find out once whether Tess Mini is installed
-  fetch(MINI + '/ping', { mode: 'no-cors' }).then(() => { nativeMini = true; }).catch(() => {});
+  // find out once whether Tess Mini is installed, and only then remember it as the native window
+  miniReady().then((ok) => { nativeMini = ok; }).catch(() => {});
   const LEAD_MS = 120;
   // re-sync: a per-song offset you nudge with the ± buttons (remembered)
   const syncOffsets = (() => { try { return JSON.parse(localStorage.getItem('tess:lyricSync') || '{}'); } catch { return {}; } })();
