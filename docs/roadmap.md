@@ -44,6 +44,7 @@ The goal: restore rich foreground motion and quality, fix open bugs, clean up th
 | #4 | `P2` | Album and playlist pages review (*waiting on Krish*) |
 | #49 | `P2` | Visual check: verify About/Credits dialogs, tooltips, library expand animation, and Tess Mini |
 | #50 | `P2` | Compatibility testing: test on Intel Macs, macOS 12–14, `~/Applications`, and fresh setups |
+| #128 | `P2` | Record only the Spotify window for a support visit (ScreenCaptureKit; the profile takes a still until then) |
 | — | `P2` | Optional: Apple Developer ID + notarization (would replace the self-signed identity, D-20) |
 
 ## Phase 3 — Apple-Level Polish
