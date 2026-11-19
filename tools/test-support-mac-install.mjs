@@ -3,7 +3,7 @@
 // Usage: node tools/test-support-mac-install.mjs
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +11,29 @@ import assert from 'node:assert/strict';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const install = join(root, 'support/mac/install.sh');
-const token = `tess_${'abc123'.repeat(6)}`;
+const token = `tess_${'0123456789abcdef'.repeat(4)}`;
+const profileCommit = readFileSync(install, 'utf8').match(/^PROFILE_COMMIT=([0-9a-f]{40})$/m)[1];
+const hermesTeam = readFileSync(install, 'utf8').match(/^HERMES_TEAM='([A-Z0-9]{10})'$/m)[1];
+const cliStub = `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '%s\\n' 'hermes 0.22.0'
+  exit 0
+fi
+printf '%s\\n' "$*" > "$TESS_FAKE_LOG/cli-args"
+if [ -n "\${TESS_SUPPORT_TOKEN:-}" ]; then printf '%s\\n' leak >> "$TESS_FAKE_LOG/env-leak"; fi
+mkdir -p "$HOME/.local/bin" "$HERMES_HOME/hermes-agent"
+cat > "$HOME/.local/bin/hermes" <<'END'
+#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '%s\\n' 'hermes 0.22.0'
+  exit 0
+fi
+exit 0
+END
+chmod +x "$HOME/.local/bin/hermes"
+printf '%s\\n' agent > "$HERMES_HOME/hermes-agent/README"
+exit 0
+`;
 const decoy = 'sk-opencode-this-must-not-be-written';
 const nodeVersion = readFileSync(install, 'utf8').match(/^NODE_VERSION=(v\d+\.\d+\.\d+)$/m)[1];
 const fakeNode = join(mkdtempSync(join(tmpdir(), 'tess-support-fake-node-')), 'node');
@@ -35,6 +57,7 @@ const x64Tar = packNode('x64');
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const armHash = sha256(armTar);
 const x64Hash = sha256(x64Tar);
+const cliHash = sha256(cliStub);
 // A separate process: the installer is started with execFileSync, which would
 // stop an in-process server from answering.
 const serveDir = join(fakeNode, '..');
@@ -196,11 +219,14 @@ for a in "$@"; do
 done
 [ -n "$out" ] || exit 2
 case $url in
-  https://raw.githubusercontent.com/Flame119052/tess-music/main/*)
-    rel=\${url#https://raw.githubusercontent.com/Flame119052/tess-music/main/}
+  https://raw.githubusercontent.com/Flame119052/tess-music/${profileCommit}/*)
+    rel=\${url#https://raw.githubusercontent.com/Flame119052/tess-music/${profileCommit}/}
     case $rel in *..*) exit 1 ;; esac
     [ -f "$TESS_FAKE_REPO/$rel" ] || exit 22
     cp "$TESS_FAKE_REPO/$rel" "$out"
+    if [ "\${TESS_FAKE_BAD_PROFILE:-}" = 1 ] && [ "$rel" = "support/mac/SOUL.md" ]; then
+      printf 'tampered\\n' >> "$out"
+    fi
     ;;
   *stable-mac.yml)
     payload="$TESS_FAKE_LOG/payload"
@@ -209,7 +235,11 @@ case $url in
     printf '%s\\n' "version: 9.9.9" "files:" "  - url: /releases/tag/v9.9.9/HermesBundled-9.9.9-mac-arm64.dmg" "    sha512: $hash" "    size: 5" > "$out"
     ;;
   *.dmg)
-    printf 'dmg!!' > "$out"
+    if [ "\${TESS_FAKE_BAD_DMG:-}" = 1 ]; then
+      printf 'dmg!!bad' > "$out"
+    else
+      printf 'dmg!!' > "$out"
+    fi
     ;;
   https://nodejs.org/dist/*)
     case $url in
@@ -219,16 +249,8 @@ case $url in
     /usr/bin/curl -fsSL --proto '=http' --retry 0 -o "$out" "http://127.0.0.1:\${TESS_NODE_PORT}\${rel}"
     ;;
   *install.sh)
-    cat > "$out" <<'END'
-#!/bin/sh
-printf '%s\\n' "$*" > "$TESS_FAKE_LOG/cli-args"
-if [ -n "\${TESS_SUPPORT_TOKEN:-}" ]; then printf '%s\\n' leak >> "$TESS_FAKE_LOG/env-leak"; fi
-mkdir -p "$HOME/.local/bin" "$HERMES_HOME/hermes-agent"
-printf '%s\\n' '#!/bin/sh' 'exit 0' > "$HOME/.local/bin/hermes"
-chmod +x "$HOME/.local/bin/hermes"
-printf '%s\\n' agent > "$HERMES_HOME/hermes-agent/README"
-exit 0
-END
+    cat > "$out" <<'TESS_STUB'
+${cliStub}TESS_STUB
     ;;
   *)
     printf 'bad url %s\\n' "$url" >> "$TESS_FAKE_LOG/curl.log"
@@ -255,12 +277,29 @@ done
 mkdir -p "$mp/Hermes.app/Contents/MacOS"
 printf '%s\\n' '#!/bin/sh' 'exit 0' > "$mp/Hermes.app/Contents/MacOS/Hermes"
 chmod +x "$mp/Hermes.app/Contents/MacOS/Hermes"
+ver=\${TESS_FAKE_HERMES_VERSION:-0.22.0}
+cat > "$mp/Hermes.app/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>$ver</string></dict></plist>
+EOF
 exit 0
 `);
   // ditto is the Mac copy. The sandbox uses cp so this check does not need a Mac.
   writeBin(bin, 'ditto', `#!/bin/sh
+if [ "\${TESS_FAKE_DITTO_EXIT:-0}" != 0 ]; then exit "\${TESS_FAKE_DITTO_EXIT}"; fi
 [ "$#" = 2 ] || exit 2
 cp -R "$1" "$2"
+`);
+  writeBin(bin, 'mv', `#!/bin/sh
+if [ "\${TESS_FAKE_MV_EXIT:-0}" != 0 ]; then
+  for a in "$@"; do
+    case $a in
+      */Hermes.app) exit "\${TESS_FAKE_MV_EXIT}" ;;
+    esac
+  done
+fi
+exec /bin/mv "$@"
 `);
   // A Mac uses PlistBuddy. Linux does not have it; the Dock checks still run.
   const appleBuddy = ['/usr', 'libexec', 'PlistBuddy'].join('/');
@@ -361,6 +400,7 @@ const baseEnv = (place, extra) => ({
   TESS_NODE_PORT: String(nodePort),
   TESS_NODE_SHA_ARM64: armHash,
   TESS_NODE_SHA_X64: x64Hash,
+  TESS_HERMES_CLI_SHA: cliHash,
   OPENCODE_GO_API_KEY: decoy,
   LANG: 'C',
   ...extra,
@@ -493,6 +533,9 @@ try {
   const curlOnce = readFileSync(join(arm.log, 'curl.log'), 'utf8');
   assert.match(curlOnce, /stable-mac\.yml/);
   assert.match(curlOnce, /mac-arm64\.dmg/);
+  const signed = readFileSync(join(arm.log, 'codesign.log'), 'utf8');
+  assert.match(signed, /--verify/);
+  assert.ok(signed.includes(`certificate leaf[subject.OU] = "${hermesTeam}"`), signed);
   assert.match(curlOnce, new RegExp(`node-${nodeVersion.replaceAll('.', '\\.')}-darwin-arm64\\.tar\\.gz`));
   assert.equal((readFileSync(join(arm.log, 'killall.log'), 'utf8').match(/^Dock$/gm) || []).length, 1);
   assert.equal(urlsInDock(arm.plist).filter((url) => url.includes('Tess%20Support.app')).length, 1);
@@ -592,7 +635,9 @@ try {
   assert.equal(existsSync(join(intel.box, 'Applications', 'Hermes.app')), false);
   assert.match(readFileSync(join(intel.log, 'cli-args'), 'utf8'), /--non-interactive --skip-browser --skip-computer-use/);
   const intelLaunch = readFileSync(join(intel.box, 'home', 'Applications', 'Tess Support.app', 'Contents', 'MacOS', 'launch'), 'utf8');
-  assert.match(intelLaunch, /hermes -p tess-support webapp/);
+  const intelHermes = realpathSync(join(intel.box, 'home', '.local', 'bin', 'hermes'));
+  assert.match(intelLaunch, new RegExp(`exec '${intelHermes.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}' -p tess-support webapp`));
+  assert.doesNotMatch(intelLaunch, /exec hermes /);
   assert.doesNotMatch(intelLaunch, /open -a /);
   assert.equal(readFileSync(join(intel.box, 'hermes', 'tess-support-we-installed'), 'utf8').trim(), 'cli');
   assertOnlyEnv(intel);
@@ -617,7 +662,7 @@ try {
   mkdirSync(join(piped.box, 'tmp'));
   const pipedRun = run([], baseEnv(piped, { TESS_ARCH: 'arm64' }), { piped: true, cwd: piped.box });
   assert.equal(pipedRun.status, 0, pipedRun.stderr);
-  assert.match(readFileSync(join(piped.log, 'curl.log'), 'utf8'), /raw\.githubusercontent\.com\/Flame119052\/tess-music\/main\/support\/mac\/plugins\/tess-visit\/__init__\.py/);
+  assert.match(readFileSync(join(piped.log, 'curl.log'), 'utf8'), new RegExp(`raw\\.githubusercontent\\.com/Flame119052/tess-music/${profileCommit}/support/mac/plugins/tess-visit/__init__\\.py`));
   sameTree(tree(join(piped.box, 'hermes', 'profiles', 'tess-support')), reference, 'install.sh piped from curl');
   assertOnlyEnv(piped);
   const pipedGone = run(['--uninstall'], baseEnv(piped, { TESS_ARCH: 'arm64' }), { piped: true, cwd: piped.box });
@@ -704,6 +749,213 @@ print(mod.resolve_node(sys.argv[2]))
   assert.match(asArg.stderr, /Usage/);
   assert.equal(filesContaining(argPlace.box, token).length, 0);
   assert.equal(existsSync(join(argPlace.log, 'curl.log')), false);
+
+  const seedApps = (place) => {
+    const apps = join(place.box, 'Applications');
+    mkdirSync(apps, { recursive: true });
+    writeFileSync(join(apps, 'DO_NOT_TOUCH'), 'sentinel\n');
+    return apps;
+  };
+  const appsUntouched = (place) => {
+    const apps = join(place.box, 'Applications');
+    assert.deepEqual(readdirSync(apps).sort(), ['DO_NOT_TOUCH']);
+    assert.equal(readFileSync(join(apps, 'DO_NOT_TOUCH'), 'utf8'), 'sentinel\n');
+    assert.equal(existsSync(join(apps, 'Hermes.app')), false);
+    assert.equal(existsSync(join(apps, '.Hermes.app.tess-incoming')), false);
+  };
+  const plist = (version) => `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>${version}</string></dict></plist>
+`;
+  const hermesBin = (version) => `#!/bin/sh
+if [ "$1" = "--version" ]; then printf '%s\\n' 'hermes ${version}'; exit 0; fi
+exit 0
+`;
+
+  const badSign = layout('codesign');
+  boxes.push(badSign.box);
+  mkdirSync(join(badSign.box, 'tmp'));
+  seedApps(badSign);
+  const badSignRun = run([], baseEnv(badSign, { TESS_ARCH: 'arm64', TESS_FAKE_CODESIGN_EXIT: '1' }));
+  assert.notEqual(badSignRun.status, 0);
+  assert.match(badSignRun.stderr, /Nothing was copied into Applications/);
+  appsUntouched(badSign);
+  assert.equal(existsSync(join(badSign.box, 'hermes', 'profiles', 'tess-support')), false);
+
+  const badDmg = layout('dmg');
+  boxes.push(badDmg.box);
+  mkdirSync(join(badDmg.box, 'tmp'));
+  seedApps(badDmg);
+  const badDmgRun = run([], baseEnv(badDmg, { TESS_ARCH: 'arm64', TESS_FAKE_BAD_DMG: '1' }));
+  assert.notEqual(badDmgRun.status, 0);
+  assert.match(badDmgRun.stderr, /did not match Hermes's published checksum/);
+  assert.match(badDmgRun.stderr, /Nothing was copied into Applications/);
+  appsUntouched(badDmg);
+
+  const badDitto = layout('ditto');
+  boxes.push(badDitto.box);
+  mkdirSync(join(badDitto.box, 'tmp'));
+  seedApps(badDitto);
+  const badDittoRun = run([], baseEnv(badDitto, { TESS_ARCH: 'arm64', TESS_FAKE_DITTO_EXIT: '1' }));
+  assert.notEqual(badDittoRun.status, 0);
+  appsUntouched(badDitto);
+  assert.equal(existsSync(join(badDitto.box, 'hermes', 'profiles', 'tess-support')), false);
+
+  const badMove = layout('mv');
+  boxes.push(badMove.box);
+  mkdirSync(join(badMove.box, 'tmp'));
+  seedApps(badMove);
+  const badMoveRun = run([], baseEnv(badMove, { TESS_ARCH: 'arm64', TESS_FAKE_MV_EXIT: '1' }));
+  assert.notEqual(badMoveRun.status, 0);
+  assert.match(badMoveRun.stderr, /Applications was left as it was/);
+  appsUntouched(badMove);
+
+  const existingApp = layout('existing-app');
+  boxes.push(existingApp.box);
+  mkdirSync(join(existingApp.box, 'tmp'));
+  const existingBundle = join(existingApp.box, 'Applications', 'Hermes.app');
+  mkdirSync(join(existingBundle, 'Contents', 'MacOS'), { recursive: true });
+  writeFileSync(join(existingBundle, 'SENTINEL'), 'keep\n');
+  writeFileSync(join(existingBundle, 'Contents', 'Info.plist'), plist('0.22.0'));
+  const existingCli = join(existingBundle, 'Contents', 'MacOS', 'hermes');
+  writeFileSync(existingCli, hermesBin('0.22.0'));
+  chmodSync(existingCli, 0o755);
+  const existingRun = run([], baseEnv(existingApp, { TESS_ARCH: 'arm64' }));
+  assert.equal(existingRun.status, 0, existingRun.stderr);
+  assert.match(existingRun.stdout, /profile you already use stays as it is/);
+  assert.equal(readFileSync(join(existingBundle, 'SENTINEL'), 'utf8'), 'keep\n');
+  assert.equal(existsSync(join(existingApp.box, 'hermes', 'tess-support-we-installed')), false);
+  assert.doesNotMatch(readFileSync(join(existingApp.log, 'curl.log'), 'utf8'), /stable-mac\.yml|\.dmg/);
+  const existingLaunch = readFileSync(join(existingApp.box, 'home', 'Applications', 'Tess Support.app', 'Contents', 'MacOS', 'launch'), 'utf8');
+  assert.match(existingLaunch, new RegExp(`exec '${realpathSync(existingCli).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}' -p tess-support webapp`));
+  assert.doesNotMatch(existingLaunch, /exec hermes /);
+
+  const noCli = layout('no-cli');
+  boxes.push(noCli.box);
+  mkdirSync(join(noCli.box, 'tmp'));
+  const noCliBundle = join(noCli.box, 'Applications', 'Hermes.app', 'Contents');
+  mkdirSync(noCliBundle, { recursive: true });
+  writeFileSync(join(noCli.box, 'Applications', 'Hermes.app', 'SENTINEL'), 'keep\n');
+  writeFileSync(join(noCliBundle, 'Info.plist'), plist('0.22.0'));
+  const noCliRun = run([], baseEnv(noCli, { TESS_ARCH: 'arm64' }));
+  assert.notEqual(noCliRun.status, 0);
+  assert.match(noCliRun.stderr, /could not find its hermes command/);
+  assert.equal(readFileSync(join(noCli.box, 'Applications', 'Hermes.app', 'SENTINEL'), 'utf8'), 'keep\n');
+  assert.equal(existsSync(join(noCli.box, 'hermes', 'profiles', 'tess-support', '.env')), false);
+
+  const existingIntel = layout('existing-cli');
+  boxes.push(existingIntel.box);
+  mkdirSync(join(existingIntel.box, 'tmp'));
+  const brewBin = join(existingIntel.box, 'homebrew', 'bin');
+  mkdirSync(brewBin, { recursive: true });
+  const brewHermes = join(brewBin, 'hermes');
+  writeFileSync(brewHermes, hermesBin('0.22.0'));
+  chmodSync(brewHermes, 0o755);
+  const existingIntelRun = run([], baseEnv(existingIntel, {
+    TESS_ARCH: 'x86_64',
+    PATH: `${existingIntel.bin}:${brewBin}:/usr/bin:/bin:/usr/sbin`,
+  }));
+  assert.equal(existingIntelRun.status, 0, existingIntelRun.stderr);
+  assert.match(existingIntelRun.stdout, /profile you already use stays as it is/);
+  assert.equal(existsSync(join(existingIntel.log, 'cli-args')), false);
+  assert.doesNotMatch(readFileSync(join(existingIntel.log, 'curl.log'), 'utf8'), /hermes-agent\/v0\.23\.2\/scripts\/install\.sh/);
+  assert.equal(existsSync(join(existingIntel.box, 'hermes', 'tess-support-we-installed')), false);
+  const brewLaunch = readFileSync(join(existingIntel.box, 'home', 'Applications', 'Tess Support.app', 'Contents', 'MacOS', 'launch'), 'utf8');
+  assert.match(brewLaunch, new RegExp(`exec '${brewHermes.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}' -p tess-support webapp`));
+
+  const oldCli = layout('old-cli');
+  boxes.push(oldCli.box);
+  mkdirSync(join(oldCli.box, 'tmp'));
+  const oldBin = join(oldCli.box, 'old', 'bin');
+  mkdirSync(oldBin, { recursive: true });
+  writeFileSync(join(oldBin, 'hermes'), hermesBin('0.21.0'));
+  chmodSync(join(oldBin, 'hermes'), 0o755);
+  const oldRun = run([], baseEnv(oldCli, {
+    TESS_ARCH: 'x86_64',
+    PATH: `${oldCli.bin}:${oldBin}:/usr/bin:/bin:/usr/sbin`,
+  }));
+  assert.notEqual(oldRun.status, 0);
+  assert.match(oldRun.stderr, /0\.21\.0/);
+  assert.match(oldRun.stderr, /0\.22\.0 or newer/);
+  assert.equal(existsSync(join(oldCli.box, 'hermes', 'profiles', 'tess-support')), false);
+
+  const custom = layout('custom-profile');
+  boxes.push(custom.box);
+  mkdirSync(join(custom.box, 'tmp'));
+  const customHome = join(custom.box, 'hermes');
+  mkdirSync(customHome);
+  writeFileSync(join(customHome, 'active_profile'), 'personal\n');
+  const customDesk = join(custom.box, 'home', 'Library', 'Application Support', 'Hermes');
+  mkdirSync(customDesk, { recursive: true });
+  writeFileSync(join(customDesk, 'active-profile.json'), '{"profile":"personal"}\n');
+  const customRun = run([], baseEnv(custom, { TESS_ARCH: 'arm64' }));
+  assert.equal(customRun.status, 0, customRun.stderr);
+  assert.equal(readFileSync(join(customHome, 'active_profile'), 'utf8'), 'personal\n');
+  assert.equal(readFileSync(join(customDesk, 'active-profile.json'), 'utf8'), '{"profile":"personal"}\n');
+
+  const badInbox = layout('inbox');
+  boxes.push(badInbox.box);
+  mkdirSync(join(badInbox.box, 'tmp'));
+  const badInboxRun = run([], baseEnv(badInbox, { TESS_ARCH: 'arm64', TESS_INBOX: 'http://example.com' }));
+  assert.notEqual(badInboxRun.status, 0);
+  assert.match(badInboxRun.stderr, /TESS_INBOX must be https:\/\/tess-music-player\.janus\.ing/);
+  assert.equal(existsSync(join(badInbox.box, 'hermes', 'profiles', 'tess-support', '.env')), false);
+
+  const badCode = layout('bad-code');
+  boxes.push(badCode.box);
+  mkdirSync(join(badCode.box, 'tmp'));
+  const badCodeRun = run([], baseEnv(badCode, { TESS_ARCH: 'arm64', TESS_SUPPORT_TOKEN: 'tess_not-a-real-code' }));
+  assert.notEqual(badCodeRun.status, 0);
+  assert.match(badCodeRun.stderr, /not one Krish issued/);
+  assert.equal(existsSync(join(badCode.box, 'hermes', 'profiles', 'tess-support', '.env')), false);
+
+  const badHash = layout('bad-hash');
+  boxes.push(badHash.box);
+  mkdirSync(join(badHash.box, 'tmp'));
+  const badHashEnv = baseEnv(badHash, { TESS_ARCH: 'arm64' });
+  const badHashFirst = run([], badHashEnv, { piped: true, cwd: badHash.box });
+  assert.equal(badHashFirst.status, 0, badHashFirst.stderr);
+  const badHashProfile = join(badHash.box, 'hermes', 'profiles', 'tess-support');
+  mkdirSync(join(badHashProfile, 'cache'), { recursive: true });
+  writeFileSync(join(badHashProfile, 'cache', 'keep.txt'), 'unsent\n');
+  const badHashTree = tree(badHashProfile);
+  const badHashSecond = run([], { ...badHashEnv, TESS_FAKE_BAD_PROFILE: '1' }, { piped: true, cwd: badHash.box });
+  assert.notEqual(badHashSecond.status, 0);
+  assert.match(badHashSecond.stderr, /did not match its pinned checksum/);
+  assert.match(badHashSecond.stderr, /Nothing was changed in the profile/);
+  sameTree(tree(badHashProfile), badHashTree, 'a wrong profile checksum');
+
+  const badCli = layout('bad-cli-hash');
+  boxes.push(badCli.box);
+  mkdirSync(join(badCli.box, 'tmp'));
+  seedApps(badCli);
+  const badCliRun = run([], baseEnv(badCli, { TESS_ARCH: 'x86_64', TESS_HERMES_CLI_SHA: '0'.repeat(64) }));
+  assert.notEqual(badCliRun.status, 0);
+  assert.match(badCliRun.stderr, /did not match its pinned checksum/);
+  assert.match(badCliRun.stderr, /It was not run/);
+  assert.equal(existsSync(join(badCli.log, 'cli-args')), false);
+  appsUntouched(badCli);
+
+  const linkedOff = layout('linked-off');
+  boxes.push(linkedOff.box);
+  mkdirSync(join(linkedOff.box, 'tmp'));
+  const linkedOffEnv = baseEnv(linkedOff, { TESS_ARCH: 'arm64' });
+  const linkedOffRun = run([], linkedOffEnv);
+  assert.equal(linkedOffRun.status, 0, linkedOffRun.stderr);
+  const linkedProfiles = join(linkedOff.box, 'hermes', 'profiles');
+  const linkedElsewhere = join(linkedOff.box, 'elsewhere');
+  renameSync(linkedProfiles, linkedElsewhere);
+  symlinkSync(linkedElsewhere, linkedProfiles);
+  const linkedOffRemove = run(['--uninstall'], linkedOffEnv);
+  assert.notEqual(linkedOffRemove.status, 0);
+  assert.match(linkedOffRemove.stderr, /symlink/);
+  assert.equal(readFileSync(join(linkedElsewhere, 'tess-support', '.env'), 'utf8').includes(token), true);
+  assert.equal(existsSync(join(linkedOff.box, 'home', 'Applications', 'Tess Support.app')), true);
+
+  const pinned = readFileSync(install, 'utf8');
+  execFileSync(process.execPath, [join(root, 'tools/pin-support-mac.mjs'), profileCommit], { cwd: root });
+  assert.equal(readFileSync(install, 'utf8'), pinned, 'pin-support-mac.mjs is idempotent');
+  assert.match(readFileSync(join(root, 'support/mac/distribution.yaml'), 'utf8'), /hermes_requires:\s*">=0\.22\.0"/);
 } finally {
   nodeChild.kill();
   rmSync(join(fakeNode, '..'), { recursive: true, force: true });
