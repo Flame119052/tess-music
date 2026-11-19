@@ -1,6 +1,0 @@
-name: tess-notes
-version: "1.0.0"
-description: "Write the visit notes into the current support session, and nowhere else."
-author: Tess Music
-provides_tools:
-  - tess_save_note

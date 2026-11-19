@@ -849,17 +849,44 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   `support_reports.image`, and deleted with the recording when the report is filed or after 14 days. The person's
   words, the title, the summary and a doctor note are written by the profile plugin tool `tess_save_note`, which
   only creates `words.txt`, `title.txt`, `summary.txt` or `doctor.txt` in the current session folder.
-  `doctor.mjs` runs `tess doctor` and saves `doctor.txt` itself. `screencapture` and `osascript` are denied.
-  `spotify-window.mjs` is the only capture. When the profile is running, Hermes sets `HERMES_HOME` to the profile
-  directory, so the approved commands are `$HERMES_HOME/skills/...`. The `skills` toolset stays on so the model can
-  read its skills, and the `tess-notes` hook blocks `skill_manage` (and the file, catalog and project tools) so a
-  skill's `scripts/` cannot be rewritten. `skills.write_approval` is on as a second check. The `vision` toolset is
-  off: an attached chat image still reaches the model through `image_input_mode: auto`, which does not need
-  `vision_analyze`. A shell command may expand only `$HERMES_HOME` and `$HOME`.
+  `doctor.mjs` runs `tess doctor` and saves `doctor.txt` itself. `spotify-window.mjs` is the only capture.
+  The shell sentences this decision used to carry were wrong, and D-110 replaces them. There is no command
+  list. A command that is not on a list does not stop and ask, because Hermes approves it. The model has no
+  shell. The `skills` toolset stays on so the model can read its skills. `skill_manage` is not a tool it can
+  call. `skills.write_approval` stays on as a second check. The `vision` toolset is off: an attached chat image
+  still reaches the model through `image_input_mode: auto`, which does not need `vision_analyze`.
   *Why:* a visit that asks the person to approve a redirect, or that captures a picture and then throws it away, does
   not do the job the profile exists for. Recording the whole display to get eight seconds of Spotify would show
   everything else on the Mac. Krish's filing agents can see the still.
   *Trade-off:* an existing inbox database needs `ALTER TABLE support_reports ADD COLUMN image TEXT` before a still
   can be stored. Until then a still is answered 503 and a video still stores. A moving bug has no automatic
   recording until the ScreenCaptureKit helper exists. This change does not deploy the Worker.
+- **D-110 · 19 Nov 2026 · Agent** — A Mac support visit has no shell (#121). D-106 said a command that is not on
+  `command_allowlist` stops and asks. That is false. In Hermes 0.22.6, `check_all_command_guards`
+  (`tools/approval.py`) approves every command `detect_dangerous_command` does not flag, in manual mode and in
+  the deny modes. The allowlist only pre-approves flagged commands. It refuses nothing. A prompt-injected model
+  could run `curl`, `node /tmp/…`, `printenv` and `cat .env` with no prompt, and a zsh glob qualifier inside an
+  allowed wildcard line runs code. `inbox.mjs issues` feeds the model public GitHub issue titles, and it also
+  reads the person's words, `guard.log` and the doctor output.
+  The profile turns off the `terminal` toolset, which is `terminal` and `process_manage`, and every other
+  toolset that can start a process or write a file. `clarify` stays, because it only asks a question.
+  `skills_list` and `skill_view` stay, because Hermes omits the skills index when none of the skills tools are
+  on (`agent/system_prompt.py`). `skill_view` does not run inline shell snippets from a skill file:
+  `skills.inline_shell` is false (`agent/skill_preprocessing.py`). `skill_manage` writes files and cannot be split
+  off that toolset. A profile plugin is not allowed to delete that process-global tool, so `tess-visit`
+  registers a scoped replacement whose availability check never passes. That takes it off the model list and
+  off the tool-search catalog. The hook still blocks the call. `tools.tool_search.enabled` is `off`, so the
+  visit tools stay on the model's own list instead of behind `tool_call`. The
+  `onboarding` toolset is off, because `setup_beat` writes the first-run record. There is no
+  `command_allowlist` and no deny list. The visit is plugin tools. Each one runs `subprocess` with an argument
+  list the plugin builds. The model never passes a path or a shell string. The plugin picks the session folder.
+  `tess_still` refuses until `tess_consent` has recorded a yes for this visit. The question names what the
+  picture may show. Node is the profile's `runtime/node/bin/node`, or `TESS_NODE` when `TESS_TEST=1`. It is
+  never `node` from `PATH`. The plugin reads `TESS_SUPPORT_TOKEN` from the profile `.env` and puts it in the
+  environment of the `inbox.mjs` report and recording processes only. Tool output is capped and passed through
+  `privacy.mjs` `clean()`, and the token string is removed even when a script fails.
+  *Why:* the person is not there to approve a shell line, and a public issue title is enough to inject one.
+  *Trade-off:* the model cannot run an ad-hoc command when the doctor output is surprising. It can save a note
+  and post what it has. This does not change the VPS bot, which still has a terminal. This change does not
+  deploy the Worker.
 

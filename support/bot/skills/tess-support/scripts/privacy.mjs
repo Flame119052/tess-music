@@ -1,3 +1,7 @@
+// The Mac plugin runs this file as a program to scrub tool output. A Worker import
+// does not take that branch: argv[1] is not this file.
+import { pathToFileURL } from 'node:url';
+
 // The privacy rules for everything a support report carries, in one place.
 //
 // This list used to exist twice: in the bot's triage step, which prepares the text, and in the inbox, which is the last
@@ -69,3 +73,11 @@ export const clean = (text) => {
   for (const [re, to] of PERSONAL) out = out.replace(re, to);
   return out.replace(/\u0000(\d+)\u0000/g, (_, i) => keep[Number(i)]);
 };
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const chunks = [];
+  process.stdin.on('data', (chunk) => chunks.push(chunk));
+  process.stdin.on('end', () => {
+    process.stdout.write(clean(Buffer.concat(chunks).toString('utf8')));
+  });
+}

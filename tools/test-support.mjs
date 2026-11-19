@@ -471,7 +471,7 @@ exit 0
     TESS_SUPPORT_NONINTERACTIVE: '1', TESS_SUPPORT_TOKEN: supSecret, OPENCODE_GO_API_KEY: goSecret,
   };
 
-  const setup = (extra = {}) => out('/bin/sh', [SETUP], { ...senv, ...extra });
+  const setup = (extra = {}) => out('/bin/sh', [SETUP], { ...senv, TESS_TEST_NO_SYSTEMCTL: '1', ...extra });
   const calls = () => (existsSync(join(state, 'calls')) ? readFileSync(join(state, 'calls'), 'utf8').match(/^.*$/gm) || [] : []);
 
   const ran = setup();

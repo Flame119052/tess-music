@@ -550,10 +550,21 @@ if [ "$IS_ROOT" = 1 ]; then
   check_target_safe "$UNIT_DIR" "$ALLOWED_UNIT_DIR" dir 0
 fi
 
+# A sandbox on a machine that already has systemd still has to exercise the
+# "systemctl is not here" path. TESS_TEST_NO_SYSTEMCTL=1 is that switch, and it
+# is ignored unless TESS_TEST=1, so a real install cannot skip its own units
+# by copying the variable into the environment.
+have_systemctl() {
+  if [ "${TESS_TEST:-0}" = 1 ] && [ "${TESS_TEST_NO_SYSTEMCTL:-0}" = 1 ]; then
+    return 1
+  fi
+  command -v systemctl >/dev/null 2>&1
+}
+
 # On a Linux server with useradd and systemd, require root/sudo so we create both tess-support and tess-cap and
 # install the resource-capped systemd units (unless updating as tess-support itself or running in sandbox tests).
 if [ "$IS_ROOT" = 0 ] && [ "${TESS_TEST:-0}" != 1 ] && [ "$CUR_USER" != "$DEFAULT_BOT_USER" ]; then
-  if command -v useradd >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1; then
+  if command -v useradd >/dev/null 2>&1 && have_systemctl; then
     die "on a Linux server with systemd, run this with sudo so it creates the '$DEFAULT_BOT_USER' and '$DEFAULT_CAP_USER' users and installs the capped systemd units:
   sudo -E sh support/setup.sh"
   fi
@@ -961,7 +972,7 @@ UNIT_READY=0
 FILLED_TMP="$TMP/tess-support.service.filled"
 CAP_FILLED_TMP="$TMP/tess-cap.service.filled"
 
-if command -v systemctl >/dev/null 2>&1 && [ -f "$UNIT" ] && [ -f "$CAP_UNIT" ]; then
+if have_systemctl && [ -f "$UNIT" ] && [ -f "$CAP_UNIT" ]; then
   sed \
     -e "s|__USER__|$BOT_USER|g" \
     -e "s|__HOME__|$BOT_HOME|g" \
