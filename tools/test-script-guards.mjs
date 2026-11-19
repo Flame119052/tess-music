@@ -69,6 +69,9 @@ const fakeTool = (name, status) => {
 };
 fakeTool('launchctl', 0);
 fakeTool('pgrep', 1);
+// updater.sh lints the LaunchAgent with plutil before it asks launchd. A Mac has plutil.
+// Without a stand-in the script returns first, and the test never sees music.tess.guard.
+fakeTool('plutil', 0);
 fakeTool('pmset', 0);
 fakeTool('osascript', 0);
 fakeTool('open', 0);
