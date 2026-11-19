@@ -19,10 +19,17 @@ providers:
     default_model: deepseek-v4.1-flash
 
 agent:
-  # A picture of Spotify is evidence, so an attached image stays an image.
+  # A picture attached in the chat stays an image. Hermes puts those pixels on the
+  # message itself (agent/image_routing.py). That does not use the vision toolset:
+  # vision_analyze is a separate tool, and the text fallback calls the helper
+  # function directly. The tool stays off so the model cannot fetch a URL or
+  # open an arbitrary file.
   image_input_mode: auto
-  # The visit needs a terminal, the skills, and a look at the picture or the short recording.
-  # code_execution is off because a script can start a process without hitting the shell deny list.
+  # The visit needs a terminal and the skills. code_execution is off because a
+  # script can start a process without hitting the shell deny list. vision,
+  # catalog and project are off so the model cannot fetch an image URL, install
+  # a catalog entry, or create a project. skills stays on for skills_list and
+  # skill_view; skill_manage is blocked by the tess-notes hook.
   disabled_toolsets:
     - computer_use
     - desktop_ui
@@ -44,12 +51,21 @@ agent:
     - yuanbao
     - kanban
     - todo
+    - vision
+    - catalog
+    - project
+
+# A skill write waits for a person even if the hook is not loaded. The hook still
+# refuses skill_manage outright, so this is the second check.
+skills:
+  write_approval: true
 
 # Exact calls that may run without a question. Hermes compares the whole line,
 # case-sensitive (tools/approval_floors.py): no *, ? or [ means that text only,
 # and a glob has to match the entire line. &&, ;, |, a backtick and $( never
 # match here, even inside a glob. $HERMES_HOME and $HOME stay unquoted in the
 # skills: a quoted $ is a second command, so it would ask on every visit.
+# Any other $ is refused by the tess-notes hook before the shell expands it.
 # When this profile is running, Hermes sets HERMES_HOME to this profile's own
 # directory (hermes_cli/profiles.py resolve_profile_env), not to ~/.hermes.
 # node -e, --eval and -p are denied below, so a glob cannot pre-approve them.
@@ -57,16 +73,15 @@ command_allowlist:
   - 'tail -40 $HOME/Library/Application\ Support/Tess/guard.log'
   - 'node $HERMES_HOME/skills/tess-gather/scripts/doctor.mjs *'
   - 'node $HERMES_HOME/skills/tess-evidence/scripts/spotify-window.mjs'
-  - 'node $HERMES_HOME/skills/tess-evidence/scripts/spotify-window.mjs still */spotify.png'
-  - 'node $HERMES_HOME/skills/tess-evidence/scripts/spotify-window.mjs video */spotify.mov'
+  - 'node $HERMES_HOME/skills/tess-evidence/scripts/spotify-window.mjs still */cache/support/sessions/*/spotify.png'
   - 'node $HERMES_HOME/skills/tess-support/scripts/session.mjs new'
   - 'node $HERMES_HOME/skills/tess-support/scripts/session.mjs sweep'
-  - 'node $HERMES_HOME/skills/tess-support/scripts/session.mjs add */spotify.mov --record'
   - 'node $HERMES_HOME/skills/tess-support/scripts/session.mjs handoff *'
   - 'node $HERMES_HOME/skills/tess-support/scripts/inbox.mjs issues'
   - 'node $HERMES_HOME/skills/tess-support/scripts/inbox.mjs report *'
   - 'node $HERMES_HOME/skills/tess-support/scripts/inbox.mjs recording *'
   - 'node $HERMES_HOME/skills/tess-handoff/scripts/triage-inbox.mjs --report * --words * --title-file * --summary-file * --mode inbox'
+  - 'node $HERMES_HOME/skills/tess-handoff/scripts/triage-inbox.mjs --report * --words * --title-file * --summary-file * --also * --mode inbox'
 
 # The note tool is not a shell command. It is the profile plugin tess-notes.
 plugins:
