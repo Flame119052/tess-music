@@ -14,7 +14,7 @@
 // payload is whatever triage wrote.
 import { closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, dirname, extname, join, resolve } from 'node:path';
-import { inRoot } from './session.mjs';
+import { inRoot, scrub } from './session.mjs';
 import { SECRET_SHAPES, stripInvisible } from './privacy.mjs';
 
 // The one address this bot posts to. Not a variable a message can steer: a redirected host would take the token with it.
@@ -26,14 +26,14 @@ const MAX_IMAGE = 5 * 1024 * 1024;
 const VIDEO = { '.mov': 'video/quicktime', '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm', '.mkv': 'video/x-matroska' };
 const IMAGE = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' };
 
-const die = (msg) => { console.error(msg); process.exit(1); };
+const die = (msg) => { console.error(scrub(msg)); process.exit(1); };
 const dry = process.argv.includes('--dry-run');
 const [cmd, one, two] = process.argv.slice(2).filter((a) => a !== '--dry-run');
 
 const inbox = () => {
   const raw = process.env.TESS_INBOX || `https://${HOST}`;
   let url;
-  try { url = new URL(raw); } catch { die(`TESS_INBOX is not an address: ${raw}`); }
+  try { url = new URL(raw); } catch { die('TESS_INBOX is not an address'); }
   const local = process.env.TESS_TEST === '1' && url.protocol === 'http:' && TEST_HOSTS.has(url.hostname);
   if (!local && !(url.protocol === 'https:' && url.hostname === HOST)) {
     die(`${url.hostname} is not the Tess inbox. This bot posts to ${HOST} and nowhere else.`);
@@ -89,7 +89,7 @@ const readSession = (dir, name, missing, max = Infinity) => {
   try { session = realpathSync(inRoot(dir)); } catch (e) { die(e.message); }
   const wanted = join(session, basename(String(name || '')));
   let lst;
-  try { lst = lstatSync(wanted); } catch { die(missing || `no such file: ${wanted}`); }
+  try { lst = lstatSync(wanted); } catch { die(missing || 'no such file in the session folder'); }
   if (!lst.isFile() || lst.nlink > 1) {
     die(`${basename(wanted)} is not a plain file of this session: a link, or a file with another name, is not something this bot wrote`);
   }
@@ -107,7 +107,7 @@ const readSession = (dir, name, missing, max = Infinity) => {
 
 if (cmd === 'report') {
   if (!one) die('usage: inbox.mjs report <session dir>');
-  const body = readSession(one, 'payload.json', `no payload in ${one}: triage writes it with --mode inbox`).bytes.toString('utf8');
+  const body = readSession(one, 'payload.json', 'no payload in the session folder: triage writes it with --mode inbox').bytes.toString('utf8');
   noSecrets(body, 'the report');
   const out = await send('POST', '/v1/support', { body, type: 'application/json', auth: true });
   if (dry) process.exit(0);
@@ -122,7 +122,7 @@ if (cmd === 'report') {
   if (!type) die('send a .mov, .mp4, .webm or .mkv recording, or a .png or .jpg still');
   const cap = IMAGE[ext] ? MAX_IMAGE : MAX_RECORDING;
   const what = IMAGE[ext] ? 'picture' : 'recording';
-  const got = readSession(dirname(resolve(String(two || ''))), name, `no such file: ${two}`, cap);
+  const got = readSession(dirname(resolve(String(two || ''))), name, 'no such file in the session folder', cap);
   if (got.tooBig) die(`that ${what} is ${Math.round(got.tooBig / 1048576)} MB; the limit is ${cap / 1048576}`);
   const out = await send('PUT', `/v1/support/recording/${one}`, { body: got.bytes, type, auth: true });
   if (dry) process.exit(0);

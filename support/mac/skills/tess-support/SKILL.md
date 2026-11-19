@@ -31,10 +31,10 @@ Start only after they have sent the problem.
    node $HERMES_HOME/skills/tess-support/scripts/session.mjs new
    ```
 
-2. **The doctor** — `tess-gather`. Run `doctor.mjs`. It saves the output. Read logs only under `~/Library/Application Support/Tess`.
-3. **Their words** — call `tess_save_note`. That is a tool, not a shell command. Save `words`, then a plain `title`, then a short `summary`.
-4. **The Spotify window** — `tess-evidence`. One picture, or a short silent recording if the bug moves. If Screen Recording is not allowed yet, say how to turn it on, then carry on without the picture.
-5. **Scrub, post, delete** — `tess-handoff`. `triage.mjs` scrubs through `privacy.mjs`. `inbox.mjs` posts the text, the picture and the recording. After the inbox accepts them, `session.mjs handoff` deletes the folder.
+2. **The doctor** — `tess-gather`. Run `doctor.mjs`. It saves the output. Read logs only under `~/Library/Application Support/Tess`. If the doctor is missing, `tess-gather` says to save a doctor note with `tess_save_note`.
+3. **The Spotify window** — `tess-evidence`. One still of that window. This profile does not record the screen. If Screen Recording is not allowed yet, say how to turn it on, then carry on without the picture.
+4. **Their words** — call `tess_save_note`. That is a tool, not a shell command. Save `words`, then a plain `title`, then a short `summary`.
+5. **Scrub, post, delete** — `tess-handoff`. `triage.mjs` scrubs through `privacy.mjs`. When the doctor found nothing, pass `--also area:theme`, `--also area:mini`, or `--also area:installer` before `--mode inbox`. `inbox.mjs` posts the text and the picture. A recording is sent only when the person attached one. After the inbox accepts them, `session.mjs handoff` deletes the folder.
 
 If it is their Mac rather than Tess — a permission off, Spotify moved, no network — say the fix in one sentence with the exact click path, delete the session folder, and stop.
 
@@ -42,7 +42,7 @@ If it is their Mac rather than Tess — a permission off, Spotify moved, no netw
 
 - `doctor.mjs` in `tess-gather`. It runs the check and saves `doctor.txt`
 - `tess_save_note` for their words, the title and the summary
-- The Spotify window script in `tess-evidence` (`still` or `video`). Never `screencapture`, never `osascript`
+- The Spotify window script in `tess-evidence` (`still` only). Never `screencapture`, never `osascript`
 - `tail` of `guard.log`, the one line in `tess-gather`
 - `node` on `triage-inbox.mjs`, `inbox.mjs`, and `session.mjs`
 

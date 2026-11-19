@@ -4,10 +4,10 @@
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { inRoot } from '../../tess-support/scripts/session.mjs';
+import { inRoot, scrub } from '../../tess-support/scripts/session.mjs';
 
 const MAX = 1024 * 1024;
-const die = (msg) => { console.error(msg); process.exit(1); };
+const die = (msg) => { console.error(scrub(msg)); process.exit(1); };
 
 const dir = process.argv[2];
 if (process.argv.length !== 3 || !dir || dir.startsWith('-')) {

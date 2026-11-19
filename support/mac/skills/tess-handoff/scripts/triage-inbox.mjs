@@ -9,7 +9,8 @@ import { writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const die = (msg) => { console.error(msg); process.exit(1); };
+let scrub = (msg) => String(msg ?? '');
+const die = (msg) => { console.error(scrub(msg)); process.exit(1); };
 const args = process.argv.slice(2);
 const reportAt = args.indexOf('--report');
 const report = reportAt === -1 ? '' : args[reportAt + 1];
@@ -21,15 +22,16 @@ if (!report || report.startsWith('-') || args[modeAt + 1] !== 'inbox') {
 const here = dirname(fileURLToPath(import.meta.url));
 let session;
 try {
-  const { inRoot } = await import(pathToFileURL(join(here, '../../tess-support/scripts/session.mjs')).href);
-  session = inRoot(dirname(report));
+  const sessionApi = await import(pathToFileURL(join(here, '../../tess-support/scripts/session.mjs')).href);
+  scrub = sessionApi.scrub;
+  session = sessionApi.inRoot(dirname(report));
 } catch (err) { die(err.message); }
 const own = { '--report': 'doctor.txt', '--words': 'words.txt', '--title-file': 'title.txt', '--summary-file': 'summary.txt' };
 for (const [flag, name] of Object.entries(own)) {
   const at = args.indexOf(flag);
   if (at === -1) continue;
   const file = resolve(String(args[at + 1] || ''));
-  if (dirname(file) !== session || basename(file) !== name) die(`${flag} must be ${join(session, name)}`);
+  if (dirname(file) !== session || basename(file) !== name) die(`${flag} must be the session's own ${name}`);
 }
 
 const triage = join(here, '../../tess-support/scripts/triage.mjs');
@@ -37,7 +39,7 @@ let out;
 try {
   out = execFileSync(process.execPath, [triage, ...args], { encoding: 'utf8' });
 } catch (err) {
-  if (err.stderr) process.stderr.write(err.stderr);
+  if (err.stderr) process.stderr.write(scrub(err.stderr));
   process.exit(err.status || 1);
 }
 writeFileSync(join(session, 'payload.json'), out);
