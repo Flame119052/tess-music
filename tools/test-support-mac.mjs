@@ -167,9 +167,17 @@ json.dump([{"allow": allow_match(c), "deny": bool(deny_match(c))} for c in comma
 
 const loginHome = () => {
   const user = execFileSync('/usr/bin/id', ['-un'], { encoding: 'utf8' }).trim();
-  const out = execFileSync('/usr/bin/dscl', ['.', '-read', `/Users/${user}`, 'NFSHomeDirectory'], { encoding: 'utf8' });
-  const line = out.split('\n').find((l) => l.startsWith('NFSHomeDirectory:'));
-  return line.slice('NFSHomeDirectory:'.length).trim();
+  let dir = '';
+  try {
+    const out = execFileSync('/usr/bin/dscl', ['.', '-read', `/Users/${user}`, 'NFSHomeDirectory'], { encoding: 'utf8' });
+    const line = out.split('\n').find((l) => l.startsWith('NFSHomeDirectory:'));
+    dir = line?.slice('NFSHomeDirectory:'.length).trim() || '';
+  } catch {
+    const row = execFileSync('getent', ['passwd', user], { encoding: 'utf8' }).split('\n')[0] || '';
+    dir = row.split(':')[5] || '';
+  }
+  if (!dir.startsWith('/')) throw new Error('the login home was not found');
+  return dir;
 };
 
 // macOS often points TMPDIR at a folder under the login home. The installer then
