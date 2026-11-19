@@ -836,5 +836,20 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   base URL (`agent/agent_runtime_helpers.py`), so the profile stores the base `${TESS_INBOX}/v1/support` and the
   gate serves `POST /v1/support/chat/completions` (D-103); the dry-run builds the same URL.
   *Trade-off:* none on the path; the bare `/v1/support/chat` is refused by the gate. `code_execution` is disabled as well as the toolsets in the plan, because a script
-  can start a process without passing the shell deny list.
+  can start a process without passing the shell deny list. The installer refuses a `HERMES_HOME` inside the real login
+  home when `TESS_TEST=1`, so the tests never touch this Mac. A real install is not `TESS_TEST`: it allows `~/.hermes`,
+  which is where Hermes lives, and it still refuses a symlink and any write outside `profiles/tess-support`.
+- **D-106 · 19 Nov 2026 · Agent** — A Mac support visit finishes without a shell approval (#121). The video is captured
+  into the profile's inbound cache (`$HERMES_HOME/cache/support/spotify.mov`, outside the session root) and
+  `session.mjs add` copies it in. A still is posted on `PUT /v1/support/recording` as `image/png` or `image/jpeg`,
+  capped at 5 MB, counted on the same per-token upload budget as a video, stored on `support_reports.image`, and
+  deleted with the recording when the report is filed or after 14 days. The person's words, the title and the summary
+  are written by the profile plugin tool `tess_save_note`, which only creates `words.txt`, `title.txt`, `summary.txt`
+  or `doctor.txt` in the current session folder. `doctor.mjs` runs `tess doctor` and saves `doctor.txt` itself.
+  `screencapture` and `osascript` are denied. `spotify-window.mjs` is the only capture. When the profile is running,
+  Hermes sets `HERMES_HOME` to the profile directory, so the approved commands are `$HERMES_HOME/skills/...`.
+  *Why:* a visit that asks the person to approve a redirect, or that captures a picture and then throws it away, does
+  not do the job the profile exists for. Krish's filing agents can see the still.
+  *Trade-off:* an existing inbox database needs `ALTER TABLE support_reports ADD COLUMN image TEXT` before a still
+  can be stored. Until then a still is answered 503 and a video still stores. This change does not deploy the Worker.
 

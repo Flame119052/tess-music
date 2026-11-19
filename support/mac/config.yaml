@@ -50,22 +50,28 @@ agent:
 # and a glob has to match the entire line. &&, ;, |, a backtick and $( never
 # match here, even inside a glob. $HERMES_HOME and $HOME stay unquoted in the
 # skills: a quoted $ is a second command, so it would ask on every visit.
+# When this profile is running, Hermes sets HERMES_HOME to this profile's own
+# directory (hermes_cli/profiles.py resolve_profile_env), not to ~/.hermes.
 # node -e, --eval and -p are denied below, so a glob cannot pre-approve them.
 command_allowlist:
-  - 'tess doctor'
-  - 'zsh $HOME/Library/Application\ Support/Tess/doctor.sh'
   - 'tail -40 $HOME/Library/Application\ Support/Tess/guard.log'
-  - 'node $HERMES_HOME/profiles/tess-support/skills/tess-evidence/scripts/spotify-window.mjs'
-  - 'node $HERMES_HOME/profiles/tess-support/skills/tess-evidence/scripts/spotify-window.mjs still */spotify.png'
-  - 'node $HERMES_HOME/profiles/tess-support/skills/tess-evidence/scripts/spotify-window.mjs video */spotify.mov'
-  - 'node $HERMES_HOME/profiles/tess-support/skills/tess-support/scripts/session.mjs new'
-  - 'node $HERMES_HOME/profiles/tess-support/skills/tess-support/scripts/session.mjs sweep'
-  - 'node $HERMES_HOME/profiles/tess-support/skills/tess-support/scripts/session.mjs add */spotify.mov --record'
-  - 'node $HERMES_HOME/profiles/tess-support/skills/tess-support/scripts/session.mjs handoff *'
-  - 'node $HERMES_HOME/profiles/tess-support/skills/tess-support/scripts/inbox.mjs issues'
-  - 'node $HERMES_HOME/profiles/tess-support/skills/tess-support/scripts/inbox.mjs report *'
-  - 'node $HERMES_HOME/profiles/tess-support/skills/tess-support/scripts/inbox.mjs recording *'
-  - 'node $HERMES_HOME/profiles/tess-support/skills/tess-handoff/scripts/triage-inbox.mjs --report * --words * --title-file * --summary-file * --mode inbox'
+  - 'node $HERMES_HOME/skills/tess-gather/scripts/doctor.mjs *'
+  - 'node $HERMES_HOME/skills/tess-evidence/scripts/spotify-window.mjs'
+  - 'node $HERMES_HOME/skills/tess-evidence/scripts/spotify-window.mjs still */spotify.png'
+  - 'node $HERMES_HOME/skills/tess-evidence/scripts/spotify-window.mjs video */spotify.mov'
+  - 'node $HERMES_HOME/skills/tess-support/scripts/session.mjs new'
+  - 'node $HERMES_HOME/skills/tess-support/scripts/session.mjs sweep'
+  - 'node $HERMES_HOME/skills/tess-support/scripts/session.mjs add */spotify.mov --record'
+  - 'node $HERMES_HOME/skills/tess-support/scripts/session.mjs handoff *'
+  - 'node $HERMES_HOME/skills/tess-support/scripts/inbox.mjs issues'
+  - 'node $HERMES_HOME/skills/tess-support/scripts/inbox.mjs report *'
+  - 'node $HERMES_HOME/skills/tess-support/scripts/inbox.mjs recording *'
+  - 'node $HERMES_HOME/skills/tess-handoff/scripts/triage-inbox.mjs --report * --words * --title-file * --summary-file * --mode inbox'
+
+# The note tool is not a shell command. It is the profile plugin tess-notes.
+plugins:
+  enabled:
+    - tess-notes
 
 approvals:
   mode: manual
@@ -85,8 +91,8 @@ approvals:
     - '*curl*|*sh*'
     - '*curl*|*bash*'
     - '*/Applications/Spotify.app*'
-    - '*screencapture*-G*'
-    - '*screencapture*-D*'
+    - '*screencapture*'
+    - '*osascript*'
     - 'node -e*'
     - 'node --eval*'
     - 'node -p*'

@@ -10,6 +10,7 @@ distribution_owned:
   - config.yaml
   - distribution.yaml
   - skills
+  - plugins
 
 # The installer writes these into the profile .env at mode 600. The token is the person's support token.
 # The Go key never lands in this file.

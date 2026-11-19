@@ -26,9 +26,9 @@ reads it with `tools/reports.mjs support list` and files the issue with its P0�
 never files, and has no GitHub token or `gh` at all**. Access is an allowlist only Krish can change, on the server
 over SSH (D-79).
 
-A Mac profile lives in `support/mac/` (D-104, #121). It has no Telegram and no gateway. The model base is
-`${TESS_INBOX}/v1/support` (Hermes posts to `/chat/completions` under it) and the bearer is the per-person support token. It is not installed on a Mac yet
-(that is the one-command installer). The VPS unit files are unchanged.
+A Mac profile lives in `support/mac/` (D-104, D-106, #121). It has no Telegram and no gateway. The model base is
+`${TESS_INBOX}/v1/support` (Hermes posts to `/chat/completions` under it) and the bearer is the per-person support token. A visit posts the scrubbed text, a still and a short video without a shell approval. It is not installed on a Mac yet
+(that is the one-command installer, which allows `~/.hermes` outside the test suite). The VPS unit files are unchanged.
 
 **Not deployed, and not part of a release.** Before it can work: `inbox/schema.sql` applied to D1, the Worker deployed,
 and the R2 bucket created — all Krish's, none done here — plus a machine, a Telegram bot and a posting token. What can be

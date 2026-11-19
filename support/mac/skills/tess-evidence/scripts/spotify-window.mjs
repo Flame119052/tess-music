@@ -5,6 +5,7 @@
 //   node spotify-window.mjs still <session>/spotify.png
 //   node spotify-window.mjs video <session>/spotify.mov   eight silent seconds
 import { execFileSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
 
 const die = (msg) => { console.error(msg); process.exit(1); };
 
@@ -30,10 +31,17 @@ const [mode, out, extra] = process.argv.slice(2);
 if (process.argv.length === 2) {
   process.stdout.write(`${windowId()}\n`);
 } else if (!extra && (mode === 'still' || mode === 'video') && out && !out.startsWith('-')) {
-  const args = ['-x', '-l', windowId()];
-  if (mode === 'video') args.push('-V', '8');
-  args.push(out);
-  execFileSync('/usr/sbin/screencapture', args, { stdio: 'inherit' });
+  // Tests pass both. A real visit never sets TESS_FAKE_CAPTURE, so this stays the real capture.
+  if (process.env.TESS_TEST === '1' && process.env.TESS_FAKE_CAPTURE === '1') {
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+    try { writeFileSync(out, mode === 'still' ? png : Buffer.from('tess-fake-mov')); }
+    catch { die(`cannot write ${out}`); }
+  } else {
+    const args = ['-x', '-l', windowId()];
+    if (mode === 'video') args.push('-V', '8');
+    args.push(out);
+    execFileSync('/usr/sbin/screencapture', args, { stdio: 'inherit' });
+  }
 } else {
   die('usage: spotify-window.mjs [still <out.png> | video <out.mov>]');
 }

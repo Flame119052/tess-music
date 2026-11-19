@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// One chat-completions post to the support gate. The configured URL is the endpoint (D-104):
-// Hermes would append /chat/completions, and that would miss the route the gate is building.
+// One chat-completions post to the support gate. The configured URL is the base (D-103, D-104):
+// this script appends /chat/completions, which is the gate's route.
 // 401 and 429 stop. The token is never printed, and a redirect is not followed.
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
