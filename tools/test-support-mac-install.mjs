@@ -2,9 +2,9 @@
 // Never the real Dock, the real /Applications, or the real home.
 // Usage: node tools/test-support-mac-install.mjs
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 
@@ -41,6 +41,27 @@ const filesContaining = (dir, needle) => {
   return hits;
 };
 
+// Every file under dir, as relative path -> bytes. A symlink is a failure: the profile never holds one.
+const tree = (dir) => {
+  const files = new Map();
+  const walk = (current) => {
+    for (const name of readdirSync(current).sort()) {
+      const path = join(current, name);
+      const info = lstatSync(path);
+      assert.equal(info.isSymbolicLink(), false, `${path} is a symlink`);
+      if (info.isDirectory()) walk(path);
+      else files.set(relative(dir, path), readFileSync(path));
+    }
+  };
+  walk(dir);
+  return files;
+};
+
+const sameTree = (got, want, label) => {
+  assert.deepEqual([...got.keys()].sort(), [...want.keys()].sort(), `${label}: a different set of files`);
+  for (const [name, bytes] of want) assert.ok(got.get(name).equals(bytes), `${label}: ${name} differs`);
+};
+
 const urlsInDock = (plist) => {
   if (!existsSync(plist)) return [];
   const raw = execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', plist], { encoding: 'utf8' });
@@ -57,6 +78,7 @@ const layout = (name) => {
   const leak = `
 if [ -n "\${TESS_SUPPORT_TOKEN:-}" ]; then printf '%s\\n' leak >> "$TESS_FAKE_LOG/env-leak"; fi
 `;
+  // The piped install downloads the profile from GitHub. Here those files come from this checkout.
   writeBin(bin, 'curl', `#!/bin/sh
 {
   printf 'argv'
@@ -77,6 +99,12 @@ for a in "$@"; do
 done
 [ -n "$out" ] || exit 2
 case $url in
+  https://raw.githubusercontent.com/Flame119052/tess-music/main/*)
+    rel=\${url#https://raw.githubusercontent.com/Flame119052/tess-music/main/}
+    case $rel in *..*) exit 1 ;; esac
+    [ -f "$TESS_FAKE_REPO/$rel" ] || exit 22
+    cp "$TESS_FAKE_REPO/$rel" "$out"
+    ;;
   *stable-mac.yml)
     payload="$TESS_FAKE_LOG/payload"
     printf 'dmg!!' > "$payload"
@@ -91,6 +119,10 @@ case $url in
 #!/bin/sh
 printf '%s\\n' "$*" > "$TESS_FAKE_LOG/cli-args"
 if [ -n "\${TESS_SUPPORT_TOKEN:-}" ]; then printf '%s\\n' leak >> "$TESS_FAKE_LOG/env-leak"; fi
+mkdir -p "$HOME/.local/bin" "$HERMES_HOME/hermes-agent"
+printf '%s\\n' '#!/bin/sh' 'exit 0' > "$HOME/.local/bin/hermes"
+chmod +x "$HOME/.local/bin/hermes"
+printf '%s\\n' agent > "$HERMES_HOME/hermes-agent/README"
 exit 0
 END
     ;;
@@ -205,6 +237,7 @@ const baseEnv = (place, extra) => ({
   TESS_APPLICATIONS: join(place.box, 'Applications'),
   TMPDIR: join(place.box, 'tmp'),
   TESS_FAKE_LOG: place.log,
+  TESS_FAKE_REPO: root,
   TESS_TEST: '1',
   TESS_SUPPORT_TOKEN: token,
   TESS_INBOX: 'http://127.0.0.1:9',
@@ -213,11 +246,16 @@ const baseEnv = (place, extra) => ({
   ...extra,
 });
 
-const run = (args, env) => {
+// piped runs the script the way a person does: curl ... | sh. It then has no checkout beside it.
+const run = (args, env, { piped = false, cwd } = {}) => {
   try {
-    const stdout = execFileSync('/bin/sh', [install, ...args], {
-      encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    const stdout = piped
+      ? execFileSync('/bin/sh', ['-s', '--', ...args], {
+        encoding: 'utf8', env, cwd, input: readFileSync(install, 'utf8'), stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      : execFileSync('/bin/sh', [install, ...args], {
+        encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'],
+      });
     return { status: 0, stdout, stderr: '' };
   } catch (error) {
     return {
@@ -246,6 +284,24 @@ const assertOnlyEnv = (place) => {
 
 const boxes = [];
 try {
+  // install.mjs is the profile's own installer. install.sh must leave the same files.
+  const ref = mkdtempSync(join(tmpdir(), 'tess-support-install-ref-'));
+  boxes.push(ref);
+  const refOut = execFileSync(process.execPath, [join(root, 'support/mac/install.mjs')], {
+    encoding: 'utf8',
+    env: {
+      PATH: '/usr/bin:/bin', HOME: join(ref, 'home'), HERMES_HOME: join(ref, 'hermes'), TMPDIR: tmpdir(),
+      LANG: 'C', TESS_TEST: '1', TESS_SUPPORT_TOKEN: token, TESS_INBOX: 'http://127.0.0.1:9',
+    },
+  });
+  assert.equal(refOut, 'via copy\n');
+  const reference = tree(join(ref, 'hermes', 'profiles', 'tess-support'));
+  for (const name of ['plugins/tess-notes/__init__.py', 'plugins/tess-notes/plugin.yaml', 'skills/tess-gather/scripts/doctor.mjs',
+    'skills/tess-evidence/scripts/spotify-window.mjs', 'skills/tess-handoff/scripts/triage-inbox.mjs',
+    'skills/tess-support/scripts/session.mjs', 'config.yaml', 'distribution.yaml', 'SOUL.md', '.env']) {
+    assert.ok(reference.has(name), `install.mjs did not install ${name}`);
+  }
+
   const missing = run([], {
     PATH: '/usr/bin:/bin',
     HOME: join(tmpdir(), 'tess-support-missing-home'),
@@ -308,18 +364,41 @@ try {
   const installedScript = readFileSync(join(armEnv.HERMES_HOME, 'profiles/tess-support/skills/tess-support/scripts/inbox.mjs'));
   assert.ok(shipped.equals(installedScript));
   assert.equal(readFileSync(join(armEnv.HERMES_HOME, 'profiles/tess-support/.env'), 'utf8'), `TESS_SUPPORT_TOKEN=${token}\nTESS_INBOX=http://127.0.0.1:9\n`);
+  sameTree(tree(join(armEnv.HERMES_HOME, 'profiles', 'tess-support')), reference, 'install.sh beside a checkout');
   const curlOnce = readFileSync(join(arm.log, 'curl.log'), 'utf8');
   assert.match(curlOnce, /stable-mac\.yml/);
   assert.match(curlOnce, /mac-arm64\.dmg/);
   assert.equal((readFileSync(join(arm.log, 'killall.log'), 'utf8').match(/^Dock$/gm) || []).length, 1);
   assert.equal(urlsInDock(arm.plist).filter((url) => url.includes('Tess%20Support.app')).length, 1);
 
+  // A reinstall replaces the listed files whole and keeps an unsent visit in cache/.
+  const armProfile = join(armEnv.HERMES_HOME, 'profiles', 'tess-support');
+  writeFileSync(join(armProfile, 'skills', 'tess-gather', 'stale.md'), 'old\n');
+  mkdirSync(join(armProfile, 'cache', 'support', 'sessions', 'visit-1'), { recursive: true });
+  writeFileSync(join(armProfile, 'cache', 'support', 'sessions', 'visit-1', 'words.txt'), 'unsent\n');
   const second = run([], armEnv);
   assert.equal(second.status, 0, second.stderr);
   assert.equal(urlsInDock(arm.plist).filter((url) => url.includes('Tess%20Support.app')).length, 1);
   assert.equal((readFileSync(join(arm.log, 'killall.log'), 'utf8').match(/^Dock$/gm) || []).length, 1);
   assert.equal(readFileSync(join(arm.log, 'curl.log'), 'utf8'), curlOnce);
+  assert.equal(existsSync(join(armProfile, 'skills', 'tess-gather', 'stale.md')), false);
+  assert.equal(readFileSync(join(armProfile, 'cache', 'support', 'sessions', 'visit-1', 'words.txt'), 'utf8'), 'unsent\n');
   assertOnlyEnv(arm);
+
+  // Uninstall must leave Spotify and Tess exactly as they were.
+  const spotifyFile = join(armEnv.TESS_APPLICATIONS, 'Spotify.app', 'Contents', 'Resources', 'Apps', 'xpui.spa');
+  const tessFiles = [
+    join(armEnv.HOME, 'Library', 'Application Support', 'Tess', 'guard.log'),
+    join(armEnv.HOME, 'Library', 'Application Support', 'Tess', 'tess'),
+    join(armEnv.HOME, '.local', 'bin', 'tess'),
+  ];
+  for (const path of [spotifyFile, ...tessFiles]) {
+    mkdirSync(join(path, '..'), { recursive: true });
+    writeFileSync(path, `sentinel ${path}\n`);
+  }
+  const keepTree = (path) => tree(join(path, '..'));
+  const spotifyBefore = tree(join(armEnv.TESS_APPLICATIONS, 'Spotify.app'));
+  const tessBefore = tessFiles.map(keepTree);
 
   mkdirSync(join(armEnv.HERMES_HOME, 'profiles', 'other'), { recursive: true });
   writeFileSync(join(armEnv.HERMES_HOME, 'profiles', 'other', 'keep'), 'leave this profile\n');
@@ -351,6 +430,9 @@ try {
   assert.equal(readFileSync(join(armEnv.HERMES_HOME, 'profiles', 'other', 'keep'), 'utf8'), 'leave this profile\n');
   assert.equal(readFileSync(join(armEnv.HOME, 'Applications', 'NotOurs.app', 'keep'), 'utf8'), 'leave this app\n');
   assert.equal(urlsInDock(arm.plist).some((url) => url.includes('Other.app')), true);
+  sameTree(tree(join(armEnv.TESS_APPLICATIONS, 'Spotify.app')), spotifyBefore, 'Spotify after uninstall');
+  tessFiles.forEach((path, i) => sameTree(keepTree(path), tessBefore[i], 'Tess after uninstall'));
+  assert.deepEqual(readdirSync(armEnv.TESS_APPLICATIONS).sort(), ['Spotify.app']);
 
   const blocked = layout('spctl');
   boxes.push(blocked.box);
@@ -385,6 +467,53 @@ try {
   assert.doesNotMatch(intelLaunch, /open -a /);
   assert.equal(readFileSync(join(intel.box, 'hermes', 'tess-support-we-installed'), 'utf8').trim(), 'cli');
   assertOnlyEnv(intel);
+  sameTree(tree(join(intel.box, 'hermes', 'profiles', 'tess-support')), reference, 'Intel install');
+
+  mkdirSync(join(intel.box, 'hermes', 'profiles', 'other'), { recursive: true });
+  writeFileSync(join(intel.box, 'hermes', 'profiles', 'other', 'keep'), 'leave this profile\n');
+  const intelGone = run(['--uninstall'], baseEnv(intel, { TESS_ARCH: 'x86_64', TESS_UNINSTALL_HERMES: 'yes' }));
+  assert.equal(intelGone.status, 0, intelGone.stderr);
+  assert.match(intelGone.stdout, /Hermes was removed/);
+  assert.equal(existsSync(join(intel.box, 'home', '.local', 'bin', 'hermes')), false);
+  assert.equal(existsSync(join(intel.box, 'hermes', 'hermes-agent')), false);
+  assert.equal(existsSync(join(intel.box, 'hermes', 'profiles', 'tess-support')), false);
+  assert.equal(existsSync(join(intel.box, 'hermes', 'tess-support-we-installed')), false);
+  assert.equal(existsSync(join(intel.box, 'home', 'Applications', 'Tess Support.app')), false);
+  assert.equal(readFileSync(join(intel.box, 'hermes', 'profiles', 'other', 'keep'), 'utf8'), 'leave this profile\n');
+  assert.equal(urlsInDock(intel.plist).some((url) => url.includes('Tess%20Support.app')), false);
+
+  // The pasted line: curl ... | sh. No checkout beside it, so every profile file is downloaded.
+  const piped = layout('piped');
+  boxes.push(piped.box);
+  mkdirSync(join(piped.box, 'tmp'));
+  const pipedRun = run([], baseEnv(piped, { TESS_ARCH: 'arm64' }), { piped: true, cwd: piped.box });
+  assert.equal(pipedRun.status, 0, pipedRun.stderr);
+  assert.match(readFileSync(join(piped.log, 'curl.log'), 'utf8'), /raw\.githubusercontent\.com\/Flame119052\/tess-music\/main\/support\/mac\/plugins\/tess-notes\/__init__\.py/);
+  sameTree(tree(join(piped.box, 'hermes', 'profiles', 'tess-support')), reference, 'install.sh piped from curl');
+  assertOnlyEnv(piped);
+  const pipedGone = run(['--uninstall'], baseEnv(piped, { TESS_ARCH: 'arm64' }), { piped: true, cwd: piped.box });
+  assert.equal(pipedGone.status, 0, pipedGone.stderr);
+  assert.match(pipedGone.stdout, /Ask Krish to revoke your code/);
+  assert.equal(existsSync(join(piped.box, 'hermes', 'profiles', 'tess-support')), false);
+
+  // A symlinked HERMES_HOME or profiles folder is refused, and its target is not written.
+  const linked = layout('linked');
+  boxes.push(linked.box);
+  mkdirSync(join(linked.box, 'tmp'));
+  const elsewhere = join(linked.box, 'elsewhere');
+  mkdirSync(elsewhere);
+  symlinkSync(elsewhere, join(linked.box, 'hermes'));
+  const linkHome = run([], baseEnv(linked, { TESS_ARCH: 'arm64' }));
+  assert.notEqual(linkHome.status, 0);
+  assert.match(linkHome.stderr, /symlink/);
+  unlinkSync(join(linked.box, 'hermes'));
+  mkdirSync(join(linked.box, 'hermes'));
+  symlinkSync(elsewhere, join(linked.box, 'hermes', 'profiles'));
+  const linkProfiles = run([], baseEnv(linked, { TESS_ARCH: 'arm64' }));
+  assert.notEqual(linkProfiles.status, 0);
+  assert.match(linkProfiles.stderr, /symlink/);
+  assert.deepEqual(readdirSync(elsewhere), []);
+  assert.equal(filesContaining(linked.box, token).length, 0);
 
   const argPlace = layout('argv');
   boxes.push(argPlace.box);
