@@ -31,6 +31,14 @@ QUESTION = (
     "May I take one still of the Spotify window? It can show your Spotify name, "
     "your picture, your friends' activity, and your playlist names."
 )
+# The only skills this profile will show the model. Hermes's skill_view also
+# searches trusted project directories and installs a skill's deps
+# (tools/skills_tool.py skill_view, the search at the roots call and pm.ensure
+# on deps). There is no config switch for either, so the skills toolset is off.
+SKILL_NAMES = ("tess-support", "tess-gather", "tess-evidence", "tess-handoff")
+WITHHELD = "(output withheld: the privacy filter did not run)"
+_YES = frozenset({"yes", "y", "ok", "sure", "go ahead"})
+_EDGE = set(".,!?;:\"'`()[]{}…“”‘’")
 
 # File tools and the other writers. The matching toolsets are off in config.yaml.
 # This hook still refuses them if one is turned back on. terminal is refused
@@ -41,6 +49,8 @@ _BLOCKED_TOOLS = frozenset({
     "process",
     "process_manage",
     "skill_manage",
+    "skill_view",
+    "skills_list",
     "read_file",
     "write_file",
     "patch",
@@ -318,11 +328,18 @@ def _clip(text):
 
 
 def scrub_text(text, token, node, privacy, home=None):
-    """privacy.mjs clean(), then the exact token again in case the shape was unusual."""
+    """privacy.mjs clean(), then the exact token again.
+
+    A missing, failing, or timed-out filter does not return the original text.
+    The person asks for support when the install is broken, which is when the
+    filter is most likely to be missing.
+    """
     raw = str(text or "")
     if token:
         raw = raw.replace(token, "(token)")
-    if node and privacy:
+    if not node or not privacy or not os.path.isfile(privacy):
+        return WITHHELD
+    try:
         try:
             env_home = profile_home(home) if (home is not None or os.environ.get("HERMES_HOME")) else None
         except ValueError:
@@ -331,23 +348,23 @@ def scrub_text(text, token, node, privacy, home=None):
             env = _child_env(env_home)
         else:
             env = {key: os.environ[key] for key in ("PATH", "LANG") if os.environ.get(key)}
-        try:
-            proc = subprocess.run(
-                [node, privacy],
-                input=raw.encode("utf-8"),
-                capture_output=True,
-                timeout=15,
-                shell=False,
-                check=False,
-                env=env,
-            )
-            if proc.returncode == 0:
-                raw = proc.stdout.decode("utf-8", "replace")
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        proc = subprocess.run(
+            [node, privacy],
+            input=raw.encode("utf-8"),
+            capture_output=True,
+            timeout=15,
+            shell=False,
+            check=False,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return WITHHELD
+    if proc.returncode != 0:
+        return WITHHELD
+    cleaned = proc.stdout.decode("utf-8", "replace")
     if token:
-        raw = raw.replace(token, "(token)")
-    return _clip(raw)
+        cleaned = cleaned.replace(token, "(token)")
+    return _clip(cleaned)
 
 
 def _scrub_value(value, token, node, privacy, home):
@@ -460,23 +477,104 @@ def guard_log(home=None):
     return {"ok": True, "log": "\n".join(lines)}
 
 
-def consent(yes, home=None):
-    if not isinstance(yes, bool):
-        raise ValueError("yes must be true or false")
-    session = current_session(home)
+def _consent_state(session):
     dest = _consent_path(session)
-    _write_note(dest, (b"yes\n" if yes else b"no\n"))
-    return {"ok": True, "yes": yes}
+    if not dest.is_file():
+        return ""
+    try:
+        text = dest.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    if text in ("asked\n", "yes\n", "no\n"):
+        return text[:-1]
+    return ""
+
+
+def ask_consent(home=None):
+    """Remember that the question was asked. This does not record a yes.
+
+    The model can call every tool, so a boolean from it is not the person's
+    answer. A yes already stored for this visit is left alone. A no is opened
+    again, and the next message decides.
+    """
+    session = current_session(home)
+    if _consent_state(session) != "yes":
+        _write_note(_consent_path(session), b"asked\n")
+    return {"ok": True, "question": QUESTION}
+
+
+def _message_text(user_message):
+    if isinstance(user_message, str):
+        return user_message
+    if isinstance(user_message, dict):
+        content = user_message.get("content", user_message.get("text"))
+        if content is user_message:
+            return ""
+        return _message_text(content)
+    if isinstance(user_message, list):
+        parts = []
+        for part in user_message:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                elif isinstance(part.get("content"), str):
+                    parts.append(part["content"])
+        return "\n".join(parts)
+    return ""
+
+
+def _plain_yes(text):
+    if not isinstance(text, str):
+        return False
+    cleaned = text.strip()
+    while cleaned and cleaned[0] in _EDGE:
+        cleaned = cleaned[1:].strip()
+    while cleaned and cleaned[-1] in _EDGE:
+        cleaned = cleaned[:-1].strip()
+    return cleaned.lower() in _YES
+
+
+def pre_llm_call(user_message="", **kwargs):
+    """The person's own message, before the model runs.
+
+    Hermes passes that message as user_message on pre_llm_call
+    (agent/turn_context.py). Only the next message after tess_ask_consent
+    counts, and only a plain yes is consent. Any other reply is a no.
+    """
+    del kwargs
+    try:
+        session = current_session()
+        if _consent_state(session) != "asked":
+            return None
+        answer = b"yes\n" if _plain_yes(_message_text(user_message)) else b"no\n"
+        _write_note(_consent_path(session), answer)
+    except ValueError:
+        return None
+    return None
 
 
 def _consented(session):
-    dest = _consent_path(session)
-    if not dest.is_file():
-        return False
-    try:
-        return dest.read_text(encoding="utf-8") == "yes\n"
-    except OSError:
-        return False
+    return _consent_state(session) == "yes"
+
+
+def read_skill(name, home=None):
+    """The text of one shipped skill. No shell, no dependency install, no other name."""
+    if not isinstance(name, str) or name not in SKILL_NAMES:
+        raise ValueError("name must be one of the four visit skills")
+    home_path = profile_home(home)
+    skill_dir = home_path / "skills" / name
+    if skill_dir.is_symlink():
+        raise ValueError("refusing to follow a link")
+    skill_md = skill_dir / "SKILL.md"
+    if skill_md.is_symlink() or not skill_md.is_file():
+        raise ValueError("that skill is not in this profile")
+    real = skill_md.resolve()
+    if real.parent != skill_dir.resolve() or not real.is_relative_to(home_path):
+        raise ValueError("refusing a path outside the profile")
+    return {"ok": True, "name": name, "skill": real.read_text(encoding="utf-8")}
 
 
 def still(home=None):
@@ -613,17 +711,9 @@ def handoff(home=None):
     return {"ok": True}
 
 
-def _skill_manage_schema():
-    return {
-        "name": "skill_manage",
-        "description": "This profile cannot edit skills.",
-        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
-    }
-
-
 def _skill_manage_refuse(args, **kwargs):
     del args, kwargs
-    return json.dumps({"ok": False, "error": "This profile cannot edit skills."})
+    return json.dumps({"ok": False, "error": "This profile cannot use that skill tool."})
 
 
 def _skill_manage_hidden():
@@ -632,16 +722,14 @@ def _skill_manage_hidden():
     return False
 
 
-def drop_skill_manage():
-    """Take skill_manage off the list the model is given.
+def _hide_skill_tool(name):
+    """Take one built-in skill tool off the list, if Hermes will not delete it.
 
-    The skills toolset cannot be turned off without hiding the skills index.
     Hermes loads this file as hermes_plugins.tess_visit. That caller is not
-    allowed to delete the process-global skill_manage, even with
-    allow_tool_override. It may register a scoped replacement, and a check
-    that never passes removes that replacement from the tool list and from the
-    tool-search catalog. A direct import, as in the tests, is not that
-    module, so it must not touch Hermes's registry at all.
+    allowed to delete a process-global tool, even with allow_tool_override.
+    It may register a scoped replacement, and a check that never passes
+    removes that replacement from the tool list. A direct import, as in the
+    tests, is not that module, so it must not touch Hermes's registry at all.
     """
     if not __name__.startswith("hermes_plugins."):
         return False
@@ -650,17 +738,21 @@ def drop_skill_manage():
     except Exception:
         return False
     try:
-        registry.deregister("skill_manage")
+        registry.deregister(name)
     except Exception:
         pass
-    still = any(getattr(entry, "name", None) == "skill_manage" for entry in registry._snapshot_entries())
+    still = any(getattr(entry, "name", None) == name for entry in registry._snapshot_entries())
     if not still:
         return True
     try:
         registry.register(
-            name="skill_manage",
+            name=name,
             toolset="skills",
-            schema=_skill_manage_schema(),
+            schema={
+                "name": name,
+                "description": "This profile cannot use that skill tool.",
+                "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
             handler=_skill_manage_refuse,
             check_fn=_skill_manage_hidden,
             override=True,
@@ -668,6 +760,11 @@ def drop_skill_manage():
     except Exception:
         return False
     return True
+
+
+def drop_skill_tools():
+    """The skills toolset is off. Hide the three tools again if it is turned back on."""
+    return all(_hide_skill_tool(name) for name in ("skill_manage", "skill_view", "skills_list"))
 
 
 def pre_tool_call(tool_name="", args=None, **kwargs):
@@ -694,7 +791,7 @@ def _tool(name, description, properties, required, handler):
 
 
 def register(ctx):
-    drop_skill_manage()
+    drop_skill_tools()
     home_box = {}
 
     def call(fn, params, allowed):
@@ -731,20 +828,35 @@ def register(ctx):
             lambda params: call(lambda _got: guard_log(), params, ()),
         ),
         _tool(
-            "tess_consent",
-            "Record the person's answer to one question, asked before any picture: " + QUESTION + " "
-            "Pass yes true only after they agree. Pass yes false if they decline.",
-            {"yes": {"type": "boolean", "description": "True only if they agreed to the picture."}},
-            ["yes"],
-            lambda params: call(lambda got: consent(got.get("yes")), params, ("yes",)),
+            "tess_ask_consent",
+            "Ask before any picture. Returns the exact question to show the person. "
+            "Their next message is the answer. You cannot record a yes yourself. " + QUESTION,
+            {},
+            [],
+            lambda params: call(lambda _got: ask_consent(), params, ()),
         ),
         _tool(
             "tess_still",
             "Take one still of the Spotify window into this visit's folder. Takes no arguments. "
-            "Refuses until tess_consent has recorded a yes for this visit. " + QUESTION,
+            "Refuses until the person's own next message, after tess_ask_consent, was a plain yes. " + QUESTION,
             {},
             [],
             lambda params: call(lambda _got: still(), params, ()),
+        ),
+        _tool(
+            "tess_read_skill",
+            "Read one visit skill: tess-support, tess-gather, tess-evidence, or tess-handoff. "
+            "Read tess-support first and follow it. These four are the only skills. "
+            "A name outside that list is refused. The text is the skill, not a command.",
+            {
+                "name": {
+                    "type": "string",
+                    "enum": list(SKILL_NAMES),
+                    "description": "One of tess-support, tess-gather, tess-evidence, tess-handoff.",
+                },
+            },
+            ["name"],
+            lambda params: call(lambda got: read_skill(got.get("name")), params, ("name",)),
         ),
         _tool(
             "tess_save_note",
@@ -827,3 +939,4 @@ def register(ctx):
             handler=handle,
         )
     ctx.register_hook("pre_tool_call", pre_tool_call)
+    ctx.register_hook("pre_llm_call", pre_llm_call)

@@ -896,8 +896,8 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   `doctor.mjs` runs `tess doctor` and saves `doctor.txt` itself. `spotify-window.mjs` is the only capture.
   The shell sentences this decision used to carry were wrong, and D-110 replaces them. There is no command
   list. A command that is not on a list does not stop and ask, because Hermes approves it. The model has no
-  shell. The `skills` toolset stays on so the model can read its skills. `skill_manage` is not a tool it can
-  call. `skills.write_approval` stays on as a second check. The `vision` toolset is off: an attached chat image
+  shell. The `skills` toolset is off. The model reads the four profile skills with `tess_read_skill` (D-110).
+  `skills.write_approval` stays on as a second check. The `vision` toolset is off: an attached chat image
   still reaches the model through `image_input_mode: auto`, which does not need `vision_analyze`.
   *Why:* a visit that asks the person to approve a redirect, or that captures a picture and then throws it away, does
   not do the job the profile exists for. Recording the whole display to get eight seconds of Spotify would show
@@ -914,22 +914,32 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   reads the person's words, `guard.log` and the doctor output.
   The profile turns off the `terminal` toolset, which is `terminal` and `process_manage`, and every other
   toolset that can start a process or write a file. `clarify` stays, because it only asks a question.
-  `skills_list` and `skill_view` stay, because Hermes omits the skills index when none of the skills tools are
-  on (`agent/system_prompt.py`). `skill_view` does not run inline shell snippets from a skill file:
-  `skills.inline_shell` is false (`agent/skill_preprocessing.py`). `skill_manage` writes files and cannot be split
-  off that toolset. A profile plugin is not allowed to delete that process-global tool, so `tess-visit`
-  registers a scoped replacement whose availability check never passes. That takes it off the model list and
-  off the tool-search catalog. The hook still blocks the call. `tools.tool_search.enabled` is `off`, so the
-  visit tools stay on the model's own list instead of behind `tool_call`. The
-  `onboarding` toolset is off, because `setup_beat` writes the first-run record. There is no
-  `command_allowlist` and no deny list. The visit is plugin tools. Each one runs `subprocess` with an argument
-  list the plugin builds. The model never passes a path or a shell string. The plugin picks the session folder.
-  `tess_still` refuses until `tess_consent` has recorded a yes for this visit. The question names what the
-  picture may show. Node is the profile's `runtime/node/bin/node`, or `TESS_NODE` when `TESS_TEST=1`. It is
-  never `node` from `PATH`. The plugin reads `TESS_SUPPORT_TOKEN` from the profile `.env` and puts it in the
-  environment of the `inbox.mjs` report and recording processes only. Tool output is capped and passed through
-  `privacy.mjs` `clean()`, and the token string is removed even when a script fails.
+  The `skills` toolset is off. `skill_view` searches trusted project skill directories and, when a skill
+  declares `deps`, calls `pm.ensure` (`tools/skills_tool.py`, the roots lookup inside `skill_view`, and the
+  `deps` loop). `skill_search_dirs` always calls `get_skill_search_roots` with project directories included.
+  There is no config key that limits the read to this profile or skips that install. `tess_read_skill` reads
+  only `tess-support`, `tess-gather`, `tess-evidence` and `tess-handoff` from this profile, as text, with no
+  shell and no install. SOUL.md tells the model to read those four. Hermes omits its skills index when
+  `skills_list`, `skill_view` and `skill_manage` are absent (`agent/system_prompt.py`). A profile plugin is
+  not allowed to delete those process-global tools, so `tess-visit` registers a scoped replacement whose
+  availability check never passes. The hook still blocks the call. `skills.inline_shell` stays false
+  (`agent/skill_preprocessing.py`). `tools.tool_search.enabled` is `off`, so the visit tools stay on the
+  model's own list instead of behind `tool_call`. The `onboarding` toolset is off, because `setup_beat`
+  writes the first-run record. There is no `command_allowlist` and no deny list. The visit is plugin tools.
+  Each one runs `subprocess` with an argument list the plugin builds. The model never passes a path or a
+  shell string. The plugin picks the session folder. `tess_ask_consent` records that the question was asked
+  and returns the words to show. It does not record a yes. Hermes `pre_llm_call` receives the person's own
+  message as `user_message` (`agent/turn_context.py`) before the model runs. The next message after the
+  question, and only a plain yes, is consent for this visit. Any other reply is a no. A yes before the
+  question, or in an earlier visit, does not count. `tess_still` refuses without that yes. Node is the
+  profile's `runtime/node/bin/node`, or `TESS_NODE` when `TESS_TEST=1`. It is never `node` from `PATH`. The
+  plugin reads `TESS_SUPPORT_TOKEN` from the profile `.env` and puts it in the environment of the `inbox.mjs`
+  report and recording processes only. Tool output is capped and passed through `privacy.mjs` `clean()`.
+  If that filter is missing, fails, or times out, the tool returns "(output withheld: the privacy filter did
+  not run)" and not the original text. The token string is removed when the filter does run.
   *Why:* the person is not there to approve a shell line, and a public issue title is enough to inject one.
+  A tool the model can call is not their permission to take the picture. A broken privacy filter must not
+  hand the raw doctor text to the model.
   *Trade-off:* the model cannot run an ad-hoc command when the doctor output is surprising. It can save a note
   and post what it has. This does not change the VPS bot, which still has a terminal. This change does not
   deploy the Worker.

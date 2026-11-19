@@ -56,6 +56,13 @@ jobs:
           node tools/test-support-chat.mjs
       - name: Support session folder tests
         run: node tools/test-session.mjs
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Hermes packages for the Mac profile check
+        run: |
+          py=$(bash tools/hermes-test-env.sh)
+          echo "TESS_HERMES_PYTHON=$py" >> "$GITHUB_ENV"
       - name: Mac support profile tests
         run: node tools/test-support-mac.mjs
       - name: Mac support install tests
