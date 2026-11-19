@@ -55,13 +55,22 @@ login_home() {
     *[!A-Za-z0-9._-]*) return 0 ;;
   esac
   line=$(/usr/bin/dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null || true)
-  printf '%s\n' "$line" | while IFS= read -r row; do
+  found=$(printf '%s\n' "$line" | while IFS= read -r row; do
     case $row in
       NFSHomeDirectory:*)
         printf '%s\n' "${row#NFSHomeDirectory:}" | sed 's/^ *//'
         ;;
     esac
-  done | head -1
+  done | head -1)
+  if [ -n "$found" ]; then
+    printf '%s\n' "$found"
+    return 0
+  fi
+  # macOS names the home through dscl. A Linux test has no Directory Service;
+  # the passwd entry is the same directory the checks refuse to touch.
+  if command -v getent >/dev/null 2>&1; then
+    getent passwd "$user" | awk -F: 'NR == 1 { print $6 }'
+  fi
 }
 
 inside() {
@@ -82,7 +91,9 @@ require_test_fakes() {
 
 # A test sets TESS_TEST=1 and scratch folders. A person's Mac does not.
 prepare_places() {
-  if [ "$(uname -s)" != Darwin ]; then
+  # A person's install is a Mac. The sandbox (TESS_TEST=1) also runs on Linux, with the
+  # disk tools faked, and it must still refuse the real home before it creates anything.
+  if [ "$(uname -s)" != Darwin ] && [ "${TESS_TEST:-}" != 1 ]; then
     die "Tess Support installs on a Mac."
   fi
   if [ "${TESS_TEST:-}" = 1 ] && [ -n "${TESS_ARCH:-}" ]; then
@@ -634,6 +645,17 @@ pin_dock() {
   killall Dock
 }
 
+# A Mac has this tool. The sandbox on Linux puts its own on PATH, and only a test may use that.
+plist_buddy() {
+  if [ -x /usr/libexec/PlistBuddy ]; then
+    /usr/libexec/PlistBuddy "$@"
+  elif [ "${TESS_TEST:-}" = 1 ]; then
+    PlistBuddy "$@"
+  else
+    return 1
+  fi
+}
+
 unpin_dock() {
   plist=$work/dock.plist
   if ! defaults export com.apple.dock "$plist" 2>/dev/null; then
@@ -642,10 +664,10 @@ unpin_dock() {
   removed=0
   i=0
   while :; do
-    url=$(/usr/libexec/PlistBuddy -c "Print :persistent-apps:${i}:tile-data:file-data:_CFURLString" "$plist" 2>/dev/null) || break
+    url=$(plist_buddy -c "Print :persistent-apps:${i}:tile-data:file-data:_CFURLString" "$plist" 2>/dev/null) || break
     case $url in
       *Tess%20Support.app/*)
-        /usr/libexec/PlistBuddy -c "Delete :persistent-apps:${i}" "$plist" >/dev/null
+        plist_buddy -c "Delete :persistent-apps:${i}" "$plist" >/dev/null
         removed=1
         ;;
       *) i=$((i + 1)) ;;

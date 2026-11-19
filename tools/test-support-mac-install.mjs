@@ -97,9 +97,17 @@ const nodePort = await new Promise((resolve, reject) => {
 
 const loginHome = () => {
   const user = execFileSync('/usr/bin/id', ['-un'], { encoding: 'utf8' }).trim();
-  const out = execFileSync('/usr/bin/dscl', ['.', '-read', `/Users/${user}`, 'NFSHomeDirectory'], { encoding: 'utf8' });
-  const line = out.split('\n').find((row) => row.startsWith('NFSHomeDirectory:'));
-  return line.slice('NFSHomeDirectory:'.length).trim();
+  let dir = '';
+  try {
+    const out = execFileSync('/usr/bin/dscl', ['.', '-read', `/Users/${user}`, 'NFSHomeDirectory'], { encoding: 'utf8' });
+    const line = out.split('\n').find((row) => row.startsWith('NFSHomeDirectory:'));
+    dir = line?.slice('NFSHomeDirectory:'.length).trim() || '';
+  } catch {
+    const row = execFileSync('getent', ['passwd', user], { encoding: 'utf8' }).split('\n')[0] || '';
+    dir = row.split(':')[5] || '';
+  }
+  if (!dir.startsWith('/')) throw new Error('the login home was not found');
+  return dir;
 };
 
 const writeBin = (dir, name, body) => {
@@ -146,7 +154,14 @@ const sameTree = (got, want, label) => {
 
 const urlsInDock = (plist) => {
   if (!existsSync(plist)) return [];
-  const raw = execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', plist], { encoding: 'utf8' });
+  // plutil is the Mac converter. The same plist is JSON either way.
+  const raw = existsSync('/usr/bin/plutil')
+    ? execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', plist], { encoding: 'utf8' })
+    : execFileSync('python3', ['-c', `
+import json, plistlib, sys
+with open(sys.argv[1], 'rb') as handle:
+    print(json.dumps(plistlib.load(handle)))
+`, plist], { encoding: 'utf8' });
   const data = JSON.parse(raw);
   return (data['persistent-apps'] || []).map((tile) => tile?.['tile-data']?.['file-data']?._CFURLString || '');
 };
@@ -242,6 +257,19 @@ printf '%s\\n' '#!/bin/sh' 'exit 0' > "$mp/Hermes.app/Contents/MacOS/Hermes"
 chmod +x "$mp/Hermes.app/Contents/MacOS/Hermes"
 exit 0
 `);
+  // ditto is the Mac copy. The sandbox uses cp so this check does not need a Mac.
+  writeBin(bin, 'ditto', `#!/bin/sh
+[ "$#" = 2 ] || exit 2
+cp -R "$1" "$2"
+`);
+  // A Mac uses PlistBuddy. Linux does not have it; the Dock checks still run.
+  const appleBuddy = ['/usr', 'libexec', 'PlistBuddy'].join('/');
+  writeBin(bin, 'PlistBuddy', `#!/bin/sh
+if [ -x ${appleBuddy} ]; then
+  exec ${appleBuddy} "$@"
+fi
+exec python3 ${join(root, 'tools/plist-buddy.py')} "$@"
+`);
   writeBin(bin, 'codesign', `#!/bin/sh
 {
   printf 'argv'
@@ -280,7 +308,7 @@ case $cmd in
   read)
     [ "$3" = "persistent-apps" ] || exit 2
     [ -f "$plist" ] || exit 1
-    /usr/libexec/PlistBuddy -c 'Print :persistent-apps' "$plist"
+    PlistBuddy -c 'Print :persistent-apps' "$plist"
     ;;
   write)
     [ "$3" = "persistent-apps" ] && [ "$4" = "-array-add" ] || exit 2
@@ -289,20 +317,20 @@ case $cmd in
     if [ ! -f "$plist" ]; then
       printf '%s\\n' '<?xml version="1.0" encoding="UTF-8"?>' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' '<plist version="1.0"><dict/></plist>' > "$plist"
     fi
-    if ! /usr/libexec/PlistBuddy -c 'Print :persistent-apps' "$plist" >/dev/null 2>&1; then
-      /usr/libexec/PlistBuddy -c 'Add :persistent-apps array' "$plist"
+    if ! PlistBuddy -c 'Print :persistent-apps' "$plist" >/dev/null 2>&1; then
+      PlistBuddy -c 'Add :persistent-apps array' "$plist"
     fi
     count=0
-    while /usr/libexec/PlistBuddy -c "Print :persistent-apps:\${count}" "$plist" >/dev/null 2>&1; do
+    while PlistBuddy -c "Print :persistent-apps:\${count}" "$plist" >/dev/null 2>&1; do
       count=$((count + 1))
     done
-    /usr/libexec/PlistBuddy -c "Add :persistent-apps:\${count} dict" "$plist"
-    /usr/libexec/PlistBuddy -c "Add :persistent-apps:\${count}:tile-type string file-tile" "$plist"
-    /usr/libexec/PlistBuddy -c "Add :persistent-apps:\${count}:tile-data dict" "$plist"
-    /usr/libexec/PlistBuddy -c "Add :persistent-apps:\${count}:tile-data:file-label string Tess Support" "$plist"
-    /usr/libexec/PlistBuddy -c "Add :persistent-apps:\${count}:tile-data:file-data dict" "$plist"
-    /usr/libexec/PlistBuddy -c "Add :persistent-apps:\${count}:tile-data:file-data:_CFURLString string \${url}" "$plist"
-    /usr/libexec/PlistBuddy -c "Add :persistent-apps:\${count}:tile-data:file-data:_CFURLStringType integer 15" "$plist"
+    PlistBuddy -c "Add :persistent-apps:\${count} dict" "$plist"
+    PlistBuddy -c "Add :persistent-apps:\${count}:tile-type string file-tile" "$plist"
+    PlistBuddy -c "Add :persistent-apps:\${count}:tile-data dict" "$plist"
+    PlistBuddy -c "Add :persistent-apps:\${count}:tile-data:file-label string Tess Support" "$plist"
+    PlistBuddy -c "Add :persistent-apps:\${count}:tile-data:file-data dict" "$plist"
+    PlistBuddy -c "Add :persistent-apps:\${count}:tile-data:file-data:_CFURLString string \${url}" "$plist"
+    PlistBuddy -c "Add :persistent-apps:\${count}:tile-data:file-data:_CFURLStringType integer 15" "$plist"
     ;;
   export)
     [ -f "$plist" ] || exit 1
@@ -502,11 +530,12 @@ try {
   writeFileSync(join(armEnv.HERMES_HOME, 'profiles', 'other', 'keep'), 'leave this profile\n');
   mkdirSync(join(armEnv.HOME, 'Applications', 'NotOurs.app'), { recursive: true });
   writeFileSync(join(armEnv.HOME, 'Applications', 'NotOurs.app', 'keep'), 'leave this app\n');
-  execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Add :persistent-apps: dict', arm.plist]);
-  execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Add :persistent-apps:1:tile-type string file-tile', arm.plist]);
-  execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Add :persistent-apps:1:tile-data dict', arm.plist]);
-  execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Add :persistent-apps:1:tile-data:file-data dict', arm.plist]);
-  execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Add :persistent-apps:1:tile-data:file-data:_CFURLString string file:///Applications/Other.app/', arm.plist]);
+  const buddy = join(arm.bin, 'PlistBuddy');
+  execFileSync(buddy, ['-c', 'Add :persistent-apps: dict', arm.plist]);
+  execFileSync(buddy, ['-c', 'Add :persistent-apps:1:tile-type string file-tile', arm.plist]);
+  execFileSync(buddy, ['-c', 'Add :persistent-apps:1:tile-data dict', arm.plist]);
+  execFileSync(buddy, ['-c', 'Add :persistent-apps:1:tile-data:file-data dict', arm.plist]);
+  execFileSync(buddy, ['-c', 'Add :persistent-apps:1:tile-data:file-data:_CFURLString string file:///Applications/Other.app/', arm.plist]);
 
   const removed = run(['--uninstall'], armEnv);
   assert.equal(removed.status, 0, removed.stderr);
