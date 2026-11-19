@@ -1,7 +1,7 @@
 # Status
 
 What's true right now, what's open, and what's waiting on whom. Update this when something user-visible changes.
-Last updated: 18 Nov 2026.
+Last updated: 19 Nov 2026.
 
 ## Releases
 

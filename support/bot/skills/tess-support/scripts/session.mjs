@@ -13,7 +13,7 @@
 //   node session.mjs handoff <dir> <report id>  one-line record, then deletes the folder
 //   node session.mjs sweep                      deletes folders older than 24h and holds the total under the cap
 //   node session.mjs size                       total bytes held right now
-// Runs on the server. Nothing here runs on anyone's Mac.
+// Runs on the VPS bot, and, copied verbatim by support/mac/install.mjs, on a person's Mac (D-106).
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

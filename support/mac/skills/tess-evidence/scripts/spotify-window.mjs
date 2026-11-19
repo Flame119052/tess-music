@@ -3,7 +3,8 @@
 // get a shell line that can grow -D (the whole display) or -G (the microphone).
 //   node spotify-window.mjs                         prints the window id
 //   node spotify-window.mjs still <session>/spotify.png
-//   node spotify-window.mjs video <session>/spotify.mov   eight silent seconds
+//   node spotify-window.mjs video $HERMES_HOME/cache/support/spotify.mov   eight silent seconds
+//   (the cache, not the session: session.mjs add only accepts a file from the cache)
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 
