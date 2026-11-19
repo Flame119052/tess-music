@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Runs tess doctor and writes <session>/doctor.txt itself.
-// The output never goes through a shell redirect, so the allowlist can name this one command.
+// The model never starts this. The visit tool runs it with an argument list.
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';

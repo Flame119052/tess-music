@@ -3,7 +3,7 @@
 // Usage: node tools/test-support-mac-install.mjs
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -417,7 +417,7 @@ try {
   });
   assert.equal(refOut, 'via copy\n');
   const reference = tree(join(ref, 'hermes', 'profiles', 'tess-support'));
-  for (const name of ['plugins/tess-notes/__init__.py', 'plugins/tess-notes/plugin.yaml', 'skills/tess-gather/scripts/doctor.mjs',
+  for (const name of ['plugins/tess-visit/__init__.py', 'plugins/tess-visit/plugin.yaml', 'skills/tess-gather/scripts/doctor.mjs',
     'skills/tess-evidence/scripts/spotify-window.mjs', 'skills/tess-handoff/scripts/triage-inbox.mjs',
     'skills/tess-support/scripts/session.mjs', 'config.yaml', 'distribution.yaml', 'SOUL.md', '.env',
     'runtime/node/bin/node', 'runtime/node/VERSION']) {
@@ -617,7 +617,7 @@ try {
   mkdirSync(join(piped.box, 'tmp'));
   const pipedRun = run([], baseEnv(piped, { TESS_ARCH: 'arm64' }), { piped: true, cwd: piped.box });
   assert.equal(pipedRun.status, 0, pipedRun.stderr);
-  assert.match(readFileSync(join(piped.log, 'curl.log'), 'utf8'), /raw\.githubusercontent\.com\/Flame119052\/tess-music\/main\/support\/mac\/plugins\/tess-notes\/__init__\.py/);
+  assert.match(readFileSync(join(piped.log, 'curl.log'), 'utf8'), /raw\.githubusercontent\.com\/Flame119052\/tess-music\/main\/support\/mac\/plugins\/tess-visit\/__init__\.py/);
   sameTree(tree(join(piped.box, 'hermes', 'profiles', 'tess-support')), reference, 'install.sh piped from curl');
   assertOnlyEnv(piped);
   const pipedGone = run(['--uninstall'], baseEnv(piped, { TESS_ARCH: 'arm64' }), { piped: true, cwd: piped.box });
@@ -683,43 +683,18 @@ try {
   assert.match(readFileSync(join(other.log, 'curl.log'), 'utf8'), new RegExp(`node-${nodeVersion.replaceAll('.', '\\.')}-${otherName}\\.tar\\.gz`));
   assert.doesNotMatch(readFileSync(join(other.log, 'curl.log'), 'utf8'), new RegExp(`node-${nodeVersion.replaceAll('.', '\\.')}-${hostName}\\.tar\\.gz`));
 
-  const runtimeCmd = '$HERMES_HOME/runtime/node/bin/node';
-  const fnmatchcase = (name, pat) => {
-    let src = '';
-    for (let i = 0; i < pat.length; i += 1) {
-      const c = pat[i];
-      if (c === '*') src += '[\\s\\S]*';
-      else if (c === '?') src += '[\\s\\S]';
-      else src += c.replace(/[\\^$.*+?(){}|[\]-]/g, '\\$&');
-    }
-    return new RegExp(`^${src}$`).test(name);
-  };
-  const allowOf = (text) => {
-    const lines = text.split('\n');
-    const start = lines.findIndex((line) => line === 'command_allowlist:');
-    const items = [];
-    for (const line of lines.slice(start + 1)) {
-      const item = line.match(/^  - '(.*)'$/);
-      if (!item) break;
-      items.push(item[1]);
-    }
-    return items;
-  };
-  const matches = (command, patterns) => patterns.some((pattern) => {
-    if (command === pattern) return true;
-    return /[*?\[]/.test(pattern) && fnmatchcase(command, pattern);
-  });
-  const allow = allowOf(readFileSync(join(root, 'support/mac/config.yaml'), 'utf8'));
-  const installedAllow = allowOf(readFileSync(join(priorProfile, 'config.yaml'), 'utf8'));
-  assert.deepEqual(installedAllow, allow);
-  for (const item of allow) {
-    if (item.includes('/skills/')) assert.ok(item.startsWith(`${runtimeCmd} `), item);
-  }
-  const visit = `${runtimeCmd} $HERMES_HOME/skills/tess-support/scripts/session.mjs new`;
-  assert.equal(matches(visit, allow), true);
-  assert.equal(matches('node $HERMES_HOME/skills/tess-support/scripts/session.mjs new', allow), false);
-  assert.equal(matches('node /tmp/session.mjs new', allow), false);
-  assert.equal(matches(`${runtimeCmd} -e process.exit`, allow), false);
+  const shippedConfig = readFileSync(join(root, 'support/mac/config.yaml'), 'utf8');
+  assert.doesNotMatch(shippedConfig, /^command_allowlist:/m);
+  assert.equal(readFileSync(join(priorProfile, 'config.yaml'), 'utf8'), shippedConfig, 'install.sh rewrote the profile config');
+  assert.equal(reference.get('config.yaml').toString(), shippedConfig, 'install.mjs rewrote the profile config');
+  const pluginNode = execFileSync('python3', ['-c', `
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("tess_visit", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(mod.resolve_node(sys.argv[2]))
+`, join(priorProfile, 'plugins/tess-visit/__init__.py'), priorProfile], { encoding: 'utf8' }).trim();
+  assert.equal(pluginNode, realpathSync(join(priorProfile, 'runtime/node/bin/node')));
 
   const argPlace = layout('argv');
   boxes.push(argPlace.box);

@@ -26,9 +26,9 @@ reads it with `tools/reports.mjs support list` and files the issue with its P0�
 never files, and has no GitHub token or `gh` at all**. Access is an allowlist only Krish can change, on the server
 over SSH (D-79).
 
-A Mac profile lives in `support/mac/` (D-104, D-105, D-106, #121). It has no Telegram and no gateway. The model base is
+A Mac profile lives in `support/mac/` (D-104, D-105, D-106, D-110, #121). It has no Telegram and no gateway. The model base is
 `${TESS_INBOX}/v1/support` (Hermes posts to `/chat/completions` under it) and the bearer is the per-person support token.
-A visit posts the scrubbed text and a still of the Spotify window without a shell approval. It does not record the screen. A recording the person attaches can still be posted, and the VPS bot still sends one.
+The model has no shell. A visit is a fixed set of tools: doctor, a still of the Spotify window after the person says yes, then the scrubbed text and the picture posted to the inbox. It does not record the screen. A recording the person attaches can still be posted, and the VPS bot still sends one.
 `support/mac/install.sh` is the one command that installs that profile, a pinned Node.js for the visit, and Tess Support in the Dock (D-105).
 Uninstall removes the profile, including that Node, the icon, and the Dock tile. The checks run it in a scratch home with fake disk tools.
 They do not touch a real Mac. The VPS unit files are unchanged.
@@ -63,7 +63,7 @@ run now: `node tools/test-inbox-support.mjs`, `node tools/test-session.mjs`, `no
 | #4 | `P2` | `theme` | Album and playlist pages: review round with Krish | Waiting on Krish's review (Phase 2). |
 | #49 | `P2` | `theme`, `mini` | Visual check: verify About/Credits dialogs, tooltips, library expand animation, and Tess Mini | Open testing (Phase 2). |
 | #50 | `P2` | `installer`, `patcher` | Compatibility testing: test on Intel Macs, macOS 12–14, `~/Applications`, and fresh setups | Open testing (Phase 2). |
-| #128 | `P2` | `mini`, `installer` | Record only the Spotify window for a support visit | Open (Phase 2). The Mac profile takes a still until a ScreenCaptureKit helper exists (D-106). |
+| #128 | `P2` | `mini`, `installer` | Record only the Spotify window for a support visit | Open (Phase 2). The Mac profile takes a still, after the person says yes, until a ScreenCaptureKit helper exists (D-106, D-110). |
 | #108 | `P2` | `installer`, `patcher` | A background theme update logged "checked Spotify swap failed" (macOS App Management denied the helper's `ditto`) | Fixed: the swap runs inside `tess-patcher swap-apps`, which opens Spotify's folder while it validates it and does every step relative to that descriptor, so a path replaced mid-copy — or a real folder moved into `Resources` during the plist read — stops the swap instead of redirecting it; Go and sandbox tests cover a blocked write, a failure partway through, a kill mid-swap, `Resources` swapped for a symlink during the copy, and `Resources`/`Contents` swapped for another real folder during the check. PR #110 pending review. |
 | #47 | `P2` | `theme` | Liquid Glass: Apple-level polish | Open (Phase 3). |
 | #46 | `P2` | `theme` | Library: smoother, more creative animation when expanding from sidebar to full screen | Open (Phase 3). |

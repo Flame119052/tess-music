@@ -359,8 +359,8 @@ support/mac/skills/tess-gather/scripts/doctor.mjs
 support/mac/skills/tess-handoff/SKILL.md
 support/mac/skills/tess-handoff/scripts/triage-inbox.mjs
 support/mac/skills/tess-support/SKILL.md
-support/mac/plugins/tess-notes/__init__.py
-support/mac/plugins/tess-notes/plugin.yaml
+support/mac/plugins/tess-visit/__init__.py
+support/mac/plugins/tess-visit/plugin.yaml
 support/bot/skills/tess-support/scripts/privacy.mjs
 support/bot/skills/tess-support/scripts/triage.mjs
 support/bot/skills/tess-support/scripts/inbox.mjs
