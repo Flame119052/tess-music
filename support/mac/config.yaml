@@ -50,11 +50,13 @@ agent:
   #   feishu_doc, feishu_drive: not used here. The drive tools post comments.
   #   onboarding: setup_beat writes the first-run record. A desktop session folds
   #     that toolset in for the onboarding chat.
-  # skills stays on. Hermes omits the skills index when skills_list, skill_view and
-  # skill_manage are all absent (agent/system_prompt.py). skill_view only reads a
-  # skill file. skill_manage writes files and cannot be split off this toolset, so
-  # the plugin removes it from the registry at load. clarify stays: it only asks
-  # a question.
+  # skills is off. skill_view searches trusted project skill directories and,
+  # when a skill declares deps, installs them (tools/skills_tool.py, the roots
+  # lookup inside skill_view, and pm.ensure). Hermes has no switch that limits
+  # that read to this profile or skips the install. The model reads the four
+  # shipped skills with tess_read_skill. Hermes omits its own skills index when
+  # skills_list, skill_view and skill_manage are absent (agent/system_prompt.py).
+  # clarify stays: it only asks a question.
   # Do not disable a hermes-* bundle instead. Hermes subtracts only that bundle's
   # extra tools and leaves the core ones (model_tools.py).
   disabled_toolsets:
@@ -83,18 +85,17 @@ agent:
     - catalog
     - project
     - terminal
+    - skills
     - feishu_doc
     - feishu_drive
     - onboarding
 
-# A skill write waits for a person even if the hook is not loaded. The plugin
-# still removes skill_manage from the tool list and blocks it if it is called.
+# The skills toolset is off. These stay so a later edit that turns it on still
+# asks before a write, and still does not run !`cmd` from a SKILL.md
+# (agent/skill_preprocessing.py expand_inline_shell). The plugin also hides
+# skill_manage, skill_view and skills_list, and the hook blocks them.
 skills:
   write_approval: true
-  # skill_view runs !`cmd` inside a SKILL.md when this is on
-  # (agent/skill_preprocessing.py expand_inline_shell). Off, so reading a skill
-  # cannot start a shell. The default is already off; this keeps a later default
-  # from turning it on.
   inline_shell: false
 
 # No MCP servers. A server can start a process or write a file, and this profile
@@ -118,7 +119,7 @@ plugins:
     - tess-visit
   entries:
     tess-visit:
-      # Lets this plugin replace skill_manage, which it does not own, with a
+      # Lets this plugin replace the skill tools, which it does not own, with a
       # check that never passes. The model cannot use the opt-in. It only
       # applies to the plugin's own register().
       allow_tool_override: true
