@@ -27,10 +27,18 @@ const loginHome = () => {
   try {
     const user = execFileSync('/usr/bin/id', ['-un'], { encoding: 'utf8' }).trim();
     if (!/^[\w.-]+$/.test(user)) return null;
-    const out = execFileSync('/usr/bin/dscl', ['.', '-read', `/Users/${user}`, 'NFSHomeDirectory'], { encoding: 'utf8' });
-    const line = out.split('\n').find((l) => l.startsWith('NFSHomeDirectory:'));
-    const dir = line?.slice('NFSHomeDirectory:'.length).trim();
-    return dir && dir.startsWith('/') ? resolve(dir) : null;
+    let dir = '';
+    try {
+      const out = execFileSync('/usr/bin/dscl', ['.', '-read', `/Users/${user}`, 'NFSHomeDirectory'], { encoding: 'utf8' });
+      const line = out.split('\n').find((l) => l.startsWith('NFSHomeDirectory:'));
+      dir = line?.slice('NFSHomeDirectory:'.length).trim() || '';
+    } catch {
+      // macOS names the home through dscl. A Linux test has no Directory Service;
+      // the passwd entry is the same directory, and a miss must stay a refusal.
+      const row = execFileSync('getent', ['passwd', user], { encoding: 'utf8' }).split('\n')[0] || '';
+      dir = row.split(':')[5] || '';
+    }
+    return dir.startsWith('/') ? resolve(dir) : null;
   } catch {
     return null;
   }
