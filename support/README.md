@@ -185,7 +185,7 @@ person ──message──▶ tess-support on VPS ──127.0.0.1:4193──▶ 
 | Where | What |
 | --- | --- |
 | Their Mac (Telegram) | Spotify, Tess, and `tess report`, which they start. The bot does not install anything. |
-| Their Mac (Dock) | **Tess Support** in the Dock and the `tess-support` profile. Hermes is added only when it was not already there (D-105). |
+| Their Mac (Dock) | **Tess Support** in the Dock and the profile in [`mac/`](mac/). Hermes is added only when it was not already there (D-105). They open the chat; the agent runs `tess doctor` and can capture the Spotify window. The model is reached only through the support gate. |
 | Krish's VPS (`tess-cap`) | Isolated `tess-cap` user + systemd service, real `OPENCODE_GO_API_KEY`, `cap-proxy/proxy.mjs`, enforced `StateDirectory=tess-cap`. |
 | Krish's VPS (`tess-support`) | Isolated `tess-support` user + systemd service, proxy token + Telegram/inbox `.env`, early-UX `daily-cap` plugin. |
 | Paperclip on VPS | Completely untouched (`/srv/paperclip`, PostgreSQL, Paperclip services, Tincan relay). |

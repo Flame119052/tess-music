@@ -253,7 +253,7 @@ try {
   const bytes = Buffer.from('not really a video');
   assert.equal(await status(rec(bytes)), 401, 'a recording with no token is refused');
   assert.equal(await status(rec(bytes, { authorization: `Bearer ${dead}` })), 401, 'a revoked token cannot upload');
-  assert.equal(await status(rec(bytes, { authorization: `Bearer ${token}`, 'content-type': 'application/pdf' })), 415, 'a non-video is refused');
+  assert.equal(await status(rec(bytes, { authorization: `Bearer ${token}`, 'content-type': 'application/pdf' })), 415, 'a file that is neither a video nor a still is refused');
   const tooBig = Buffer.alloc(51 * 1024 * 1024);
   assert.equal(await status(rec(tooBig, { authorization: `Bearer ${token}` })), 413, 'a recording over 50 MB is refused');
   assert.equal(await status(rec(bytes, { authorization: `Bearer ${token}` })), 204, 'an approved token stores it');
@@ -266,6 +266,32 @@ try {
   execFileSync('sqlite3', [dbFile, `INSERT INTO support_tokens (label, sha, added) VALUES ('Krish bot', '${shaOf(other)}', ${Date.now()})`]);
   assert.equal(await status(rec(bytes, { authorization: `Bearer ${other}` })), 403, 'a different token cannot replace someone else\'s recording');
   assert.equal(query(`SELECT recording FROM support_reports WHERE id = ${id}`)[0].recording, `support/${id}.mov`, 'and the original is still the one recorded');
+
+  // 7a. A still travels on the same route, in its own object, and does not replace the video.
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const still = (body, headers = {}) => new Request(`https://inbox.test/v1/support/recording/${id}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'image/png', 'content-length': String(body.length), authorization: `Bearer ${token}`, ...headers },
+    body,
+  });
+  assert.equal(await status(still(png)), 204, 'a png still is stored');
+  assert.equal(query(`SELECT image FROM support_reports WHERE id = ${id}`)[0].image, `support/${id}.png`, 'the report records the still');
+  assert.equal(query(`SELECT recording FROM support_reports WHERE id = ${id}`)[0].recording, `support/${id}.mov`, 'the video is still recorded');
+  assert.ok(bucket.has(`support/${id}.png`) && bucket.has(`support/${id}.mov`), 'both objects are in the bucket');
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+  assert.equal(await status(still(jpeg, { 'content-type': 'image/jpeg' })), 204, 'a jpeg still is stored');
+  assert.equal(query(`SELECT image FROM support_reports WHERE id = ${id}`)[0].image, `support/${id}.jpg`, 'jpeg is stored as jpg');
+  assert.ok(!bucket.has(`support/${id}.png`), 'the previous still is replaced');
+  assert.ok(bucket.has(`support/${id}.mov`), 'replacing the still leaves the video');
+  const six = Buffer.alloc(6 * 1024 * 1024);
+  assert.equal(await status(still(six)), 413, 'a still over 5 MB is refused');
+  assert.equal(await status(still(six, { 'content-length': '100' })), 413, 'a 6 MB still behind a 100-byte header is refused');
+  assert.equal(query(`SELECT image FROM support_reports WHERE id = ${id}`)[0].image, `support/${id}.jpg`, 'a refused still does not replace the stored one');
+  assert.equal(await status(still(png, { authorization: `Bearer ${other}` })), 403, 'a different token cannot attach a still either');
+  const recKey = `rec:${shaOf(token).slice(0, 16)}`;
+  execFileSync('sqlite3', [dbFile, `UPDATE limits SET n = 10 WHERE k = '${recKey}'`]);
+  assert.equal(await status(still(png)), 429, 'a still counts against the same per-token upload budget as a video');
+  execFileSync('sqlite3', [dbFile, `UPDATE limits SET n = 1 WHERE k = '${recKey}'`]);
 
   // 7c. The 50 MB cap is measured on the bytes that arrive, not on the number the request claims. A posting token that
   // says "100 bytes" and then sends 51 MB used to fill the bucket; now it is cut off at the cap.
@@ -287,7 +313,9 @@ try {
   execFileSync('sqlite3', [dbFile, `UPDATE support_reports SET issue = 'https://github.com/Flame119052/tess-music/issues/91', filed_at = ${Date.now()} WHERE id = ${id}`]);
   await worker.scheduled({}, env());
   assert.ok(!bucket.has(`support/${id}.mov`), 'a filed report\'s recording is deleted');
+  assert.ok(!bucket.has(`support/${id}.jpg`), 'a filed report\'s still is deleted');
   assert.equal(query(`SELECT recording FROM support_reports WHERE id = ${id}`)[0].recording, null, 'and the row stops pointing at it');
+  assert.equal(query(`SELECT image FROM support_reports WHERE id = ${id}`)[0].image, null, 'and it stops pointing at the still');
 
   // 8b. A Worker deployed before inbox/schema.sql is applied must not take the health inbox down with it.
   const oldDb = join(box, 'old-schema.db');
@@ -303,6 +331,31 @@ try {
   await worker.scheduled({}, { DB: oldDBs, SALT: 'x', LIMIT: { limit: async () => ({ success: true }) }, RESCUE: { get: async () => null }, SUPPORT: { delete: async () => {} } });
   assert.equal(oldQuery('SELECT COUNT(*) AS n FROM reports')[0].n, 0, 'the health-report cleanup still ran on a database without the support tables');
   assert.equal(oldQuery('SELECT COUNT(*) AS n FROM limits')[0].n, 0, 'and so did the rate-limit cleanup');
+
+  // 8d. A database that has recordings but no image column still drops the recording. The missing column must not
+  // abort the sweep that was already there.
+  const mid = join(box, 'no-image.db');
+  execFileSync('sqlite3', [mid, `CREATE TABLE reports (id INTEGER PRIMARY KEY, at INTEGER); CREATE TABLE limits (k TEXT PRIMARY KEY, n INTEGER, until INTEGER); CREATE TABLE support_reports (id INTEGER PRIMARY KEY, at INTEGER, issue TEXT, recording TEXT); INSERT INTO support_reports (id, at, issue, recording) VALUES (1, ${Date.now()}, 'https://github.com/Flame119052/tess-music/issues/91', 'support/1.mov');`]);
+  const midQuery = (sql) => { const t = execFileSync('sqlite3', ['-json', mid, sql], { encoding: 'utf8' }).trim(); return t ? JSON.parse(t) : []; };
+  const midDB = {
+    prepare: (sql) => ({
+      bind: (...a) => ({
+        first: async () => midQuery(subs(sql, a))[0] ?? null,
+        all: async () => ({ results: midQuery(subs(sql, a)) }),
+        run: async () => { execFileSync('sqlite3', [mid, subs(sql, a)]); return { meta: {} }; },
+      }),
+      first: async () => midQuery(sql)[0] ?? null,
+      all: async () => ({ results: midQuery(sql) }),
+      run: async () => { execFileSync('sqlite3', [mid, sql]); return { meta: {} }; },
+    }),
+  };
+  const midBucket = new Map([['support/1.mov', Buffer.from('mov')]]);
+  await worker.scheduled({}, {
+    DB: midDB, SALT: 'x', LIMIT: { limit: async () => ({ success: true }) }, RESCUE: { get: async () => null },
+    SUPPORT: { delete: async (key) => { midBucket.delete(key); } },
+  });
+  assert.ok(!midBucket.has('support/1.mov'), 'a recording is still deleted when the image column is missing');
+  assert.equal(midQuery('SELECT recording FROM support_reports WHERE id = 1')[0].recording, null, 'and the row is cleared');
 
   // 8c. A title that would be read as a command is refused at the door. A control byte is not a command, it is noise:
   // it is stripped and the title is kept, so a stray NUL does not cost someone their report.
@@ -376,7 +429,8 @@ try {
     '  · an oversized or non-JSON body is refused, and a text/plain body is refused',
     '  · there is no GET for a support report — reading stays behind the owner\'s Cloudflare login',
     '  · the open-issue title list is served, with no report data in it',
-    '  · a recording is refused without an approved token, refused if it is not video or over 50 MB, and can never be read back',
+    '  · a recording is refused without an approved token, refused if it is not video or a still or over 50 MB, and can never be read back',
+    '  · a png or jpeg still is stored beside the video, refused over 5 MB, and deleted with the recording when the report is filed',
     '  · the 50 MB cap is measured on the bytes that arrive: 51 MB behind a 100-byte header is cut off and not stored',
     '  · a filed report\'s recording is deleted by the sweep',
     '  · another approved token cannot replace a report\'s recording, even with the same label',

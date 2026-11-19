@@ -82,6 +82,7 @@ function support() {
     console.log(r.issue ? `filed as ${r.issue}` : 'not filed yet');
     // The recording is in R2 and never served back; this is the only place it is named.
     console.log(r.recording ? `recording in R2: ${r.recording} (deleted when filed, or at 14 days)` : 'no recording');
+    console.log(r.image ? `image in R2: ${r.image} (deleted when filed, or at 14 days)` : 'no image');
     console.log(`\n--- what they said\n${r.words || '(nothing)'}\n\n--- what the bot worked out\n${r.diagnosis || '(nothing)'}\n\n--- the finished write-up\n${r.body || '(nothing)'}`);
     console.log(`\nfile it with:\n  ${issueCommand(r)}`);
     console.log(`then record it: node tools/reports.mjs support filed ${r.id} --issue <url>`);

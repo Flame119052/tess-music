@@ -1,7 +1,7 @@
 # Status
 
 What's true right now, what's open, and what's waiting on whom. Update this when something user-visible changes.
-Last updated: 18 Nov 2026.
+Last updated: 19 Nov 2026.
 
 ## Releases
 
@@ -26,8 +26,9 @@ reads it with `tools/reports.mjs support list` and files the issue with its P0â€
 never files, and has no GitHub token or `gh` at all**. Access is an allowlist only Krish can change, on the server
 over SSH (D-79).
 
-A Mac profile lives in `support/mac/` (D-104, #121). It has no Telegram and no gateway. The model base is
+A Mac profile lives in `support/mac/` (D-104, D-106, #121). It has no Telegram and no gateway. The model base is
 `${TESS_INBOX}/v1/support` (Hermes posts to `/chat/completions` under it) and the bearer is the per-person support token.
+A visit posts the scrubbed text, a still and a short video without a shell approval.
 `support/mac/install.sh` is the one command that installs that profile and puts Tess Support in the Dock (D-105).
 Uninstall removes the profile, the icon, and the Dock tile. The checks run it in a scratch home with fake disk tools.
 They do not touch a real Mac. The VPS unit files are unchanged.
