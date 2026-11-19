@@ -357,6 +357,51 @@ try {
   assert.ok(!midBucket.has('support/1.mov'), 'a recording is still deleted when the image column is missing');
   assert.equal(midQuery('SELECT recording FROM support_reports WHERE id = 1')[0].recording, null, 'and the row is cleared');
 
+  // 8e. A still on that same shape of database is refused before anything is stored. The missing column
+  // must not leave an orphaned object in the bucket.
+  const bare = join(box, 'still-no-image.db');
+  execFileSync('sqlite3', [bare, `CREATE TABLE limits (k TEXT PRIMARY KEY, n INTEGER, until INTEGER); CREATE TABLE support_tokens (id INTEGER PRIMARY KEY, label TEXT, sha TEXT, added INTEGER, revoked INTEGER); CREATE TABLE support_reports (id INTEGER PRIMARY KEY, at INTEGER, issue TEXT, recording TEXT, token_id INTEGER); INSERT INTO support_tokens (id, label, sha, added) VALUES (1, 'Krish bot', '${shaOf(token)}', ${Date.now()}); INSERT INTO support_reports (id, at, recording, token_id) VALUES (4, ${Date.now()}, NULL, 1);`]);
+  const bareQuery = (sql) => { const t = execFileSync('sqlite3', ['-json', bare, sql], { encoding: 'utf8' }).trim(); return t ? JSON.parse(t) : []; };
+  const bareDB = {
+    prepare: (sql) => ({
+      bind: (...a) => ({
+        first: async () => bareQuery(subs(sql, a))[0] ?? null,
+        all: async () => ({ results: bareQuery(subs(sql, a)) }),
+        run: async () => {
+          const out = execFileSync('sqlite3', [bare, `${subs(sql, a)};\nSELECT changes(), last_insert_rowid();`], { encoding: 'utf8' }).trim();
+          const [changes, last] = out.split('\n').pop().split('|');
+          return { meta: { changes: Number(changes) || 0, last_row_id: Number(last) || 0 } };
+        },
+      }),
+      first: async () => bareQuery(sql)[0] ?? null,
+      all: async () => ({ results: bareQuery(sql) }),
+      run: async () => { execFileSync('sqlite3', [bare, sql]); return { meta: {} }; },
+    }),
+  };
+  const bareBucket = new Map();
+  const bareEnv = {
+    DB: bareDB, SALT: 'x', LIMIT: { limit: async () => ({ success: true }) }, RESCUE: { get: async () => null },
+    SUPPORT: {
+      put: async (key, body) => { bareBucket.set(key, body); },
+      delete: async (key) => { bareBucket.delete(key); },
+    },
+  };
+  const bareStill = new Request('https://inbox.test/v1/support/recording/4', {
+    method: 'PUT',
+    headers: { 'content-type': 'image/png', 'content-length': String(png.length), authorization: `Bearer ${token}` },
+    body: png,
+  });
+  assert.equal((await worker.fetch(bareStill, bareEnv)).status, 503, 'a still is refused when the image column is missing');
+  assert.equal(bareBucket.size, 0, 'the refused still was still written to R2');
+
+  // 8f. An unfiled still older than 14 days is deleted even though the report itself is kept for 30.
+  const agedAt = Date.now() - 15 * 86400 * 1000;
+  execFileSync('sqlite3', [dbFile, `INSERT INTO support_reports (at, priority, areas, kind, title, image) VALUES (${agedAt}, 'P2', 'area: theme', 'bug', 'An old still nobody filed', 'support/aged-still.png')`]);
+  bucket.set('support/aged-still.png', Buffer.from('old-still'));
+  await worker.scheduled({}, env());
+  assert.ok(!bucket.has('support/aged-still.png'), 'a 15-day-old unfiled still is deleted');
+  assert.equal(query(`SELECT image FROM support_reports WHERE title = 'An old still nobody filed'`)[0].image, null, 'and the row stops pointing at it');
+
   // 8c. A title that would be read as a command is refused at the door. A control byte is not a command, it is noise:
   // it is stripped and the title is kept, so a stray NUL does not cost someone their report.
   for (const nasty of ['Lyrics $(touch /tmp/x)', 'Lyrics `id`']) {
