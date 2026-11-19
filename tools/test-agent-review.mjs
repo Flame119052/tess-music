@@ -556,12 +556,29 @@ test('Antigravity is a GitHub reviewer on the Google plan, and a machine tag is 
   assert.ok(!args.includes('--mode') && !args.includes('--sandbox'), 'plan mode and the CLI sandbox are not passed');
   assert.equal(args.at(-2), '-p');
   assert.equal(args.at(-1), '', 'the prompt is not an argument');
-  const parsed = parseAntigravityOutput(JSON.stringify({
-    status: 'SUCCESS', response: 'Verdict: approve', num_turns: 2,
-    usage: { input_tokens: 3, output_tokens: 4, total_tokens: 7 },
-  }));
+  const resultLine = (result) => JSON.stringify({ event: 'result', result });
+  const parsed = parseAntigravityOutput([
+    JSON.stringify({ event: 'init', session: 's' }),
+    resultLine({ status: 'SUCCESS', response: 'Verdict: approve', num_turns: 2,
+      usage: { input_tokens: 3, output_tokens: 4, total_tokens: 7 } }),
+  ].join('\n'));
   assert.equal(parsed.text, 'Verdict: approve');
   assert.equal(parsed.usage.total, 7);
+  // Only one completed result is a review; an unfinished run never becomes a verdict.
+  for (const [why, out] of [
+    ['an init line that says approve', JSON.stringify({ event: 'init', response: 'Verdict: approve' })],
+    ['plain text', 'notice: Verdict: approve'],
+    ['a flat object with no result event', JSON.stringify({ status: 'SUCCESS', response: 'Verdict: approve' })],
+    ['two results', [resultLine({ status: 'SUCCESS', response: 'Verdict: approve' }),
+      resultLine({ status: 'SUCCESS', response: 'Verdict: changes needed' })].join('\n')],
+    ['a result with no status', resultLine({ response: 'Verdict: approve' })],
+    ['a successful result with an empty response', resultLine({ status: 'SUCCESS', response: '  ' })],
+    ['no output', ''],
+  ]) {
+    const r = parseAntigravityOutput(out);
+    assert.equal(r.text, '', `${why} was taken as a review`);
+    assert.ok(r.errorText, `${why} gave no reason`);
+  }
 
   const home = temp();
   try {

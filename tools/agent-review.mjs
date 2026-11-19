@@ -1784,29 +1784,34 @@ function antigravityResultShape(parsed) {
   };
 }
 
-// `--output-format stream-json` is NDJSON: init, step updates, then one `result` object. An older
-// `--output-format json` object, or a plain-text answer, is still the review.
+// `--output-format stream-json` is NDJSON: init, step updates, then one `result` object. Only that one result,
+// with status SUCCESS and a non-empty response, is a review. Anything else (no result, two results, an init or
+// step line that happens to say "Verdict: approve", plain text) is a reviewer that did not finish, so it posts
+// nothing as a verdict.
 export function parseAntigravityOutput(stdout) {
-  const text = String(stdout || '').trim();
-  let found = null;
-  for (const line of text.split('\n')) {
+  const results = [];
+  let failure = null;
+  for (const line of String(stdout || '').split('\n')) {
     const trimmed = line.trim();
     if (!trimmed.startsWith('{')) continue;
-    try {
-      const shaped = antigravityResultShape(JSON.parse(trimmed));
-      if (shaped) found = shaped;
-    } catch {
-      // a step line that is not JSON is skipped; the result line is the review
-    }
+    let parsed;
+    try { parsed = JSON.parse(trimmed); } catch { continue; }
+    if (parsed && parsed.event === 'result') { results.push(parsed); continue; }
+    const shaped = antigravityResultShape(parsed);
+    if (shaped?.errorText) failure = shaped;
   }
-  if (found) return found;
-  try {
-    const shaped = antigravityResultShape(JSON.parse(text));
-    if (shaped) return shaped;
-  } catch {
-    // not JSON
+  if (results.length !== 1) {
+    const errorText = failure?.errorText
+      || `agy did not finish one review (${results.length} result lines)`;
+    return { text: '', usage: failure?.usage || null, errorText };
   }
-  return { text, usage: null };
+  const shaped = antigravityResultShape(results[0]);
+  if (!shaped) return { text: '', usage: null, errorText: 'agy returned a result line with no status or response' };
+  if (shaped.errorText) return shaped;
+  if (shaped.status !== 'SUCCESS' || !shaped.text.trim()) {
+    return { ...shaped, text: '', errorText: `agy result was not a completed review (status ${shaped.status || 'missing'})` };
+  }
+  return shaped;
 }
 
 export function tokenCount(usage) {
