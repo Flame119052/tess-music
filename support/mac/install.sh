@@ -55,13 +55,8 @@ login_home() {
     *[!A-Za-z0-9._-]*) return 0 ;;
   esac
   line=$(/usr/bin/dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null || true)
-  found=$(printf '%s\n' "$line" | while IFS= read -r row; do
-    case $row in
-      NFSHomeDirectory:*)
-        printf '%s\n' "${row#NFSHomeDirectory:}" | sed 's/^ *//'
-        ;;
-    esac
-  done | head -1)
+  # sh rejects a case pattern that contains a colon inside this substitution.
+  found=$(printf '%s\n' "$line" | sed -n 's/^NFSHomeDirectory:[[:space:]]*//p' | head -1)
   if [ -n "$found" ]; then
     printf '%s\n' "$found"
     return 0
