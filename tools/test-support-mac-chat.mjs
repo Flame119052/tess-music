@@ -408,7 +408,7 @@ try {
   const shipped = readFileSync(join(profile, 'config.yaml'), 'utf8');
   assert.doesNotMatch(shipped, /^command_allowlist:/m);
   assert.match(shipped, /^ {4}- terminal$/m);
-  assert.match(readFileSync(join(profile, 'skills/tess-evidence/SKILL.md'), 'utf8'), QUESTION);
+  assert.ok(readFileSync(join(profile, 'skills/tess-evidence/SKILL.md'), 'utf8').includes(QUESTION), 'the still question is missing from the skill');
   assert.equal(existsSync(join(profile, 'plugins/tess-visit/__init__.py')), true);
   shown.push(`installed the profile into a scratch HERMES_HOME with TESS_TEST=1, TESS_INBOX=${gate}`);
 
