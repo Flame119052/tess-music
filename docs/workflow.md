@@ -94,6 +94,8 @@ The tag also says **where** the review runs, and may add **what to look at**:
   Krish's step, not a merge.
 - **`machine=vps`** is refused, in fixed words: T3 on `paperclip-vps` runs as root beside Paperclip, so Tess agents do
   not run there through T3 (see "Which machine does what").
+- **`provider=antigravity` on `mac` or `omarchy`** is refused in one line: Krish chose the GitHub path. Gemini 4 Neon
+  runs in the GitHub job (D-107, D-109).
 
 What the machine path enforces, before any pull-request text reaches a thread (D-77, D-78):
 
@@ -130,7 +132,8 @@ out, or use `machine=github`). `t3 thread start` takes no token limit either, so
 comment says `Cap: none on this path`; the bound is the same `timeout_s` the GitHub job runs a reviewer under.
 
 **Plans only.** Every model on the list runs on one of Krish's subscriptions — the Claude plan, the ChatGPT plan, the
-OpenCode Go plan, or the Z.ai coding plan. No per-token API key is used, ever: a review must never bill by the token.
+OpenCode Go plan, the Z.ai coding plan, or the Google plan. No per-token API key is used, ever: a review must never
+bill by the token. `GEMINI_API_KEY` and Application Default Credentials are not a way in.
 
 **What the agent checks before tagging:**
 1. **Usage on its own machine.** `provider_usage` and `provider_pick` in the T3 usage tool, or `~/.local/bin/tess-usage`
@@ -164,6 +167,8 @@ OpenCode Go plan, or the Z.ai coding plan. No per-token API key is used, ever: a
   disagrees with `author=`;
 - a usage snapshot shows that window used up, fewer than three reviews left in its 5-hour window, or inside a `reserve` (pace is the tagging agent's call, not a refusal);
 - the Codex plan login is missing or inside its last 12 hours;
+- the Antigravity plan login is missing, or it is not the Google-plan file;
+- `provider=antigravity` is tagged for `mac` or `omarchy` (Krish chose the GitHub path);
 - the tag names a machine that is not `github`, `mac` or `omarchy` — including `vps`, which is refused with its reason;
 - a `prompt=` is longer than 400 characters, empty, or the tag has an option a tag does not take (`tier=`, `machine=pc`),
   or a quote that is never closed;
@@ -206,17 +211,19 @@ Hacker News and Reddit in Sep–Nov 2026. Sources are in [`docs/research/reviewe
 - **Copilot:** possible later.
 - **Cursor:** its own models come from a weekly pool, but a Claude or GPT model inside Cursor bills prepaid credit at
   API list price from the first request. Leaving it out keeps the plans-only rule true without a footnote.
-- **Antigravity (`agy`):** it runs here and lists models (`gemini-4-hydrogen`, `gemini-4-argon`, `gemini-3.8-flash`), so
-  it was checked properly on 15 Nov. It keeps its account token in the OS keyring (`keyringAuth`, "secret not found in
-  keyring") and has no login subcommand or headless credential file for its own account, so a GitHub Linux VM cannot
-  sign in on the plan. Its `--mode plan` and `--sandbox` flags are the right shape, and it can be added later if it grows
-  a credential-file login.
+**Antigravity is in the GitHub job (D-107, D-109).** `gemini-4-neon` runs on the Google plan. On a Linux machine with no
+D-Bus session (a GitHub VM, and an SSH session on the Dell) agy 1.5.12 keeps that login in one file,
+`~/.gemini/antigravity-cli/antigravity-oauth-token`, instead of the OS keyring. `node tools/agy-ci-login.mjs` on the
+Dell produces the file. The job mounts only that file, runs `agy` with `--dangerously-skip-permissions` so a tool call
+does not wait for a person, and does not pass `--mode plan`. A tag for `mac` or `omarchy` is refused: Krish chose the
+GitHub path.
 
 Every reviewer runs inside a real boundary, whichever provider it is. Each CLI starts inside **bubblewrap** (`bwrap`,
 unprivileged, with `--unshare-all --share-net --die-with-parent`) in an empty filesystem where only these are bound,
 read-only: the review copy, the CLI and its runtime (`/usr`, `/lib*`, `/etc/ssl`, `/etc/resolv.conf`), and that
 provider's own config and sign-in files, mounted **inside** the throwaway `HOME` at the paths its CLI looks in
-(`~/.codex` for Codex, `~/.config/opencode` and `~/.local/share/opencode/auth.json` for OpenCode) — a mount at the
+(`~/.codex` for Codex, `~/.config/opencode` and `~/.local/share/opencode/auth.json` for OpenCode,
+`~/.gemini/antigravity-cli/antigravity-oauth-token` for Antigravity) — a mount at the
 job's real home is invisible once `HOME` changes. It gets only its own key in the environment, and `GH_TOKEN` is
 removed before the reviewer starts. A machine without `bubblewrap`, or with user namespaces switched off, refuses that
 provider with a skip reason and tries the next one: no reviewer is run bare. `--share-net` is deliberate, because the
@@ -235,6 +242,9 @@ On top of that, each CLI is told to stay read-only:
   `external_directory` so reads stop at the review copy. The installed copy must match that file on `main` exactly, or the
   review stops instead of running under wider rules. That file is sensitive work: a PR that changes it gets the strong
   reviewer, never "docs only".
+- Antigravity (D-107): `--dangerously-skip-permissions`, so the CLI does not stop and ask. The bubblewrap mounts above
+  are the boundary: the review copy and the one login file are read-only, `GH_TOKEN` is not in the environment, and
+  only this job posts the review. `--mode plan` is not passed.
 
 Any agent settings shipped inside a PR (`.opencode`, `.cursor`, `.claude` and the like) are removed from the review copy
 first, at any depth and in any letter case, together with the PR's own `AGENTS.md` and `CLAUDE.md`: a reviewer reads a PR
@@ -266,6 +276,7 @@ A review must never take a large share of an allowance, so each one is bounded b
 | Codex | `-c model_reasoning_effort=…`, `-c model_auto_compact_token_limit=64000`, `-c features.rollout_budget.*`, `--json` stream monitor | `features.rollout_budget.limit_tokens=200000` (with `enforce_limit=true` and `reminder_at_remaining_tokens=[50000]`) asks Codex to budget its rollout, and the `--json` stream monitor is the hard enforcement that kills any run crossing `caps.codex.max_tokens` (200,000) immediately and refuses it with a comment. Compaction at 64k tokens keeps multi-turn context lean. |
 | Cursor | the 480 s timeout, `--mode ask`, `--sandbox enabled` | Not offered today (see "Left out on purpose"). Only Cursor's own models (Composer) would be allowed, because a Claude or GPT model inside Cursor bills prepaid credit from the first request. |
 | OpenCode | `steps: 12` in the `tess-reviewer` agent file | On the last step OpenCode drops the tools and asks for a summary, which is the review. The agent file must match `tools/opencode-reviewer.md` exactly, and the test keeps its number equal to `caps.opencode.steps`. |
+| Antigravity | `--print-timeout` set to the same wall clock, `--output-format json` | No separate turn cap. The CLI is told to auto-approve its own tools (D-107); the sandbox is what contains that. |
 | **All of them** | a 600 s wall clock (480 s for `gpt-6.1-terra` and GLM-5.3-Flash) | The process is killed at the limit, bubblewrap takes its children with it, and the posted comment says so: `codex/gpt-6.1-sol timed out after 600s`. The job then stops instead of running a different model. |
 
 A review's wall clock and its share of a window are different things: the timeout stops a stuck or runaway run, while

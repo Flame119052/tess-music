@@ -824,4 +824,17 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   *Why:* a person's Mac must not hold the Go key or be able to reset a counter, and the public internet must not reach
   `support/cap-proxy/`. *Trade-off:* chat and rescue share a Worker process. The route's code does not touch rescue
   state; splitting them into a second Worker can wait. This decision does not deploy the Worker.
+- **D-109 · 19 Nov 2026 · Agent** — The GitHub review job can run Antigravity (`agy` 1.5.12, `gemini-4-neon`) on the
+  Google plan (D-107). On Linux with no D-Bus session, including an SSH session on the Dell and a GitHub-hosted VM,
+  agy stores that login in `~/.gemini/antigravity-cli/antigravity-oauth-token` and does not use the OS keyring. The job
+  writes that one file from `AGY_OAUTH_TOKEN`, mounts only that file, passes `--dangerously-skip-permissions`, and does
+  not pass `--mode plan`. `GH_TOKEN` is removed before `agy` starts, and only the job posts. `machine=mac` and
+  `machine=omarchy` still refuse `provider=antigravity`: Krish chose the GitHub path.
+  *Why:* D-107 already puts this reviewer in the GitHub job with full access inside the sandbox. The missing piece was
+  a plan login a fresh Linux VM can read. A headless `-p` run on the Dell with `--dangerously-skip-permissions` logged
+  that it auto-approves tool permissions, then exited at once because the throwaway home had no login. The same run
+  with `--mode plan` also exited at once, but it never reached a tool call, so plan mode is not used.
+  *Trade-off:* inside the sandbox the CLI is allowed to ask for writes and shell. The read-only mounts are what stop
+  them. A signed-in tool turn still needs the one-time login in the PR; it was not run here. `GEMINI_API_KEY` and
+  Application Default Credentials are refused.
 
