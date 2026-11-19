@@ -23,10 +23,17 @@ webapp:
   enabled: true
 
 agent:
-  # A picture of Spotify is evidence, so an attached image stays an image.
+  # A picture attached in the chat stays an image. Hermes puts those pixels on the
+  # message itself (agent/image_routing.py). That does not use the vision toolset:
+  # vision_analyze is a separate tool, and the text fallback calls the helper
+  # function directly. The tool stays off so the model cannot fetch a URL or
+  # open an arbitrary file.
   image_input_mode: auto
-  # The visit needs a terminal, the skills, and a look at the picture or the short recording.
-  # code_execution is off because a script can start a process without hitting the shell deny list.
+  # The visit needs a terminal and the skills. code_execution is off because a
+  # script can start a process without hitting the shell deny list. vision,
+  # catalog and project are off so the model cannot fetch an image URL, install
+  # a catalog entry, or create a project. skills stays on for skills_list and
+  # skill_view; skill_manage is blocked by the tess-notes hook.
   disabled_toolsets:
     - computer_use
     - desktop_ui
@@ -48,6 +55,14 @@ agent:
     - yuanbao
     - kanban
     - todo
+    - vision
+    - catalog
+    - project
+
+# A skill write waits for a person even if the hook is not loaded. The hook still
+# refuses skill_manage outright, so this is the second check.
+skills:
+  write_approval: true
 
 # Exact calls that may run without a question. Hermes compares the whole line,
 # case-sensitive (tools/approval_floors.py): no *, ? or [ means that text only,
@@ -55,7 +70,8 @@ agent:
 # match here, even inside a glob. Hermes does not expand $HERMES_HOME in these
 # patterns; it matches the text the skill tells the model to run. $HERMES_HOME
 # and $HOME stay unquoted in the skills: a quoted $ is a second command, so it
-# would ask on every visit. When this profile is running, Hermes sets
+# would ask on every visit. Any other $ is refused by the tess-notes hook
+# before the shell expands it. When this profile is running, Hermes sets
 # HERMES_HOME to this profile's own directory (hermes_cli/profiles.py
 # resolve_profile_env), not to ~/.hermes. The binary is that directory's
 # runtime/node/bin/node, so a node on PATH is a different command.
@@ -65,16 +81,15 @@ command_allowlist:
   - 'tail -40 $HOME/Library/Application\ Support/Tess/guard.log'
   - '$HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-gather/scripts/doctor.mjs *'
   - '$HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-evidence/scripts/spotify-window.mjs'
-  - '$HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-evidence/scripts/spotify-window.mjs still */spotify.png'
-  - '$HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-evidence/scripts/spotify-window.mjs video */spotify.mov'
+  - '$HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-evidence/scripts/spotify-window.mjs still */cache/support/sessions/*/spotify.png'
   - '$HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-support/scripts/session.mjs new'
   - '$HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-support/scripts/session.mjs sweep'
-  - '$HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-support/scripts/session.mjs add */spotify.mov --record'
   - '$HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-support/scripts/session.mjs handoff *'
   - '$HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-support/scripts/inbox.mjs issues'
   - '$HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-support/scripts/inbox.mjs report *'
   - '$HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-support/scripts/inbox.mjs recording *'
   - '$HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-handoff/scripts/triage-inbox.mjs --report * --words * --title-file * --summary-file * --mode inbox'
+  - '$HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-handoff/scripts/triage-inbox.mjs --report * --words * --title-file * --summary-file * --also * --mode inbox'
 
 # The note tool is not a shell command. It is the profile plugin tess-notes.
 plugins:

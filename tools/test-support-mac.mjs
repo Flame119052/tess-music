@@ -4,7 +4,7 @@
 // Usage: node tools/test-support-mac.mjs
 import { createServer } from 'node:http';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -13,10 +13,6 @@ import assert from 'node:assert/strict';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const install = join(root, 'support/mac/install.mjs');
 const chat = join(root, 'support/mac/chat.mjs');
-const box = mkdtempSync(join(tmpdir(), 'tess-support-mac-test-'));
-const fakeRuntime = join(box, 'fake-node');
-writeFileSync(fakeRuntime, '#!/bin/sh\nprintf \'%s\\n\' tess-support-node\n');
-chmodSync(fakeRuntime, 0o755);
 const token = `tess_${'abc123'.repeat(6)}`;
 const decoy = 'sk-opencode-this-must-not-be-written';
 
@@ -176,6 +172,23 @@ const loginHome = () => {
   return line.slice('NFSHomeDirectory:'.length).trim();
 };
 
+// macOS often points TMPDIR at a folder under the login home. The installer then
+// refuses its own scratch directory. /tmp is outside that home.
+const scratchTmp = () => {
+  const raw = tmpdir();
+  let home = '';
+  try { home = realpathSync(loginHome()); } catch { return raw; }
+  let real = raw;
+  try { real = realpathSync(raw); } catch { /* keep the path tmpdir reported */ }
+  if (real === home || real.startsWith(`${home}/`)) return '/tmp';
+  return raw;
+};
+const tempRoot = scratchTmp();
+const box = mkdtempSync(join(tempRoot, 'tess-support-mac-test-'));
+const fakeRuntime = join(box, 'fake-node');
+writeFileSync(fakeRuntime, '#!/bin/sh\nprintf \'%s\\n\' tess-support-node\n');
+chmodSync(fakeRuntime, 0o755);
+
 const listen = (onRequest) => new Promise((resolve) => {
   const server = createServer(onRequest);
   server.listen(0, '127.0.0.1', () => resolve(server));
@@ -184,7 +197,7 @@ const listen = (onRequest) => new Promise((resolve) => {
 const baseEnv = {
   PATH: process.env.PATH,
   HOME: join(box, 'home'),
-  TMPDIR: tmpdir(),
+  TMPDIR: tempRoot,
   LANG: 'C',
 };
 
@@ -244,16 +257,15 @@ try {
     'tail -40 $HOME/Library/Application\\ Support/Tess/guard.log',
     `${node}/skills/tess-gather/scripts/doctor.mjs *`,
     `${node}/skills/tess-evidence/scripts/spotify-window.mjs`,
-    `${node}/skills/tess-evidence/scripts/spotify-window.mjs still */spotify.png`,
-    `${node}/skills/tess-evidence/scripts/spotify-window.mjs video */spotify.mov`,
+    `${node}/skills/tess-evidence/scripts/spotify-window.mjs still */cache/support/sessions/*/spotify.png`,
     `${node}/skills/tess-support/scripts/session.mjs new`,
     `${node}/skills/tess-support/scripts/session.mjs sweep`,
-    `${node}/skills/tess-support/scripts/session.mjs add */spotify.mov --record`,
     `${node}/skills/tess-support/scripts/session.mjs handoff *`,
     `${node}/skills/tess-support/scripts/inbox.mjs issues`,
     `${node}/skills/tess-support/scripts/inbox.mjs report *`,
     `${node}/skills/tess-support/scripts/inbox.mjs recording *`,
     `${node}/skills/tess-handoff/scripts/triage-inbox.mjs --report * --words * --title-file * --summary-file * --mode inbox`,
+    `${node}/skills/tess-handoff/scripts/triage-inbox.mjs --report * --words * --title-file * --summary-file * --also * --mode inbox`,
   ];
   const deny = [
     'sudo *', 'rm -rf *', 'rm -fr *', 'chmod -R *', 'dd *', 'mkfs*',
@@ -271,18 +283,17 @@ try {
     'tail -40 $HOME/Library/Application\\ Support/Tess/guard.log',
     `${node}/skills/tess-gather/scripts/doctor.mjs /tmp/sess`,
     `${node}/skills/tess-evidence/scripts/spotify-window.mjs`,
-    `${node}/skills/tess-evidence/scripts/spotify-window.mjs still /tmp/sess/spotify.png`,
-    `${node}/skills/tess-evidence/scripts/spotify-window.mjs video $HERMES_HOME/cache/support/spotify.mov`,
+    `${node}/skills/tess-evidence/scripts/spotify-window.mjs still /tmp/cache/support/sessions/visit/spotify.png`,
     `${node}/skills/tess-support/scripts/session.mjs new`,
     `${node}/skills/tess-support/scripts/session.mjs sweep`,
-    `${node}/skills/tess-support/scripts/session.mjs add /tmp/sess $HERMES_HOME/cache/support/spotify.mov --record`,
-    `${node}/skills/tess-support/scripts/session.mjs handoff /tmp/sess 12`,
+    `${node}/skills/tess-support/scripts/session.mjs handoff /tmp/cache/support/sessions/visit 12`,
     `${node}/skills/tess-support/scripts/inbox.mjs issues`,
     `${node}/skills/tess-support/scripts/inbox.mjs report /tmp/sess`,
     `${node}/skills/tess-support/scripts/inbox.mjs recording 12 /tmp/sess/spotify.mov`,
     `${node}/skills/tess-support/scripts/inbox.mjs recording 12 /tmp/sess/spotify.png`,
-    `${node}/skills/tess-handoff/scripts/triage-inbox.mjs --report /tmp/sess/doctor.txt --words /tmp/sess/words.txt --title-file /tmp/sess/title.txt --summary-file /tmp/sess/summary.txt --mode inbox`,
-    `${node}/skills/tess-handoff/scripts/triage-inbox.mjs --report /tmp/sess/doctor.txt --words /tmp/sess/words.txt --title-file /tmp/sess/title.txt --summary-file /tmp/sess/summary.txt --related 61 --mode inbox`,
+    `${node}/skills/tess-handoff/scripts/triage-inbox.mjs --report /tmp/cache/support/sessions/visit/doctor.txt --words /tmp/cache/support/sessions/visit/words.txt --title-file /tmp/cache/support/sessions/visit/title.txt --summary-file /tmp/cache/support/sessions/visit/summary.txt --mode inbox`,
+    `${node}/skills/tess-handoff/scripts/triage-inbox.mjs --report /tmp/cache/support/sessions/visit/doctor.txt --words /tmp/cache/support/sessions/visit/words.txt --title-file /tmp/cache/support/sessions/visit/title.txt --summary-file /tmp/cache/support/sessions/visit/summary.txt --related 61 --mode inbox`,
+    `${node}/skills/tess-handoff/scripts/triage-inbox.mjs --report /tmp/cache/support/sessions/visit/doctor.txt --words /tmp/cache/support/sessions/visit/words.txt --title-file /tmp/cache/support/sessions/visit/title.txt --summary-file /tmp/cache/support/sessions/visit/summary.txt --also area:theme --mode inbox`,
   ];
   const blocked = [
     'node -e \'fs.copyFileSync(env.HOME+"/.hermes/profiles/tess-support/.env","/tmp/x")\' x-triage.mjs',
@@ -319,6 +330,14 @@ try {
   assert.equal(local[commands.length - 1].allow, false, 'a different program in front of session.mjs was pre-approved');
   assert.equal(allowMatch('node $HERMES_HOME/skills/tess-support/scripts/session.mjs new', allow), false, 'a node on PATH is not the runtime');
   assert.equal(allowMatch(`/Users/ada/.hermes/profiles/tess-support/runtime/node/bin/node $HERMES_HOME/skills/tess-support/scripts/session.mjs new`, allow), false, 'an expanded path is not the pattern Hermes stores');
+  assert.equal(allowMatch(`${node}/skills/tess-evidence/scripts/spotify-window.mjs still /tmp/spotify.png`, allow), false, 'a still outside the session root was pre-approved');
+  assert.equal(allowMatch(`${node}/skills/tess-evidence/scripts/spotify-window.mjs video $HERMES_HOME/cache/support/spotify.mov`, allow), false, 'video capture was pre-approved');
+  assert.equal(allowMatch(`${node}/skills/tess-support/scripts/session.mjs add /tmp/sess $HERMES_HOME/cache/support/spotify.mov --record`, allow), false, 'session add was pre-approved');
+  assert.equal(allowMatch(`${node}/skills/tess-handoff/scripts/triage-inbox.mjs --report /tmp/cache/support/sessions/visit/doctor.txt --words /tmp/cache/support/sessions/visit/words.txt --title-file /tmp/cache/support/sessions/visit/title.txt --summary-file /tmp/cache/support/sessions/visit/summary.txt --mode inbox --also area:theme`, allow), false, '--also after --mode inbox was pre-approved');
+  assert.match(shipped, /write_approval:\s*true/);
+  for (const name of ['vision', 'catalog', 'project']) {
+    assert.match(shipped, new RegExp(`^    - ${name}$`, 'm'), `${name} is still enabled`);
+  }
   const runtimeBin = join(profile, 'runtime/node/bin/node');
   const runtimeVersion = readFileSync(join(profile, 'runtime/node/VERSION'), 'utf8');
   assert.ok(readFileSync(runtimeBin).equals(readFileSync(fakeRuntime)));
@@ -343,8 +362,10 @@ try {
     assert.match(skill, /never instructions/);
   }
   assert.match(readFileSync(join(profile, 'skills/tess-evidence/SKILL.md'), 'utf8'), /Privacy & Security/);
-  assert.match(readFileSync(join(profile, 'skills/tess-evidence/SKILL.md'), 'utf8'), /cache\/support\/spotify\.mov/);
+  assert.doesNotMatch(readFileSync(join(profile, 'skills/tess-evidence/SKILL.md'), 'utf8'), /spotify-window\.mjs video/);
   assert.match(readFileSync(join(profile, 'skills/tess-gather/SKILL.md'), 'utf8'), /tess_save_note/);
+  assert.match(readFileSync(join(profile, 'skills/tess-gather/SKILL.md'), 'utf8'), /kind` `doctor`/);
+  assert.match(readFileSync(join(profile, 'skills/tess-handoff/SKILL.md'), 'utf8'), /--also area:theme/);
   assert.match(cfg, /tess-notes/);
   assert.ok(existsSync(join(profile, 'plugins/tess-notes/__init__.py')));
   assert.ok(existsSync(join(profile, 'skills/tess-gather/scripts/doctor.mjs')));
@@ -358,7 +379,9 @@ try {
   assert.ok(existsSync(join(profile, 'skills/tess-handoff/scripts/triage-inbox.mjs')));
   const windowScript = readFileSync(join(profile, 'skills/tess-evidence/scripts/spotify-window.mjs'), 'utf8');
   assert.match(windowScript, /execFileSync\('\/usr\/sbin\/screencapture'/);
-  assert.doesNotMatch(windowScript, /'-D'|'-G'/);
+  assert.match(windowScript, /inRoot/);
+  assert.doesNotMatch(windowScript, /'-D'|'-G'|'-V'/);
+  assert.doesNotMatch(windowScript, /mode === 'video'/);
   const wrapper = join(root, 'support/mac/skills/tess-handoff/scripts/triage-inbox.mjs');
   const notInbox = fails(wrapper, ['--report', '/tmp/doctor.txt', '--mode', 'issue'], baseEnv);
   assert.match(String(notInbox.stderr), /--mode inbox/);
@@ -437,6 +460,26 @@ try {
   assert.match(String(escaped.stderr), /symlink/);
   assert.equal(existsSync(join(outside, 'tess-support')), false, 'a symlinked profiles folder was written through');
 
+  const evilHome = join(box, 'evil-inbox');
+  const evilInbox = fails(install, [], { ...baseEnv, HERMES_HOME: evilHome, TESS_SUPPORT_TOKEN: token, TESS_TEST: '1', TESS_INBOX: 'https://evil.example' });
+  assert.match(String(evilInbox.stderr), /tess-music-player\.janus\.ing/);
+  assert.ok(!`${evilInbox.stderr || ''}${evilInbox.stdout || ''}`.includes(token), 'the inbox refusal printed the token');
+  assert.equal(existsSync(join(evilHome, 'profiles', 'tess-support', '.env')), false, 'a foreign inbox was written into .env');
+  const plainHttp = fails(install, [], { ...baseEnv, HERMES_HOME: join(box, 'plain-http'), TESS_SUPPORT_TOKEN: token, TESS_INBOX: 'http://127.0.0.1:9' });
+  assert.match(String(plainHttp.stderr), /tess-music-player\.janus\.ing/);
+  const hop = join(box, 'hop-to-login');
+  symlinkSync(real, hop);
+  const viaLink = join(hop, '.tess-support-mac-ancestor-must-not-exist');
+  const ancestor = fails(install, [], { ...baseEnv, HERMES_HOME: viaLink, TESS_SUPPORT_TOKEN: token, TESS_TEST: '1' });
+  assert.match(String(ancestor.stderr), /real home folder/);
+  assert.equal(existsSync(join(real, '.tess-support-mac-ancestor-must-not-exist')), false, 'mkdir followed a symlink into the real home');
+  const leakedEnv = join(box, 'leaked.env');
+  rmSync(join(profile, '.env'));
+  symlinkSync(leakedEnv, join(profile, '.env'));
+  const envLink = fails(install, [], env);
+  assert.match(String(envLink.stderr), /symlink/);
+  assert.equal(existsSync(leakedEnv), false, 'the installer followed a symlinked .env');
+
   // The visit, in the order the skills name, against a fake doctor, a fake capture and a fake inbox.
   // HERMES_HOME for these commands is the profile directory, which is what Hermes sets when the profile runs.
   const posted = [];
@@ -491,9 +534,7 @@ try {
   const bin = join(box, 'bin');
   mkdirSync(bin);
   writeFileSync(join(bin, 'tess'), '#!/bin/sh\necho "can\'t find Spotify"\necho "ada@example.com"\necho "/Users/ada/Library/Application Support/Tess/guard.log"\n', { mode: 0o755 });
-  writeFileSync(join(bin, 'ffprobe'), '#!/bin/sh\necho 1\n', { mode: 0o755 });
   chmodSync(join(bin, 'tess'), 0o755);
-  chmodSync(join(bin, 'ffprobe'), 0o755);
   const visitEnv = {
     ...baseEnv,
     PATH: `${bin}:${process.env.PATH}`,
@@ -505,12 +546,25 @@ try {
   };
   const sessionScript = join(visitProfile, 'skills/tess-support/scripts/session.mjs');
   const session = run(sessionScript, ['new'], visitEnv).trim();
+  const windowScriptVisit = join(visitProfile, 'skills/tess-evidence/scripts/spotify-window.mjs');
+  const outsidePng = join(box, 'spotify.png');
+  const strayStill = fails(windowScriptVisit, ['still', outsidePng], visitEnv);
+  assert.match(String(strayStill.stderr), /not a session folder/);
+  assert.equal(existsSync(outsidePng), false, 'a still was written outside the session');
+  assert.ok(!String(strayStill.stderr).includes(token), 'the still refusal printed the token');
+  const wrongStill = fails(windowScriptVisit, ['still', join(session, 'shot.png')], visitEnv);
+  assert.match(String(wrongStill.stderr), /spotify\.png/);
+  const stillLink = join(box, 'linked-still.png');
+  writeFileSync(stillLink, 'not-a-picture');
+  symlinkSync(stillLink, join(session, 'spotify.png'));
+  const linkedStill = fails(windowScriptVisit, ['still', join(session, 'spotify.png')], visitEnv);
+  assert.match(String(linkedStill.stderr), /link/);
+  assert.equal(readFileSync(stillLink, 'utf8'), 'not-a-picture', 'the still followed a symlink');
+  rmSync(join(session, 'spotify.png'));
+  const videoRefused = fails(windowScriptVisit, ['video', join(session, 'spotify.png')], visitEnv);
+  assert.match(String(videoRefused.stderr), /usage/);
   run(join(visitProfile, 'skills/tess-gather/scripts/doctor.mjs'), [session], visitEnv);
-  run(join(visitProfile, 'skills/tess-evidence/scripts/spotify-window.mjs'), ['still', join(session, 'spotify.png')], visitEnv);
-  const inbound = join(visitProfile, 'cache/support/spotify.mov');
-  run(join(visitProfile, 'skills/tess-evidence/scripts/spotify-window.mjs'), ['video', inbound], visitEnv);
-  run(sessionScript, ['add', session, inbound, '--record'], visitEnv);
-  assert.equal(existsSync(inbound), false, 'the cache copy is removed once the session has the recording');
+  run(windowScriptVisit, ['still', join(session, 'spotify.png')], visitEnv);
   const noteScript = join(visitProfile, 'plugins/tess-notes/__init__.py');
   const saveNote = (kind, text) => JSON.parse(execFileSync('python3', ['-c', `
 import importlib.util, json, sys
@@ -546,12 +600,9 @@ sys.exit(2)
     `${visitNode} $HERMES_HOME/skills/tess-support/scripts/session.mjs new`,
     `${visitNode} $HERMES_HOME/skills/tess-gather/scripts/doctor.mjs ${session}`,
     `${visitNode} $HERMES_HOME/skills/tess-evidence/scripts/spotify-window.mjs still ${session}/spotify.png`,
-    `${visitNode} $HERMES_HOME/skills/tess-evidence/scripts/spotify-window.mjs video $HERMES_HOME/cache/support/spotify.mov`,
-    `${visitNode} $HERMES_HOME/skills/tess-support/scripts/session.mjs add ${session} $HERMES_HOME/cache/support/spotify.mov --record`,
     `${visitNode} $HERMES_HOME/skills/tess-handoff/scripts/triage-inbox.mjs --report ${session}/doctor.txt --words ${session}/words.txt --title-file ${session}/title.txt --summary-file ${session}/summary.txt --mode inbox`,
     `${visitNode} $HERMES_HOME/skills/tess-support/scripts/inbox.mjs report ${session}`,
     `${visitNode} $HERMES_HOME/skills/tess-support/scripts/inbox.mjs recording 7 ${session}/spotify.png`,
-    `${visitNode} $HERMES_HOME/skills/tess-support/scripts/inbox.mjs recording 7 ${session}/spotify.mov`,
     `${visitNode} $HERMES_HOME/skills/tess-support/scripts/session.mjs handoff ${session} 7`,
   ];
   for (const line of steps) assert.equal(allowMatch(line, allow), true, `the visit needs an approval: ${line}`);
@@ -580,12 +631,10 @@ sys.exit(2)
     '--mode', 'inbox',
   ], visitEnv);
   const png = readFileSync(join(session, 'spotify.png'));
-  const mov = readFileSync(join(session, 'spotify.mov'));
   // inbox.mjs talks to the server in this process. A synchronous wait would stop it answering.
   const reported = await runAsync(join(visitProfile, 'skills/tess-support/scripts/inbox.mjs'), ['report', session], visitEnv);
   assert.match(reported, /report id: 7/);
   await runAsync(join(visitProfile, 'skills/tess-support/scripts/inbox.mjs'), ['recording', '7', join(session, 'spotify.png')], visitEnv);
-  await runAsync(join(visitProfile, 'skills/tess-support/scripts/inbox.mjs'), ['recording', '7', join(session, 'spotify.mov')], visitEnv);
   run(sessionScript, ['handoff', session, '7'], visitEnv);
   assert.equal(existsSync(session), false, 'the session folder is deleted after the post');
   const report = posted.find((item) => item.method === 'POST' && item.url === '/v1/support');
@@ -594,10 +643,114 @@ sys.exit(2)
   assert.doesNotMatch(reportText, /ada@example\.com/);
   assert.doesNotMatch(reportText, /\/Users\/ada/);
   const image = posted.find((item) => item.method === 'PUT' && item.type.startsWith('image/png'));
-  const video = posted.find((item) => item.method === 'PUT' && item.type.startsWith('video/quicktime'));
   assert.ok(image && image.body.equals(png), 'the still reached the inbox');
-  assert.ok(video && video.body.equals(mov), 'the recording reached the inbox');
+  assert.equal(posted.some((item) => String(item.type).startsWith('video/')), false, 'the visit recorded a video');
   visitServer.close();
+
+  const echoed = fails(sessionScript, ['handoff', token, '1'], visitEnv);
+  assert.match(String(echoed.stderr), /not a session folder/);
+  assert.ok(!`${echoed.stderr || ''}${echoed.stdout || ''}`.includes(token), 'a refused session path echoed the token');
+  const echoedDoctor = fails(join(visitProfile, 'skills/tess-gather/scripts/doctor.mjs'), [token], visitEnv);
+  assert.ok(!`${echoedDoctor.stderr || ''}${echoedDoctor.stdout || ''}`.includes(token), 'a refused doctor path echoed the token');
+  const extraAdd = fails(sessionScript, ['add', session, join(box, 'spotify.png'), 'extra.mov', '--record'], visitEnv);
+  assert.match(String(extraAdd.stderr), /usage/);
+
+  const pluginSession = run(sessionScript, ['new'], visitEnv).trim();
+  const noteHome = join(box, 'note-link-home');
+  mkdirSync(join(noteHome, 'cache', 'support'), { recursive: true });
+  const escapedSessions = join(box, 'escaped-sessions');
+  mkdirSync(escapedSessions);
+  symlinkSync(escapedSessions, join(noteHome, 'cache', 'support', 'sessions'));
+  const cacheHome = join(box, 'cache-link-home');
+  mkdirSync(cacheHome);
+  const elsewhereCache = join(box, 'elsewhere-cache');
+  mkdirSync(join(elsewhereCache, 'support', 'sessions'), { recursive: true });
+  symlinkSync(elsewhereCache, join(cacheHome, 'cache'));
+  const pluginOut = execFileSync('python3', ['-c', `
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("tess_notes", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+hooks, tools = {}, {}
+class Ctx:
+    def register_tool(self, **kw):
+        tools.update(kw)
+    def register_hook(self, name, cb):
+        hooks[name] = cb
+mod.register(Ctx())
+hook = hooks["pre_tool_call"]
+blocked = hook("skill_manage", {"action": "write_file", "name": "tess-support", "file_path": "scripts/session.mjs", "file_content": "hack"})
+assert blocked and blocked.get("action") == "block", blocked
+assert hook("skills_list", {}) is None
+assert hook("skill_view", {"name": "tess-gather"}) is None
+assert hook("terminal", {"command": "node $HERMES_HOME/skills/tess-gather/scripts/doctor.mjs $TESS_SUPPORT_TOKEN"}).get("action") == "block"
+assert hook("terminal", {"command": "tail -40 $HOME/Library/Application\\\\ Support/Tess/guard.log"}) is None
+assert hook("terminal", {"command": "node $HERMES_HOME/skills/tess-support/scripts/session.mjs new"}) is None
+for name in ("write_file", "patch", "read_file", "search_files", "manage_catalog", "desktop_project", "execute_code"):
+    got = hook(name, {})
+    assert got and got.get("action") == "block", name
+for home in (sys.argv[2], sys.argv[3]):
+    try:
+        mod.save_note("words", "should not land", home)
+    except ValueError as exc:
+        assert "link" in str(exc), exc
+        continue
+    raise SystemExit("a symlinked session root was accepted")
+fresh = sys.argv[4]
+os.environ["HERMES_HOME"] = fresh
+saved = json.loads(tools["handler"]({"kind": "doctor", "text": "tess doctor is not on this Mac"}))
+assert saved.get("ok") is True, saved
+mode = os.stat(os.path.join(mod.current_session(fresh), "doctor.txt")).st_mode & 0o777
+assert mode == 0o600, mode
+link = os.path.join(mod.current_session(fresh), "words.txt")
+open(sys.argv[5], "w").write("keep")
+os.symlink(sys.argv[5], link)
+try:
+    mod.save_note("words", "through the link", fresh)
+except ValueError as exc:
+    assert "link" in str(exc), exc
+else:
+    raise SystemExit("a symlinked note was written")
+print("ok")
+`, noteScript, noteHome, cacheHome, visitProfile, join(box, 'note-outside')], { encoding: 'utf8', env: { ...visitEnv, HERMES_HOME: visitProfile } });
+  assert.equal(pluginOut.trim(), 'ok');
+  assert.equal(readdirSync(escapedSessions).length, 0, 'a note was written through a symlinked sessions folder');
+  assert.equal(readdirSync(join(elsewhereCache, 'support', 'sessions')).length, 0, 'a note was written through a symlinked cache');
+  assert.equal(readFileSync(join(box, 'note-outside'), 'utf8'), 'keep', 'a symlinked note file was followed');
+  assert.equal(readFileSync(join(pluginSession, 'doctor.txt'), 'utf8'), 'tess doctor is not on this Mac');
+  assert.equal(statSync(join(pluginSession, 'doctor.txt')).mode & 0o777, 0o600);
+
+  writeFileSync(join(bin, 'tess'), '#!/bin/sh\necho "Tess is in Spotify 1.2.52.442"\necho "  ✓ the look is the only complaint"\n', { mode: 0o755 });
+  const clean = run(sessionScript, ['new'], visitEnv).trim();
+  const newer = (Date.now() + 10000) / 1000;
+  utimesSync(clean, newer, newer);
+  run(join(visitProfile, 'skills/tess-gather/scripts/doctor.mjs'), [clean], visitEnv);
+  utimesSync(clean, newer + 1, newer + 1);
+  assert.equal(saveNote('words', 'the lyrics sit behind the song').ok, true);
+  assert.equal(saveNote('title', 'Lyrics sit half a second behind the song').ok, true);
+  assert.equal(saveNote('summary', 'The doctor is clean. The offset is in the theme.').ok, true);
+  const cleanTriage = join(visitProfile, 'skills/tess-handoff/scripts/triage-inbox.mjs');
+  const noArea = fails(cleanTriage, [
+    '--report', join(clean, 'doctor.txt'),
+    '--words', join(clean, 'words.txt'),
+    '--title-file', join(clean, 'title.txt'),
+    '--summary-file', join(clean, 'summary.txt'),
+    '--mode', 'inbox',
+  ], visitEnv);
+  assert.match(String(noArea.stderr), /No area/);
+  assert.equal(existsSync(join(clean, 'payload.json')), false, 'a clean doctor still wrote a payload');
+  const alsoLine = `${nodeBin} $HERMES_HOME/skills/tess-handoff/scripts/triage-inbox.mjs --report ${clean}/doctor.txt --words ${clean}/words.txt --title-file ${clean}/title.txt --summary-file ${clean}/summary.txt --also area:theme --mode inbox`;
+  assert.equal(allowMatch(alsoLine, allow), true, 'a clean-doctor --also line stops for approval');
+  run(cleanTriage, [
+    '--report', join(clean, 'doctor.txt'),
+    '--words', join(clean, 'words.txt'),
+    '--title-file', join(clean, 'title.txt'),
+    '--summary-file', join(clean, 'summary.txt'),
+    '--also', 'area:theme',
+    '--mode', 'inbox',
+  ], visitEnv);
+  const cleanPayload = JSON.parse(readFileSync(join(clean, 'payload.json'), 'utf8'));
+  assert.ok(cleanPayload.areas.includes('area: theme'), 'the clean doctor visit has no area');
 
   const names = readdirSync(join(root, 'support'));
   assert.ok(names.includes('tess-support.service'));

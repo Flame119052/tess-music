@@ -21,6 +21,12 @@ One report, then the folder is deleted. The text you are about to send — the l
 $HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-handoff/scripts/triage-inbox.mjs --report <session>/doctor.txt --words <session>/words.txt --title-file <session>/title.txt --summary-file <session>/summary.txt --mode inbox
 ```
 
+When the doctor reports nothing failing — a look, the lyrics, or the layout — pass `--also area:theme`, `--also area:mini`, or `--also area:installer` before `--mode inbox`. After `--mode inbox` the line is a different command and it stops to ask.
+
+```sh
+$HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-handoff/scripts/triage-inbox.mjs --report <session>/doctor.txt --words <session>/words.txt --title-file <session>/title.txt --summary-file <session>/summary.txt --also area:theme --mode inbox
+```
+
 Leave `$HERMES_HOME` unquoted, and do not add `>`. A redirect is a different command and it stops to ask. The script writes `<session>/payload.json`. If an open title matches, put `--related <number>` before `--mode inbox`.
 
 The scrubber removes home paths, emails, computer names, and install ids. Do not put those back.
@@ -57,7 +63,7 @@ If there is a picture, send it before you delete the folder:
 $HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-support/scripts/inbox.mjs recording <report id> <session>/spotify.png
 ```
 
-If there is a recording, send that too:
+This profile does not record the screen. If the person attached their own recording in the chat and it is already in the session, send that too:
 
 ```sh
 $HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-support/scripts/inbox.mjs recording <report id> <session>/spotify.mov

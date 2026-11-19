@@ -4,7 +4,9 @@
 // Proves: a folder is created under the scratch root; a recording over the size cap is refused when it can't be
 // shrunk and a file of the wrong type is refused; the folder and every file in it are deleted after a successful
 // hand-off with only a one-line record left; a folder older than 24 hours is swept; and the total stays under the cap.
+import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
@@ -194,6 +196,21 @@ exit 0
   assert.ok(sweptForSize.length > 0, 'by removing whole sessions');
   assert.ok(!existsSync(filled[0]), 'the oldest goes first');
   assert.ok(existsSync(filled[2]), 'the newest is kept, so a live conversation survives');
+
+  const sessionCli = fileURLToPath(new URL('../support/bot/skills/tess-support/scripts/session.mjs', import.meta.url));
+  const secret = `tess_${'sekret'.repeat(6)}`;
+  const echoed = spawnSync(process.execPath, [sessionCli, 'handoff', secret, '1'], {
+    env: { ...process.env, TESS_SUPPORT_TOKEN: secret }, encoding: 'utf8',
+  });
+  assert.notEqual(echoed.status, 0, 'a token used as a session path was accepted');
+  assert.match(echoed.stderr, /not a session folder/);
+  assert.ok(!`${echoed.stderr}${echoed.stdout}`.includes(secret), 'the refusal printed the token');
+  const extra = spawnSync(process.execPath, [sessionCli, 'add', dir, file('extra.png', 32), 'second.mov', '--record'], {
+    encoding: 'utf8',
+  });
+  assert.notEqual(extra.status, 0, 'add accepted a trailing path');
+  assert.match(extra.stderr, /usage/);
+  assert.ok(existsSync(join(box, 'extra.png')), 'a refused add deleted the file it was not asked to take');
 
   console.log('session folder: all checks passed\n');
   console.log([

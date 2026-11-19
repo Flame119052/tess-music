@@ -25,7 +25,7 @@ $HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-gather/scripts/docto
 
 `<session>` is the folder `session.mjs new` printed. Run it once. Do not run `tess doctor` yourself, and do not run it again "to be sure".
 
-If it says `tess doctor is not on this Mac`, say so and continue with their words.
+If it says `tess doctor is not on this Mac`, save a short note with `tess_save_note` (`kind` `doctor`) saying the doctor is not on this Mac, then continue with their words. The hand-off reads that file.
 
 ## Their words
 
