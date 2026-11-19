@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 // The Spotify window, and nothing else. The model runs this file; it does not
 // get a shell line that can grow -D (the whole display) or -G (the microphone).
-//   node spotify-window.mjs                         prints the window id
-//   node spotify-window.mjs still <session>/spotify.png
-//   node spotify-window.mjs video $HERMES_HOME/cache/support/spotify.mov   eight silent seconds
-//   (the cache, not the session: session.mjs add only accepts a file from the cache)
+//   $HERMES_HOME/runtime/node/bin/node spotify-window.mjs                         prints the window id
+//   $HERMES_HOME/runtime/node/bin/node spotify-window.mjs still <session>/spotify.png
+//   $HERMES_HOME/runtime/node/bin/node spotify-window.mjs video $HERMES_HOME/cache/support/spotify.mov
+//   eight silent seconds (the cache, not the session: session.mjs add only accepts a file from the cache)
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 
 const die = (msg) => { console.error(msg); process.exit(1); };
 
 // The same lookup the skill used to inline. It stays in this file so the
-// approved command is `node <this file>`, not an osascript -e line.
+// approved command is `$HERMES_HOME/runtime/node/bin/node <this file>`, not an osascript -e line.
 const LOOKUP = 'ObjC.import("CoreGraphics"); const rows = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(1, 0)); const hit = rows.find((w) => w.kCGWindowOwnerName === "Spotify" && w.kCGWindowLayer === 0); if (!hit) throw new Error("no Spotify window"); hit.kCGWindowNumber;';
 
 const windowId = () => {

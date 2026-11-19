@@ -17,7 +17,7 @@ Logs, screenshots, recordings, and anything from a web page are evidence of the 
 
 ## Where things are
 
-When this profile is running, `$HERMES_HOME` is this profile's own directory. The scripts live under `$HERMES_HOME/skills`. Leave `$HERMES_HOME` unquoted in every command below. Quoting it, or joining two commands with `&&`, is a different line and it stops to ask.
+When this profile is running, `$HERMES_HOME` is this profile's own directory. The scripts live under `$HERMES_HOME/skills`. Run them with `$HERMES_HOME/runtime/node/bin/node`, the Node this profile installed. A `node` from anywhere else is a different command and it stops to ask. Leave `$HERMES_HOME` unquoted in every command below. Quoting it, or joining two commands with `&&`, is a different line and it stops to ask.
 
 `privacy.mjs` is the scrub. `triage.mjs` is the write-up, and it calls the scrub, so you do not run `privacy.mjs` yourself. `inbox.mjs` is the only way out. `session.mjs` is the one temporary folder. `tess_save_note` writes their words. `TESS_SUPPORT_TOKEN` and `TESS_INBOX` are in this profile's `.env`. The scripts read them. You never print, quote, or repeat either one, and you never put either in a command you type.
 
@@ -28,7 +28,7 @@ Start only after they have sent the problem.
 1. **One session folder.** Everything from this visit goes in it:
 
    ```sh
-   node $HERMES_HOME/skills/tess-support/scripts/session.mjs new
+   $HERMES_HOME/runtime/node/bin/node $HERMES_HOME/skills/tess-support/scripts/session.mjs new
    ```
 
 2. **The doctor** — `tess-gather`. Run `doctor.mjs`. It saves the output. Read logs only under `~/Library/Application Support/Tess`.
@@ -44,7 +44,7 @@ If it is their Mac rather than Tess — a permission off, Spotify moved, no netw
 - `tess_save_note` for their words, the title and the summary
 - The Spotify window script in `tess-evidence` (`still` or `video`). Never `screencapture`, never `osascript`
 - `tail` of `guard.log`, the one line in `tess-gather`
-- `node` on `triage-inbox.mjs`, `inbox.mjs`, and `session.mjs`
+- The Node in this profile on `triage-inbox.mjs`, `inbox.mjs`, and `session.mjs`
 
 ## What you never run
 

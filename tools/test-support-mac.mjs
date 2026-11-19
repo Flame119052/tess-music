@@ -14,6 +14,9 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const install = join(root, 'support/mac/install.mjs');
 const chat = join(root, 'support/mac/chat.mjs');
 const box = mkdtempSync(join(tmpdir(), 'tess-support-mac-test-'));
+const fakeRuntime = join(box, 'fake-node');
+writeFileSync(fakeRuntime, '#!/bin/sh\nprintf \'%s\\n\' tess-support-node\n');
+chmodSync(fakeRuntime, 0o755);
 const token = `tess_${'abc123'.repeat(6)}`;
 const decoy = 'sk-opencode-this-must-not-be-written';
 
@@ -38,9 +41,11 @@ const fails = (file, args, env) => {
 };
 
 // Hermes matches an allowlist entry against the whole line (fnmatch, case-sensitive)
-// and skips the match when the line has a shell operator. Deny globs are
-// case-insensitive and also see the command split on &&, ; and |. This is the
-// copy of tools/approval_floors.py used when that tree is not on the machine.
+// and skips the match when the line has a shell operator. It does not expand
+// $HERMES_HOME. Deny globs are case-insensitive and also see the command split
+// on &&, ; and |, plus the executable's basename. This is the copy of
+// tools/approval_floors.py and _deny_command_variants used when that tree is
+// not on the machine.
 const SHELL_CONTROL = new Set(['\n', '\r', ';', '&', '|', '<', '>', '`', '$', '(', ')']);
 const REINTERPRETED = /(?:^|[ \t])(?:-[^-\s]*[ce]|--(?:command|eval))(?:[= \t]|$)/;
 const hasShellOperator = (command) => {
@@ -214,6 +219,7 @@ try {
     TESS_TEST: '1',
     TESS_SUPPORT_TOKEN: token,
     TESS_INBOX: `http://127.0.0.1:${port}`,
+    TESS_NODE_RUNTIME: fakeRuntime,
     OPENCODE_GO_API_KEY: decoy,
   };
 
@@ -232,7 +238,8 @@ try {
   assert.doesNotMatch(cfg, /opencode-go|OPENCODE_GO/);
   const shipped = readFileSync(join(root, 'support/mac/config.yaml'), 'utf8');
   assert.doesNotMatch(shipped, /Dangerous patterns that are already approved/);
-  const node = 'node $HERMES_HOME';
+  const nodeBin = '$HERMES_HOME/runtime/node/bin/node';
+  const node = `${nodeBin} $HERMES_HOME`;
   const allow = [
     'tail -40 $HOME/Library/Application\\ Support/Tess/guard.log',
     `${node}/skills/tess-gather/scripts/doctor.mjs *`,
@@ -289,6 +296,9 @@ try {
     '/usr/sbin/screencapture -x -l 1 -D 1 /tmp/spotify.png',
     'screencapture -x /tmp/desktop.png',
     'osascript -e \'tell application "Spotify"\'',
+    `${nodeBin} -e process.exit`,
+    `${nodeBin} --eval process.exit`,
+    `${nodeBin} -p process.version`,
   ];
   const commands = [...pass, ...blocked, 'tess doctor --help', `node /tmp/evil.mjs ${node}/skills/tess-support/scripts/session.mjs new`];
   const local = commands.map((command) => ({ allow: allowMatch(command, allow), deny: Boolean(denyMatch(command, deny)) }));
@@ -307,6 +317,18 @@ try {
   assert.equal(allowMatch('zsh $HOME/Library/Application\\ Support/Tess/doctor.sh', allow), false, 'doctor.sh is not pre-approved');
   assert.equal(local[commands.length - 2].allow, false, 'tess doctor --help is broader than the doctor script');
   assert.equal(local[commands.length - 1].allow, false, 'a different program in front of session.mjs was pre-approved');
+  assert.equal(allowMatch('node $HERMES_HOME/skills/tess-support/scripts/session.mjs new', allow), false, 'a node on PATH is not the runtime');
+  assert.equal(allowMatch(`/Users/ada/.hermes/profiles/tess-support/runtime/node/bin/node $HERMES_HOME/skills/tess-support/scripts/session.mjs new`, allow), false, 'an expanded path is not the pattern Hermes stores');
+  const runtimeBin = join(profile, 'runtime/node/bin/node');
+  const runtimeVersion = readFileSync(join(profile, 'runtime/node/VERSION'), 'utf8');
+  assert.ok(readFileSync(runtimeBin).equals(readFileSync(fakeRuntime)));
+  writeFileSync(runtimeBin, 'kept-runtime\n');
+  assert.match(run(install, [], env), /^via (copy|hermes)\n$/);
+  assert.equal(readFileSync(runtimeBin, 'utf8'), 'kept-runtime\n', 'a reinstall keeps the runtime when the pin is unchanged');
+  writeFileSync(join(profile, 'runtime/node/VERSION'), 'v0.0.0\n');
+  assert.match(run(install, [], env), /^via (copy|hermes)\n$/);
+  assert.ok(readFileSync(runtimeBin).equals(readFileSync(fakeRuntime)), 'a changed pin replaces the runtime');
+  assert.equal(readFileSync(join(profile, 'runtime/node/VERSION'), 'utf8'), runtimeVersion);
 
   const dot = readFileSync(join(profile, '.env'), 'utf8');
   assert.equal(dot, `TESS_SUPPORT_TOKEN=${token}\nTESS_INBOX=http://127.0.0.1:${port}\n`);
@@ -460,6 +482,7 @@ try {
     TESS_TEST: '1',
     TESS_SUPPORT_TOKEN: token,
     TESS_INBOX: `http://127.0.0.1:${visitPort}`,
+    TESS_NODE_RUNTIME: fakeRuntime,
   };
   assert.match(run(install, [], visitParent), /^via (copy|hermes)\n$/);
   // tmpdir() is /var/folders, which is a symlink to /private/var. session.mjs resolves its
@@ -518,17 +541,18 @@ except ValueError as exc:
 sys.exit(2)
 `, noteScript, visitProfile], { encoding: 'utf8' });
   assert.equal(tooLong, '');
+  const visitNode = '$HERMES_HOME/runtime/node/bin/node';
   const steps = [
-    'node $HERMES_HOME/skills/tess-support/scripts/session.mjs new',
-    `node $HERMES_HOME/skills/tess-gather/scripts/doctor.mjs ${session}`,
-    `node $HERMES_HOME/skills/tess-evidence/scripts/spotify-window.mjs still ${session}/spotify.png`,
-    'node $HERMES_HOME/skills/tess-evidence/scripts/spotify-window.mjs video $HERMES_HOME/cache/support/spotify.mov',
-    `node $HERMES_HOME/skills/tess-support/scripts/session.mjs add ${session} $HERMES_HOME/cache/support/spotify.mov --record`,
-    `node $HERMES_HOME/skills/tess-handoff/scripts/triage-inbox.mjs --report ${session}/doctor.txt --words ${session}/words.txt --title-file ${session}/title.txt --summary-file ${session}/summary.txt --mode inbox`,
-    `node $HERMES_HOME/skills/tess-support/scripts/inbox.mjs report ${session}`,
-    `node $HERMES_HOME/skills/tess-support/scripts/inbox.mjs recording 7 ${session}/spotify.png`,
-    `node $HERMES_HOME/skills/tess-support/scripts/inbox.mjs recording 7 ${session}/spotify.mov`,
-    `node $HERMES_HOME/skills/tess-support/scripts/session.mjs handoff ${session} 7`,
+    `${visitNode} $HERMES_HOME/skills/tess-support/scripts/session.mjs new`,
+    `${visitNode} $HERMES_HOME/skills/tess-gather/scripts/doctor.mjs ${session}`,
+    `${visitNode} $HERMES_HOME/skills/tess-evidence/scripts/spotify-window.mjs still ${session}/spotify.png`,
+    `${visitNode} $HERMES_HOME/skills/tess-evidence/scripts/spotify-window.mjs video $HERMES_HOME/cache/support/spotify.mov`,
+    `${visitNode} $HERMES_HOME/skills/tess-support/scripts/session.mjs add ${session} $HERMES_HOME/cache/support/spotify.mov --record`,
+    `${visitNode} $HERMES_HOME/skills/tess-handoff/scripts/triage-inbox.mjs --report ${session}/doctor.txt --words ${session}/words.txt --title-file ${session}/title.txt --summary-file ${session}/summary.txt --mode inbox`,
+    `${visitNode} $HERMES_HOME/skills/tess-support/scripts/inbox.mjs report ${session}`,
+    `${visitNode} $HERMES_HOME/skills/tess-support/scripts/inbox.mjs recording 7 ${session}/spotify.png`,
+    `${visitNode} $HERMES_HOME/skills/tess-support/scripts/inbox.mjs recording 7 ${session}/spotify.mov`,
+    `${visitNode} $HERMES_HOME/skills/tess-support/scripts/session.mjs handoff ${session} 7`,
   ];
   for (const line of steps) assert.equal(allowMatch(line, allow), true, `the visit needs an approval: ${line}`);
   for (const line of steps) assert.equal(denyMatch(line, deny), null, `the visit is denied: ${line}`);

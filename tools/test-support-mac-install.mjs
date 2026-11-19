@@ -1,7 +1,8 @@
 // The one-command Mac installer, against scratch folders and fake system tools.
 // Never the real Dock, the real /Applications, or the real home.
 // Usage: node tools/test-support-mac-install.mjs
-import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { execFileSync, spawn } from 'node:child_process';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
@@ -12,6 +13,87 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const install = join(root, 'support/mac/install.sh');
 const token = `tess_${'abc123'.repeat(6)}`;
 const decoy = 'sk-opencode-this-must-not-be-written';
+const nodeVersion = readFileSync(install, 'utf8').match(/^NODE_VERSION=(v\d+\.\d+\.\d+)$/m)[1];
+const fakeNode = join(mkdtempSync(join(tmpdir(), 'tess-support-fake-node-')), 'node');
+writeFileSync(fakeNode, '#!/bin/sh\nprintf \'%s\\n\' tess-support-node\n');
+chmodSync(fakeNode, 0o755);
+const packNode = (arch) => {
+  const dir = mkdtempSync(join(tmpdir(), `tess-support-node-${arch}-`));
+  const top = `node-${nodeVersion}-darwin-${arch}`;
+  mkdirSync(join(dir, top, 'bin'), { recursive: true });
+  mkdirSync(join(dir, top, 'lib', 'npm', 'bin'), { recursive: true });
+  writeFileSync(join(dir, top, 'bin', 'node'), readFileSync(fakeNode));
+  chmodSync(join(dir, top, 'bin', 'node'), 0o755);
+  writeFileSync(join(dir, top, 'lib', 'should-not-land'), 'no\n');
+  writeFileSync(join(dir, top, 'lib', 'npm', 'bin', 'node-gyp'), 'not-the-runtime\n');
+  const archive = join(dir, `${top}.tar.gz`);
+  execFileSync('tar', ['-czf', archive, '-C', dir, top]);
+  return readFileSync(archive);
+};
+const armTar = packNode('arm64');
+const x64Tar = packNode('x64');
+const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const armHash = sha256(armTar);
+const x64Hash = sha256(x64Tar);
+// A separate process: the installer is started with execFileSync, which would
+// stop an in-process server from answering.
+const serveDir = join(fakeNode, '..');
+const armPath = join(serveDir, 'arm.tar.gz');
+const x64Path = join(serveDir, 'x64.tar.gz');
+const tamperFlag = join(serveDir, 'tamper');
+writeFileSync(armPath, armTar);
+writeFileSync(x64Path, x64Tar);
+const serverFile = join(serveDir, 'server.mjs');
+writeFileSync(serverFile, `import { createServer } from 'node:http';
+import { existsSync, readFileSync } from 'node:fs';
+const arm = readFileSync(process.env.ARM);
+const x64 = readFileSync(process.env.X64);
+const armHash = process.env.ARM_HASH;
+const x64Hash = process.env.X64_HASH;
+const tamperFlag = process.env.TAMPER_FLAG;
+const sumsFor = (version) => ['arm64', 'x64'].map((arch) => {
+  const name = 'node-' + version + '-darwin-' + arch + '.tar.gz';
+  return (arch === 'arm64' ? armHash : x64Hash) + '  ' + name;
+}).join('\\n') + '\\n';
+const server = createServer((req, res) => {
+  const url = (req.url || '').split('?')[0];
+  const match = url.match(/^\\/dist\\/(v\\d+\\.\\d+\\.\\d+)\\/(.+)$/);
+  if (!match) { res.writeHead(404); res.end('no'); return; }
+  const version = match[1];
+  const name = match[2];
+  if (name === 'SHASUMS256.txt') {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end(sumsFor(version));
+    return;
+  }
+  const darwin = name.endsWith('darwin-arm64.tar.gz') ? 'darwin-arm64' : name.endsWith('darwin-x64.tar.gz') ? 'darwin-x64' : '';
+  const body = darwin === 'darwin-arm64' ? arm : darwin === 'darwin-x64' ? x64 : null;
+  if (!body || name !== 'node-' + version + '-' + darwin + '.tar.gz') {
+    res.writeHead(404); res.end('no'); return;
+  }
+  const bytes = existsSync(tamperFlag) ? Buffer.concat([body, Buffer.from('x')]) : body;
+  res.writeHead(200, { 'content-type': 'application/gzip' });
+  res.end(bytes);
+});
+server.listen(0, '127.0.0.1', () => process.stdout.write(String(server.address().port) + '\\n'));
+`);
+const nodeChild = spawn(process.execPath, [serverFile], {
+  env: {
+    ...process.env, ARM: armPath, X64: x64Path, ARM_HASH: armHash, X64_HASH: x64Hash, TAMPER_FLAG: tamperFlag,
+  },
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+let nodeErr = '';
+nodeChild.stderr.on('data', (chunk) => { nodeErr += chunk; });
+const nodePort = await new Promise((resolve, reject) => {
+  let buf = '';
+  nodeChild.stdout.on('data', (chunk) => {
+    buf += chunk;
+    const end = buf.indexOf('\n');
+    if (end !== -1) resolve(buf.slice(0, end).trim());
+  });
+  nodeChild.on('exit', (code) => reject(new Error(`fake nodejs.org exited ${code}: ${nodeErr}`)));
+});
 
 const loginHome = () => {
   const user = execFileSync('/usr/bin/id', ['-un'], { encoding: 'utf8' }).trim();
@@ -113,6 +195,13 @@ case $url in
     ;;
   *.dmg)
     printf 'dmg!!' > "$out"
+    ;;
+  https://nodejs.org/dist/*)
+    case $url in
+      *..*) exit 1 ;;
+    esac
+    rel=\${url#https://nodejs.org}
+    /usr/bin/curl -fsSL --proto '=http' --retry 0 -o "$out" "http://127.0.0.1:\${TESS_NODE_PORT}\${rel}"
     ;;
   *install.sh)
     cat > "$out" <<'END'
@@ -241,6 +330,9 @@ const baseEnv = (place, extra) => ({
   TESS_TEST: '1',
   TESS_SUPPORT_TOKEN: token,
   TESS_INBOX: 'http://127.0.0.1:9',
+  TESS_NODE_PORT: String(nodePort),
+  TESS_NODE_SHA_ARM64: armHash,
+  TESS_NODE_SHA_X64: x64Hash,
   OPENCODE_GO_API_KEY: decoy,
   LANG: 'C',
   ...extra,
@@ -292,15 +384,20 @@ try {
     env: {
       PATH: '/usr/bin:/bin', HOME: join(ref, 'home'), HERMES_HOME: join(ref, 'hermes'), TMPDIR: tmpdir(),
       LANG: 'C', TESS_TEST: '1', TESS_SUPPORT_TOKEN: token, TESS_INBOX: 'http://127.0.0.1:9',
+      TESS_NODE_RUNTIME: fakeNode,
     },
   });
   assert.equal(refOut, 'via copy\n');
   const reference = tree(join(ref, 'hermes', 'profiles', 'tess-support'));
   for (const name of ['plugins/tess-notes/__init__.py', 'plugins/tess-notes/plugin.yaml', 'skills/tess-gather/scripts/doctor.mjs',
     'skills/tess-evidence/scripts/spotify-window.mjs', 'skills/tess-handoff/scripts/triage-inbox.mjs',
-    'skills/tess-support/scripts/session.mjs', 'config.yaml', 'distribution.yaml', 'SOUL.md', '.env']) {
+    'skills/tess-support/scripts/session.mjs', 'config.yaml', 'distribution.yaml', 'SOUL.md', '.env',
+    'runtime/node/bin/node', 'runtime/node/VERSION']) {
     assert.ok(reference.has(name), `install.mjs did not install ${name}`);
   }
+  assert.ok(reference.get('runtime/node/bin/node').equals(readFileSync(fakeNode)));
+  assert.equal(reference.get('runtime/node/VERSION').toString(), `${nodeVersion}\n`);
+  assert.equal([...reference.keys()].some((name) => name.includes('should-not-land') || name.includes('node-gyp')), false);
 
   const missing = run([], {
     PATH: '/usr/bin:/bin',
@@ -368,6 +465,7 @@ try {
   const curlOnce = readFileSync(join(arm.log, 'curl.log'), 'utf8');
   assert.match(curlOnce, /stable-mac\.yml/);
   assert.match(curlOnce, /mac-arm64\.dmg/);
+  assert.match(curlOnce, new RegExp(`node-${nodeVersion.replaceAll('.', '\\.')}-darwin-arm64\\.tar\\.gz`));
   assert.equal((readFileSync(join(arm.log, 'killall.log'), 'utf8').match(/^Dock$/gm) || []).length, 1);
   assert.equal(urlsInDock(arm.plist).filter((url) => url.includes('Tess%20Support.app')).length, 1);
 
@@ -415,6 +513,7 @@ try {
   assert.match(removed.stdout, /Ask Krish to revoke your code/);
   assert.match(removed.stdout, /Hermes is still installed/);
   assert.equal(existsSync(join(armEnv.HERMES_HOME, 'profiles', 'tess-support')), false);
+  assert.equal(existsSync(join(armProfile, 'runtime', 'node')), false);
   assert.equal(readFileSync(join(armEnv.HERMES_HOME, 'profiles', 'other', 'keep'), 'utf8'), 'leave this profile\n');
   assert.equal(existsSync(join(armEnv.HOME, 'Applications', 'Tess Support.app')), false);
   assert.equal(readFileSync(join(armEnv.HOME, 'Applications', 'NotOurs.app', 'keep'), 'utf8'), 'leave this app\n');
@@ -458,6 +557,7 @@ try {
   assert.match(intelRun.stdout, /Command Line Tools/);
   const curlLog = readFileSync(join(intel.log, 'curl.log'), 'utf8');
   assert.match(curlLog, /install\.sh/);
+  assert.match(curlLog, new RegExp(`node-${nodeVersion.replaceAll('.', '\\.')}-darwin-x64\\.tar\\.gz`));
   assert.doesNotMatch(curlLog, /\.dmg|stable-mac\.yml/);
   assert.equal(existsSync(join(intel.log, 'hdiutil.log')), false);
   assert.equal(existsSync(join(intel.box, 'Applications', 'Hermes.app')), false);
@@ -515,6 +615,83 @@ try {
   assert.deepEqual(readdirSync(elsewhere), []);
   assert.equal(filesContaining(linked.box, token).length, 0);
 
+  // A bad checksum is refused before the profile changes. The earlier runtime stays.
+  const prior = layout('checksum');
+  boxes.push(prior.box);
+  mkdirSync(join(prior.box, 'tmp'));
+  const priorEnv = baseEnv(prior, { TESS_ARCH: 'arm64' });
+  const priorRun = run([], priorEnv);
+  assert.equal(priorRun.status, 0, priorRun.stderr);
+  const priorProfile = join(priorEnv.HERMES_HOME, 'profiles', 'tess-support');
+  writeFileSync(join(priorProfile, 'cache-marker.txt'), 'leave this\n');
+  const priorTree = tree(priorProfile);
+  writeFileSync(tamperFlag, '1\n');
+  const wrong = run([], { ...priorEnv, TESS_NODE_VERSION: 'v0.0.0' });
+  unlinkSync(tamperFlag);
+  assert.notEqual(wrong.status, 0);
+  assert.match(wrong.stderr, /did not match the checksum/);
+  assert.match(wrong.stderr, /Nothing was unpacked into the profile/);
+  sameTree(tree(priorProfile), priorTree, 'a wrong Node checksum');
+
+  // uname -m picks the archive name when a test does not set TESS_ARCH.
+  const host = execFileSync('uname', ['-m'], { encoding: 'utf8' }).trim();
+  const hostName = host === 'arm64' ? 'darwin-arm64' : host === 'x86_64' ? 'darwin-x64' : '';
+  assert.ok(hostName, `uname -m was ${host}`);
+  const named = layout('uname');
+  boxes.push(named.box);
+  mkdirSync(join(named.box, 'tmp'));
+  const namedRun = run([], baseEnv(named));
+  assert.equal(namedRun.status, 0, namedRun.stderr);
+  const namedLog = readFileSync(join(named.log, 'curl.log'), 'utf8');
+  assert.match(namedLog, new RegExp(`node-${nodeVersion.replaceAll('.', '\\.')}-${hostName}\\.tar\\.gz`));
+  const otherArch = host === 'arm64' ? 'x86_64' : 'arm64';
+  const otherName = otherArch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
+  const other = layout('other-arch');
+  boxes.push(other.box);
+  mkdirSync(join(other.box, 'tmp'));
+  const otherRun = run([], baseEnv(other, { TESS_ARCH: otherArch }));
+  assert.equal(otherRun.status, 0, otherRun.stderr);
+  assert.match(readFileSync(join(other.log, 'curl.log'), 'utf8'), new RegExp(`node-${nodeVersion.replaceAll('.', '\\.')}-${otherName}\\.tar\\.gz`));
+  assert.doesNotMatch(readFileSync(join(other.log, 'curl.log'), 'utf8'), new RegExp(`node-${nodeVersion.replaceAll('.', '\\.')}-${hostName}\\.tar\\.gz`));
+
+  const runtimeCmd = '$HERMES_HOME/runtime/node/bin/node';
+  const fnmatchcase = (name, pat) => {
+    let src = '';
+    for (let i = 0; i < pat.length; i += 1) {
+      const c = pat[i];
+      if (c === '*') src += '[\\s\\S]*';
+      else if (c === '?') src += '[\\s\\S]';
+      else src += c.replace(/[\\^$.*+?(){}|[\]-]/g, '\\$&');
+    }
+    return new RegExp(`^${src}$`).test(name);
+  };
+  const allowOf = (text) => {
+    const lines = text.split('\n');
+    const start = lines.findIndex((line) => line === 'command_allowlist:');
+    const items = [];
+    for (const line of lines.slice(start + 1)) {
+      const item = line.match(/^  - '(.*)'$/);
+      if (!item) break;
+      items.push(item[1]);
+    }
+    return items;
+  };
+  const matches = (command, patterns) => patterns.some((pattern) => {
+    if (command === pattern) return true;
+    return /[*?\[]/.test(pattern) && fnmatchcase(command, pattern);
+  });
+  const allow = allowOf(readFileSync(join(root, 'support/mac/config.yaml'), 'utf8'));
+  const installedAllow = allowOf(readFileSync(join(priorProfile, 'config.yaml'), 'utf8'));
+  assert.deepEqual(installedAllow, allow);
+  for (const item of allow) {
+    if (item.includes('/skills/')) assert.ok(item.startsWith(`${runtimeCmd} `), item);
+  }
+  const visit = `${runtimeCmd} $HERMES_HOME/skills/tess-support/scripts/session.mjs new`;
+  assert.equal(matches(visit, allow), true);
+  assert.equal(matches('node $HERMES_HOME/skills/tess-support/scripts/session.mjs new', allow), false);
+  assert.equal(matches('node /tmp/session.mjs new', allow), false);
+  assert.equal(matches(`${runtimeCmd} -e process.exit`, allow), false);
+
   const argPlace = layout('argv');
   boxes.push(argPlace.box);
   mkdirSync(join(argPlace.box, 'tmp'));
@@ -524,6 +701,8 @@ try {
   assert.equal(filesContaining(argPlace.box, token).length, 0);
   assert.equal(existsSync(join(argPlace.log, 'curl.log')), false);
 } finally {
+  nodeChild.kill();
+  rmSync(join(fakeNode, '..'), { recursive: true, force: true });
   for (const box of boxes) rmSync(box, { recursive: true, force: true });
 }
 

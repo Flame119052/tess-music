@@ -11,8 +11,9 @@
 #   curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/support/mac/install.sh | sh -s -- --uninstall
 #
 # The profile files are the ones distribution.yaml lists, the same list install.mjs copies. This script cannot use
-# install.mjs: a person's Mac may not have node. HERMES_HOME follows install.mjs's rule: a real install uses ~/.hermes,
-# a test refuses the login home, and both refuse a symlink.
+# install.mjs: a person's Mac may not have node. It downloads a pinned Node.js and keeps only bin/node under the
+# profile, so a visit does not use a node from PATH. HERMES_HOME follows install.mjs's rule: a real install uses
+# ~/.hermes, a test refuses the login home, and both refuse a symlink. --uninstall removes that Node with the profile.
 set -eu
 
 FEED_URL=https://hermes-assets.nousresearch.com/releases/darwin/stable/stable-mac.yml
@@ -20,6 +21,11 @@ ASSET_ORIGIN=https://hermes-assets.nousresearch.com
 CLI_URL=https://hermes-agent.nousresearch.com/install.sh
 PROFILE_ORIGIN=https://raw.githubusercontent.com/Flame119052/tess-music/main
 INBOX_DEFAULT=https://tess-music-player.janus.ing
+# Current LTS (Lithium). The darwin tarball's bin/node links only macOS system libraries.
+NODE_VERSION=v26.13.1
+NODE_ORIGIN=https://nodejs.org
+NODE_SHA_ARM64=aec2514ea1ceb2ba52455e9ec65986f6749a06dd759e5db2a72e6889668c9735
+NODE_SHA_X64=82bb96078a24ca50b9c9a38f2379e6be6d87171fcd400fc14c8934b3bce96e2f
 
 die() {
   printf '%s\n' "$1" >&2
@@ -154,7 +160,7 @@ prepare_places() {
 
 allow_url() {
   case $1 in
-    "$ASSET_ORIGIN"/*|"$CLI_URL"|"$PROFILE_ORIGIN"/*) ;;
+    "$ASSET_ORIGIN"/*|"$CLI_URL"|"$PROFILE_ORIGIN"/*|"$NODE_ORIGIN"/dist/*) ;;
     *) die "Refusing a download from an unknown address." ;;
   esac
 }
@@ -162,6 +168,127 @@ allow_url() {
 fetch() {
   allow_url "$2"
   curl -fsSL --proto '=https' --retry 2 --retry-delay 1 -o "$1" "$2"
+}
+
+is_sha256() {
+  printf '%s' "$1" | grep -Eq '^[0-9a-f]{64}$'
+}
+
+# A test may point the pins at a fake archive. A real install ignores those variables.
+apply_node_test_pins() {
+  [ "${TESS_TEST:-}" = 1 ] || return 0
+  if [ -n "${TESS_NODE_VERSION:-}" ]; then
+    case $TESS_NODE_VERSION in
+      *[!0-9v.]*) die "TESS_NODE_VERSION is not a Node version." ;;
+      v*.*.*) NODE_VERSION=$TESS_NODE_VERSION ;;
+      *) die "TESS_NODE_VERSION is not a Node version." ;;
+    esac
+  fi
+  if [ -n "${TESS_NODE_SHA_ARM64:-}" ]; then
+    is_sha256 "$TESS_NODE_SHA_ARM64" || die "TESS_NODE_SHA_ARM64 is not a SHA-256."
+    NODE_SHA_ARM64=$TESS_NODE_SHA_ARM64
+  fi
+  if [ -n "${TESS_NODE_SHA_X64:-}" ]; then
+    is_sha256 "$TESS_NODE_SHA_X64" || die "TESS_NODE_SHA_X64 is not a SHA-256."
+    NODE_SHA_X64=$TESS_NODE_SHA_X64
+  fi
+}
+
+runtime_current() {
+  [ -f "$runtime_dir/VERSION" ] || return 1
+  [ -f "$runtime_dir/bin/node" ] || return 1
+  [ -L "$runtime_dir" ] && return 1
+  [ -L "$runtime_dir/bin" ] && return 1
+  [ -L "$runtime_dir/bin/node" ] && return 1
+  have=$(tr -d '[:space:]' < "$runtime_dir/VERSION")
+  [ "$have" = "$NODE_VERSION" ]
+}
+
+# Download and check in $work. A mismatch returns before the profile is touched.
+stage_node() {
+  apply_node_test_pins
+  runtime_dir=$profile/runtime/node
+  node_skip=0
+  if runtime_current; then
+    node_skip=1
+    return 0
+  fi
+  case $arch in
+    arm64) node_arch=arm64; node_sha=$NODE_SHA_ARM64 ;;
+    x86_64) node_arch=x64; node_sha=$NODE_SHA_X64 ;;
+    *) die "This Mac is not supported. Tess Support needs Apple Silicon or a 64-bit Intel Mac." ;;
+  esac
+  is_sha256 "$node_sha" || die "The Node checksum in this installer is not a SHA-256."
+  node_name="node-${NODE_VERSION}-darwin-${node_arch}.tar.gz"
+  base="$NODE_ORIGIN/dist/$NODE_VERSION"
+  fetch "$work/SHASUMS256.txt" "$base/SHASUMS256.txt"
+  published=$(awk -v name="$node_name" '$2 == name { print $1; exit }' "$work/SHASUMS256.txt")
+  if [ "$published" != "$node_sha" ]; then
+    die "The Node checksum in this installer does not match Node's published list. Nothing was unpacked into the profile."
+  fi
+  fetch "$work/node.tar.gz" "$base/$node_name"
+  got=$(/usr/bin/openssl dgst -sha256 "$work/node.tar.gz" | awk '{ print $NF }')
+  if [ "$got" != "$node_sha" ]; then
+    die "The Node download did not match the checksum. Nothing was unpacked into the profile."
+  fi
+  tar -tzf "$work/node.tar.gz" > "$work/node-members"
+  member=
+  count=0
+  while IFS= read -r path; do
+    case $path in
+      */bin/node)
+        count=$((count + 1))
+        member=$path
+        ;;
+    esac
+  done < "$work/node-members"
+  if [ "$count" != 1 ]; then
+    die "The Node archive did not contain exactly one bin/node. Nothing was unpacked into the profile."
+  fi
+  case $member in
+    /*|*..*) die "The Node archive had an unsafe path. Nothing was unpacked into the profile." ;;
+  esac
+  kind=$(tar -tvzf "$work/node.tar.gz" "$member" | awk 'NR==1 { print substr($1, 1, 1); exit }')
+  if [ "$kind" != "-" ]; then
+    die "The Node archive's bin/node is not a plain file. Nothing was unpacked into the profile."
+  fi
+  rm -rf "$work/node-src"
+  mkdir -p "$work/node-src"
+  tar -xzf "$work/node.tar.gz" -C "$work/node-src" "$member"
+  srcfile=$work/node-src/$member
+  if [ ! -f "$srcfile" ] || [ -L "$srcfile" ] || [ ! -s "$srcfile" ]; then
+    die "The Node archive did not unpack bin/node. Nothing was unpacked into the profile."
+  fi
+}
+
+commit_node() {
+  [ "$node_skip" = 1 ] && return 0
+  case $profile in
+    "$HERMES_HOME"/profiles/tess-support) ;;
+    *) die "The profile path is not the tess-support profile." ;;
+  esac
+  if [ -L "$profile" ] || [ -L "$profile/runtime" ] || [ -L "$profile/runtime/node" ]; then
+    die "The Node runtime path is a symlink. Refusing to follow it."
+  fi
+  incoming=$profile/runtime/.node-incoming
+  previous=$profile/runtime/.node-previous
+  rm -rf "$incoming"
+  mkdir -p "$incoming/bin"
+  cp "$srcfile" "$incoming/bin/node"
+  chmod 755 "$incoming/bin/node"
+  printf '%s\n' "$NODE_VERSION" > "$incoming/VERSION"
+  rm -rf "$previous"
+  if [ -d "$profile/runtime/node" ]; then
+    mv "$profile/runtime/node" "$previous"
+  fi
+  if mv "$incoming" "$profile/runtime/node"; then
+    rm -rf "$previous"
+  else
+    if [ -d "$previous" ]; then
+      mv "$previous" "$profile/runtime/node"
+    fi
+    die "Could not install Node. The previous runtime was left in place."
+  fi
 }
 
 read_token() {
@@ -616,7 +743,9 @@ install_main() {
   elif [ "$arch" = "x86_64" ]; then
     install_cli
   fi
+  stage_node
   install_profile
+  commit_node
   set_active_profile
   build_launcher
   pin_dock
@@ -631,6 +760,9 @@ cleanup() {
   fi
   if [ -n "${apps:-}" ] && [ -d "$apps/.Hermes.app.tess-incoming" ]; then
     rm -rf "$apps/.Hermes.app.tess-incoming"
+  fi
+  if [ -n "${profile:-}" ] && [ -d "$profile/runtime/.node-incoming" ]; then
+    rm -rf "$profile/runtime/.node-incoming"
   fi
   if [ -n "${work:-}" ]; then
     rm -rf "$work"
