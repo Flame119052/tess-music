@@ -842,14 +842,21 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
 - **D-105 · 18 Nov 2026 · Agent** — The one-command Mac install is `support/mac/install.sh` (#121). On Apple Silicon
   the script downloads the bundled disk image named in Hermes's `stable-mac.yml` feed, checks the published SHA-512, then checks
   the mounted app with `codesign` and `spctl`. The signature requirement pins Nous Research's team `763K57MW7Z`
-  (`certificate leaf[subject.OU]`). That id was read with `codesign -dvv` on `Hermes Agent.app` inside a read-only mount
-  of `HermesBundled-0.22.0-mac-arm64.dmg`, the Apple Silicon image named in the live `stable-mac.yml` on 19 Nov 2026.
-  The published SHA-512 matched. The image was then unmounted and deleted, and it was not copied into `/Applications`.
-  The bundle on that image is named `Hermes Agent.app`. The copy into Applications happens only after the checks. A failed
+  (`certificate leaf[subject.OU]`), the Developer ID intermediate (`certificate 1[field.1.2.840.113635.100.6.2.6]`)
+  and leaf (`certificate leaf[field.1.2.840.113635.100.6.1.13]`), and the bundle identifier
+  `com.nousresearch.hermes-bundled`. The team and the identifier were read with `codesign -dvv` on `Hermes Agent.app`
+  inside a read-only mount of `HermesBundled-0.22.0-mac-arm64.dmg`, the Apple Silicon image named in the live
+  `stable-mac.yml` on 19 Nov 2026. The published SHA-512 matched. The same requirement accepts that app, and a
+  different identifier is rejected. The image was then unmounted and deleted, and it was not copied into `/Applications`.
+  A symlink named `Hermes.app` is not treated as the app. The bundle on that image is named `Hermes Agent.app`.
+  The copy into Applications happens only after the checks. A failed
   check leaves Applications unchanged. An Intel Mac does not download that image. It downloads
-  `https://raw.githubusercontent.com/NousResearch/hermes-agent/v0.23.2/scripts/install.sh`, checks SHA-256
+  `https://raw.githubusercontent.com/NousResearch/hermes-agent/ae2a81ccc00e9b7c06301523e5bb09608397149c/scripts/install.sh`
+  (the commit `v0.23.2` points at, not the tag), checks SHA-256
   `c73dad4dcf7c9ecadb98578e28cc763d23d7be3fa1b513545319038795493214`, and only then runs it with
-  `--non-interactive --skip-browser --skip-computer-use`. That script still makes its own downloads. The script says
+  `--non-interactive --skip-browser --skip-computer-use`. The `HERMES_*` and `UV_*` variables that script honours,
+  other than `HERMES_HOME`, are removed from its environment first. That script still makes its own downloads:
+  it then downloads Hermes and its Python packages without pins of its own. The script says
   macOS may ask once to install Command Line Tools. The Dock icon is `~/Applications/Tess Support.app`. The script adds
   that icon to `persistent-apps` once, and a second run does not add it again. When this script installed Hermes on
   Apple Silicon, the icon opens that app with `--profile=tess-support`. On Intel, and when Hermes was already installed,
@@ -858,19 +865,26 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   `hermes_requires` (`>=0.22.0`). `webapp.enabled` is set, because `hermes webapp` stays off until it is. The
   code is read from the environment or from `/dev/tty`, then written only to the profile `.env` at mode 600.
   `install.sh --uninstall` (pasted as `curl … | sh -s -- --uninstall`) removes the profile, the icon, and the Dock tile.
-  It removes Hermes only when this script installed Hermes and the person agrees. It never touches Spotify or Tess.
+  It removes Hermes only when this script installed Hermes and the person agrees. The recorded app name keeps its
+  spaces, so `Hermes Agent.app` is the app that is removed. A name this installer does not know is left in place,
+  and the marker stays. It never touches Spotify or Tess.
   It then tells them to ask Krish to revoke the code. The ticket named `tess support uninstall`; it is not a `tess`
   subcommand because `tess-command.sh` is signed Tess release content that reaches people only after a promote, the
   installer embeds it byte for byte, and a person who removes Tess first would lose the command. A Support uninstall
   that edits Tess is also the coupling this decision avoids. The profile files are the ones `distribution.yaml`
   lists, the same list `install.mjs` copies, and the piped install downloads each of them from one pinned commit,
   checking a SHA-256 for every file before anything in the profile changes. The pins make an install reproducible.
+  After this branch is merged, those pins have to be written again from `main`. A squash or a rebase would not keep the commit they name.
   Whether this support line goes through dev, then beta, then stable promotion is still open. They are copied in the
-  shell, not with `install.mjs` or `hermes profile install`, because installer scripts may not need `node` and the
+  shell, one pinned file at a time, not a whole `skills` or `plugins` folder, and not with `install.mjs` or
+  `hermes profile install`, because installer scripts may not need `node` and the
   tests never start Hermes. `HERMES_HOME` follows `install.mjs`'s rule: a real install uses `~/.hermes` and refuses
   any other folder inside the login home, a test refuses the login home, and both refuse a symlinked `HERMES_HOME`
-  or profile folder. A reinstall swaps the whole profile folder. `cache/` and the Node runtime are carried across,
-  so an unsent visit survives, and a failed swap puts the previous folder back. The command-line sticky profile is
+  or profile folder. A reinstall builds the new profile and its Node together in `.tess-support.incoming`, next to
+  the live profile, and renames them on the same disk. `cache/` is carried across, so an unsent visit survives.
+  The cleanup trap never deletes `.tess-support.previous`. A later run puts that folder back if the swap was interrupted.
+  A code that is not one Krish issued, and a Node or profile file that fails its checksum, create no Hermes app,
+  no command, and no `~/.hermes`. The command-line sticky profile is
   written only when this run created `HERMES_HOME`. On a later run it is overwritten only while it still says
   `tess-support`. A name the person chose is left alone. The Dock icon passes the profile itself. The desktop
   `active-profile.json` follows the same rule when the icon will open the desktop app.

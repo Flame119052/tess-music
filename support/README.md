@@ -22,7 +22,7 @@ The same command puts a pinned copy of Node.js inside the Tess Support profile. 
 
 macOS asks once to allow screen recording the first time Tess Support needs to see Spotify. Turn it on for Tess Support in System Settings, under Privacy and Security, then click the Dock icon again.
 
-On an Intel Mac, macOS may ask once to install Command Line Tools. If a window opens, click Install.
+On an Intel Mac, macOS may ask once to install Command Line Tools. If a window opens, click Install. The Hermes installer then downloads Hermes and its Python packages. Those downloads are not pinned by Tess.
 
 To remove Tess Support, paste this line. It removes the Dock icon and the Tess Support profile, including that Node, and does not touch Spotify or Tess. It leaves Hermes unless this install put Hermes on the Mac and you type `yes`.
 

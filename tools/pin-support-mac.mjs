@@ -1,5 +1,6 @@
 // Rewrite the profile pins in support/mac/install.sh from one commit.
 // Usage: node tools/pin-support-mac.mjs <commit>
+// After this branch is merged, run this again with the commit on main.
 // The file list is the installer's rels block. The same commit writes the same text.
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -11,6 +12,7 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const commit = process.argv[2] || '';
 if (!/^[0-9a-f]{40}$/.test(commit)) {
   console.error('usage: node tools/pin-support-mac.mjs <40-character commit>');
+  console.error('After this branch is merged, run it again with the commit on main.');
   process.exit(1);
 }
 

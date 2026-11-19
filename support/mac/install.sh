@@ -5,7 +5,8 @@
 #
 # The support code is read from TESS_SUPPORT_TOKEN or typed at /dev/tty. It is never an argument.
 # Apple Silicon: the bundled Hermes.app, checksum then codesign and spctl, and only then Applications.
-# Intel: Hermes's command-line installer. The Dock icon opens the same chat in the browser.
+# Intel: Hermes's command-line installer, pinned to one commit. That installer then downloads Hermes
+# and its Python packages without its own pins. The Dock icon opens the same chat in the browser.
 # Safe to run again. --uninstall removes only this profile, this icon, and this Dock tile:
 #
 #   curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/support/mac/install.sh | sh -s -- --uninstall
@@ -89,12 +90,15 @@ unset TESS_SUPPORT_TOKEN || true
 
 FEED_URL=https://hermes-assets.nousresearch.com/releases/darwin/stable/stable-mac.yml
 ASSET_ORIGIN=https://hermes-assets.nousresearch.com
-# v0.23.2's scripts/install.sh, the same bytes as the unversioned site on 19 Nov 2026. The hash is checked before it runs.
-CLI_URL=https://raw.githubusercontent.com/NousResearch/hermes-agent/v0.23.2/scripts/install.sh
+# v0.23.2's scripts/install.sh at the commit the tag points at (ae2a81cc, 19 Nov 2026). A tag can move.
+# The hash is checked before it runs. That script then downloads Hermes and its Python packages with no pins of its own.
+CLI_URL=https://raw.githubusercontent.com/NousResearch/hermes-agent/ae2a81ccc00e9b7c06301523e5bb09608397149c/scripts/install.sh
 CLI_SHA=c73dad4dcf7c9ecadb98578e28cc763d23d7be3fa1b513545319038795493214
-# Nous Research's Apple team. codesign -dvv on Hermes Agent.app inside the read-only mount of
-# HermesBundled-0.22.0-mac-arm64.dmg (the arm64 image named in stable-mac.yml on 19 Nov 2026).
+# Nous Research's Apple team and the bundle identifier. codesign -dvv on Hermes Agent.app inside the
+# read-only mount of HermesBundled-0.22.0-mac-arm64.dmg (the arm64 image named in stable-mac.yml on 19 Nov 2026).
+# The published SHA-512 matched. The image was unmounted and deleted. It was not copied into /Applications.
 HERMES_TEAM='763K57MW7Z'
+HERMES_ID='com.nousresearch.hermes-bundled'
 # The same minimum distribution.yaml names. A checkout whose file disagrees is refused.
 HERMES_REQUIRES='>=0.22.0'
 # >>> support profile pins >>>
@@ -175,6 +179,28 @@ physical() {
   (CDPATH= cd -- "$1" && pwd -P)
 }
 
+# mkdir follows a symlink in an ancestor. Resolve the part that already exists, and decide from
+# that path, before any directory is created.
+predict() {
+  chosen_path=$1
+  cur=$chosen_path
+  while [ ! -e "$cur" ] && [ ! -L "$cur" ]; do
+    parent=$(dirname -- "$cur")
+    [ "$parent" = "$cur" ] && break
+    cur=$parent
+  done
+  if [ -d "$cur" ] || [ -L "$cur" ]; then
+    base=$(physical "$cur") || die "Could not resolve $cur."
+  else
+    base=$cur
+  fi
+  case $chosen_path in
+    "$cur") printf '%s\n' "$base" ;;
+    "$cur"/*) printf '%s\n' "$base/${chosen_path#"$cur"/}" ;;
+    *) die "Could not resolve $chosen_path." ;;
+  esac
+}
+
 require_test_fakes() {
   tool=$1
   found=$(command -v "$tool" || true)
@@ -244,23 +270,71 @@ prepare_places() {
     done
   fi
 
+  # Resolve ancestors before creating anything. A symlink above a missing folder would otherwise
+  # be created inside the symlink's target, and the check would run too late.
+  home_real=$(predict "$HOME")
+  hermes_real=$(predict "$HERMES_HOME")
+  apps_real=$(predict "$apps")
+  if [ "${TESS_TEST:-}" = 1 ] && inside "$apps_real" "/Applications"; then
+    die "Refusing the real Applications folder."
+  fi
+  if [ "${TESS_TEST:-}" != 1 ] && [ -n "${login:-}" ] && inside "$hermes_real" "$login" && [ "$chosen" != "$login/.hermes" ]; then
+    die "HERMES_HOME is inside the real home folder ($login) but is not ~/.hermes."
+  fi
+  if [ "${TESS_TEST:-}" = 1 ] && [ -n "${login:-}" ]; then
+    inside "$home_real" "$login" && die "HOME is inside the real home folder ($login). Use a scratch directory."
+    inside "$hermes_real" "$login" && die "HERMES_HOME is inside the real home folder ($login). Use a scratch directory."
+    inside "$apps_real" "$login" && die "TESS_APPLICATIONS is inside the real home folder ($login). Use a scratch directory."
+  fi
+
   # A later run must not replace a profile name the person chose after the first install.
+  # Recorded before any directory is created, so a refused code still counts as a fresh install.
   created_home=0
   if [ ! -e "$HERMES_HOME" ]; then
     created_home=1
   fi
-  mkdir -p "$HOME" "$HERMES_HOME" "$apps"
-  [ -L "$chosen" ] && die "HERMES_HOME is a symlink. Refusing to follow it."
-  HOME=$(physical "$HOME")
-  HERMES_HOME=$(physical "$HERMES_HOME")
-  apps=$(physical "$apps")
-  if [ "${TESS_TEST:-}" != 1 ] && [ -n "${login:-}" ] && inside "$HERMES_HOME" "$login" && [ "$chosen" != "$login/.hermes" ]; then
+  marker=$HERMES_HOME/tess-support-we-installed
+  profile=$HERMES_HOME/profiles/tess-support
+  support_app=$HOME/Applications/Tess\ Support.app
+}
+
+# Create the folders only after the code, the inbox, and the downloads have been checked.
+# --uninstall never creates a missing HERMES_HOME.
+ensure_places() {
+  if [ "${1:-}" = "uninstall" ]; then
+    if [ -e "$HOME" ] || [ -L "$HOME" ]; then
+      HOME=$(physical "$HOME") || die "Could not resolve HOME."
+    fi
+    if [ -L "$HERMES_HOME" ]; then
+      die "HERMES_HOME is a symlink. Refusing to follow it."
+    fi
+    if [ -e "$HERMES_HOME" ]; then
+      HERMES_HOME=$(physical "$HERMES_HOME") || die "Could not resolve HERMES_HOME."
+    fi
+    if [ -e "$apps" ] || [ -L "$apps" ]; then
+      apps=$(physical "$apps") || die "Could not resolve Applications."
+    fi
+  else
+    mkdir -p "$HOME" "$HERMES_HOME" "$apps"
+    [ -L "$chosen" ] && die "HERMES_HOME is a symlink. Refusing to follow it."
+    HOME=$(physical "$HOME") || die "Could not resolve HOME."
+    HERMES_HOME=$(physical "$HERMES_HOME") || die "Could not resolve HERMES_HOME."
+    apps=$(physical "$apps") || die "Could not resolve Applications."
+  fi
+  if [ "${TESS_TEST:-}" = 1 ] && inside "$apps" "/Applications"; then
+    die "Refusing the real Applications folder."
+  fi
+  if [ "${TESS_TEST:-}" != 1 ] && [ -n "${login:-}" ] && [ -e "$HERMES_HOME" ] && inside "$HERMES_HOME" "$login" && [ "$chosen" != "$login/.hermes" ]; then
     die "HERMES_HOME is inside the real home folder ($login) but is not ~/.hermes."
   fi
   if [ "${TESS_TEST:-}" = 1 ] && [ -n "${login:-}" ]; then
     inside "$HOME" "$login" && die "HOME is inside the real home folder ($login). Use a scratch directory."
-    inside "$HERMES_HOME" "$login" && die "HERMES_HOME is inside the real home folder ($login). Use a scratch directory."
-    inside "$apps" "$login" && die "TESS_APPLICATIONS is inside the real home folder ($login). Use a scratch directory."
+    if [ -e "$HERMES_HOME" ]; then
+      inside "$HERMES_HOME" "$login" && die "HERMES_HOME is inside the real home folder ($login). Use a scratch directory."
+    fi
+    if [ -e "$apps" ]; then
+      inside "$apps" "$login" && die "TESS_APPLICATIONS is inside the real home folder ($login). Use a scratch directory."
+    fi
   fi
   export HOME HERMES_HOME
   marker=$HERMES_HOME/tess-support-we-installed
@@ -425,7 +499,7 @@ runtime_current() {
   [ "$have" = "$NODE_VERSION" ]
 }
 
-# Download and check in $work. A mismatch returns before the profile is touched.
+# Download and check in $work. A mismatch returns before HERMES_HOME exists and before Hermes is installed.
 stage_node() {
   apply_node_test_pins
   runtime_dir=$profile/runtime/node
@@ -482,34 +556,25 @@ stage_node() {
   fi
 }
 
-commit_node() {
-  [ "$node_skip" = 1 ] && return 0
-  case $profile in
-    "$HERMES_HOME"/profiles/tess-support) ;;
-    *) die "The profile path is not the tess-support profile." ;;
-  esac
-  if [ -L "$profile" ] || [ -L "$profile/runtime" ] || [ -L "$profile/runtime/node" ]; then
-    die "The Node runtime path is a symlink. Refusing to follow it."
-  fi
-  incoming=$profile/runtime/.node-incoming
-  previous=$profile/runtime/.node-previous
-  rm -rf "$incoming"
-  mkdir -p "$incoming/bin"
-  cp "$srcfile" "$incoming/bin/node"
-  chmod 755 "$incoming/bin/node"
-  printf '%s\n' "$NODE_VERSION" > "$incoming/VERSION"
-  rm -rf "$previous"
-  if [ -d "$profile/runtime/node" ]; then
-    mv "$profile/runtime/node" "$previous"
-  fi
-  if mv "$incoming" "$profile/runtime/node"; then
-    rm -rf "$previous"
-  else
-    if [ -d "$previous" ]; then
-      mv "$previous" "$profile/runtime/node"
+# The new profile and its Node are built together, so a failed swap does not leave one without the other.
+place_node() {
+  dest=$1
+  if [ "$node_skip" = 1 ]; then
+    if [ -e "$profile/runtime" ]; then
+      if [ -L "$profile/runtime" ] || [ ! -d "$profile/runtime" ]; then
+        die "The Node runtime path is a symlink. Refusing to follow it."
+      fi
+      cp -R "$profile/runtime" "$dest/runtime"
     fi
-    die "Could not install Node. The previous runtime was left in place."
+    return 0
   fi
+  if [ -z "${srcfile:-}" ] || [ ! -f "$srcfile" ] || [ -L "$srcfile" ]; then
+    die "Node was not downloaded. Nothing was unpacked into the profile."
+  fi
+  mkdir -p "$dest/runtime/node/bin"
+  cp "$srcfile" "$dest/runtime/node/bin/node"
+  chmod 755 "$dest/runtime/node/bin/node"
+  printf '%s\n' "$NODE_VERSION" > "$dest/runtime/node/VERSION"
 }
 
 read_token() {
@@ -598,7 +663,7 @@ read_inbox() {
   die "TESS_INBOX must be $INBOX_DEFAULT"
 }
 
-profile_source() {
+stage_profile_files() {
   # tools/pin-support-mac.mjs reads this list and rewrites PROFILE_PINS from one commit.
   rels="
 support/mac/config.yaml
@@ -663,35 +728,48 @@ owned_names() {
   ' "$1"
 }
 
+# A signal between the two renames leaves the good profile at .previous. Put it back.
+# This never deletes .previous: that folder is the only copy until the rename home finishes.
+recover_profile_swap() {
+  profiles_dir=$HERMES_HOME/profiles
+  incoming=$profiles_dir/.tess-support.incoming
+  previous=$profiles_dir/.tess-support.previous
+  if [ ! -e "$profile" ] && [ -d "$previous" ] && [ ! -L "$previous" ]; then
+    if [ -e "$incoming" ]; then
+      rm -rf "$incoming"
+    fi
+    mv "$previous" "$profile" || die "Could not put the previous profile back."
+  fi
+  if [ -e "$profile" ] && [ -e "$incoming" ]; then
+    rm -rf "$incoming"
+  fi
+  if [ ! -e "$profile" ] && [ ! -d "$previous" ] && [ -e "$incoming" ]; then
+    rm -rf "$incoming"
+  fi
+}
+
 install_profile() {
-  profile_source
   case $profile in
     "$HERMES_HOME"/profiles/tess-support) ;;
     *) die "The profile path is not the tess-support profile." ;;
   esac
   names=$(owned_names "$src/distribution.yaml")
   [ -n "$names" ] || die "distribution.yaml lists no profile files."
-  # Build the whole profile first, so a missing file stops the install before the old profile changes.
-  stage=$work/stage
-  rm -rf "$stage"
-  mkdir -p "$stage"
   set -f
   for name in $names; do
-    # These names are copied as folders. A downloaded list must not reach outside the profile.
+    # These names are the folders distribution.yaml owns. Only the pinned files inside them are copied.
     case $name in
       ""|.|..|-*|*/*|*..*|.env|.env.*) die "distribution.yaml names a file this installer will not copy: $name" ;;
     esac
     [ -e "$src/$name" ] || die "distribution.yaml lists $name, which was not downloaded."
-    cp -R "$src/$name" "$stage/$name"
   done
   set +f
-  find "$stage" -name .env -exec rm -rf {} +
-  mkdir -p "$stage/skills/tess-support/scripts"
-  for name in privacy.mjs triage.mjs inbox.mjs session.mjs; do
-    cp "$root/support/bot/skills/tess-support/scripts/$name" "$stage/skills/tess-support/scripts/$name"
-  done
+  profiles_dir=$HERMES_HOME/profiles
+  incoming=$profiles_dir/.tess-support.incoming
+  previous=$profiles_dir/.tess-support.previous
+  recover_profile_swap
   refuse_linked_profile
-  mkdir -p "$HERMES_HOME/profiles"
+  mkdir -p "$profiles_dir"
   refuse_linked_profile
   if [ -L "$profile" ]; then
     die "The profile folder is a symlink. Refusing to follow it."
@@ -699,39 +777,58 @@ install_profile() {
   if [ -e "$profile" ] && [ ! -d "$profile" ]; then
     die "The profile path is not a folder. Nothing was changed in the profile."
   fi
-  # The whole folder is swapped. cache/ and the Node runtime are not in the download, so they are carried across.
-  # The old .env stays in the previous folder until the swap commits, then the new one is already in the stage.
+  # The new profile is a sibling of the live one, so the swap is a rename on the same disk.
+  # cache/ is not in the download, so it is carried across. Node is written into this same folder.
+  rm -rf "$incoming"
+  mkdir -p "$incoming"
+  set -f
+  for rel in $rels; do
+    case $rel in
+      support/mac/*)
+        dest=${rel#support/mac/}
+        case $dest in
+          /*|*..*) die "The profile file $rel is not one this installer will copy." ;;
+        esac
+        mkdir -p "$incoming/$(dirname -- "$dest")"
+        cp "$root/$rel" "$incoming/$dest"
+        ;;
+      support/bot/skills/tess-support/scripts/*)
+        mkdir -p "$incoming/skills/tess-support/scripts"
+        cp "$root/$rel" "$incoming/skills/tess-support/scripts/${rel##*/}"
+        ;;
+      *) die "The profile file $rel is not one this installer will copy." ;;
+    esac
+  done
+  set +f
+  find "$incoming" -name .env -exec rm -rf {} +
   if [ -e "$profile/cache" ]; then
     if [ -L "$profile/cache" ] || [ ! -d "$profile/cache" ]; then
       die "The profile cache is a symlink. Refusing to follow it."
     fi
-    cp -R "$profile/cache" "$stage/cache"
+    cp -R "$profile/cache" "$incoming/cache"
   fi
-  if [ -e "$profile/runtime" ]; then
-    if [ -L "$profile/runtime" ] || [ ! -d "$profile/runtime" ]; then
-      die "The Node runtime path is a symlink. Refusing to follow it."
-    fi
-    cp -R "$profile/runtime" "$stage/runtime"
-  fi
+  place_node "$incoming"
   if [ -L "$profile/.env" ]; then
     die "The profile .env is a symlink. Refusing to follow it."
   fi
   umask 077
-  printf 'TESS_SUPPORT_TOKEN=%s\nTESS_INBOX=%s\n' "$token" "$inbox" > "$stage/.env"
-  chmod 600 "$stage/.env"
+  printf 'TESS_SUPPORT_TOKEN=%s\nTESS_INBOX=%s\n' "$token" "$inbox" > "$incoming/.env"
+  chmod 600 "$incoming/.env"
   umask 022
   if [ -d "$profile" ]; then
-    prev=$work/profile-previous
-    rm -rf "$prev"
-    mv "$profile" "$prev" || die "Could not replace the profile. It was left as it was."
-    if mv "$stage" "$profile"; then
-      rm -rf "$prev" || true
+    # Drop an older backup only while the live profile is still here.
+    if [ -e "$previous" ]; then
+      rm -rf "$previous"
+    fi
+    mv "$profile" "$previous" || die "Could not replace the profile. It was left as it was."
+    if mv "$incoming" "$profile"; then
+      rm -rf "$previous" || true
     else
-      mv "$prev" "$profile" || die "Could not put the previous profile back."
+      mv "$previous" "$profile" || die "Could not put the previous profile back."
       die "Could not install the profile. The previous one was put back."
     fi
   else
-    mv "$stage" "$profile" || die "Could not install the profile. Nothing was changed in the profile."
+    mv "$incoming" "$profile" || die "Could not install the profile. Nothing was changed in the profile."
   fi
 }
 
@@ -812,6 +909,10 @@ parse_feed() {
 }
 
 find_hermes_app() {
+  # A symlink named Hermes.app would pass -d and then be copied as if it were the app.
+  if [ -L "$1/Hermes.app" ] || [ -L "$1/Hermes Agent.app" ]; then
+    return 1
+  fi
   if [ -d "$1/Hermes.app" ]; then
     printf '%s\n' "$1/Hermes.app"
     return 0
@@ -822,6 +923,7 @@ find_hermes_app() {
     return 0
   fi
   for entry in "$1"/* "$1"/*/*; do
+    [ -L "$entry" ] && continue
     [ -d "$entry" ] || continue
     base=$(basename "$entry")
     if [ "$base" = "Hermes.app" ] || [ "$base" = "Hermes Agent.app" ]; then
@@ -865,7 +967,7 @@ install_desktop() {
   mkdir -p "$mnt"
   hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$work/Hermes.dmg"
   mounted=$(find_hermes_app "$mnt") || leave_applications "The download did not contain Hermes. Nothing was copied into Applications."
-  if ! codesign --verify --deep --strict -R="anchor apple generic and certificate leaf[subject.OU] = \"${HERMES_TEAM}\"" "$mounted"; then
+  if ! codesign --verify --deep --strict -R="anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = \"${HERMES_TEAM}\" and identifier \"${HERMES_ID}\"" "$mounted"; then
     leave_applications "The Hermes app did not pass Apple's signature check. Nothing was copied into Applications. Do not open the download."
   fi
   if ! spctl --assess --type execute "$mounted"; then
@@ -900,13 +1002,6 @@ install_desktop() {
 
 install_cli() {
   printf '%s\n' "This Mac is Intel. Tess Support installs the Hermes command line, not the desktop app. macOS may ask once to install Command Line Tools. If a window opens, click Install."
-  if ! git --version >/dev/null 2>&1; then
-    printf '%s\n' "Command Line Tools are not installed yet. Click Install in the window macOS opens, wait until it finishes, then paste this command again." >&2
-    if [ "${TESS_TEST:-}" != 1 ]; then
-      xcode-select --install >/dev/null 2>&1 || true
-    fi
-    exit 1
-  fi
   if [ -f "$marker" ] && [ "$(tr -d '[:space:]' < "$marker")" = "cli" ]; then
     launch=web
     require_hermes_cli
@@ -924,7 +1019,15 @@ install_cli() {
   if [ "$got" != "$CLI_SHA" ]; then
     die "The Hermes installer did not match its pinned checksum. It was not run."
   fi
-  /bin/bash "$work/hermes-install.sh" --non-interactive --skip-browser --skip-computer-use
+  # v0.23.2's scripts/install.sh (commit ae2a81cc) honours these and would follow a stray value.
+  # HERMES_REPO_URL redirects the clone. HERMES_INSTALL_DIR is not the folder uninstall removes.
+  # HERMES_INSTALL_CHANNEL, HERMES_INSTALL_VERBOSE and HERMES_RUNTIME_DIR are read the same way.
+  # UV_CMD is cleared by that script before use; UV_PIN_URL, UV_PIN_SHA256 and UV_PIN_MIRROR are
+  # assigned by it. They are still removed here so a caller cannot reach a later change in that script.
+  # HERMES_HOME is kept: this installer chose it, and uninstall removes $HERMES_HOME/hermes-agent.
+  env -u HERMES_REPO_URL -u HERMES_INSTALL_CHANNEL -u HERMES_INSTALL_DIR -u HERMES_INSTALL_VERBOSE \
+    -u HERMES_RUNTIME_DIR -u UV_CMD -u UV_PIN_URL -u UV_PIN_SHA256 -u UV_PIN_MIRROR \
+    /bin/bash "$work/hermes-install.sh" --non-interactive --skip-browser --skip-computer-use
   printf '%s\n' cli > "$marker"
   launch=web
   require_hermes_cli
@@ -1058,6 +1161,7 @@ agree_remove_hermes() {
 uninstall() {
   unset TESS_SUPPORT_TOKEN || true
   prepare_places
+  ensure_places uninstall
   # A symlink here would make the rm below follow it. Stop before anything is removed.
   refuse_linked_profile
   unpin_dock
@@ -1090,25 +1194,31 @@ uninstall() {
         if [ "$installed" = "app" ]; then
           app_name=Hermes.app
           if [ -f "$HERMES_HOME/tess-support-app-name" ]; then
-            app_name=$(tr -d '[:space:]' < "$HERMES_HOME/tess-support-app-name")
+            IFS= read -r app_name < "$HERMES_HOME/tess-support-app-name" || app_name=
+            app_name=$(printf '%s' "$app_name" | tr -d '\r')
           fi
           case $app_name in
             Hermes.app|"Hermes Agent.app")
-              if [ -d "$apps/$app_name" ]; then
+              if [ -d "$apps/$app_name" ] && [ ! -L "$apps/$app_name" ]; then
                 rm -rf "$apps/$app_name"
               fi
+              rm -f "$HERMES_HOME/tess-support-app-name"
+              rm -f "$marker"
+              printf '%s\n' "Hermes was removed. Other Hermes profiles were left in place."
+              ;;
+            *)
+              printf '%s\n' "The recorded Hermes app is not one this installer knows (${app_name:-empty}), so Hermes was left in place." >&2
               ;;
           esac
-          rm -f "$HERMES_HOME/tess-support-app-name"
         fi
         if [ "$installed" = "cli" ]; then
           rm -f "$HOME/.local/bin/hermes"
           if [ -d "$HERMES_HOME/hermes-agent" ]; then
             rm -rf "$HERMES_HOME/hermes-agent"
           fi
+          rm -f "$marker"
+          printf '%s\n' "Hermes was removed. Other Hermes profiles were left in place."
         fi
-        rm -f "$marker"
-        printf '%s\n' "Hermes was removed. Other Hermes profiles were left in place."
       else
         printf '%s\n' "Hermes is still installed."
       fi
@@ -1128,15 +1238,24 @@ install_main() {
   read_token
   read_inbox
   same_requirement
+  if [ "$arch" = "x86_64" ] && ! git --version >/dev/null 2>&1; then
+    printf '%s\n' "This Mac is Intel. Tess Support installs the Hermes command line, not the desktop app. macOS may ask once to install Command Line Tools. If a window opens, click Install."
+    printf '%s\n' "Command Line Tools are not installed yet. Click Install in the window macOS opens, wait until it finishes, then paste this command again." >&2
+    if [ "${TESS_TEST:-}" != 1 ]; then
+      xcode-select --install >/dev/null 2>&1 || true
+    fi
+    exit 1
+  fi
+  stage_node
+  stage_profile_files
+  ensure_places
   launch=web
   if [ "$arch" = "arm64" ]; then
     install_desktop
   elif [ "$arch" = "x86_64" ]; then
     install_cli
   fi
-  stage_node
   install_profile
-  commit_node
   set_active_profile
   build_launcher
   pin_dock
@@ -1155,9 +1274,7 @@ cleanup() {
     hdiutil detach "$mnt" >/dev/null 2>&1 || true
   fi
   drop_incoming
-  if [ -n "${profile:-}" ] && [ -d "$profile/runtime/.node-incoming" ]; then
-    rm -rf "$profile/runtime/.node-incoming"
-  fi
+  # .tess-support.previous is the previous profile. A signal during the swap must not lose it.
   if [ -n "${work:-}" ]; then
     rm -rf "$work"
   fi

@@ -210,15 +210,16 @@ try {
   const piped = run('sh', [], { cwd: checkoutDir, input: readFileSync(join(checkoutDir, 'installer', 'install.sh'), 'utf8') });
   assert.doesNotMatch(piped.out, /was sourced|is inside a git checkout|was handed to a shell/, 'a piped install line is not refused');
   assert.match(piped.out, /Couldn't download Tess's signature checker/, 'a piped install line starts its own work');
-  // The support install is the same shape. TESS_TEST stops it at its own folder check, after the guard has let it through.
+  // The support install is the same shape. No TESS_TEST, so this is the guard a real pipe hits.
+  // uname reports Linux, and the script stops before it asks for a folder or touches a Mac.
   resetToolLog();
   const supportPiped = run('sh', [], {
     cwd: checkoutDir,
     input: readFileSync(join(checkoutDir, 'support/mac/install.sh'), 'utf8'),
-    env: env({ TESS_TEST: '1', HERMES_HOME: '', TESS_APPLICATIONS: '' }),
+    env: env({ PATH: `${fakeBinLinux}:${fakeBin}:${process.env.PATH}` }),
   });
   assert.doesNotMatch(supportPiped.out, /was sourced|is inside a git checkout|was handed to a shell/, 'a piped support install is not refused by the guard');
-  assert.match(supportPiped.out, /Set HERMES_HOME/, 'a piped support install gets past the guard');
+  assert.match(supportPiped.out, /Tess Support installs on a Mac/, 'a piped support install gets past the guard');
   untouched('a piped support install');
   noToolRan('a piped support install');
   // The old README uninstall line is the same shape as the install line, but it must not run: that file is whatever
@@ -237,8 +238,17 @@ try {
   // 7. A sandbox (TESS_TEST=1) and the documented escape (TESS_REAL_INSTALL=1) both get past the guard.
   for (const { name, shell, folder } of scripts) {
     for (const flag of ['TESS_TEST', 'TESS_REAL_INSTALL']) {
-      // The support installer has no safe step between the guard and /Applications. TESS_TEST=1 stops first.
-      if (folder === 'support/mac' && flag === 'TESS_REAL_INSTALL') continue;
+      // TESS_REAL_INSTALL=1 lets the checkout copy past the guard. uname reports Linux, so it stops
+      // before Applications, the Dock, or the home folder.
+      if (folder === 'support/mac' && flag === 'TESS_REAL_INSTALL') {
+        const stopped = run(shell, [join(checkoutDir, folder, name)], {
+          cwd: box,
+          env: env({ TESS_REAL_INSTALL: '1', PATH: `${fakeBinLinux}:${fakeBin}:${process.env.PATH}` }),
+        });
+        assert.doesNotMatch(stopped.out, /was sourced|is inside a git checkout/, `${name} with TESS_REAL_INSTALL=1: not refused by the guard`);
+        assert.match(stopped.out, /Tess Support installs on a Mac/, `${name} with TESS_REAL_INSTALL=1: stops because this is not a Mac`);
+        continue;
+      }
       const r = run(shell, [join(checkoutDir, folder, name)], { cwd: box, env: env({ [flag]: '1' }) });
       assert.doesNotMatch(r.out, /was sourced|is inside a git checkout/, `${name} with ${flag}=1: not refused`);
     }
