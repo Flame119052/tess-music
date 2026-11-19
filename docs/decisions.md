@@ -865,8 +865,15 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   when the icon will open the desktop app.
   *Why:* one paste, Gatekeeper before Applications changes, and the code stays out of shell history and out of argv.
   *Trade-off:* the Dock write is a private preference the script reads back before it adds a tile. An Intel chat
-  needs `webapp.enabled`, or the browser chat never starts. Every approved visit command starts with `node`, and this
-  script does not install Node, so a Mac without it can install Tess Support but cannot finish a visit yet.
+  needs `webapp.enabled`, or the browser chat never starts. The visit's Node is Node.js 26.13.1, the current LTS.
+  The script checks that pin against the version's `SHASUMS256.txt`, then checks the download against the same
+  SHA-256, and only then unpacks `bin/node` into `profiles/tess-support/runtime/node/`. The official binary links
+  only macOS system libraries, so nothing else from the archive is kept. A mismatch leaves the profile as it was.
+  A reinstall downloads again only when the pin changes. Uninstall removes the runtime with the profile. Hermes
+  does not expand `$HERMES_HOME` in an allowlist pattern (`tools/approval_floors.py` matches the command text).
+  A running profile sets `HERMES_HOME` to the profile directory, so the approved command is
+  `$HERMES_HOME/runtime/node/bin/node`. A `node` on `PATH` does not match. The deny globs stay `node -e*`,
+  `node --eval*` and `node -p*`: Hermes also compares the executable's basename, so those still block this binary.
 - **D-106 · 19 Nov 2026 · Agent** — A Mac support visit finishes without a shell approval (#121). The video is captured
   into the profile's inbound cache (`$HERMES_HOME/cache/support/spotify.mov`, outside the session root) and
   `session.mjs add` copies it in. A still is posted on `PUT /v1/support/recording` as `image/png` or `image/jpeg`,

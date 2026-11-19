@@ -18,11 +18,13 @@ When Terminal asks, type the code Krish gave you and press Return. The code is n
 
 **Tess Support** appears in the Dock. Click that icon, then type what went wrong.
 
+The same command puts a pinned copy of Node.js inside the Tess Support profile. A visit uses that copy. The Mac does not need Node installed already.
+
 macOS asks once to allow screen recording the first time Tess Support needs to see Spotify. Turn it on for Tess Support in System Settings, under Privacy and Security, then click the Dock icon again.
 
 On an Intel Mac, macOS may ask once to install Command Line Tools. If a window opens, click Install.
 
-To remove Tess Support, paste this line. It removes the Dock icon and the Tess Support profile, and does not touch Spotify or Tess. It leaves Hermes unless this install put Hermes on the Mac and you type `yes`.
+To remove Tess Support, paste this line. It removes the Dock icon and the Tess Support profile, including that Node, and does not touch Spotify or Tess. It leaves Hermes unless this install put Hermes on the Mac and you type `yes`.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/support/mac/install.sh | sh -s -- --uninstall
