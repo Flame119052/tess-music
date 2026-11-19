@@ -6,8 +6,9 @@ provides_tools:
   - tess_visit_start
   - tess_doctor
   - tess_guard_log
-  - tess_consent
+  - tess_ask_consent
   - tess_still
+  - tess_read_skill
   - tess_save_note
   - tess_open_issues
   - tess_triage
