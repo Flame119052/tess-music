@@ -32,7 +32,12 @@ const KEY = `oc-go-test-${'k'.repeat(40)}`;
 const UPSTREAM = 'https://opencode.ai/zen/go/v1/chat/completions';
 const LABEL = 'Ada test Mac';
 const REFUSED = 'This support code is not active. Ask Krish for a new one.';
-// install.mjs refuses a test HERMES_HOME inside the real login home. A shell whose TMPDIR lives there
+const QUESTION = 'May I take one still of the Spotify window? It can show your Spotify name, your picture, your friends\' activity, and your playlist names.';
+const VISIT_TOOLS = [
+  'tess_visit_start', 'tess_doctor', 'tess_guard_log', 'tess_consent', 'tess_still',
+  'tess_save_note', 'tess_open_issues', 'tess_triage', 'tess_post', 'tess_handoff',
+];
+// install.mjs refuses a test HERMES_HOME inside the real login home. A TMPDIR inside that home
 // (T3 puts it under the home folder) would fail the install. Scratch goes outside the home, or to /tmp.
 const scratchBase = () => {
   try {
@@ -49,7 +54,7 @@ const persist = join(box, 'd1');
 const hermesHome = join(box, 'hermes');
 const personHome = join(box, 'home');
 mkdirSync(personHome);
-// The person's shell has node and the system tools, and no hermes, so install.mjs copies the profile.
+// The install PATH has node and the system tools, and no hermes, so install.mjs copies the profile.
 const personPath = `${dirname(process.execPath)}:/usr/bin:/bin`;
 const sha = (t) => createHash('sha256').update(t).digest('hex');
 const vars = Object.fromEntries([...readFileSync(join(inbox, 'wrangler.toml'), 'utf8').split(/^\[vars\]$/m)[1].split(/^\[/m)[0]
@@ -150,9 +155,9 @@ const res = await fetch(url, {
     'user-agent': 'OpenAI/Python 2.8.0', 'x-stainless-lang': 'python' },
   body: JSON.stringify({
     model,
-    messages: [{ role: 'system', content: 'You are Tess Support.' }, { role: 'user', content: process.argv[2] }],
-    tools: [{ type: 'function', function: { name: 'tess_save_note', description: 'Save a note for this visit',
-      parameters: { type: 'object', properties: { kind: { type: 'string' }, text: { type: 'string' } }, required: ['kind', 'text'] } } }],
+    messages: [{ role: 'system', content: 'You are Tess Support. You have no shell. Before any picture, ask this and wait: ' + ${JSON.stringify(QUESTION)} }, { role: 'user', content: process.argv[2] }],
+    tools: ${JSON.stringify(VISIT_TOOLS)}.map((name) => ({ type: 'function', function: { name, description: name,
+      parameters: { type: 'object', properties: {}, required: [] } } })),
     stream: true,
     stream_options: { include_usage: true },
   }),
@@ -400,6 +405,11 @@ try {
   assert.equal(installed.stdout, 'via copy\n', 'no hermes on the person PATH, so the profile was copied');
   const profile = join(hermesHome, 'profiles', 'tess-support');
   assert.equal(readFileSync(join(profile, '.env'), 'utf8'), `TESS_SUPPORT_TOKEN=${token}\nTESS_INBOX=${gate}\n`);
+  const shipped = readFileSync(join(profile, 'config.yaml'), 'utf8');
+  assert.doesNotMatch(shipped, /^command_allowlist:/m);
+  assert.match(shipped, /^ {4}- terminal$/m);
+  assert.match(readFileSync(join(profile, 'skills/tess-evidence/SKILL.md'), 'utf8'), QUESTION);
+  assert.equal(existsSync(join(profile, 'plugins/tess-visit/__init__.py')), true);
   shown.push(`installed the profile into a scratch HERMES_HOME with TESS_TEST=1, TESS_INBOX=${gate}`);
 
   const personEnv = { PATH: personPath, HOME: personHome, HERMES_HOME: hermesHome, TESS_TEST: '1', TEST_RELEASE_URL: `http://127.0.0.1:${upPort}/release` };
@@ -422,7 +432,9 @@ try {
   assert.equal(sent.model, 'deepseek-v4.1-flash');
   assert.equal(sent.stream, true);
   assert.deepEqual(sent.stream_options, { include_usage: true });
-  assert.equal(sent.tools[0].function.name, 'tess_save_note', 'Hermes tools reach the model');
+  assert.deepEqual(sent.tools.map((tool) => tool.function.name), VISIT_TOOLS, 'the visit tools reach the model');
+  assert.equal(sent.tools.some((tool) => tool.function.name === 'terminal'), false);
+  assert.equal(sent.messages[0].content.includes(QUESTION), true, 'the still question is missing from the turn');
   assert.equal(sent.messages[1].content, 'The lyrics are two seconds late');
   shown.push(`streamed turn: "${t1.content}" (first delta reached the client before the upstream finished), ${t1.usage.total_tokens} tokens`);
 

@@ -32,7 +32,8 @@ Skip any step that's already done.
    ```sh
    openssl rand -hex 32 | npx wrangler@4 secret put SALT
    ```
-4. **The storage bucket for videos and stills.** A deploy fails without it. Check **(Cloudflare login)** with
+4. **The storage bucket.** A still of the Spotify window is stored here, and so is a recording the person
+   attaches themselves. The bot does not record the screen. A deploy fails without the bucket. Check **(Cloudflare login)** with
    `npx wrangler@4 r2 bucket list`, which should list `tess-support`. If it doesn't, create it:
 
    ```sh
@@ -53,7 +54,7 @@ Skip any step that's already done.
    npx wrangler@4 r2 bucket lifecycle add tess-support delete-after-14-days --expire-days 14 --force
    ```
 5. **Deploy the Worker** with the support chat in it. From `inbox/`, on an up-to-date `main` **(Cloudflare login)**:
-   `npx wrangler@4 deploy`. The "This support code is not active" answer in section 5 (revoke) comes from a Worker deployed
+   `npx wrangler@4 deploy`. The "This support code is not active" answer in section 6 (revoke) comes from a Worker deployed
    after this runbook was added.
 6. **Turn Extra Usage off on your OpenCode account.** This is a setting on the OpenCode website, not a command, so
    nothing in this repo can check it for you. Sign in to your OpenCode account, find the Extra Usage setting
@@ -94,10 +95,10 @@ They open Terminal on their Mac and paste:
 curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/support/mac/install.sh | sh
 ```
 
-It asks `Enter the code Krish gave you:`. They paste the code, and nothing shows as they type. The code never goes
-on the command line or into shell history. It installs Hermes, the Tess Support profile, and a **Tess Support** icon
-in the Dock. Opening that icon opens the chat. The first time it captures Spotify, macOS asks them to allow Screen
-Recording, which they have to do by hand. On an Intel Mac, macOS may ask once to install Command Line Tools.
+It asks `Enter the code Krish gave you:`. They paste the code, and nothing shows as they type. The code is not an
+argument of the install, and it is not kept in the history of what they typed. It installs Hermes, the Tess
+Support profile, and a **Tess Support** icon in the Dock. Opening that icon opens the chat. On an Intel Mac,
+macOS may ask once to install Command Line Tools.
 
 To remove it, they run the same line with `--uninstall` on the end:
 
@@ -105,7 +106,22 @@ To remove it, they run the same line with `--uninstall` on the end:
 curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/support/mac/install.sh | sh -s -- --uninstall
 ```
 
-## 4. Watch what it uses, and read what it sends
+## 4. What the person sees
+
+They click **Tess Support** in the Dock. The chat is already open. They type what broke and send it. The bot does
+not ask them to paste a command, and it does not run one.
+
+Before any picture, it asks this, in these words, and waits for a yes or a no:
+
+> May I take one still of the Spotify window? It can show your Spotify name, your picture, your friends' activity, and your playlist names.
+
+Yes means one still of the Spotify window. No means the note goes out without a picture. It does not record the
+screen. The first time a still needs Screen Recording, macOS asks them to allow it, which they do by hand. If they
+would rather not, the bot says so and continues with their words.
+
+When the note is in, they see one short message: it has been written down, and a fix reaches them when it ships.
+
+## 5. Watch what it uses, and read what it sends
 
 **(Cloudflare login)**
 
@@ -121,8 +137,8 @@ Ada (Mac)                 12 of 80 requests  41000 of 300000 tokens  active
 (everyone)                12 of 400 requests  41000 of 2000000 tokens
 ```
 
-- A **request** is one call to the model, not one message. When the agent runs `tess doctor` or looks at a picture,
-  one message from the person can take several requests.
+- A **request** is one call to the model, not one message. The doctor and a look at the still can each be their own
+  call, so one message from the person can take several requests.
 - Counts restart at **00:00 UTC** every day. A person who hits their limit sees "This support chat has reached
   today's limit. It resets at 00:00 UTC."
 - The limits printed come from `inbox/wrangler.toml` in your checkout. The live Worker uses whatever you last
@@ -139,9 +155,9 @@ node tools/reports.mjs support filed 12 --issue https://github.com/Flame119052/t
 
 `support show` prints a ready-made `gh issue create …` line. Pasting it files the issue with the right priority and
 labels. Then `support filed` records which issue it became. The Worker's nightly cleanup then deletes that report's
-video and still.
+picture, and a recording only if the person attached one themselves.
 
-## 5. Take it away (revoke)
+## 6. Take it away (revoke)
 
 **(Cloudflare login)**
 
@@ -164,7 +180,7 @@ sign-in wording beside it, and OpenCode isn't called. Their Mac still has Tess
 Support installed. Removing that is the `--uninstall` line in step 3. To give them access again, make a new code
 under a new name (step 1). A revoked code never works again.
 
-## 6. Set the daily limits
+## 7. Set the daily limits
 
 The limits live in `inbox/wrangler.toml`, under `[vars]`:
 
