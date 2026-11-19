@@ -57,7 +57,9 @@ jobs:
       - name: Support session folder tests
         run: node tools/test-session.mjs
       - name: Mac support profile tests
-        run: node tools/test-support-mac.mjs
+        run: |
+          node tools/test-support-mac.mjs
+          node tools/test-support-mac-chat.mjs --gate=node
       - name: Support filing line tests
         run: node tools/test-reports.mjs
       - name: Reviewer agent tests

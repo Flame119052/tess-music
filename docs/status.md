@@ -29,11 +29,15 @@ over SSH (D-79).
 A Mac profile lives in `support/mac/` (D-104, D-106, #121). It has no Telegram and no gateway. The model base is
 `${TESS_INBOX}/v1/support` (Hermes posts to `/chat/completions` under it) and the bearer is the per-person support token. A visit posts the scrubbed text, a still and a short video without a shell approval. It is not installed on a Mac yet
 (that is the one-command installer, which allows `~/.hermes` outside the test suite). The VPS unit files are unchanged.
+A real chat turn from that profile has been run against the real Worker under `wrangler dev --local` and a fake model:
+the reply streams, the key stays on the Worker, the turn is counted, and a revoked code is refused with "This support
+code is not active" before the model is called (`node tools/test-support-mac-chat.mjs`, D-108). Krish's steps (make a
+code, send it, watch use, revoke, daily limits, Extra Usage off) are in [`support/RUNBOOK-mac.md`](../support/RUNBOOK-mac.md).
 
 **Not deployed, and not part of a release.** Before it can work: `inbox/schema.sql` applied to D1, the Worker deployed,
 and the R2 bucket created — all Krish's, none done here — plus a machine, a Telegram bot and a posting token. What can be
 run now: `node tools/test-inbox-support.mjs`, `node tools/test-session.mjs`, `node tools/test-reports.mjs`,
-`node tools/test-support.mjs`, `node tools/test-support-mac.mjs`.
+`node tools/test-support.mjs`, `node tools/test-support-mac.mjs`, `node tools/test-support-mac-chat.mjs`.
 
 ## Open issues (GitHub, sorted by priority — see [`triage.md`](triage.md))
 
