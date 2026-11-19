@@ -474,7 +474,22 @@ exit 0
   const setup = (extra = {}) => out('/bin/sh', [SETUP], { ...senv, ...extra });
   const calls = () => (existsSync(join(state, 'calls')) ? readFileSync(join(state, 'calls'), 'utf8').match(/^.*$/gm) || [] : []);
 
-  const ran = setup();
+  // This run is the machine with no systemd. On a merged /usr, systemctl sits in every
+  // standard directory, so the PATH is a copy of those tools with systemctl left out.
+  // The gateway check then means the same thing on a Mac and on this Linux box.
+  const hostBin = join(box, 'no-systemctl');
+  mkdirSync(hostBin, { recursive: true });
+  for (const dir of ['/usr/bin', '/bin', '/usr/sbin', '/sbin']) {
+    let names = [];
+    try { names = readdirSync(dir); } catch { continue; }
+    for (const name of names) {
+      if (name === 'systemctl') continue;
+      const dest = join(hostBin, name);
+      if (existsSync(dest)) continue;
+      try { symlinkSync(join(dir, name), dest); } catch { /* a name can be unreadable; the script asks for what it needs */ }
+    }
+  }
+  const ran = setup({ PATH: `${bin}:${hostBin}:${dirname(process.execPath)}` });
   const said = calls().join('\n');
   assert.match(said, /profile install .*\/bot --name tess-support --yes/, 'the bot is installed from the path the real tar produced');
   assert.match(said, /config set model\.provider opencode-go/, 'default provider is opencode-go');
