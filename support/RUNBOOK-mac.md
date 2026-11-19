@@ -67,11 +67,12 @@ Skip any step that's already done.
 **(Cloudflare login)**
 
 ```sh
-node tools/reports.mjs support token add "Ada (Mac)"
+node tools/reports.mjs support token add "tester-1 Mac"
 ```
 
-Give each person their own name in the quotes, and never reuse a name. Revoking goes by this name, so one name
-must mean one person. The command prints a code that starts with `tess_`. **It's shown once.** The database
+Give each person their own label in the quotes, and never reuse one. Revoking goes by this label, so one label
+must mean one person. Use a label that doesn't name them (`tester-1 Mac`, not their real name), because
+`support usage` and `support tokens` print it, and keep who is who somewhere private. The command prints a code that starts with `tess_`. **It's shown once.** The database
 keeps only a scrambled fingerprint (hash) of it, so nobody can look it up later, not even you. If you lose it,
 make a new one.
 
@@ -115,7 +116,9 @@ Before any picture, it asks this, in these words:
 
 > May I take one still of the Spotify window? It can show your Spotify name, your picture, your friends' activity, and your playlist names.
 
-The picture is taken only after they type yes. Any other reply means the note goes out without a picture. It does
+The picture is taken only after they reply with a plain yes: `yes`, `y`, `ok`, `sure` or `go ahead`, on its own (capitals
+and punctuation don't matter). Any other reply, including a yes inside a longer sentence, means the note goes out
+without a picture. It does
 not record the screen. The first time a still needs Screen Recording, macOS asks them to allow it, which they do by
 hand. If they would rather not, the bot says so and continues with their words.
 
@@ -133,7 +136,7 @@ This shows today's use for each person, and for everyone together, against the l
 
 ```
 support chat today (resets 00:00 UTC; caps as in inbox/wrangler.toml, a token cap of 0 is off)
-Ada (Mac)                 12 of 80 requests  41000 of 300000 tokens  active
+tester-1 Mac              12 of 80 requests  41000 of 300000 tokens  active
 (everyone)                12 of 400 requests  41000 of 2000000 tokens
 ```
 
@@ -162,7 +165,7 @@ picture, and a recording only if the person attached one themselves.
 **(Cloudflare login)**
 
 ```sh
-node tools/reports.mjs support token revoke "Ada (Mac)"
+node tools/reports.mjs support token revoke "tester-1 Mac"
 ```
 
 Use the same name you gave in step 1. Then confirm it:
@@ -197,9 +200,18 @@ To change one, edit the number (keep the quotes), merge it through a pull reques
 - A **token** limit of `"0"` switches that token limit off. A **request** limit of `"0"` refuses every message.
 - Change these values only in `wrangler.toml`. A value you change on the Cloudflare website is replaced by
   `wrangler.toml` on the next deploy.
-- **Emergency stop for everyone**, without editing anything. From `inbox/`, on an up-to-date `main` **(Cloudflare login)**:
-  `npx wrangler@4 deploy --var SUPPORT_CHAT_SHARED_REQUESTS:0`. Every chat is refused straight away with the "reached
-  today's limit" message. To turn chat back on, run a plain `npx wrangler@4 deploy`.
+- **Emergency stop for everyone**, without editing anything **(Cloudflare login)**. First make sure you're on an up-to-date
+  `main`, because a deploy publishes whatever code is in the folder:
+
+  ```sh
+  cd ~/Developer/tess-music
+  git switch main && git pull --ff-only
+  git status -sb    # the first line must read exactly: ## main...origin/main
+  cd inbox && npx wrangler@4 deploy --var SUPPORT_CHAT_SHARED_REQUESTS:0
+  ```
+
+  If `git switch` or `git pull` stops with an error, or the first line says anything else, don't deploy: ask for help.
+  Once it's deployed, every chat is refused straight away with the "reached today's limit" message. To turn chat back on, run a plain `npx wrangler@4 deploy`.
 
 ## If something looks wrong
 
