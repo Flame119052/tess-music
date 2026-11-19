@@ -6,7 +6,7 @@
 // refused with a comment instead of falling back to some other model.
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { appendFileSync, closeSync, existsSync, lstatSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,16 +26,21 @@ const providerDetails = {
   codex: { command: 'codex', cache: 'codex.json', home: ['.codex'] },
   cursor: { command: 'cursor-agent', cache: 'cursor.json', home: [] },
   opencode: { command: 'opencode', cache: 'opencode.json', home: ['.config/opencode', '.local/share/opencode/auth.json'] },
+  // The plan login is one file, not the whole Gemini home. agy 1.5.12 reads it when the keyring is skipped
+  // (no D-Bus, a container, or an SSH session). Measured on the Dell, 19 Nov 2026.
+  antigravity: { command: 'agy', cache: 'antigravity.json', home: ['.gemini/antigravity-cli/antigravity-oauth-token'] },
 };
 
 // The plan logins each provider signs in with, as GitHub Actions secrets on a hosted job. A review gets only its own
 // provider's login and nothing else. Every one of them is a subscription: Claude's plan (`claude setup-token`), the
-// ChatGPT plan (`CODEX_AUTH_JSON`, a `codex login` on a throwaway CODEX_HOME), OpenCode Go and the Z.ai coding plan. No
-// per-token API key is on this list, because a review must never bill Krish per use.
+// ChatGPT plan (`CODEX_AUTH_JSON`, a `codex login` on a throwaway CODEX_HOME), OpenCode Go and the Z.ai coding plan,
+// and the Google plan (`AGY_OAUTH_TOKEN`, the file `agy` writes under a throwaway HOME). No per-token API key is on
+// this list, because a review must never bill Krish per use.
 export const providerKeys = {
   claude: ['CLAUDE_CODE_OAUTH_TOKEN'],
   codex: ['CODEX_AUTH_JSON'],
   opencode: ['OPENCODE_API_KEY', 'ZHIPU_API_KEY'],
+  antigravity: ['AGY_OAUTH_TOKEN'],
 };
 
 // The secrets that were a pay-per-use API key in an earlier design. They are named only so a test can assert that
@@ -84,9 +89,16 @@ export function codexAuth(raw, now = Date.now()) {
   return { accessToken, accountId, expiresAt };
 }
 
-// The providers whose CLI the review workflow installs. Cursor is optional (#71) and is not installed there, so the
-// pick step never sends a review to it; a tag that names it falls back to the role's defaults and says so.
-export const installedProviders = ['claude', 'codex', 'opencode'];
+// The providers whose CLI the review workflow installs. Cursor is optional (#71) and is not installed there.
+// Antigravity is installed for `machine=github` only. A Mac or omarchy tag still refuses it (D-109).
+export const installedProviders = ['claude', 'codex', 'opencode', 'antigravity'];
+
+// One line, on purpose. Gemini 4 Neon runs in the GitHub job (D-107). A machine tag does not start a thread for it.
+export const antigravityMachineReason = 'Krish chose the GitHub path.';
+
+// Where agy 1.5.12 reads the plan login once the keyring is out of the way. Only this file is mounted.
+export const antigravityTokenRelative = '.gemini/antigravity-cli/antigravity-oauth-token';
+providerDetails.antigravity.home = [antigravityTokenRelative];
 
 // The providers whose login never enters the sandbox, because their CLI takes a gateway endpoint: the review process
 // holds a per-review token, a proxy in this process holds the real credential, and the proxy adds it to the request it
@@ -701,6 +713,10 @@ export function requestProblem(config, request, context = {}) {
     return { reason: `${provider}/${model} is not on the plans-only list in .github/agents.json` };
   }
   if (!installed.includes(provider)) return { reason: `the review job does not install the ${provider} CLI` };
+  // D-107 puts Gemini 4 Neon in the GitHub job. A Mac or omarchy tag does not open a thread for it.
+  if (provider === 'antigravity' && watcherMachines.includes(machine)) {
+    return { reason: antigravityMachineReason, code: 'antigravity-github-only' };
+  }
   if (credential) return { reason: credential };
   if (tier === 'sensitive' && !(config.strong || []).includes(model)) {
     return { reason: `sensitive work needs a strong model (${(config.strong || []).join(', ')})` };
@@ -745,9 +761,48 @@ function commandExists(command) {
 // The login a provider needs, as a reason a review cannot run, or null. Only Codex keeps one that can expire quietly:
 // its ChatGPT-plan `auth.json` carries an access token good for about 10 days, and a refresh on a disposable runner
 // would rotate the token into a file that dies with the machine.
+// A Google-plan login is the JSON file agy writes, not an API key and not Application Default Credentials.
+// The check looks at shape only. It never puts the token into the reason string.
+export function antigravityAuth(raw) {
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return { problem: 'no Antigravity plan login is stored (AGY_OAUTH_TOKEN is empty)' };
+  }
+  let data;
+  try { data = JSON.parse(raw); } catch {
+    return { problem: 'the stored Antigravity login is not readable JSON' };
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return { problem: 'the stored Antigravity login is not a JSON object' };
+  }
+  const nested = data.token && typeof data.token === 'object' ? data.token : {};
+  const method = String(data.auth_method || data.authMethod || nested.auth_method || '');
+  if (/api[_-]?key|service.account|\badc\b/i.test(method) || data.type === 'service_account' || data.client_email || data.api_key) {
+    return { problem: 'the stored Antigravity login is not a Google plan login' };
+  }
+  const access = data.access_token || nested.access_token;
+  const refresh = data.refresh_token || nested.refresh_token;
+  if (!access && !refresh) return { problem: 'the stored Antigravity login has no plan token' };
+  return { ok: true };
+}
+
+// The review step writes this file before bubblewrap starts, mode 0600, and the sandbox mounts only that path.
+// The secret stays out of the reviewer's environment (reviewerEnv drops AGY_OAUTH_TOKEN).
+export function writeAntigravityLogin(env, home) {
+  const raw = env?.AGY_OAUTH_TOKEN;
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  const auth = antigravityAuth(raw);
+  if (auth.problem) throw new Error(auth.problem);
+  const dest = join(home, antigravityTokenRelative);
+  mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
+  writeFileSync(dest, raw, { mode: 0o600 });
+  try { chmodSync(dest, 0o600); } catch { /* the mode on write is the one that matters */ }
+  return dest;
+}
+
 export function credentialProblem(provider, env = process.env) {
-  if (provider !== 'codex') return null;
-  return codexAuth(env.CODEX_AUTH_JSON).problem || null;
+  if (provider === 'codex') return codexAuth(env.CODEX_AUTH_JSON).problem || null;
+  if (provider === 'antigravity') return antigravityAuth(env.AGY_OAUTH_TOKEN).problem || null;
+  return null;
 }
 
 function readUsage(provider) {
@@ -1245,7 +1300,8 @@ const proxySettings = (provider, proxy) => (proxy ? proxyReviewerConfig(provider
 export function reviewerEnv(env = process.env, provider, proxy = null) {
   const names = ['HOME', 'PATH', 'TMPDIR', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL'];
   const settings = proxySettings(provider, proxy);
-  const keys = settings ? [] : (providerKeys[provider] || []);
+  // AGY_OAUTH_TOKEN is the file the sandbox mounts. It is not also an environment variable the CLI could print.
+  const keys = (settings ? [] : (providerKeys[provider] || [])).filter((name) => name !== 'AGY_OAUTH_TOKEN');
   const kept = Object.fromEntries([...names, ...keys].flatMap((name) => env[name] ? [[name, env[name]]] : []));
   if (!settings) return kept;
   const cleaned = { ...kept };
@@ -1432,6 +1488,16 @@ export function cliArgs(provider, model, effort, work = root, caps = defaultCaps
   if (provider === 'opencode') {
     return ['run', '--agent', 'tess-reviewer', '--model', effort ? `${model}#${effort}` : model, '--archived'];
   }
+  if (provider === 'antigravity') {
+    // `-p` takes the next word as the prompt, so it stays last and the caller appends the prompt after these flags.
+    // `--mode plan` is left off: on the Dell a headless plan run never reached a tool call, so it is not known to
+    // finish one without waiting. `--dangerously-skip-permissions` is what D-107's full access means here. The
+    // bubblewrap mounts are what keep that from writing the job's files. No `--sandbox` flag: that is a second
+    // policy, and the job's boundary is bubblewrap.
+    return ['--model', model, ...(effort ? ['--effort', effort] : []),
+      '--dangerously-skip-permissions', '--output-format', 'json',
+      '--print-timeout', `${timeoutSeconds({ provider, model }, caps)}s`, '-p'];
+  }
   throw new Error(`unsupported review provider: ${provider}`);
 }
 
@@ -1480,6 +1546,31 @@ export function parseClaudeOutput(stdout) {
     }
   } catch {
     // not JSON: a plain-text answer
+  }
+  return { text, usage: null };
+}
+
+// agy's `--output-format json` is one object with `response` and `usage`. A plain-text answer is still the review.
+export function parseAntigravityOutput(stdout) {
+  const text = String(stdout || '').trim();
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed.response === 'string') {
+      const usage = parsed.usage || {};
+      const failed = typeof parsed.status === 'string' && parsed.status !== 'SUCCESS';
+      return {
+        text: failed ? '' : parsed.response,
+        ...(failed ? { errorText: `${parsed.status}: ${parsed.response}` } : {}),
+        usage: {
+          ...(typeof parsed.num_turns === 'number' ? { turns: parsed.num_turns } : {}),
+          ...(typeof usage.input_tokens === 'number' ? { input: usage.input_tokens } : {}),
+          ...(typeof usage.output_tokens === 'number' ? { output: usage.output_tokens } : {}),
+          ...(typeof usage.total_tokens === 'number' ? { total: usage.total_tokens } : {}),
+        },
+      };
+    }
+  } catch {
+    // not JSON
   }
   return { text, usage: null };
 }
@@ -1714,7 +1805,8 @@ export function streamCommand(command, args, options = {}) {
 function finalizeInvocation(provider, result) {
   const parsed = provider === 'claude' ? parseClaudeOutput(result.stdout)
     : provider === 'codex' ? parseCodexOutput(result.stdout)
-      : { text: String(result.stdout || '').trim(), usage: null };
+      : provider === 'antigravity' ? parseAntigravityOutput(result.stdout)
+        : { text: String(result.stdout || '').trim(), usage: null };
   return {
     ...result,
     text: parsed.text,
@@ -1728,20 +1820,23 @@ async function cliInvocationAsync(provider, model, prompt, effort, work = root, 
   if (provider === 'opencode') assertReviewerAgent(options.agentInstalled, options.agentSource);
   const proxy = options.proxy === undefined ? startReviewProxy(provider, options.proxyOptions) : options.proxy;
   try {
-    // Cursor takes the prompt as an argument; the others read it on stdin, which has no length limit for a big diff.
-    const args = [...cliArgs(provider, model, effort, work, caps, proxy), ...(provider === 'cursor' ? [prompt] : [])];
-    const sandbox = sandboxArgv(provider, work, args, options);
+    // Cursor and agy take the prompt as an argument (`agy -p` consumes the next word). The others read stdin.
+    const promptIsArg = provider === 'cursor' || provider === 'antigravity';
+    const args = [...cliArgs(provider, model, effort, work, caps, proxy), ...(promptIsArg ? [prompt] : [])];
+    const home = options.home || homedir();
+    if (provider === 'antigravity') writeAntigravityLogin(options.env || process.env, home);
+    const sandbox = sandboxArgv(provider, work, args, { ...options, home });
     const timeout = timeoutSeconds({ provider, model }, caps) * 1000;
     const tokenCap = maxTokens({ provider, model }, caps);
     const result = await streamCommand(sandbox.command, sandbox.args, {
       cwd: work,
       env: {
-        ...reviewerEnv(process.env, provider, proxy),
+        ...reviewerEnv(options.env || process.env, provider, proxy),
         HOME: sandbox.home,
         TMPDIR: '/tmp',
         PATH: sandbox.path,
       },
-      input: provider === 'cursor' ? undefined : prompt,
+      input: promptIsArg ? undefined : prompt,
       timeout,
       killSignal: 'SIGKILL',
       maxBuffer: 30 * 1024 * 1024,
@@ -1759,21 +1854,24 @@ function cliInvocation(provider, model, prompt, effort, work = root, options = {
   if (provider === 'opencode') assertReviewerAgent(options.agentInstalled, options.agentSource);
   const proxy = options.proxy === undefined ? startReviewProxy(provider, options.proxyOptions) : options.proxy;
   try {
-    // Cursor takes the prompt as an argument; the others read it on stdin, which has no length limit for a big diff.
-    const args = [...cliArgs(provider, model, effort, work, caps, proxy), ...(provider === 'cursor' ? [prompt] : [])];
-    const sandbox = sandboxArgv(provider, work, args, options);
+    // Cursor and agy take the prompt as an argument (`agy -p` consumes the next word). The others read stdin.
+    const promptIsArg = provider === 'cursor' || provider === 'antigravity';
+    const args = [...cliArgs(provider, model, effort, work, caps, proxy), ...(promptIsArg ? [prompt] : [])];
+    const home = options.home || homedir();
+    if (provider === 'antigravity') writeAntigravityLogin(options.env || process.env, home);
+    const sandbox = sandboxArgv(provider, work, args, { ...options, home });
     const timeout = timeoutSeconds({ provider, model }, caps) * 1000;
     // A review that runs past its limit is killed, not waited on. bubblewrap's --die-with-parent takes the CLI with it, so
     // nothing keeps spending after the job moves to the next reviewer.
     const result = spawnSync(sandbox.command, sandbox.args, {
       cwd: work,
       env: {
-        ...reviewerEnv(process.env, provider, proxy),
+        ...reviewerEnv(options.env || process.env, provider, proxy),
         HOME: sandbox.home,
         TMPDIR: '/tmp',
         PATH: sandbox.path,
       },
-      input: provider === 'cursor' ? undefined : prompt,
+      input: promptIsArg ? undefined : prompt,
       encoding: 'utf8',
       timeout,
       killSignal: 'SIGKILL',

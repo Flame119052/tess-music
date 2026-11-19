@@ -2,7 +2,7 @@
 // Usage: node tools/test-agent-review.mjs
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
@@ -51,8 +51,13 @@ import {
   refusalComment,
   authorChoices,
   authorProvider,
+  antigravityAuth,
+  antigravityMachineReason,
+  antigravityTokenRelative,
   codexAuth,
   credentialProblem,
+  parseAntigravityOutput,
+  writeAntigravityLogin,
   retiredKeyNames,
   reviewerEnv,
   readSnapshots,
@@ -144,7 +149,9 @@ test('the review runs on a fresh GitHub-hosted machine, never a self-hosted runn
 
 test('only the chosen reviewer\'s CLI is installed, at a pinned version', () => {
   const review = jobBlock('review');
-  const installs = { claude: 'Install Claude Code', codex: 'Install Codex', opencode: 'Install OpenCode' };
+  const installs = {
+    claude: 'Install Claude Code', codex: 'Install Codex', opencode: 'Install OpenCode', antigravity: 'Install Antigravity',
+  };
   for (const [provider, step] of Object.entries(installs)) {
     const block = stepBlock(review, step);
     assert.match(block, new RegExp(`if: steps\\.pick\\.outputs\\.provider == '${provider}'`),
@@ -516,6 +523,77 @@ test('the author is read from every authorship shape this repository really uses
   // text cannot name is never a reason to allow anything (see the guard test below).
   for (const body of ['no line at all', '', '## Made by\n\n', 'Made by:', 'Made by: someone', 'Made by: Claude Opus in OpenCode']) {
     assert.equal(authorProvider(body), '', JSON.stringify(body));
+  }
+});
+
+test('Antigravity is a GitHub reviewer on the Google plan, and a machine tag is refused in one line', () => {
+  const neon = { provider: 'antigravity', model: 'gemini-4-neon', effort: 'high', machine: 'github' };
+  const onGitHub = requestProblem(config, neon, { author: 'claude', machine: 'github' });
+  assert.deepEqual(onGitHub.model, { provider: 'antigravity', model: 'gemini-4-neon', effort: 'high' },
+    'machine=github runs the model the tag named');
+  for (const machine of ['mac', 'omarchy']) {
+    const refused = requestProblem(config, { ...neon, machine }, { author: 'claude', machine });
+    assert.equal(refused.reason, antigravityMachineReason, machine);
+    assert.equal(refused.model, undefined);
+  }
+  assert.match(requestProblem(config, { ...neon, author: 'antigravity' }, { author: 'antigravity', machine: 'github' }).reason, /same provider/);
+  assert.match(credentialProblem('antigravity', {}), /AGY_OAUTH_TOKEN is empty/);
+  assert.match(antigravityAuth('{"api_key":"x","access_token":"y"}').problem, /not a Google plan login/);
+  assert.match(antigravityAuth('{"type":"service_account","client_email":"a@b.c","access_token":"y"}').problem, /not a Google plan login/);
+  assert.equal(antigravityAuth('{"access_token":"plan-access","refresh_token":"plan-refresh"}').ok, true);
+
+  const args = cliArgs('antigravity', 'gemini-4-neon', 'high', '/w');
+  assert.ok(args.includes('--dangerously-skip-permissions'));
+  assert.ok(!args.includes('--mode') && !args.includes('--sandbox'), 'plan mode and the CLI sandbox are not passed');
+  assert.equal(args.at(-1), '-p', 'the prompt is the next word, which is how agy reads -p');
+  const parsed = parseAntigravityOutput(JSON.stringify({
+    status: 'SUCCESS', response: 'Verdict: approve', num_turns: 2,
+    usage: { input_tokens: 3, output_tokens: 4, total_tokens: 7 },
+  }));
+  assert.equal(parsed.text, 'Verdict: approve');
+  assert.equal(parsed.usage.total, 7);
+
+  const home = temp();
+  try {
+    const dest = writeAntigravityLogin({ AGY_OAUTH_TOKEN: '{"refresh_token":"plan-refresh"}' }, home);
+    assert.equal(dest, join(home, antigravityTokenRelative));
+    assert.equal(readFileSync(dest, 'utf8'), '{"refresh_token":"plan-refresh"}');
+    const sandbox = sandboxArgv('antigravity', '/work', ['-p', 'hi'], {
+      home, exists: () => true, commandPath: `${home}/.local/bin/agy`, nodePath: `${home}/.local/bin/node`,
+    });
+    assert.ok(sandbox.args.includes('--ro-bind'));
+    assert.ok(sandbox.args.includes(dest), 'only the login file is mounted, from this home');
+    assert.ok(!sandbox.args.some((arg) => String(arg).includes('.codex') || String(arg).includes('opencode')));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+
+  const env = {
+    HOME: '/home/r', PATH: '/bin', GH_TOKEN: 'ghs_x', AGY_OAUTH_TOKEN: '{"refresh_token":"plan-refresh-secret"}',
+  };
+  const cleaned = reviewerEnv(env, 'antigravity');
+  assert.equal(cleaned.AGY_OAUTH_TOKEN, undefined, 'the file is mounted; the secret is not also an environment variable');
+  assert.equal(cleaned.GH_TOKEN, undefined);
+  assert.ok(containsHeldSecret(`the review quoted ${env.AGY_OAUTH_TOKEN}`, env));
+
+  const bin = fileURLToPath(new URL('./agy-ci-login.mjs', import.meta.url));
+  const scratch = temp();
+  try {
+    const missing = spawnSync(process.execPath, [bin, '--check'], {
+      env: { ...process.env, TESS_AGY_CI_HOME: scratch }, encoding: 'utf8',
+    });
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stdout, /none yet/);
+    mkdirSync(join(scratch, '.gemini/antigravity-cli'), { recursive: true });
+    writeFileSync(join(scratch, antigravityTokenRelative), '{"refresh_token":"plan-refresh-secret"}');
+    const ok = spawnSync(process.execPath, [bin, '--check'], {
+      env: { ...process.env, TESS_AGY_CI_HOME: scratch }, encoding: 'utf8',
+    });
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.match(ok.stdout, /Google-plan file is present/);
+    assert.ok(!ok.stdout.includes('plan-refresh-secret'), 'the check does not print the token');
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
   }
 });
 
