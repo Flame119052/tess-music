@@ -4,7 +4,7 @@
 // Proves: the real GitHub labels are used ("P2: medium", not "P2"); a title full of shell syntax is inert; the body
 // arrives through a pipe rather than as an argument; and a report number that isn't one is refused.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -77,6 +77,52 @@ try {
     '(everyone) 3 of 400 requests 900 of 2000000 tokens',
   ]);
 
+  // 8. `support token revoke` of a name that is not active exits non-zero and names the command that lists real names.
+  // The stand-in for `npx wrangler d1 execute` is local sqlite. It refuses --remote, so this cannot touch the live inbox.
+  const db = join(box, 'inbox.sqlite');
+  const schema = fileURLToPath(new URL('../inbox/schema.sql', import.meta.url));
+  execFileSync('sh', ['-c', 'sqlite3 "$1" < "$2"', 'sh', db, schema]);
+  const bin = join(box, 'bin');
+  mkdirSync(bin);
+  const shim = join(bin, 'npx');
+  writeFileSync(shim, `#!/usr/bin/env node
+import { execFileSync } from 'node:child_process';
+const args = process.argv.slice(2);
+if (!args.includes('--local') || args.includes('--remote')) {
+  console.error('refusing a database that is not the local test copy');
+  process.exit(2);
+}
+const sql = args[args.indexOf('--command') + 1];
+const out = execFileSync('sqlite3', ['-json', process.env.TESS_TEST_SQLITE, sql], { encoding: 'utf8' }).trim();
+const results = out ? JSON.parse(out) : [];
+process.stdout.write(JSON.stringify([{ results, success: true }]));
+`);
+  chmodSync(shim, 0o755);
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, TESS_D1_LOCAL: box, TESS_TEST_SQLITE: db };
+  for (const k of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CF_API_TOKEN', 'CF_ACCOUNT_ID', 'CLOUDFLARE_API_KEY']) delete env[k];
+  const reportsRun = (args) => {
+    try {
+      const stdout = execFileSync(process.execPath, [reportsPath, ...args], { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      return { status: 0, stdout, stderr: '' };
+    } catch (err) {
+      return { status: err.status ?? 1, stdout: String(err.stdout || ''), stderr: String(err.stderr || '') };
+    }
+  };
+  const added = reportsRun(['support', 'token', 'add', 'Ada (Mac)']);
+  assert.equal(added.status, 0, added.stderr);
+  assert.match(added.stdout, /tess_[0-9a-f]{64}/);
+  const typo = reportsRun(['support', 'token', 'revoke', 'Ada Mac']);
+  assert.notEqual(typo.status, 0, 'revoking a name that is not active exited 0');
+  assert.match(typo.stderr, /no active token labelled "Ada Mac" — run support tokens to see exact names/);
+  const still = JSON.parse(execFileSync('sqlite3', ['-json', db, "SELECT revoked FROM support_tokens WHERE label = 'Ada (Mac)'"], { encoding: 'utf8' }));
+  assert.equal(still[0].revoked, null, 'a missed revoke left the token active');
+  const revoked = reportsRun(['support', 'token', 'revoke', 'Ada (Mac)']);
+  assert.equal(revoked.status, 0, revoked.stderr);
+  assert.match(revoked.stdout, /stops working on the next request/);
+  const again = reportsRun(['support', 'token', 'revoke', 'Ada (Mac)']);
+  assert.notEqual(again.status, 0, 'revoking an already-revoked token exited 0');
+  assert.match(again.stderr, /no active token labelled "Ada \(Mac\)" — run support tokens to see exact names/);
+
   console.log('support filing line: all checks passed\n');
   console.log([
     'checked:',
@@ -87,6 +133,7 @@ try {
     '  · a report number that is not a positive integer is refused',
     '  · every command reads the live inbox unless TESS_D1_LOCAL names a local folder, and never both',
     '  · support usage lines show requests and tokens against the wrangler.toml caps',
+    '  · support token revoke of a missing or already-revoked name exits non-zero and leaves the active token alone',
     '',
   ].join('\n'));
 } finally {

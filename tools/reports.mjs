@@ -195,7 +195,12 @@ function support() {
     const label = argv.slice(3).filter((a) => !a.startsWith('--')).join(' ').trim();
     if (!label) { console.error(`usage: support token ${arg} <label>`); process.exit(1); }
     if (arg === 'revoke') {
-      q(revokeSql(label));
+      // A label that matches nothing is still a successful UPDATE. RETURNING id is the row that actually changed.
+      const rows = q(`${revokeSql(label)} RETURNING id`);
+      if (!Array.isArray(rows) || rows.length === 0) {
+        console.error(`no active token labelled "${label}" — run support tokens to see exact names`);
+        process.exit(1);
+      }
       console.log(`revoked any active token labelled "${label}" — it stops working on the next request`);
       return;
     }

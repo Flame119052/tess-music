@@ -23,16 +23,34 @@ Skip any step that's already done.
 2. **Your OpenCode key, as a Worker secret.** From `inbox/` **(Cloudflare login)**:
    `npx wrangler@4 secret put OPENCODE_GO_API_KEY`. It asks you to paste the key. The key goes only to Cloudflare,
    not into a file, a command line or chat.
-3. **The `SALT` secret** (health reports already need it, so it is most likely there). Check from `inbox/`
+3. **The `SALT` secret** (health reports already need it, so it is most likely there). It has to be a random
+   value at least 16 characters long. Anything shorter makes every health report fail. Check from `inbox/`
    **(Cloudflare login)** with `npx wrangler@4 secret list`. You should see `SALT` and, after step 2,
-   `OPENCODE_GO_API_KEY`. If `SALT` is missing: `npx wrangler@4 secret put SALT`.
+   `OPENCODE_GO_API_KEY`. If `SALT` is missing, this generates one and uploads it. The value is not printed and
+   not saved in a file:
+
+   ```sh
+   openssl rand -hex 32 | npx wrangler@4 secret put SALT
+   ```
 4. **The storage bucket for videos and stills.** A deploy fails without it. Check **(Cloudflare login)** with
-   `npx wrangler@4 r2 bucket list`, which should list `tess-support`. If it doesn't, create it and make anything in it
-   delete itself after 14 days (the Worker deletes each one sooner, and this rule backs that up):
+   `npx wrangler@4 r2 bucket list`, which should list `tess-support`. If it doesn't, create it:
 
    ```sh
    npx wrangler@4 r2 bucket create tess-support
-   npx wrangler@4 r2 bucket lifecycle add tess-support delete-after-14-days --expire-days 14
+   ```
+
+   The 14-day rule is a separate check. Run it even when the bucket was already there, because an older setup can
+   create `tess-support` without the rule. **(Cloudflare login)**:
+
+   ```sh
+   npx wrangler@4 r2 bucket lifecycle list tess-support
+   ```
+
+   If that list has no rule that deletes objects after 14 days, add one. The rule covers the whole bucket. Wrangler
+   asks you to confirm that. `--force` answers yes. The Worker deletes each file sooner, and this rule backs that up:
+
+   ```sh
+   npx wrangler@4 r2 bucket lifecycle add tess-support delete-after-14-days --expire-days 14 --force
    ```
 5. **Deploy the Worker** with the support chat in it. From `inbox/`, on an up-to-date `main` **(Cloudflare login)**:
    `npx wrangler@4 deploy`. The "This support code is not active" answer in section 5 (revoke) comes from a Worker deployed
@@ -131,7 +149,16 @@ video and still.
 node tools/reports.mjs support token revoke "Ada (Mac)"
 ```
 
-Use the same name you gave in step 1. It takes effect on their next message. The Worker answers it with
+Use the same name you gave in step 1. Then confirm it:
+
+```sh
+node tools/reports.mjs support tokens
+```
+
+The name you revoked should show `REVOKED`. If the name was not an active code, the revoke command stops and prints
+`no active token labelled "…" — run support tokens to see exact names`. That code is still active.
+
+It takes effect on their next message. The Worker answers it with
 "This support code is not active. Ask Krish for a new one." Their chat shows that error, possibly with Hermes's own
 sign-in wording beside it, and OpenCode isn't called. Their Mac still has Tess
 Support installed. Removing that is the `--uninstall` line in step 3. To give them access again, make a new code
@@ -154,7 +181,7 @@ To change one, edit the number (keep the quotes), merge it through a pull reques
 - A **token** limit of `"0"` switches that token limit off. A **request** limit of `"0"` refuses every message.
 - Change these values only in `wrangler.toml`. A value you change on the Cloudflare website is replaced by
   `wrangler.toml` on the next deploy.
-- **Emergency stop for everyone**, without editing anything. From `inbox/` **(Cloudflare login)**:
+- **Emergency stop for everyone**, without editing anything. From `inbox/`, on an up-to-date `main` **(Cloudflare login)**:
   `npx wrangler@4 deploy --var SUPPORT_CHAT_SHARED_REQUESTS:0`. Every chat is refused straight away with the "reached
   today's limit" message. To turn chat back on, run a plain `npx wrangler@4 deploy`.
 

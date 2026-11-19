@@ -11,9 +11,9 @@
 import { createServer } from 'node:http';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 
@@ -32,7 +32,19 @@ const KEY = `oc-go-test-${'k'.repeat(40)}`;
 const UPSTREAM = 'https://opencode.ai/zen/go/v1/chat/completions';
 const LABEL = 'Ada test Mac';
 const REFUSED = 'This support code is not active. Ask Krish for a new one.';
-const box = mkdtempSync(join(tmpdir(), 'tess-mac-chat-'));
+// install.mjs refuses a test HERMES_HOME inside the real login home. A shell whose TMPDIR lives there
+// (T3 puts it under the home folder) would fail the install. Scratch goes outside the home, or to /tmp.
+const scratchBase = () => {
+  try {
+    const home = realpathSync(homedir());
+    const base = realpathSync(tmpdir());
+    if (base === home || base.startsWith(`${home}${sep}`)) return '/tmp';
+    return base;
+  } catch {
+    return '/tmp';
+  }
+};
+const box = mkdtempSync(join(scratchBase(), 'tess-mac-chat-'));
 const persist = join(box, 'd1');
 const hermesHome = join(box, 'hermes');
 const personHome = join(box, 'home');
@@ -73,10 +85,13 @@ const run = (args, env, opts = {}) => new Promise((resolve) => {
 
 // The fake OpenCode Go. A streamed reply sends one delta and holds the rest until the client says it has that delta,
 // so a gate that buffered the whole reply would hang here instead of passing.
+// streamUpstream keeps the last secret.length - 1 bytes. This token is longer than the first data frame's tail,
+// so a comment longer than that hold goes out in the same flush. The client can then read a whole line and release
+// the pause. A release that arrives after the pause has given up does not count.
+const holdback = Math.max(KEY.length, 'tess_'.length + 64) - 1;
 const up = { calls: [], releasedByClient: false, release: null };
 const upstream = createServer(async (req, res) => {
   if (req.method === 'POST' && req.url === '/release') {
-    up.releasedByClient = true;
     up.release?.();
     res.end('ok');
     return;
@@ -86,11 +101,22 @@ const upstream = createServer(async (req, res) => {
   up.calls.push({ headers: req.headers, body });
   const asked = JSON.parse(body);
   if (asked.stream) {
+    up.releasedByClient = false;
     res.writeHead(200, { 'content-type': 'text/event-stream' });
-    res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: 'assistant', content: 'Hello from ' } }] })}\n\n`);
+    const frame = `data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: 'assistant', content: 'Hello from ' } }] })}\n\n`;
+    const pad = `: ${' '.repeat(holdback)}\n\n`;
+    res.write(frame + pad);
     await new Promise((resolve) => {
-      const giveUp = setTimeout(resolve, 15000);
-      up.release = () => { clearTimeout(giveUp); resolve(); };
+      const giveUp = setTimeout(() => {
+        up.release = null;
+        resolve();
+      }, 5000);
+      up.release = () => {
+        clearTimeout(giveUp);
+        up.releasedByClient = true;
+        up.release = null;
+        resolve();
+      };
     });
     res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: 'the support gate.' }, finish_reason: 'stop' }] })}\n\n`);
     if (asked.stream_options?.include_usage) {
@@ -305,14 +331,33 @@ export default worker;
   return port;
 }
 
-const stopWrangler = async () => {
-  if (!wranglerChild || wranglerChild.exitCode !== null) return;
-  // workerd is a grandchild; the whole group goes, or it keeps the port.
-  try { process.kill(-wranglerChild.pid, 'SIGTERM'); } catch { /* already gone */ }
-  const gone = await Promise.race([new Promise((r) => wranglerChild.once('close', () => r(true))), new Promise((r) => setTimeout(() => r(false), 5000))]);
-  if (!gone) try { process.kill(-wranglerChild.pid, 'SIGKILL'); } catch { /* already gone */ }
+// One cleanup for the normal end and for a signal. A second call waits for the first. workerd is a grandchild
+// of the detached wrangler process, so the group has to die or it keeps the port and the scratch files.
+let cleanupStarted = null;
+const cleanup = () => {
+  if (cleanupStarted) return cleanupStarted;
+  cleanupStarted = (async () => {
+    globalThis.fetch = realFetch;
+    if (wranglerChild && wranglerChild.exitCode === null) {
+      try { process.kill(-wranglerChild.pid, 'SIGTERM'); } catch { /* already gone */ }
+      const gone = await Promise.race([
+        new Promise((r) => wranglerChild.once('close', () => r(true))),
+        new Promise((r) => setTimeout(() => r(false), 5000)),
+      ]);
+      if (!gone) try { process.kill(-wranglerChild.pid, 'SIGKILL'); } catch { /* already gone */ }
+    }
+    for (const server of [nodeGate, upstream]) {
+      server?.closeAllConnections?.();
+      server?.close();
+    }
+    rmSync(box, { recursive: true, force: true });
+    if (createdWranglerDir) rmSync(join(inbox, '.wrangler'), { recursive: true, force: true });
+  })();
+  return cleanupStarted;
 };
-process.on('SIGINT', async () => { await stopWrangler(); rmSync(box, { recursive: true, force: true }); process.exit(130); });
+const stopOnSignal = (code) => { cleanup().then(() => process.exit(code), () => process.exit(code)); };
+process.on('SIGINT', () => stopOnSignal(130));
+process.on('SIGTERM', () => stopOnSignal(143));
 
 const usage = async () => {
   const rows = sql.rows(usageSql());
@@ -412,10 +457,24 @@ try {
   shown.push(`the key reached the upstream on both calls; it is in none of the ${walk(hermesHome).length} profile files or any reply`);
 
   // 7. Revoke, then the next turn is refused with words the person can act on, and the upstream is not called.
+  // A name that is not active must fail and leave the real token alone. RETURNING id is how the command tells them apart.
   if (mode === 'wrangler') {
+    let missed;
+    try {
+      reportsCli('support', 'token', 'revoke', 'Ada Mac');
+      missed = { status: 0, stderr: '' };
+    } catch (err) {
+      missed = { status: err.status ?? 1, stderr: String(err.stderr || '') };
+    }
+    assert.notEqual(missed.status, 0, 'a revoke that matches nothing still exited 0');
+    assert.match(missed.stderr, /no active token labelled "Ada Mac" — run support tokens to see exact names/);
+    assert.equal((await usage()).revoked, null, 'a missed revoke left the token active');
     assert.match(reportsCli('support', 'token', 'revoke', LABEL), /stops working on the next request/);
   } else {
-    sql.rows(`${revokeSql(LABEL)} RETURNING id`);
+    assert.deepEqual(sql.rows(`${revokeSql('Ada Mac')} RETURNING id`), [], 'a label that is not active changes no row');
+    const hit = sql.rows(`${revokeSql(LABEL)} RETURNING id`);
+    assert.equal(hit.length, 1, 'revoke returns the id of the row it stopped');
+    assert.equal(typeof hit[0].id, 'number');
   }
   assert.ok((await usage()).revoked, 'the token row is revoked');
   const calls = up.calls.length;
@@ -438,12 +497,7 @@ try {
   if (wranglerLog) console.error(`--- wrangler dev output\n${wranglerLog.slice(-3000)}`);
   throw err;
 } finally {
-  globalThis.fetch = realFetch;
-  await stopWrangler();
-  nodeGate?.close();
-  upstream.close();
-  rmSync(box, { recursive: true, force: true });
-  if (createdWranglerDir && existsSync(join(inbox, '.wrangler'))) rmSync(join(inbox, '.wrangler'), { recursive: true, force: true });
+  await cleanup();
 }
 
 console.log(`support mac chat (${mode} gate): all checks passed\n`);
