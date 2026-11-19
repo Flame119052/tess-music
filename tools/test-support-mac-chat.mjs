@@ -34,8 +34,8 @@ const LABEL = 'Ada test Mac';
 const REFUSED = 'This support code is not active. Ask Krish for a new one.';
 const QUESTION = 'May I take one still of the Spotify window? It can show your Spotify name, your picture, your friends\' activity, and your playlist names.';
 const VISIT_TOOLS = [
-  'tess_visit_start', 'tess_doctor', 'tess_guard_log', 'tess_consent', 'tess_still',
-  'tess_save_note', 'tess_open_issues', 'tess_triage', 'tess_post', 'tess_handoff',
+  'tess_visit_start', 'tess_doctor', 'tess_guard_log', 'tess_ask_consent', 'tess_still',
+  'tess_read_skill', 'tess_save_note', 'tess_open_issues', 'tess_triage', 'tess_post', 'tess_handoff',
 ];
 // install.mjs refuses a test HERMES_HOME inside the real login home. A TMPDIR inside that home
 // (T3 puts it under the home folder) would fail the install. Scratch goes outside the home, or to /tmp.

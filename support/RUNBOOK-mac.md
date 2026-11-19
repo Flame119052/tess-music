@@ -111,13 +111,13 @@ curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/support
 They click **Tess Support** in the Dock. The chat is already open. They type what broke and send it. The bot does
 not ask them to paste a command, and it does not run one.
 
-Before any picture, it asks this, in these words, and waits for a yes or a no:
+Before any picture, it asks this, in these words:
 
 > May I take one still of the Spotify window? It can show your Spotify name, your picture, your friends' activity, and your playlist names.
 
-Yes means one still of the Spotify window. No means the note goes out without a picture. It does not record the
-screen. The first time a still needs Screen Recording, macOS asks them to allow it, which they do by hand. If they
-would rather not, the bot says so and continues with their words.
+The picture is taken only after they type yes. Any other reply means the note goes out without a picture. It does
+not record the screen. The first time a still needs Screen Recording, macOS asks them to allow it, which they do by
+hand. If they would rather not, the bot says so and continues with their words.
 
 When the note is in, they see one short message: it has been written down, and a fix reaches them when it ships.
 
