@@ -48,11 +48,21 @@ const IMAGE = /\.(png|jpe?g|heic|gif|webp)$/i;
 const TEXT = /\.(txt|log|md|json)$/i;
 const have = (bin) => { try { execFileSync('sh', ['-c', `command -v ${bin}`], { stdio: 'ignore' }); return true; } catch { return false; } };
 
+// A refused path used to be printed back. The shell expands `$TESS_SUPPORT_TOKEN` before this process
+// sees the argument, so the refusal must not repeat whatever it was given.
+export const scrub = (text) => {
+  const token = process.env.TESS_SUPPORT_TOKEN || '';
+  let out = String(text ?? '');
+  if (token.length >= 8 && out.includes(token)) out = out.split(token).join('[redacted]');
+  return out;
+};
+const refuse = (msg) => { throw new Error(scrub(msg)); };
+
 // Every path this file touches must be a direct child of the session root. The model passes these paths, and a model
 // reading a stranger's message is exactly the thing that must not be able to point `handoff` at, say, a home folder.
 export const inRoot = (dir) => {
   const r = resolve(String(dir || ''));
-  if (dirname(r) !== resolve(ROOT)) throw new Error(`${dir} is not a session folder (it must sit directly in ${ROOT})`);
+  if (dirname(r) !== resolve(ROOT)) throw new Error('that path is not a session folder');
   return r;
 };
 
@@ -97,17 +107,17 @@ export const newSession = () => {
 export const inInbound = (file) => {
   const raw = resolve(String(file || ''));
   if (!raw.startsWith(resolve(INBOUND) + '/') || raw.startsWith(resolve(ROOT) + '/')) {
-    throw new Error(`${file} is not an attachment Hermes downloaded; only files under ${INBOUND} can be added`);
+    refuse('that path is not an attachment Hermes downloaded; only a file from the uploads folder can be added');
   }
   let real;
-  try { real = realpathSync(raw); } catch { throw new Error(`no such file: ${file}`); }
+  try { real = realpathSync(raw); } catch { refuse('no such file in the uploads folder'); }
   let inbound;
   try { inbound = realpathSync(INBOUND); } catch { inbound = resolve(INBOUND); }
   if (!real.startsWith(inbound + '/')) {
-    throw new Error(`${basename(raw)} is a link to ${real}, which is not an attachment; only files under ${INBOUND} can be added`);
+    refuse('that file is a link, which is not an attachment; only a file from the uploads folder can be added');
   }
   if ((statSync(real).nlink || 1) > 1) {
-    throw new Error(`${basename(raw)} is another name for a file outside the uploads folder; only the download itself can be added`);
+    refuse('that file is another name for a file outside the uploads folder; only the download itself can be added');
   }
   return raw;
 };
@@ -115,7 +125,7 @@ export const inInbound = (file) => {
 export const addFile = (dir, file, { record = false } = {}) => {
   dir = inRoot(dir);
   inInbound(file);                 // before anything is deleted: a refusal must not remove the wrong file
-  if (!existsSync(file)) throw new Error(`no such file: ${file}`);
+  if (!existsSync(file)) refuse('no such file in the uploads folder');
   // Whatever happens below, the source is gone by the end: refused or accepted, it is Hermes' copy of their upload.
   const dropSource = () => { try { rmSync(String(file), { force: true }); } catch { /* already gone */ } };
   try {
@@ -236,19 +246,32 @@ export const size = () => totalHeld();
 // Matching on the bare name matters: tools/test-session.mjs ends with "session.mjs" too, and a loose pattern would make
 // the test run the CLI instead of the tests.
 if (basename(process.argv[1] || '') === 'session.mjs') {
-  const [cmd, arg, ...rest] = process.argv.slice(2);
+  const [cmd, ...args] = process.argv.slice(2);
+  const usage = () => {
+    console.error('usage: session.mjs new | add <dir> <file> [--record] | handoff <dir> <report id> | sweep | size');
+    process.exit(1);
+  };
   try {
-    if (cmd === 'new') console.log(newSession());
-    else if (cmd === 'add') console.log(JSON.stringify(addFile(arg, rest[0], { record: rest.includes('--record') })));
-    else if (cmd === 'handoff') console.log(JSON.stringify(handoff(arg, rest[0] || 'unknown')));
-    else if (cmd === 'sweep') console.log(JSON.stringify({ removed: sweep() }));
-    else if (cmd === 'size') console.log(size());
-    else {
-      console.error('usage: session.mjs new | add <dir> <file> [--record] | handoff <dir> <report id> | sweep | size');
-      process.exit(1);
-    }
+    if (cmd === 'new') {
+      if (args.length) usage();
+      console.log(newSession());
+    } else if (cmd === 'add') {
+      const flags = args.filter((a) => a.startsWith('--'));
+      const pos = args.filter((a) => !a.startsWith('--'));
+      if (pos.length !== 2 || flags.some((f) => f !== '--record')) usage();
+      console.log(JSON.stringify(addFile(pos[0], pos[1], { record: flags.includes('--record') })));
+    } else if (cmd === 'handoff') {
+      if (args.length !== 2) usage();
+      console.log(JSON.stringify(handoff(args[0], args[1])));
+    } else if (cmd === 'sweep') {
+      if (args.length) usage();
+      console.log(JSON.stringify({ removed: sweep() }));
+    } else if (cmd === 'size') {
+      if (args.length) usage();
+      console.log(size());
+    } else usage();
   } catch (e) {
-    console.error(e.message);
+    console.error(scrub(e.message));
     process.exit(1);
   }
 }
