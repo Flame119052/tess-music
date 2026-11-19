@@ -7,7 +7,7 @@
 // change what this script will do with it.
 //
 //   node inbox.mjs report <session dir>           POST <dir>/payload.json and print the report id
-//   node inbox.mjs recording <report id> <file>   PUT one recording against that report
+//   node inbox.mjs recording <report id> <file>   PUT one recording or still against that report
 //   node inbox.mjs issues                         GET the open issue titles
 //   node inbox.mjs … --dry-run                    say where it would go, send nothing
 // Exit 1 with one plain sentence when it refuses or the inbox answers badly. Nothing here reads a person's text; the
@@ -22,7 +22,9 @@ const HOST = 'tess-music-player.janus.ing';
 // A test points it at its own loopback server, and only when TESS_TEST is set on that machine.
 const TEST_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 const MAX_RECORDING = 50 * 1024 * 1024;
+const MAX_IMAGE = 5 * 1024 * 1024;
 const VIDEO = { '.mov': 'video/quicktime', '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm', '.mkv': 'video/x-matroska' };
+const IMAGE = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' };
 
 const die = (msg) => { console.error(msg); process.exit(1); };
 const dry = process.argv.includes('--dry-run');
@@ -115,13 +117,16 @@ if (cmd === 'report') {
 } else if (cmd === 'recording') {
   if (!/^\d+$/.test(String(one || ''))) die('usage: inbox.mjs recording <report id> <file>');
   const name = basename(resolve(String(two || '')));
-  const type = VIDEO[extname(name).toLowerCase()];
-  if (!type) die('a recording must be .mov, .mp4, .webm or .mkv');
-  const got = readSession(dirname(resolve(String(two || ''))), name, `no such file: ${two}`, MAX_RECORDING);
-  if (got.tooBig) die(`that recording is ${Math.round(got.tooBig / 1048576)} MB; the limit is ${MAX_RECORDING / 1048576}`);
+  const ext = extname(name).toLowerCase();
+  const type = VIDEO[ext] || IMAGE[ext];
+  if (!type) die('send a .mov, .mp4, .webm or .mkv recording, or a .png or .jpg still');
+  const cap = IMAGE[ext] ? MAX_IMAGE : MAX_RECORDING;
+  const what = IMAGE[ext] ? 'picture' : 'recording';
+  const got = readSession(dirname(resolve(String(two || ''))), name, `no such file: ${two}`, cap);
+  if (got.tooBig) die(`that ${what} is ${Math.round(got.tooBig / 1048576)} MB; the limit is ${cap / 1048576}`);
   const out = await send('PUT', `/v1/support/recording/${one}`, { body: got.bytes, type, auth: true });
   if (dry) process.exit(0);
-  console.log(`recording stored (${out.status})`);
+  console.log(`${what} stored (${out.status})`);
 } else if (cmd === 'issues') {
   const out = await send('GET', '/v1/issues');
   if (dry) process.exit(0);

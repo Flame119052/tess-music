@@ -15,9 +15,10 @@ const MAX_BODY = 32 * 1024;
 // A support report carries the person's words, the bot's diagnosis and the finished write-up, so it is allowed more
 // room than a health report while still being bounded.
 const MAX_SUPPORT = 48 * 1024;
-// A recording of the Spotify window only. Telegram caps an upload at 20 MB, so this is generous; it exists so a stray
-// 500 MB file can't land in R2.
+// A recording of the Spotify window, and a still of that same window. Telegram caps an upload at 20 MB, so the
+// video cap is generous; it exists so a stray 500 MB file can't land in R2. A still is smaller.
 const MAX_RECORDING = 50 * 1024 * 1024;
+const MAX_IMAGE = 5 * 1024 * 1024;
 const RECORDING_DAYS = 14;
 const DAILY_CAP = 2000;
 // One model, one URL. The client does not get to choose either. Defaults match the support chat plan; wrangler
@@ -229,8 +230,9 @@ async function issueTitles(request, env) {
   } catch { return reply(503); }
 }
 
-// A recording of the person's screen is the one thing here that must never be public, so it can be written and never
-// read back: no GET, and the scheduled job deletes it once the report is filed or after 14 days.
+// A recording or a still of the person's screen must never be public, so either can be written and never
+// read back: no GET, and the scheduled job deletes both once the report is filed or after 14 days.
+// A still and a video are different objects. Uploading one does not replace the other.
 async function recording(request, env, id) {
   const { success } = await env.LIMIT.limit({ key: request.headers.get('cf-connecting-ip') || '' });
   if (!success) return reply(429);
@@ -258,20 +260,34 @@ async function recording(request, env, id) {
   } catch { return reply(503); }
   // The header is a cheap refusal for an honest client that is already too big; the body below is the real check.
   const len = Number(request.headers.get('content-length') || 0);
-  if (!len || len > MAX_RECORDING) return reply(413);
-  const type = (request.headers.get('content-type') || '').split(';')[0].trim();
-  if (!/^video\/(mp4|quicktime|x-matroska|webm)$/.test(type)) return reply(415);
-  const ext = { 'video/quicktime': 'mov', 'video/webm': 'webm', 'video/x-matroska': 'mkv' }[type] || 'mp4';
+  if (!len) return reply(413);
+  const type = (request.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+  const image = type === 'image/png' || type === 'image/jpeg';
+  const video = /^video\/(mp4|quicktime|x-matroska|webm)$/.test(type);
+  if (!image && !video) return reply(415);
+  const cap = image ? MAX_IMAGE : MAX_RECORDING;
+  if (len > cap) return reply(413);
+  const ext = image
+    ? (type === 'image/png' ? 'png' : 'jpg')
+    : ({ 'video/quicktime': 'mov', 'video/webm': 'webm', 'video/x-matroska': 'mkv' }[type] || 'mp4');
   const key = `support/${id}.${ext}`;
   let body;
-  try { body = await readCapped(request, MAX_RECORDING); } catch { return reply(400); }
+  try { body = await readCapped(request, cap); } catch { return reply(400); }
   if (!body) return reply(413);
   try {
+    // The image column is newer than recording. A video upload must keep working on a database that
+    // does not have it yet; a still on that database is a 503, not a destroyed video.
+    let previous = row.recording;
+    if (image) {
+      const extra = await env.DB.prepare('SELECT image FROM support_reports WHERE id = ?').bind(Number(id)).first();
+      previous = extra?.image || null;
+    }
     await env.SUPPORT.put(key, body, { httpMetadata: { contentType: type } });
     // A re-upload with a different extension would otherwise leave the old object orphaned until the lifecycle rule
-    // notices; delete it as part of the same write.
-    if (row.recording && row.recording !== key) await env.SUPPORT.delete(row.recording);
-    await env.DB.prepare('UPDATE support_reports SET recording = ? WHERE id = ?').bind(key, Number(id)).run();
+    // notices; delete it as part of the same write. A still never deletes the video, or the other way around.
+    if (previous && previous !== key) await env.SUPPORT.delete(previous);
+    if (image) await env.DB.prepare('UPDATE support_reports SET image = ? WHERE id = ?').bind(key, Number(id)).run();
+    else await env.DB.prepare('UPDATE support_reports SET recording = ? WHERE id = ?').bind(key, Number(id)).run();
   } catch { return reply(503); }
   return reply(204);
 }
@@ -884,6 +900,12 @@ export default {
       const stale = await env.DB.prepare('SELECT id, recording FROM support_reports WHERE recording IS NOT NULL AND (issue IS NOT NULL OR at < ?)').bind(cutoff).all();
       for (const r of stale.results || []) await env.SUPPORT.delete(r.recording);
       await env.DB.prepare('UPDATE support_reports SET recording = NULL WHERE recording IS NOT NULL AND (issue IS NOT NULL OR at < ?)').bind(cutoff).run();
+      // Stills use the same 14-day rule. A database that has not added the image column yet still drops recordings.
+      try {
+        const staleImg = await env.DB.prepare('SELECT id, image FROM support_reports WHERE image IS NOT NULL AND (issue IS NOT NULL OR at < ?)').bind(cutoff).all();
+        for (const r of staleImg.results || []) if (r.image) await env.SUPPORT.delete(r.image);
+        await env.DB.prepare('UPDATE support_reports SET image = NULL WHERE image IS NOT NULL AND (issue IS NOT NULL OR at < ?)').bind(cutoff).run();
+      } catch { /* image column not applied yet */ }
     } catch { /* schema not applied yet, or R2 not bound: the health-report cleanup above already ran */ }
     await env.DB.prepare('DELETE FROM limits WHERE until < ?').bind(Math.floor(Date.now() / 1000)).run();
   },
