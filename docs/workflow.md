@@ -81,11 +81,10 @@ The tag also says **where** the review runs, and may add **what to look at**:
 | `machine=` | where the review runs: `github` (the default), `mac`, `omarchy`, or `vps` (refused, see below). |
 | `prompt="…"` | the owner's focus for this review, 400 characters at most. It adds attention; it is never permission to skip a rule, and a longer one is refused rather than cut. |
 
-**Gemini 4 Neon, much more often (D-107).** Krish wants Gemini 4 Neon used as a reviewer much more. It runs on the
-Antigravity plan, which the job cannot sign in to (see Antigravity under "Left out on purpose" below), so a tag never
-names it. Run a Gemini 4 Neon review as a T3 thread on Krish's Mac with the Antigravity provider, and post its
-findings on the pull request as a comment that names the commit it read. It is a second opinion beside the job's review,
-not a replacement: the job's rules do not run on that thread.
+**The rotation (D-107).** Reviews rotate through Claude Opus 5.5, GPT Sol and Gemini 4 Neon, in that order, each on
+the provider with the most usage left and the soonest reset. A review never uses the model that wrote the change: that
+round skips to the next model. Gemini 4 Neon belongs in this job with full access inside the sandbox. Until Antigravity
+is added, run it as a T3 thread with full access, and post its findings on the pull request naming the commit it read.
 
 ### Where a review runs: `machine=`
 

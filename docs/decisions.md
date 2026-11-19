@@ -853,13 +853,14 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   *Trade-off:* an existing inbox database needs `ALTER TABLE support_reports ADD COLUMN image TEXT` before a still
   can be stored. Until then a still is answered 503 and a video still stores. This change does not deploy the Worker.
 
-- **D-107 · 19 Nov 2026 · Krish** — Gemini 4 Neon is used as a reviewer much more. Krish chose this on 19 Nov. It runs
-  on Antigravity, which cannot sign in on the GitHub review job: Antigravity keeps its login in the OS keyring and has
-  no headless login (docs/workflow.md → "Left out on purpose"). So a Gemini 4 Neon review runs as a T3 thread on
-  Krish's Mac with the Antigravity provider, and its findings are posted on the pull request as a comment naming the
-  commit it read. `tools/agent-review.mjs` and `.github/agents.json` are unchanged, so a review tag still cannot name it.
-  *Trade-off:* the job does not run this review, so the job's checks (the allowlist, CI green on the exact head, the
-  author check, the stripped review copy) do not guard it. It is a second opinion beside a job review.
+- **D-107 · 19 Nov 2026 · Krish** — Reviews rotate through Claude Opus 5.5, GPT Sol and Gemini 4 Neon, in that order,
+  each on the provider with the most usage left and the soonest reset, and a review never uses the model that wrote the
+  change. Gemini 4 Neon reviews belong in the GitHub `@tess-review` job with the reviewer in full access inside the
+  job's sandbox: the throwaway VM, bubblewrap, no GitHub token, and only the job posts. Adding Antigravity to the job is
+  separate work. Until it lands, a Gemini 4 Neon review runs as a T3 thread with full access (approval-required stalls
+  on every tool call) and its findings are posted on the pull request, naming the commit it read.
+  *Trade-off:* until then the job's checks (the allowlist, CI green on the exact head, the author check, the stripped
+  review copy) do not guard a Gemini review. It is a second opinion beside a job review.
 - **D-108 · 19 Nov 2026 · Agent** — The support chat route answers a missing, unknown or revoked token with one JSON
   401: `{"error":{"message":"This support code is not active. Ask Krish for a new one.","type":"authentication_error",
   "code":"invalid_api_key"}}` (#121). The report routes keep their empty 401. *Why:* Hermes builds its error text from
