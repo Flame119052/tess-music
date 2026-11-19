@@ -124,9 +124,11 @@ jobs:
         if: steps.pick.outputs.provider == 'antigravity'
         run: |
           # agy@1.5.12, the Linux x64 build. The archive's binary is named antigravity; the job calls it agy.
+          # The sha256 was checked against a download of that release. A changed archive fails here, before tar.
           version=1.5.12
           mkdir -p "$HOME/.local/bin"
           curl -fsSL -o /tmp/agy.tgz "https://github.com/google-antigravity/antigravity-cli/releases/download/${version}/agy_cli_linux_x64.tar.gz"
+          echo "0f0cb851cdc9fbedd50432570aa6ae9c4c398b9ea3f1e23e7776f707643c5b3e  /tmp/agy.tgz" | sha256sum -c -
           tar -xzf /tmp/agy.tgz -C /tmp
           install -m 755 /tmp/antigravity "$HOME/.local/bin/agy"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
@@ -157,8 +159,9 @@ jobs:
           CODEX_AUTH_JSON: ${{ steps.pick.outputs.provider == 'codex' && secrets.CODEX_AUTH_JSON || '' }}
           OPENCODE_API_KEY: ${{ steps.pick.outputs.provider == 'opencode' && secrets.OPENCODE_API_KEY || '' }}
           ZHIPU_API_KEY: ${{ steps.pick.outputs.provider == 'opencode' && secrets.ZHIPU_API_KEY || '' }}
-          # The Google-plan file agy writes (tools/agy-ci-login.mjs). Not an API key. The script writes it to disk
-          # and does not pass it into the sandbox environment.
+          # The Google-plan file agy writes (tools/agy-ci-login.mjs). Not an API key. The job redeems the
+          # refresh token before bubblewrap and mounts only a short-lived access token. The refresh token is
+          # not written to disk and is not passed into the sandbox.
           AGY_OAUTH_TOKEN: ${{ steps.pick.outputs.provider == 'antigravity' && secrets.AGY_OAUTH_TOKEN || '' }}
           # Needed to read the PR and post the comment. `tools/agent-review.mjs` never passes it to the reviewer.
           GH_TOKEN: ${{ github.token }}
