@@ -853,3 +853,10 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   *Trade-off:* an existing inbox database needs `ALTER TABLE support_reports ADD COLUMN image TEXT` before a still
   can be stored. Until then a still is answered 503 and a video still stores. This change does not deploy the Worker.
 
+- **D-108 · 19 Nov 2026 · Agent** — The support chat route answers a missing, unknown or revoked token with one JSON
+  401: `{"error":{"message":"This support code is not active. Ask Krish for a new one.","type":"authentication_error",
+  "code":"invalid_api_key"}}` (#121). The report routes keep their empty 401. *Why:* Hermes shows `error.message` from a
+  refused request (`agent/api_error_summary.py`), so after a revoke the person reads what to do instead of a bare
+  "HTTP 401". *Trade-off:* none on secrecy. The three cases get the same words, so the answer does not say whether a
+  code ever existed. `tools/test-support-mac-chat.mjs` proves it on a real chat turn: the next turn after
+  `support token revoke` gets this line and the upstream is not called.
