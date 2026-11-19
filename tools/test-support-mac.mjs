@@ -532,7 +532,23 @@ sys.exit(2)
   ];
   for (const line of steps) assert.equal(allowMatch(line, allow), true, `the visit needs an approval: ${line}`);
   for (const line of steps) assert.equal(denyMatch(line, deny), null, `the visit is denied: ${line}`);
-  run(join(visitProfile, 'skills/tess-handoff/scripts/triage-inbox.mjs'), [
+  const triageInbox = join(visitProfile, 'skills/tess-handoff/scripts/triage-inbox.mjs');
+  const elsewhere = join(box, 'elsewhere');
+  mkdirSync(elsewhere, { recursive: true });
+  writeFileSync(join(elsewhere, 'doctor.txt'), 'not a session\n');
+  const strayReport = fails(triageInbox, ['--report', join(elsewhere, 'doctor.txt'), '--mode', 'inbox'], visitEnv);
+  assert.match(String(strayReport.stderr), /is not a session folder/);
+  assert.equal(existsSync(join(elsewhere, 'payload.json')), false, 'a payload was written outside the session');
+  const strayWords = fails(triageInbox, [
+    '--report', join(session, 'doctor.txt'), '--words', join(elsewhere, 'doctor.txt'), '--mode', 'inbox',
+  ], visitEnv);
+  assert.match(String(strayWords.stderr), /--words must be/);
+  const wrongName = fails(triageInbox, [
+    '--report', join(session, 'doctor.txt'), '--title-file', join(session, 'words.txt'), '--mode', 'inbox',
+  ], visitEnv);
+  assert.match(String(wrongName.stderr), /--title-file must be/);
+  assert.equal(existsSync(join(session, 'payload.json')), false, 'a refused line still wrote a payload');
+  run(triageInbox, [
     '--report', join(session, 'doctor.txt'),
     '--words', join(session, 'words.txt'),
     '--title-file', join(session, 'title.txt'),
