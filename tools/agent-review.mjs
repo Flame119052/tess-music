@@ -96,9 +96,66 @@ export const installedProviders = ['claude', 'codex', 'opencode', 'antigravity']
 // One line, on purpose. Gemini 4 Neon runs in the GitHub job (D-107). A machine tag does not start a thread for it.
 export const antigravityMachineReason = 'Krish chose the GitHub path.';
 
-// Where agy 1.5.12 reads the plan login once the keyring is out of the way. Only this file is mounted.
+// Where agy 1.5.12 reads the plan login once the keyring is out of the way. The sandbox mounts a
+// stand-in at this path. The stand-in has an access token, never the refresh token.
 export const antigravityTokenRelative = '.gemini/antigravity-cli/antigravity-oauth-token';
 providerDetails.antigravity.home = [antigravityTokenRelative];
+
+// agy 1.5.12 linux-x64 places these public strings immediately before the Google sign-in client.
+// The bytes after each anchor are the client id and the client secret. They identify the app, they are
+// not Krish's tokens, and they are not copied into this repo: GitHub push protection refuses them as
+// literals. Each anchor occurs once in that pinned build. A binary that does not have both, each followed
+// by the expected shape, fails closed.
+const antigravityClientIdAnchor = 'sion (low|medium|high|xhigh|max)';
+const antigravityClientSecretAnchor = 'https://auth.cloud.google/authorize';
+const antigravityClientIdShape = /^[0-9]{12}-[a-z0-9]{32}\.apps\.googleusercontent\.com/;
+const antigravityClientSecretShape = /^GOCSPX-[A-Za-z0-9_-]{28}/;
+
+export function readAntigravityOAuthClient(binary) {
+  const buf = Buffer.isBuffer(binary) ? binary : readFileSync(binary);
+  const id = anchoredField(buf, antigravityClientIdAnchor, antigravityClientIdShape);
+  const secret = anchoredField(buf, antigravityClientSecretAnchor, antigravityClientSecretShape);
+  if (!id || !secret) throw new Error('the installed agy binary has no readable Google sign-in client');
+  return { id, secret };
+}
+
+function anchoredField(buf, anchor, shape) {
+  const needle = Buffer.from(anchor);
+  const at = buf.indexOf(needle);
+  if (at < 0 || buf.indexOf(needle, at + needle.length) >= 0) return '';
+  const window = buf.subarray(at + needle.length, at + needle.length + 120).toString('latin1');
+  const match = window.match(shape);
+  if (!match || match.index !== 0) return '';
+  return match[0];
+}
+
+function antigravityOAuthClientFrom(options) {
+  if (options.oauthClient) {
+    const { id, secret } = options.oauthClient;
+    if (typeof id !== 'string' || typeof secret !== 'string' || !id || !secret) {
+      throw new Error('the installed agy binary has no readable Google sign-in client');
+    }
+    return { id, secret };
+  }
+  const path = options.agyPath || commandLocation('agy');
+  if (!path) throw new Error('agy is not installed, so the Google sign-in client cannot be read');
+  try {
+    return readAntigravityOAuthClient(path);
+  } catch (error) {
+    if (error?.message === 'the installed agy binary has no readable Google sign-in client') throw error;
+    throw new Error('the installed agy binary has no readable Google sign-in client');
+  }
+}
+
+const mintedSecrets = [];
+
+export function rememberHeldSecret(value) {
+  if (typeof value === 'string' && value.length >= 12 && !mintedSecrets.includes(value)) mintedSecrets.push(value);
+}
+
+export function forgetMintedSecrets() {
+  mintedSecrets.length = 0;
+}
 
 // The providers whose login never enters the sandbox, because their CLI takes a gateway endpoint: the review process
 // holds a per-review token, a proxy in this process holds the real credential, and the proxy adds it to the request it
@@ -785,18 +842,160 @@ export function antigravityAuth(raw) {
   return { ok: true };
 }
 
-// The review step writes this file before bubblewrap starts, mode 0600, and the sandbox mounts only that path.
-// The secret stays out of the reviewer's environment (reviewerEnv drops AGY_OAUTH_TOKEN).
-export function writeAntigravityLogin(env, home) {
-  const raw = env?.AGY_OAUTH_TOKEN;
+function antigravityRecord(raw) {
   if (typeof raw !== 'string' || !raw.trim()) return null;
-  const auth = antigravityAuth(raw);
-  if (auth.problem) throw new Error(auth.problem);
-  const dest = join(home, antigravityTokenRelative);
+  try {
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+    const nested = data.token && typeof data.token === 'object' ? data.token : {};
+    return { data, nested };
+  } catch {
+    return null;
+  }
+}
+
+export function antigravityRefreshToken(raw) {
+  const record = antigravityRecord(raw);
+  if (!record) return '';
+  const refresh = record.data.refresh_token || record.nested.refresh_token;
+  return typeof refresh === 'string' ? refresh : '';
+}
+
+// Every string in the stored login that is long enough to be a token. The whole JSON blob is already
+// held; a review that quotes only the refresh token, the access token or the id token has to be held too.
+export function jsonSecretStrings(raw) {
+  const record = antigravityRecord(raw);
+  if (!record) return [];
+  const found = [];
+  const walk = (value) => {
+    if (typeof value === 'string') {
+      if (value.length >= 12) found.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (value && typeof value === 'object') {
+      for (const item of Object.values(value)) walk(item);
+    }
+  };
+  walk(record.data);
+  return found;
+}
+
+// agy 1.5.12 accepts `{ token: { access_token, token_type, expiry }, auth_method: "consumer" }` and then
+// calls Google with that access token. Measured on the Dell with a fake access token and no refresh
+// token: silent auth succeeded and the API answered 401. A read-only copy did the same and was not
+// rewritten. `auth_method` is the plan-login marker, not a secret. The refresh token is absent.
+export function antigravityAccessFile(minted) {
+  return `${JSON.stringify({
+    token: {
+      access_token: minted.accessToken,
+      token_type: minted.tokenType || 'Bearer',
+      expiry: minted.expiry,
+    },
+    auth_method: 'consumer',
+  })}\n`;
+}
+
+export function writeAntigravityAccess(dir, minted) {
+  const body = antigravityAccessFile(minted);
+  if (body.includes('refresh_token')) throw new Error('refusing to write an Antigravity refresh token');
+  const dest = join(dir, antigravityTokenRelative);
   mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
-  writeFileSync(dest, raw, { mode: 0o600 });
+  writeFileSync(dest, body, { mode: 0o600 });
   try { chmodSync(dest, 0o600); } catch { /* the mode on write is the one that matters */ }
   return dest;
+}
+
+// Redeem the refresh token in this process. The body is never written to disk and never enters the sandbox.
+export async function mintAntigravityAccess(raw, options = {}) {
+  const refresh = antigravityRefreshToken(raw);
+  if (!refresh) throw new Error('the stored Antigravity login has no refresh token');
+  const client = antigravityOAuthClientFrom(options);
+  const fetchImpl = options.fetch || globalThis.fetch;
+  const now = options.now || Date.now;
+  const body = new URLSearchParams({
+    client_id: client.id,
+    client_secret: client.secret,
+    refresh_token: refresh,
+    grant_type: 'refresh_token',
+  });
+  let response;
+  try {
+    response = await fetchImpl('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+  } catch {
+    throw new Error('could not mint an Antigravity access token');
+  }
+  let payload = {};
+  try { payload = await response.json(); } catch { payload = {}; }
+  if (!response.ok || typeof payload.access_token !== 'string' || payload.access_token.length < 12) {
+    throw new Error('could not mint an Antigravity access token');
+  }
+  const seconds = Number(payload.expires_in);
+  const lifetime = Number.isFinite(seconds) && seconds > 0 ? seconds : 3600;
+  return {
+    accessToken: payload.access_token,
+    tokenType: typeof payload.token_type === 'string' && payload.token_type ? payload.token_type : 'Bearer',
+    expiry: new Date(now() + lifetime * 1000).toISOString(),
+  };
+}
+
+// Ask Google what the minted access token is allowed to do. The caller prints scopes and expiry only.
+export async function antigravityTokenInfo(accessToken, options = {}) {
+  const fetchImpl = options.fetch || globalThis.fetch;
+  const body = new URLSearchParams({ access_token: accessToken });
+  let response;
+  try {
+    response = await fetchImpl('https://oauth2.googleapis.com/tokeninfo', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+  } catch {
+    throw new Error('could not check the Antigravity access token');
+  }
+  let payload = {};
+  try { payload = await response.json(); } catch { payload = {}; }
+  if (!response.ok) throw new Error('could not check the Antigravity access token');
+  const scopes = String(payload.scope || '').split(/[\s,]+/).filter(Boolean);
+  const exp = Number(payload.exp);
+  return {
+    scopes,
+    expiry: Number.isFinite(exp) && exp > 0 ? new Date(exp * 1000).toISOString() : '',
+  };
+}
+
+// What `--check` prints: scopes and expiry, never the access token or the refresh token.
+export async function describeAntigravityLogin(raw, options = {}) {
+  const minted = await mintAntigravityAccess(raw, options);
+  try {
+    return await antigravityTokenInfo(minted.accessToken, options);
+  } finally {
+    forgetMintedSecrets();
+  }
+}
+
+// Mint, write the access file under RUNNER_TEMP, run `fn(dir)`, then delete the directory.
+// `options.home` is the runner home and is never the place the token is written.
+export async function withAntigravityAccess(options, fn) {
+  const env = options.env || process.env;
+  const auth = antigravityAuth(env.AGY_OAUTH_TOKEN);
+  if (auth.problem) throw new Error(auth.problem);
+  const minted = await mintAntigravityAccess(env.AGY_OAUTH_TOKEN, options);
+  rememberHeldSecret(minted.accessToken);
+  const dir = mkdtempSync(join(options.runnerTemp || process.env.RUNNER_TEMP || tmpdir(), 'tess-agy-'));
+  try {
+    writeAntigravityAccess(dir, minted);
+    return await fn(dir, minted);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 export function credentialProblem(provider, env = process.env) {
@@ -1402,9 +1601,13 @@ export function sandboxArgv(provider, work, cli, options = {}) {
     '--tmpfs', '/tmp', '--tmpfs', '/home', '--tmpfs', sandboxHome];
   for (const path of sandboxRuntime) if (exists(path)) args.push('--ro-bind', path, path);
   // Its own sign-in state and agent file only, read-only, at the path its own CLI looks for them under HOME.
+  // Antigravity's file holds an access token and no refresh token. On the Dell, agy 1.5.12 accepted that
+  // file when it was mode 444: silent auth succeeded, and the file's bytes did not change. The temp
+  // directory that holds it is deleted when the run ends.
   for (const relative of providerDetails[provider]?.home || []) {
     const source = join(home, relative);
-    if (exists(source)) args.push('--ro-bind', source, join(sandboxHome, relative));
+    if (!exists(source)) continue;
+    args.push('--ro-bind', source, join(sandboxHome, relative));
   }
   const bound = new Set();
   const bindDir = (path) => {
@@ -1489,14 +1692,17 @@ export function cliArgs(provider, model, effort, work = root, caps = defaultCaps
     return ['run', '--agent', 'tess-reviewer', '--model', effort ? `${model}#${effort}` : model, '--archived'];
   }
   if (provider === 'antigravity') {
-    // `-p` takes the next word as the prompt, so it stays last and the caller appends the prompt after these flags.
-    // `--mode plan` is left off: on the Dell a headless plan run never reached a tool call, so it is not known to
-    // finish one without waiting. `--dangerously-skip-permissions` is what D-107's full access means here. The
-    // bubblewrap mounts are what keep that from writing the job's files. No `--sandbox` flag: that is a second
-    // policy, and the job's boundary is bubblewrap.
+    // The prompt is one stream-json line on stdin. `-p` requires a value, so the value is empty and the
+    // prompt stays off argv: one argument dies at Linux's 128 KiB cap once the diff, the files and the
+    // instructions are all inlined. `--mode plan` is left off: on the Dell a headless plan run never reached
+    // a tool call. `--dangerously-skip-permissions` is what D-107's full access means here. No `--sandbox`
+    // flag: that policy auto-approves its own escape, and bubblewrap is the wall around the job's files.
+    // The refresh token never enters this process's sandbox.
     return ['--model', model, ...(effort ? ['--effort', effort] : []),
-      '--dangerously-skip-permissions', '--output-format', 'json',
-      '--print-timeout', `${timeoutSeconds({ provider, model }, caps)}s`, '-p'];
+      '--dangerously-skip-permissions',
+      '--input-format', 'stream-json', '--output-format', 'stream-json',
+      '--print-timeout', `${timeoutSeconds({ provider, model }, caps)}s`,
+      '-p', ''];
   }
   throw new Error(`unsupported review provider: ${provider}`);
 }
@@ -1550,25 +1756,53 @@ export function parseClaudeOutput(stdout) {
   return { text, usage: null };
 }
 
-// agy's `--output-format json` is one object with `response` and `usage`. A plain-text answer is still the review.
+// One stream-json line on stdin. agy reads `event: user` and runs one turn. Documented for `--input-format stream-json`.
+export function antigravityStdin(prompt) {
+  return `${JSON.stringify({ event: 'user', message: { content: String(prompt ?? '') } })}\n`;
+}
+
+function antigravityResultShape(parsed) {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const body = parsed.event === 'result' && parsed.result && typeof parsed.result === 'object' ? parsed.result : parsed;
+  if (typeof body.response !== 'string' && typeof body.error !== 'string' && typeof body.status !== 'string') return null;
+  if (typeof body.response !== 'string' && parsed.event !== 'result') return null;
+  const usage = body.usage || {};
+  const status = typeof body.status === 'string' ? body.status : '';
+  const failed = status !== '' && status !== 'SUCCESS';
+  const response = typeof body.response === 'string' ? body.response : '';
+  const error = typeof body.error === 'string' ? body.error : '';
+  return {
+    text: failed ? '' : response,
+    ...(status ? { status } : {}),
+    ...(failed ? { errorText: `${status}: ${error || response}` } : {}),
+    usage: {
+      ...(typeof body.num_turns === 'number' ? { turns: body.num_turns } : {}),
+      ...(typeof usage.input_tokens === 'number' ? { input: usage.input_tokens } : {}),
+      ...(typeof usage.output_tokens === 'number' ? { output: usage.output_tokens } : {}),
+      ...(typeof usage.total_tokens === 'number' ? { total: usage.total_tokens } : {}),
+    },
+  };
+}
+
+// `--output-format stream-json` is NDJSON: init, step updates, then one `result` object. An older
+// `--output-format json` object, or a plain-text answer, is still the review.
 export function parseAntigravityOutput(stdout) {
   const text = String(stdout || '').trim();
-  try {
-    const parsed = JSON.parse(text);
-    if (parsed && typeof parsed.response === 'string') {
-      const usage = parsed.usage || {};
-      const failed = typeof parsed.status === 'string' && parsed.status !== 'SUCCESS';
-      return {
-        text: failed ? '' : parsed.response,
-        ...(failed ? { errorText: `${parsed.status}: ${parsed.response}` } : {}),
-        usage: {
-          ...(typeof parsed.num_turns === 'number' ? { turns: parsed.num_turns } : {}),
-          ...(typeof usage.input_tokens === 'number' ? { input: usage.input_tokens } : {}),
-          ...(typeof usage.output_tokens === 'number' ? { output: usage.output_tokens } : {}),
-          ...(typeof usage.total_tokens === 'number' ? { total: usage.total_tokens } : {}),
-        },
-      };
+  let found = null;
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('{')) continue;
+    try {
+      const shaped = antigravityResultShape(JSON.parse(trimmed));
+      if (shaped) found = shaped;
+    } catch {
+      // a step line that is not JSON is skipped; the result line is the review
     }
+  }
+  if (found) return found;
+  try {
+    const shaped = antigravityResultShape(JSON.parse(text));
+    if (shaped) return shaped;
   } catch {
     // not JSON
   }
@@ -1811,54 +2045,70 @@ function finalizeInvocation(provider, result) {
     ...result,
     text: parsed.text,
     usage: parsed.usage || result.tokenUsage || null,
+    ...(parsed.status ? { agentStatus: parsed.status } : {}),
     stderr: parsed.errorText ? `${result.stderr || ''}\n${parsed.errorText}`.trim() : result.stderr,
   };
 }
 
-async function cliInvocationAsync(provider, model, prompt, effort, work = root, options = {}) {
+async function runSandboxed(provider, model, prompt, effort, work, options, proxy, home) {
   const caps = options.caps || defaultCaps;
+  // Cursor still takes the prompt as one argument. agy reads one stream-json line on stdin, because a
+  // review prompt can pass Linux's 128 KiB limit on a single argument.
+  const promptIsArg = provider === 'cursor';
+  const args = [...cliArgs(provider, model, effort, work, caps, proxy), ...(promptIsArg ? [prompt] : [])];
+  const sandbox = sandboxArgv(provider, work, args, { ...options, home });
+  const timeout = timeoutSeconds({ provider, model }, caps) * 1000;
+  const tokenCap = maxTokens({ provider, model }, caps);
+  const input = provider === 'antigravity' ? antigravityStdin(prompt) : (promptIsArg ? undefined : prompt);
+  const result = await streamCommand(sandbox.command, sandbox.args, {
+    cwd: work,
+    env: {
+      ...reviewerEnv(options.env || process.env, provider, proxy),
+      HOME: sandbox.home,
+      TMPDIR: '/tmp',
+      PATH: sandbox.path,
+    },
+    input,
+    timeout,
+    killSignal: 'SIGKILL',
+    maxBuffer: 30 * 1024 * 1024,
+    provider,
+    maxTokens: tokenCap,
+    spawnChild: options.spawnChild,
+  });
+  return finalizeInvocation(provider, result);
+}
+
+export async function invokeReviewerCli(provider, model, prompt, effort, work = root, options = {}) {
   if (provider === 'opencode') assertReviewerAgent(options.agentInstalled, options.agentSource);
   const proxy = options.proxy === undefined ? startReviewProxy(provider, options.proxyOptions) : options.proxy;
   try {
-    // Cursor and agy take the prompt as an argument (`agy -p` consumes the next word). The others read stdin.
-    const promptIsArg = provider === 'cursor' || provider === 'antigravity';
-    const args = [...cliArgs(provider, model, effort, work, caps, proxy), ...(promptIsArg ? [prompt] : [])];
-    const home = options.home || homedir();
-    if (provider === 'antigravity') writeAntigravityLogin(options.env || process.env, home);
-    const sandbox = sandboxArgv(provider, work, args, { ...options, home });
-    const timeout = timeoutSeconds({ provider, model }, caps) * 1000;
-    const tokenCap = maxTokens({ provider, model }, caps);
-    const result = await streamCommand(sandbox.command, sandbox.args, {
-      cwd: work,
-      env: {
-        ...reviewerEnv(options.env || process.env, provider, proxy),
-        HOME: sandbox.home,
-        TMPDIR: '/tmp',
-        PATH: sandbox.path,
-      },
-      input: promptIsArg ? undefined : prompt,
-      timeout,
-      killSignal: 'SIGKILL',
-      maxBuffer: 30 * 1024 * 1024,
-      provider,
-      maxTokens: tokenCap,
-    });
-    return finalizeInvocation(provider, result);
+    if (provider === 'antigravity') {
+      // The runner home is never the token directory. withAntigravityAccess deletes its temp dir
+      // even when the CLI throws.
+      return await withAntigravityAccess(options, (dir) => runSandboxed(provider, model, prompt, effort, work, options, proxy, dir));
+    }
+    return await runSandboxed(provider, model, prompt, effort, work, options, proxy, options.home || homedir());
   } finally {
     proxy?.stop?.();
   }
 }
 
+async function cliInvocationAsync(provider, model, prompt, effort, work = root, options = {}) {
+  return invokeReviewerCli(provider, model, prompt, effort, work, options);
+}
+
 function cliInvocation(provider, model, prompt, effort, work = root, options = {}) {
+  if (provider === 'antigravity') {
+    throw new Error('an Antigravity review mints its access token on the async path');
+  }
   const caps = options.caps || defaultCaps;
   if (provider === 'opencode') assertReviewerAgent(options.agentInstalled, options.agentSource);
   const proxy = options.proxy === undefined ? startReviewProxy(provider, options.proxyOptions) : options.proxy;
   try {
-    // Cursor and agy take the prompt as an argument (`agy -p` consumes the next word). The others read stdin.
-    const promptIsArg = provider === 'cursor' || provider === 'antigravity';
+    const promptIsArg = provider === 'cursor';
     const args = [...cliArgs(provider, model, effort, work, caps, proxy), ...(promptIsArg ? [prompt] : [])];
     const home = options.home || homedir();
-    if (provider === 'antigravity') writeAntigravityLogin(options.env || process.env, home);
     const sandbox = sandboxArgv(provider, work, args, { ...options, home });
     const timeout = timeoutSeconds({ provider, model }, caps) * 1000;
     // A review that runs past its limit is killed, not waited on. bubblewrap's --die-with-parent takes the CLI with it, so
@@ -2014,7 +2264,13 @@ function finishReviewerRun(candidate, result, context) {
     throw refusal(candidate, reason);
   }
   if (result.status === 0 && `${result.text ?? result.stdout ?? ''}`.trim()) {
-    return { ...candidate, text: `${result.text ?? result.stdout}`.trim(), usage: result.usage || null, snapshot: activeSnapshot };
+    return {
+      ...candidate,
+      text: `${result.text ?? result.stdout}`.trim(),
+      usage: result.usage || null,
+      snapshot: activeSnapshot,
+      status: result.agentStatus || 'SUCCESS',
+    };
   }
   const reason = skipReason(result);
   if (reason) {
@@ -2037,7 +2293,7 @@ export function runReviewer(models, prompt, work, deps = {}) {
     // refusal. Anything else would stop the job without the comment the tagging agent is waiting for.
     let result;
     try {
-      result = invoke(candidate.provider, candidate.model, prompt, candidate.effort, work, { caps: context.caps }) || {};
+      result = invoke(candidate.provider, candidate.model, prompt, candidate.effort, work, { caps: context.caps, env: context.env }) || {};
     } catch (error) {
       throw context.refusal(candidate, `${candidate.provider}/${candidate.model} could not start: ${failureSummary({ stderr: error?.message ?? error }, context.env)}`, { failure: true });
     }
@@ -2052,7 +2308,7 @@ export async function runReviewerAsync(models, prompt, work, deps = {}) {
   for (const candidate of context.candidates) {
     let result;
     try {
-      result = (await invoke(candidate.provider, candidate.model, prompt, candidate.effort, work, { caps: context.caps })) || {};
+      result = (await invoke(candidate.provider, candidate.model, prompt, candidate.effort, work, { caps: context.caps, env: context.env })) || {};
     } catch (error) {
       throw context.refusal(candidate, `${candidate.provider}/${candidate.model} could not start: ${failureSummary({ stderr: error?.message ?? error }, context.env)}`, { failure: true });
     }
@@ -2129,8 +2385,11 @@ export function formatReviewComment({ role, sha = '', tier = '', result, caps = 
 }
 
 // A reviewer reads untrusted diffs. If text in a diff talks it into printing a key or token, never post that publicly.
+const googleTokenShape = /ya29\.[\w-]{20,}|1\/\/0[\w-]{20,}/;
+
 export function looksSecret(text) {
-  return /-----BEGIN [A-Z ]*(PRIVATE KEY|OPENSSH|PGP)|\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})\b|[A-Za-z0-9+\/]{120,}={0,2}/.test(text);
+  return /-----BEGIN [A-Z ]*(PRIVATE KEY|OPENSSH|PGP)|\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})\b|[A-Za-z0-9+\/]{120,}={0,2}/.test(text)
+    || googleTokenShape.test(String(text ?? ''));
 }
 
 // The patterns above only know some key shapes. Provider keys (OpenCode, Cursor, Codex) have their own, so also refuse
@@ -2138,7 +2397,13 @@ export function looksSecret(text) {
 export const heldSecretNames = ['GH_TOKEN', 'GITHUB_TOKEN', ...Object.values(providerKeys).flat()];
 
 export function heldSecrets(env = process.env) {
-  return heldSecretNames.map((name) => env[name]).filter((value) => value && value.length >= 12);
+  const values = [];
+  for (const name of heldSecretNames) {
+    const value = env[name];
+    if (typeof value === 'string' && value.length >= 12) values.push(value);
+    if (name === 'AGY_OAUTH_TOKEN') values.push(...jsonSecretStrings(value));
+  }
+  return [...values, ...mintedSecrets];
 }
 
 // A prompt-injected diff does not have to quote a key exactly to leak it: it can split one over two lines, or ask for it
@@ -2176,7 +2441,7 @@ export function containsHeldSecret(text, env = process.env) {
 }
 
 // The key shapes `looksSecret` knows about, in one place, so a log line can be cleaned the same way a comment is judged.
-const secretShape = /gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*(?:PRIVATE KEY|OPENSSH|PGP)[^-]*-----/g;
+const secretShape = /gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*(?:PRIVATE KEY|OPENSSH|PGP)[^-]*-----|ya29\.[\w-]{20,}|1\/\/0[\w-]{20,}/g;
 
 export function redactText(text, env = process.env) {
   let out = String(text ?? '');
@@ -2186,6 +2451,7 @@ export function redactText(text, env = process.env) {
       out = out.replace(pattern, '[redacted]');
     }
   }
+  secretShape.lastIndex = 0;
   return out.replace(secretShape, '[redacted]');
 }
 

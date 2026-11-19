@@ -1,6 +1,7 @@
 // Test reviewer tier, model selection, sandbox prep and the deny-everything agent without GitHub or provider calls.
 // Usage: node tools/test-agent-review.mjs
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import http from 'node:http';
@@ -56,8 +57,15 @@ import {
   antigravityTokenRelative,
   codexAuth,
   credentialProblem,
+  antigravityStdin,
+  describeAntigravityLogin,
+  forgetMintedSecrets,
+  invokeReviewerCli,
+  mintAntigravityAccess,
   parseAntigravityOutput,
-  writeAntigravityLogin,
+  readAntigravityOAuthClient,
+  withAntigravityAccess,
+  writeAntigravityAccess,
   retiredKeyNames,
   reviewerEnv,
   readSnapshots,
@@ -544,8 +552,10 @@ test('Antigravity is a GitHub reviewer on the Google plan, and a machine tag is 
 
   const args = cliArgs('antigravity', 'gemini-4-neon', 'high', '/w');
   assert.ok(args.includes('--dangerously-skip-permissions'));
+  assert.ok(args.includes('--input-format') && args.includes('stream-json'));
   assert.ok(!args.includes('--mode') && !args.includes('--sandbox'), 'plan mode and the CLI sandbox are not passed');
-  assert.equal(args.at(-1), '-p', 'the prompt is the next word, which is how agy reads -p');
+  assert.equal(args.at(-2), '-p');
+  assert.equal(args.at(-1), '', 'the prompt is not an argument');
   const parsed = parseAntigravityOutput(JSON.stringify({
     status: 'SUCCESS', response: 'Verdict: approve', num_turns: 2,
     usage: { input_tokens: 3, output_tokens: 4, total_tokens: 7 },
@@ -555,14 +565,19 @@ test('Antigravity is a GitHub reviewer on the Google plan, and a machine tag is 
 
   const home = temp();
   try {
-    const dest = writeAntigravityLogin({ AGY_OAUTH_TOKEN: '{"refresh_token":"plan-refresh"}' }, home);
+    const dest = writeAntigravityAccess(home, {
+      accessToken: 'ya29.' + 'a'.repeat(24),
+      tokenType: 'Bearer',
+      expiry: '2099-01-01T00:00:00.000Z',
+    });
     assert.equal(dest, join(home, antigravityTokenRelative));
-    assert.equal(readFileSync(dest, 'utf8'), '{"refresh_token":"plan-refresh"}');
-    const sandbox = sandboxArgv('antigravity', '/work', ['-p', 'hi'], {
+    const written = readFileSync(dest, 'utf8');
+    assert.equal(written.includes('refresh_token'), false);
+    const sandbox = sandboxArgv('antigravity', '/work', ['-p', ''], {
       home, exists: () => true, commandPath: `${home}/.local/bin/agy`, nodePath: `${home}/.local/bin/node`,
     });
-    assert.ok(sandbox.args.includes('--ro-bind'));
-    assert.ok(sandbox.args.includes(dest), 'only the login file is mounted, from this home');
+    const at = sandbox.args.indexOf(dest);
+    assert.equal(sandbox.args[at - 1], '--ro-bind', 'the access file is mounted read-only');
     assert.ok(!sandbox.args.some((arg) => String(arg).includes('.codex') || String(arg).includes('opencode')));
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -587,13 +602,175 @@ test('Antigravity is a GitHub reviewer on the Google plan, and a machine tag is 
     mkdirSync(join(scratch, '.gemini/antigravity-cli'), { recursive: true });
     writeFileSync(join(scratch, antigravityTokenRelative), '{"refresh_token":"plan-refresh-secret"}');
     const ok = spawnSync(process.execPath, [bin, '--check'], {
-      env: { ...process.env, TESS_AGY_CI_HOME: scratch }, encoding: 'utf8',
+      env: { ...process.env, TESS_AGY_CI_HOME: scratch, PATH: '/usr/bin:/bin' }, encoding: 'utf8',
     });
-    assert.equal(ok.status, 0, ok.stderr);
-    assert.match(ok.stdout, /Google-plan file is present/);
-    assert.ok(!ok.stdout.includes('plan-refresh-secret'), 'the check does not print the token');
+    assert.notEqual(ok.status, 0, 'a check without the agy binary fails closed');
+    assert.ok(!`${ok.stdout}\n${ok.stderr}`.includes('plan-refresh-secret'), 'the check does not print the token');
   } finally {
     rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test('the Google sign-in client is read from the agy binary, and a binary without the anchors fails closed', () => {
+  const idAnchor = 'sion (low|medium|high|xhigh|max)';
+  const secretAnchor = 'https://auth.cloud.google/authorize';
+  const id = ['123456789012', '-', 'a'.repeat(32), '.apps.', 'googleusercontent.com'].join('');
+  const secret = ['GOC', 'SPX-', 'b'.repeat(28)].join('');
+  const bin = Buffer.from(`noise ${idAnchor}${id} mid ${secretAnchor}${secret}https://next`);
+  assert.deepEqual(readAntigravityOAuthClient(bin), { id, secret });
+  assert.throws(() => readAntigravityOAuthClient(Buffer.from('no client here')), /no readable Google sign-in client/);
+  assert.throws(() => readAntigravityOAuthClient(Buffer.concat([bin, bin])), /no readable Google sign-in client/);
+  assert.throws(
+    () => readAntigravityOAuthClient(Buffer.from(`${idAnchor}not-a-client ${secretAnchor}${secret}`)),
+    /no readable Google sign-in client/,
+  );
+});
+
+test('a quote of the refresh token, the access token, or an error echo is refused or redacted', () => {
+  const refresh = '1//0' + 'r'.repeat(24);
+  const access = 'ya29.' + 'a'.repeat(24);
+  const odd = 'refresh-' + 'q'.repeat(20);
+  const env = {
+    AGY_OAUTH_TOKEN: JSON.stringify({
+      refresh_token: refresh,
+      access_token: access,
+      id_token: 'id-' + 'i'.repeat(16),
+      note: odd,
+    }),
+  };
+  assert.ok(containsHeldSecret(refresh, env), 'the refresh token alone is held');
+  assert.ok(containsHeldSecret(access, env), 'the access token alone is held');
+  assert.ok(containsHeldSecret(odd, env), 'a long string in the login is held');
+  assert.equal(looksSecret(odd), false);
+  assert.ok(looksSecret(refresh));
+  assert.ok(looksSecret(access));
+  const stray = 'ya29.' + 'z'.repeat(24);
+  assert.equal(redactText(`saw ${stray}`, {}).includes(stray), false);
+  const echoed = parseAntigravityOutput(JSON.stringify({
+    event: 'result',
+    result: { status: 'ERROR', response: refresh, error: '' },
+  }));
+  const summary = failureSummary({ stderr: echoed.errorText }, env);
+  assert.equal(summary.includes(refresh), false, summary);
+  assert.match(summary, /\[redacted\]/);
+  const accessEcho = parseAntigravityOutput(JSON.stringify({ status: 'ERROR', error: access }));
+  const accessSummary = failureSummary({ stderr: accessEcho.errorText }, env);
+  assert.equal(accessSummary.includes(access), false, accessSummary);
+});
+
+test('the access file has no refresh token, the temp dir is deleted, and the runner home is untouched', async () => {
+  forgetMintedSecrets();
+  const home = temp();
+  const runner = temp();
+  writeFileSync(join(home, 'keep'), 'home');
+  const refresh = '1//0' + 'e'.repeat(24);
+  const access = 'ya29.' + 'd'.repeat(24);
+  let seen = '';
+  let dirDuring = '';
+  try {
+    await withAntigravityAccess({
+      env: { AGY_OAUTH_TOKEN: JSON.stringify({ refresh_token: refresh }), HOME: home },
+      runnerTemp: runner,
+      oauthClient: { id: 'client-for-test', secret: 'secret-for-test' },
+      fetch: async () => ({ ok: true, json: async () => ({ access_token: access, expires_in: 3600, token_type: 'Bearer' }) }),
+    }, async (dir) => {
+      dirDuring = dir;
+      seen = readFileSync(join(dir, antigravityTokenRelative), 'utf8');
+      assert.equal(existsSync(join(home, '.gemini')), false);
+    });
+    assert.equal(seen.includes('refresh_token'), false);
+    assert.equal(seen.includes(refresh), false);
+    assert.ok(seen.includes(access));
+    assert.equal(existsSync(dirDuring), false);
+    assert.equal(readdirSync(runner).some((name) => name.startsWith('tess-agy-')), false);
+    assert.equal(existsSync(join(home, '.gemini')), false);
+    assert.ok(containsHeldSecret(access, {}), 'the minted access token is held');
+  } finally {
+    forgetMintedSecrets();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(runner, { recursive: true, force: true });
+  }
+});
+
+test('check reports scopes and expiry and does not return the token', async () => {
+  const access = 'ya29.' + 'k'.repeat(24);
+  const info = await describeAntigravityLogin(JSON.stringify({ refresh_token: '1//0' + 'm'.repeat(24) }), {
+    oauthClient: { id: 'client-for-test', secret: 'secret-for-test' },
+    now: () => 0,
+    fetch: async (url) => {
+      if (String(url).includes('tokeninfo')) {
+        return { ok: true, json: async () => ({ scope: 'openid email', exp: 1_800_000_000 }) };
+      }
+      return { ok: true, json: async () => ({ access_token: access, expires_in: 3600, token_type: 'Bearer' }) };
+    },
+  });
+  assert.deepEqual(info.scopes, ['openid', 'email']);
+  assert.equal(info.expiry, new Date(1_800_000_000 * 1000).toISOString());
+  assert.equal(JSON.stringify(info).includes(access), false);
+  await assert.rejects(
+    mintAntigravityAccess(JSON.stringify({ refresh_token: '1//0' + 'm'.repeat(24) }), { agyPath: '/no/such/agy' }),
+    /no readable Google sign-in client/,
+  );
+});
+
+test('a prompt over 128 KiB is sent on stdin, not as an argument', async () => {
+  forgetMintedSecrets();
+  const home = temp();
+  const runner = temp();
+  const prompt = 'P'.repeat((128 * 1024) + 50);
+  const refresh = '1//0' + 's'.repeat(24);
+  let args = [];
+  let stdin = '';
+  let mounted = '';
+  try {
+    await invokeReviewerCli('antigravity', 'gemini-4-neon', prompt, 'high', home, {
+      env: { AGY_OAUTH_TOKEN: JSON.stringify({ refresh_token: refresh }), HOME: home },
+      runnerTemp: runner,
+      home,
+      oauthClient: { id: 'client-for-test', secret: 'secret-for-test' },
+      proxy: null,
+      fetch: async () => ({
+        ok: true,
+        json: async () => ({ access_token: 'ya29.' + 'p'.repeat(24), expires_in: 60, token_type: 'Bearer' }),
+      }),
+      spawnChild(command, argv) {
+        args = argv;
+        const source = argv.find((arg) => String(arg).startsWith(runner) && String(arg).includes('antigravity-oauth-token'));
+        mounted = readFileSync(source, 'utf8');
+        const child = new EventEmitter();
+        child.stdin = {
+          write() { return true; },
+          end(chunk) { stdin = String(chunk || ''); },
+          on() {},
+        };
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.stdout.setEncoding = () => {};
+        child.stderr.setEncoding = () => {};
+        child.kill = () => {};
+        queueMicrotask(() => {
+          child.stdout.emit('data', `${JSON.stringify({
+            event: 'result',
+            result: { status: 'SUCCESS', response: 'Verdict: approve', num_turns: 1, usage: { total_tokens: 2 } },
+          })}\n`);
+          child.emit('close', 0, null);
+        });
+        assert.equal(command, 'bwrap');
+        return child;
+      },
+    });
+    assert.equal(mounted.includes('refresh_token'), false);
+    assert.equal(mounted.includes(refresh), false);
+    assert.ok(args.every((arg) => !String(arg).includes(prompt.slice(0, 40))));
+    assert.ok(args.includes('-p') && args[args.indexOf('-p') + 1] === '');
+    assert.equal(stdin, antigravityStdin(prompt));
+    assert.ok(Buffer.byteLength(stdin) > 128 * 1024);
+    assert.equal(existsSync(join(home, '.gemini')), false);
+    assert.equal(readdirSync(runner).some((name) => name.startsWith('tess-agy-')), false);
+  } finally {
+    forgetMintedSecrets();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(runner, { recursive: true, force: true });
   }
 });
 
