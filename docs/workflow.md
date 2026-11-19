@@ -55,12 +55,6 @@ no fallback: a review runs the model that was asked for, or it does not run.
 @tess-review pr provider=codex model=gpt-6.1-terra effort=medium author=opencode
 ```
 
-**Gemini 4 Neon, much more often (D-107).** Krish wants Gemini 4 Neon used as a reviewer much more. It runs on the
-Antigravity plan, which the job cannot sign in to (see Antigravity under "Left out on purpose" below), so it is never
-named in a tag. Run a Gemini 4 Neon review as a T3 thread on Krish's Mac with the Antigravity provider, and post its
-findings on the pull request as a comment that names the commit it read. It is a second opinion beside the job's review,
-not a replacement: the job's rules do not run on that thread.
-
 `author=` is the provider that wrote the change (`claude`, `codex`, `opencode`, `antigravity`, or `none` when a person
 wrote it). **The tag must name it**, because the tag is the only trusted statement of authorship: a pull request's own
 `Made by` line is written by the same agent whose work is being reviewed, so it can only ever cause a refusal (when it
@@ -86,6 +80,12 @@ The tag also says **where** the review runs, and may add **what to look at**:
 | `author=` | the provider that wrote the change (`claude`, `codex`, `opencode`, `antigravity`, or `none` for a person). It is the allowlisted account's attestation, and the reviewer must come from a different provider. |
 | `machine=` | where the review runs: `github` (the default), `mac`, `omarchy`, or `vps` (refused, see below). |
 | `prompt="…"` | the owner's focus for this review, 400 characters at most. It adds attention; it is never permission to skip a rule, and a longer one is refused rather than cut. |
+
+**Gemini 4 Neon, much more often (D-107).** Krish wants Gemini 4 Neon used as a reviewer much more. It runs on the
+Antigravity plan, which the job cannot sign in to (see Antigravity under "Left out on purpose" below), so a tag never
+names it. Run a Gemini 4 Neon review as a T3 thread on Krish's Mac with the Antigravity provider, and post its
+findings on the pull request as a comment that names the commit it read. It is a second opinion beside the job's review,
+not a replacement: the job's rules do not run on that thread.
 
 ### Where a review runs: `machine=`
 

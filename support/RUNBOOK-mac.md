@@ -23,10 +23,21 @@ Skip any step that's already done.
 2. **Your OpenCode key, as a Worker secret.** From `inbox/` **(Cloudflare login)**:
    `npx wrangler@4 secret put OPENCODE_GO_API_KEY`. It asks you to paste the key. The key goes only to Cloudflare,
    not into a file, a command line or chat.
-3. **Deploy the Worker** with the support chat in it. From `inbox/`, on an up-to-date `main` **(Cloudflare login)**:
-   `npx wrangler@4 deploy`. The clear "this support code is not active" message in step 5 needs this branch's gate
-   to be deployed.
-4. **Turn Extra Usage off on your OpenCode account.** This is a setting on the OpenCode website, not a command, so
+3. **The `SALT` secret** (health reports already need it, so it is most likely there). Check from `inbox/`
+   **(Cloudflare login)** with `npx wrangler@4 secret list`. You should see `SALT` and, after step 2,
+   `OPENCODE_GO_API_KEY`. If `SALT` is missing: `npx wrangler@4 secret put SALT`.
+4. **The storage bucket for videos and stills.** A deploy fails without it. Check **(Cloudflare login)** with
+   `npx wrangler@4 r2 bucket list`, which should list `tess-support`. If it doesn't, create it and make anything in it
+   delete itself after 14 days (the Worker deletes each one sooner, and this rule backs that up):
+
+   ```sh
+   npx wrangler@4 r2 bucket create tess-support
+   npx wrangler@4 r2 bucket lifecycle add tess-support delete-after-14-days --expire-days 14
+   ```
+5. **Deploy the Worker** with the support chat in it. From `inbox/`, on an up-to-date `main` **(Cloudflare login)**:
+   `npx wrangler@4 deploy`. The "This support code is not active" answer in section 5 (revoke) comes from a Worker deployed
+   after this runbook was added.
+6. **Turn Extra Usage off on your OpenCode account.** This is a setting on the OpenCode website, not a command, so
    nothing in this repo can check it for you. Sign in to your OpenCode account, find the Extra Usage setting
    (paying for use beyond what your Go plan includes), and switch it off. Then, if a bug or a stolen code ever got
    past the Worker's daily limits, OpenCode would just stop answering. It wouldn't bill you. The Worker's limits are
@@ -120,8 +131,9 @@ video and still.
 node tools/reports.mjs support token revoke "Ada (Mac)"
 ```
 
-Use the same name you gave in step 1. It takes effect on their next message. Their chat then shows
-"This support code is not active. Ask Krish for a new one.", and OpenCode isn't called. Their Mac still has Tess
+Use the same name you gave in step 1. It takes effect on their next message. The Worker answers it with
+"This support code is not active. Ask Krish for a new one." Their chat shows that error, possibly with Hermes's own
+sign-in wording beside it, and OpenCode isn't called. Their Mac still has Tess
 Support installed. Removing that is the `--uninstall` line in step 3. To give them access again, make a new code
 under a new name (step 1). A revoked code never works again.
 

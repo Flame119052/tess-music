@@ -134,7 +134,7 @@ const res = await fetch(url, {
 const out = { url, status: res.status };
 if (!res.ok) {
   const text = await res.text();
-  // Hermes shows error.message from the body (agent/api_error_summary.py), else the bare status.
+  // Hermes builds its error text from error.message in the body (agent/api_error_summary.py), else the bare status.
   try { out.message = JSON.parse(text).error.message; } catch { out.message = 'HTTP ' + res.status; }
   out.raw = text;
   console.log(JSON.stringify(out));
@@ -423,7 +423,7 @@ try {
   assert.equal(refused.status, 3);
   const t3 = JSON.parse(refused.stdout);
   assert.equal(t3.status, 401);
-  assert.equal(t3.message, REFUSED, 'Hermes would show this line');
+  assert.equal(t3.message, REFUSED, 'the gate answers a revoked code with the line Hermes puts in its error');
   const plainRefused = await run([chat, 'still late'], personEnv);
   assert.equal(plainRefused.status, 1);
   assert.equal(plainRefused.stderr.trim(), 'The support token was refused. Ask for a new one. Nothing else was sent.');

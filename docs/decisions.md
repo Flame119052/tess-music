@@ -853,19 +853,18 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   *Trade-off:* an existing inbox database needs `ALTER TABLE support_reports ADD COLUMN image TEXT` before a still
   can be stored. Until then a still is answered 503 and a video still stores. This change does not deploy the Worker.
 
-- **D-107 · 19 Nov 2026 · Krish** — Gemini 4 Neon is used as a reviewer much more. It runs on the Antigravity plan,
-  which cannot sign in on the `@tess-review` GitHub job: Antigravity keeps its login in the OS keyring and has no
-  headless login (docs/workflow.md → "Left out on purpose"). So a Gemini 4 Neon review runs as a T3 thread on Krish's
-  Mac with the Antigravity provider, reading the pull request, and its findings are posted on the pull request as a
-  comment. `tools/agent-review.mjs` and `.github/agents.json` are unchanged, so a `@tess-review` tag still cannot name it.
-  *Why:* Krish wants a reviewer from a different family than the models that write most changes here, and Gemini 4 Neon
-  is on a plan he already pays for. *Trade-off:* this review is not run by the job, so the job's rules (the allowlist,
-  CI green on the exact head, the author check, the stripped review copy) do not guard it. The thread's findings are a
-  second opinion beside a job review, posted by whoever ran the thread, and they name the commit they read.
+- **D-107 · 19 Nov 2026 · Krish** — Gemini 4 Neon is used as a reviewer much more. Krish chose this on 19 Nov. It runs
+  on Antigravity, which cannot sign in on the GitHub review job: Antigravity keeps its login in the OS keyring and has
+  no headless login (docs/workflow.md → "Left out on purpose"). So a Gemini 4 Neon review runs as a T3 thread on
+  Krish's Mac with the Antigravity provider, and its findings are posted on the pull request as a comment naming the
+  commit it read. `tools/agent-review.mjs` and `.github/agents.json` are unchanged, so a review tag still cannot name it.
+  *Trade-off:* the job does not run this review, so the job's checks (the allowlist, CI green on the exact head, the
+  author check, the stripped review copy) do not guard it. It is a second opinion beside a job review.
 - **D-108 · 19 Nov 2026 · Agent** — The support chat route answers a missing, unknown or revoked token with one JSON
   401: `{"error":{"message":"This support code is not active. Ask Krish for a new one.","type":"authentication_error",
-  "code":"invalid_api_key"}}` (#121). The report routes keep their empty 401. *Why:* Hermes shows `error.message` from a
-  refused request (`agent/api_error_summary.py`), so after a revoke the person reads what to do instead of a bare
-  "HTTP 401". *Trade-off:* none on secrecy. The three cases get the same words, so the answer does not say whether a
-  code ever existed. `tools/test-support-mac-chat.mjs` proves it on a real chat turn: the next turn after
-  `support token revoke` gets this line and the upstream is not called.
+  "code":"invalid_api_key"}}` (#121). The report routes keep their empty 401. *Why:* Hermes builds its error text from
+  `error.message` in a refused reply (`agent/api_error_summary.py`), so after a revoke the error carries what to do
+  instead of a bare "HTTP 401". Hermes's app may add its own sign-in wording beside it (`agent/error_surface.py` marks
+  a 401 as the auth layer); that was not run here. *Trade-off:* none on secrecy. The three cases get the same words,
+  so the answer does not say whether a code ever existed. `tools/test-support-mac-chat.mjs` proves the gate side on a
+  real chat turn: the next turn after `support token revoke` gets this line and the upstream is not called.
