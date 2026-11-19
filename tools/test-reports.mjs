@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
 
-const { issueCommand, shellQuote, LABEL, parseSupport } = await import(new URL('../tools/reports.mjs', import.meta.url).href);
+const { issueCommand, shellQuote, LABEL, parseSupport, d1Args, usageLines, capsFrom } = await import(new URL('../tools/reports.mjs', import.meta.url).href);
 
 const box = mkdtempSync(join(tmpdir(), 'tess-reports-test-'));
 // What the shell sees when it runs the printed line. `gh` is replaced by an echo, so the only thing exercised is the
@@ -61,6 +61,22 @@ try {
     assert.throws(() => issueCommand({ id: bad, priority: 'P2', kind: 'bug', areas: 'area: theme', title: 'x' }), /not a report number|NaN|Invalid/i);
   }
 
+  // 6. The live database unless a test names a local one, and a relative local path is refused rather than guessed.
+  assert.deepEqual(d1Args('SELECT 1', {}), ['-y', 'wrangler@4', 'd1', 'execute', 'tess-inbox', '--remote', '--json', '--command', 'SELECT 1'],
+    'no TESS_D1_LOCAL is the live inbox, as before');
+  const local = d1Args('SELECT 1', { TESS_D1_LOCAL: '/tmp/tess-d1' });
+  assert.ok(local.includes('--local') && local.includes('/tmp/tess-d1') && !local.includes('--remote'), 'TESS_D1_LOCAL is local only');
+  assert.throws(() => d1Args('SELECT 1', { TESS_D1_LOCAL: 'relative' }), /absolute/);
+
+  // 7. `support usage` prints a person's use against the caps in wrangler.toml, and an unused day as 0.
+  const caps = capsFrom('SUPPORT_CHAT_PERSON_REQUESTS = "80"\nSUPPORT_CHAT_SHARED_REQUESTS = "400"\nSUPPORT_CHAT_PERSON_TOKENS = "0"\nSUPPORT_CHAT_SHARED_TOKENS = "2000000"\n');
+  assert.deepEqual(usageLines([{ who: 'Ada', revoked: null, requests: 3, tokens: 900 }, { who: 'Old', revoked: 1, requests: null, tokens: null },
+    { who: '(everyone)', revoked: null, requests: 3, tokens: 900 }], caps).map((l) => l.replace(/\s+/g, ' ')), [
+    'Ada 3 of 80 requests 900 of 0 tokens active',
+    'Old 0 of 80 requests 0 of 0 tokens REVOKED',
+    '(everyone) 3 of 400 requests 900 of 2000000 tokens',
+  ]);
+
   console.log('support filing line: all checks passed\n');
   console.log([
     'checked:',
@@ -69,6 +85,8 @@ try {
     '  · a title containing $(…), backticks, quotes and semicolons prints as text and runs nothing',
     '  · an apostrophe in a title survives the quoting',
     '  · a report number that is not a positive integer is refused',
+    '  · every command reads the live inbox unless TESS_D1_LOCAL names a local folder, and never both',
+    '  · support usage lines show requests and tokens against the wrangler.toml caps',
     '',
   ].join('\n'));
 } finally {
