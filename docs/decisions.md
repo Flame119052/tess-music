@@ -849,15 +849,24 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   the icon opens `Hermes.app` with `--profile=tess-support`. On Intel, and when Hermes was already installed, the icon
   runs `hermes -p tess-support webapp`. `webapp.enabled` is set, because `hermes webapp` stays off until it is. The
   code is read from the environment or from `/dev/tty`, then written only to the profile `.env` at mode 600.
-  `--uninstall` removes the profile, the icon, and the Dock tile. It removes Hermes only when this script installed
-  Hermes and the person agrees. It then tells them to ask Krish to revoke the code. The profile files are copied in
-  the shell, not with `hermes profile install`, so the install does not need `hermes` on `PATH` and the tests never
-  start Hermes. The command-line sticky profile is set when it is empty, `default`, already `tess-support`, or this
+  `install.sh --uninstall` (pasted as `curl … | sh -s -- --uninstall`) removes the profile, the icon, and the Dock tile.
+  It removes Hermes only when this script installed Hermes and the person agrees. It never touches Spotify or Tess.
+  It then tells them to ask Krish to revoke the code. The ticket named `tess support uninstall`; it is not a `tess`
+  subcommand because `tess-command.sh` is signed Tess release content that reaches people only after a promote, the
+  installer embeds it byte for byte, and a person who removes Tess first would lose the command. A Support uninstall
+  that edits Tess is also the coupling this decision avoids. The profile files are the ones `distribution.yaml`
+  lists, the same list `install.mjs` copies, and the piped install downloads each of them. They are copied in the
+  shell, not with `install.mjs` or `hermes profile install`, because installer scripts may not need `node` and the
+  tests never start Hermes. `HERMES_HOME` follows `install.mjs`'s rule: a real install uses `~/.hermes` and refuses
+  any other folder inside the login home, a test refuses the login home, and both refuse a symlinked `HERMES_HOME`
+  or profile folder. A reinstall replaces each listed file whole and keeps `cache/`, so an unsent visit survives.
+  The command-line sticky profile is set when it is empty, `default`, already `tess-support`, or this
   script installed Hermes. A different existing profile is left alone. The desktop `active-profile.json` is written
   when the icon will open the desktop app.
   *Why:* one paste, Gatekeeper before Applications changes, and the code stays out of shell history and out of argv.
   *Trade-off:* the Dock write is a private preference the script reads back before it adds a tile. An Intel chat
-  needs `webapp.enabled`, or the browser chat never starts.
+  needs `webapp.enabled`, or the browser chat never starts. Every approved visit command starts with `node`, and this
+  script does not install Node, so a Mac without it can install Tess Support but cannot finish a visit yet.
 - **D-106 · 19 Nov 2026 · Agent** — A Mac support visit finishes without a shell approval (#121). The video is captured
   into the profile's inbound cache (`$HERMES_HOME/cache/support/spotify.mov`, outside the session root) and
   `session.mjs add` copies it in. A still is posted on `PUT /v1/support/recording` as `image/png` or `image/jpeg`,

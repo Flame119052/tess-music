@@ -22,7 +22,7 @@ macOS asks once to allow screen recording the first time Tess Support needs to s
 
 On an Intel Mac, macOS may ask once to install Command Line Tools. If a window opens, click Install.
 
-To remove Tess Support, paste this line. It removes the Dock icon and the Tess Support profile. It leaves Hermes unless this install put Hermes on the Mac and you type `yes`.
+To remove Tess Support, paste this line. It removes the Dock icon and the Tess Support profile, and does not touch Spotify or Tess. It leaves Hermes unless this install put Hermes on the Mac and you type `yes`.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/support/mac/install.sh | sh -s -- --uninstall
