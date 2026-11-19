@@ -6,7 +6,13 @@
 # The support code is read from TESS_SUPPORT_TOKEN or typed at /dev/tty. It is never an argument.
 # Apple Silicon: the bundled Hermes.app, checksum then codesign and spctl, and only then Applications.
 # Intel: Hermes's command-line installer. The Dock icon opens the same chat in the browser.
-# Safe to run again. --uninstall removes only this profile, this icon, and this Dock tile.
+# Safe to run again. --uninstall removes only this profile, this icon, and this Dock tile:
+#
+#   curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/support/mac/install.sh | sh -s -- --uninstall
+#
+# The profile files are the ones distribution.yaml lists, the same list install.mjs copies. This script cannot use
+# install.mjs: a person's Mac may not have node. HERMES_HOME follows install.mjs's rule: a real install uses ~/.hermes,
+# a test refuses the login home, and both refuse a symlink.
 set -eu
 
 FEED_URL=https://hermes-assets.nousresearch.com/releases/darwin/stable/stable-mac.yml
@@ -98,9 +104,25 @@ prepare_places() {
     apps=/Applications
   fi
 
+  case $HERMES_HOME in
+    /*) ;;
+    *) die "HERMES_HOME must be a full path." ;;
+  esac
+  while :; do
+    case $HERMES_HOME in
+      ?*/) HERMES_HOME=${HERMES_HOME%/} ;;
+      *) break ;;
+    esac
+  done
+  chosen=$HERMES_HOME
+  [ -L "$chosen" ] && die "HERMES_HOME is a symlink. Refusing to follow it."
+
   # Refuse a real home before creating anything. A symlink is checked again after mkdir.
+  login=$(login_home || true)
+  if [ "${TESS_TEST:-}" != 1 ] && [ -n "${login:-}" ] && inside "$chosen" "$login" && [ "$chosen" != "$login/.hermes" ]; then
+    die "HERMES_HOME is inside the real home folder ($login) but is not ~/.hermes."
+  fi
   if [ "${TESS_TEST:-}" = 1 ]; then
-    login=$(login_home || true)
     if [ -n "${login:-}" ]; then
       inside "$HOME" "$login" && die "HOME is inside the real home folder ($login). Use a scratch directory."
       inside "$HERMES_HOME" "$login" && die "HERMES_HOME is inside the real home folder ($login). Use a scratch directory."
@@ -112,9 +134,13 @@ prepare_places() {
   fi
 
   mkdir -p "$HOME" "$HERMES_HOME" "$apps"
+  [ -L "$chosen" ] && die "HERMES_HOME is a symlink. Refusing to follow it."
   HOME=$(physical "$HOME")
   HERMES_HOME=$(physical "$HERMES_HOME")
   apps=$(physical "$apps")
+  if [ "${TESS_TEST:-}" != 1 ] && [ -n "${login:-}" ] && inside "$HERMES_HOME" "$login" && [ "$chosen" != "$login/.hermes" ]; then
+    die "HERMES_HOME is inside the real home folder ($login) but is not ~/.hermes."
+  fi
   if [ "${TESS_TEST:-}" = 1 ] && [ -n "${login:-}" ]; then
     inside "$HOME" "$login" && die "HOME is inside the real home folder ($login). Use a scratch directory."
     inside "$HERMES_HOME" "$login" && die "HERMES_HOME is inside the real home folder ($login). Use a scratch directory."
@@ -189,9 +215,14 @@ support/mac/config.yaml
 support/mac/distribution.yaml
 support/mac/SOUL.md
 support/mac/skills/tess-evidence/SKILL.md
+support/mac/skills/tess-evidence/scripts/spotify-window.mjs
 support/mac/skills/tess-gather/SKILL.md
+support/mac/skills/tess-gather/scripts/doctor.mjs
 support/mac/skills/tess-handoff/SKILL.md
+support/mac/skills/tess-handoff/scripts/triage-inbox.mjs
 support/mac/skills/tess-support/SKILL.md
+support/mac/plugins/tess-notes/__init__.py
+support/mac/plugins/tess-notes/plugin.yaml
 support/bot/skills/tess-support/scripts/privacy.mjs
 support/bot/skills/tess-support/scripts/triage.mjs
 support/bot/skills/tess-support/scripts/inbox.mjs
@@ -203,20 +234,56 @@ support/bot/skills/tess-support/scripts/session.mjs
   done
 }
 
+refuse_linked_profile() {
+  if [ -L "$HERMES_HOME/profiles" ] || [ -L "$profile" ]; then
+    die "The profile folder is a symlink. Refusing to follow it."
+  fi
+}
+
+# The names under distribution_owned:, read the way install.mjs reads them.
+owned_names() {
+  awk '
+    found && /^[[:space:]]*$/ { next }
+    found { if ($0 ~ /^  - [^ ]+$/) { sub(/^  - /, ""); print; next } exit }
+    $0 == "distribution_owned:" { found = 1 }
+  ' "$1"
+}
+
 install_profile() {
   profile_source
   case $profile in
     "$HERMES_HOME"/profiles/tess-support) ;;
     *) die "The profile path is not the tess-support profile." ;;
   esac
-  mkdir -p "$profile/skills/tess-support/scripts"
-  cp "$src/config.yaml" "$src/distribution.yaml" "$src/SOUL.md" "$profile/"
-  rm -rf "$profile/skills"
-  cp -R "$src/skills" "$profile/skills"
-  mkdir -p "$profile/skills/tess-support/scripts"
-  for name in privacy.mjs triage.mjs inbox.mjs session.mjs; do
-    cp "$root/support/bot/skills/tess-support/scripts/$name" "$profile/skills/tess-support/scripts/$name"
+  names=$(owned_names "$src/distribution.yaml")
+  [ -n "$names" ] || die "distribution.yaml lists no profile files."
+  # Build the whole profile first, so a missing file stops the install before the old profile changes.
+  stage=$work/stage
+  rm -rf "$stage"
+  mkdir -p "$stage"
+  for name in $names; do
+    # These names feed rm -rf below. A downloaded list must not reach outside the profile.
+    case $name in
+      ""|.|..|-*|*/*|*..*|.env|.env.*) die "distribution.yaml names a file this installer will not copy: $name" ;;
+    esac
+    [ -e "$src/$name" ] || die "distribution.yaml lists $name, which was not downloaded."
+    cp -R "$src/$name" "$stage/$name"
   done
+  find "$stage" -name .env -exec rm -rf {} +
+  mkdir -p "$stage/skills/tess-support/scripts"
+  for name in privacy.mjs triage.mjs inbox.mjs session.mjs; do
+    cp "$root/support/bot/skills/tess-support/scripts/$name" "$stage/skills/tess-support/scripts/$name"
+  done
+  refuse_linked_profile
+  mkdir -p "$profile"
+  refuse_linked_profile
+  # Each listed file is replaced whole, so a file the profile dropped does not linger. cache/ is not listed: an
+  # unsent visit survives a reinstall.
+  for name in $names; do
+    rm -rf "${profile:?}/$name"
+    cp -R "$stage/$name" "$profile/$name"
+  done
+  [ -L "$profile/.env" ] && die "The profile .env is a symlink. Refusing to follow it."
   # Builtin printf, so the code is not an argument of another program.
   umask 077
   printf 'TESS_SUPPORT_TOKEN=%s\nTESS_INBOX=%s\n' "$token" "$inbox" > "$profile/.env"
@@ -499,7 +566,9 @@ uninstall() {
       rm -f "$pref"
     fi
   fi
-  if [ -d "$profile" ]; then
+  if [ -L "$profile" ]; then
+    rm -f "$profile"
+  elif [ -d "$profile" ]; then
     case $profile in
       "$HERMES_HOME"/profiles/tess-support) rm -rf "$profile" ;;
       *) die "Refusing to remove a folder that is not the tess-support profile." ;;
