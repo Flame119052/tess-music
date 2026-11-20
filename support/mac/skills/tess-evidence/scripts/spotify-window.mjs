@@ -7,7 +7,7 @@
 // screencapture -V ignores -l and records the whole display. A window recording
 // needs ScreenCaptureKit, which this profile does not ship.
 import { execFileSync } from 'node:child_process';
-import { lstatSync, writeFileSync } from 'node:fs';
+import { appendFileSync, lstatSync, writeFileSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import { inRoot, scrub } from '../../tess-support/scripts/session.mjs';
 
@@ -65,6 +65,13 @@ if (process.argv.length === 2) {
   if (recordingDenied()) die('Screen Recording is not allowed');
   // Tests pass a fake picture. A real visit never sets TESS_FAKE_CAPTURE, so this stays the real capture.
   if (process.env.TESS_TEST === '1' && process.env.TESS_FAKE_CAPTURE === '1') {
+    // The consent test overlaps two captures. A real visit never sets these.
+    const log = process.env.TESS_CAPTURE_LOG;
+    if (log) appendFileSync(log, '1\n');
+    const delay = Number(process.env.TESS_CAPTURE_DELAY_MS || '0');
+    if (Number.isFinite(delay) && delay > 0) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
+    }
     const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
     try { writeFileSync(dest, png, { mode: 0o600 }); }
     catch { die('cannot write the still'); }

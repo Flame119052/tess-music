@@ -48,7 +48,6 @@ _EDGE = set(".,!?;:\"'`()[]{}…“”‘’")
 CONSENT_SECONDS = 300
 _CHAT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$")
 _chat = contextvars.ContextVar("tess_visit_chat", default="")
-_turn_id = contextvars.ContextVar("tess_visit_turn", default="")
 
 # File tools and the other writers. The matching toolsets are off in config.yaml.
 # This hook still refuses them if one is turned back on. terminal is refused
@@ -87,7 +86,16 @@ _BLOCKED_PREFIXES = ("a2a_", "web_", "browser_")
 # Children do not inherit the Hermes process environment. The support token is
 # added only for the two inbox calls that post.
 _ENV_KEEP = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "USER", "LOGNAME")
-_TEST_KEEP = ("TESS_TEST", "TESS_FAKE_CAPTURE", "TESS_NODE")
+# The last three exist so the Mac test can fail or overlap a fake capture.
+# A real visit does not set TESS_TEST, so they are never copied.
+_TEST_KEEP = (
+    "TESS_TEST",
+    "TESS_FAKE_CAPTURE",
+    "TESS_NODE",
+    "TESS_SCREEN_RECORDING",
+    "TESS_CAPTURE_DELAY_MS",
+    "TESS_CAPTURE_LOG",
+)
 
 
 def profile_home(home=None):
@@ -241,6 +249,28 @@ def _bump_turn(home):
     nxt = _turn_now(home) + 1
     _write_note(path, f"{nxt}\n".encode("utf-8"))
     return nxt
+
+
+def _remember_turn_id(home, turn_id):
+    """The Hermes turn id of this pre_llm_call.
+
+    handle_function_call forwards session_id to a tool and not turn_id, so the
+    ask cannot read the id from the tool call. It reads the id this hook stored.
+    """
+    path = _chat_path(home, "turn-id")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = str(turn_id or "").replace("\n", " ").strip()
+    _write_note(path, (text + "\n").encode("utf-8"))
+
+
+def _stored_turn_id(home):
+    path = _chat_path(home, "turn-id")
+    if not path.is_file():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 
 def save_note(kind, text, home=None):
@@ -539,11 +569,14 @@ def guard_log(home=None):
 class _Consent:
     """One visit's picture answer.
 
-    state is asked, yes, no, or used.
+    state is asked, yes, no, claimed, or used.
     chat is the Hermes session_id that asked.
     turn is the pre_llm_call tick of that ask. A reply has to be a later tick.
-    turn_id is the Hermes turn id of the ask, when the tool call had one.
+    turn_id is the Hermes turn id of that pre_llm_call. The tool call does not
+    receive one: handle_function_call forwards session_id only.
     at is the unix second the yes was stored. A yes expires after CONSENT_SECONDS.
+    claimed is the moment tess_still takes the yes, before the capture.
+    used and claimed are final, the same as no. Another picture needs a new visit.
     """
 
     def __init__(self, state="", chat="", turn=0, turn_id="", at=0):
@@ -554,15 +587,8 @@ class _Consent:
         self.at = at
 
 
-def _read_consent(session):
-    dest = _consent_path(session)
-    if not dest.is_file():
-        return _Consent()
-    try:
-        lines = dest.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return _Consent()
-    if not lines or lines[0] not in ("asked", "yes", "no", "used"):
+def _parse_consent(lines):
+    if not lines or lines[0] not in ("asked", "yes", "no", "used", "claimed"):
         return _Consent()
     record = _Consent(state=lines[0])
     for line in lines[1:]:
@@ -581,6 +607,24 @@ def _read_consent(session):
             except ValueError:
                 return _Consent()
     return record
+
+
+def _read_consent(session):
+    dest = _consent_path(session)
+    if not dest.is_file():
+        # rename moved the file aside and the process died before writing claimed.
+        # That attempt is spent. Asking again must not restore the yes.
+        held = session / "consent.held"
+        if held.is_symlink():
+            raise ValueError("refusing to follow a link")
+        if held.is_file():
+            return _Consent(state="used")
+        return _Consent()
+    try:
+        lines = dest.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return _Consent()
+    return _parse_consent(lines)
 
 
 def _write_consent(session, record):
@@ -603,13 +647,16 @@ def ask_consent(home=None):
     """Remember that the question was asked. This does not record a yes.
 
     The model can call every tool, so a boolean from it is not the person's
-    answer. A no already stored for this visit stays a no. Asking again does
-    not reopen it. A live yes is left alone.
+    answer. A no already stored for this visit stays a no. A used or claimed
+    yes stays spent: another picture needs a new visit. Asking again does not
+    reopen either. A live yes is left alone.
     """
     session = current_session(home)
     record = _read_consent(session)
     if record.state == "no":
         raise ValueError("This visit already declined the picture.")
+    if record.state in ("used", "claimed"):
+        raise ValueError("This visit already took the picture. Start a new visit for another.")
     if _live_yes(record):
         return {"ok": True, "question": QUESTION}
     chat = active_chat()
@@ -617,7 +664,7 @@ def ask_consent(home=None):
         state="asked",
         chat=chat,
         turn=_turn_now(home),
-        turn_id=str(_turn_id.get() or ""),
+        turn_id=_stored_turn_id(home),
     ))
     return {"ok": True, "question": QUESTION}
 
@@ -663,12 +710,14 @@ def _last_assistant_text(history):
         return ""
     for message in reversed(history[:-1]):
         if isinstance(message, dict) and message.get("role") == "assistant":
-            return _message_text(message.get("content")).rstrip()
+            return _message_text(message.get("content")).strip()
     return ""
 
 
 def _question_shown(history):
-    return _last_assistant_text(history).endswith(QUESTION)
+    """The whole message, trimmed. A question with a sentence in front of it is
+    not the question: the person may be answering that sentence."""
+    return _last_assistant_text(history) == QUESTION
 
 
 def pre_llm_call(user_message="", session_id="", turn_id="", conversation_history=None, **kwargs):
@@ -677,12 +726,14 @@ def pre_llm_call(user_message="", session_id="", turn_id="", conversation_histor
     Hermes calls this once per user turn (agent/turn_context.py) with that
     turn's text, the chat id, the turn id, and the history including this
     message last. A yes counts only when this is the same chat, a later turn
-    than the ask, and the last assistant message ends with the question.
-    Any other reply, once that question was shown, is a no. A no is final.
+    than the ask, and the last assistant message is the question and nothing
+    else. Any other reply, once that question was shown, is a no. A no is final.
+    The turn id is stored here. The tool handler never receives one.
     """
     del kwargs
     try:
         bind_chat(session_id)
+        _remember_turn_id(None, turn_id)
         turn = _bump_turn(None)
         session = current_session()
         record = _read_consent(session)
@@ -690,7 +741,7 @@ def pre_llm_call(user_message="", session_id="", turn_id="", conversation_histor
             return None
         if record.chat != active_chat() or turn <= record.turn:
             return None
-        hook_turn = str(turn_id or "")
+        hook_turn = str(turn_id or "").replace("\n", " ").strip()
         if record.turn_id and (not hook_turn or hook_turn == record.turn_id):
             return None
         if not _question_shown(conversation_history):
@@ -737,27 +788,86 @@ def read_skill(name, home=None):
     return {"ok": True, "name": name, "skill": real.read_text(encoding="utf-8")}
 
 
+def _claim_yes(session):
+    """Move a live yes to claimed before any capture.
+
+    rename of the consent file is the claim: only one caller gets the file.
+    The other finds it gone. A capture that then fails is still spent.
+    """
+    live = _consent_path(session)
+    held = session / "consent.held"
+    if held.is_symlink():
+        raise ValueError("refusing to follow a link")
+    if held.exists():
+        raise ValueError("The picture for this visit was already taken.")
+    try:
+        os.rename(live, held)
+    except OSError:
+        raise ValueError("The picture for this visit was already taken.") from None
+    current = _parse_consent([])
+    try:
+        current = _parse_consent(held.read_text(encoding="utf-8").splitlines())
+    except OSError:
+        current = _Consent()
+    if not _live_yes(current):
+        try:
+            os.rename(held, live)
+        except OSError:
+            pass
+        if current.state in ("used", "claimed"):
+            raise ValueError("The picture for this visit was already taken.")
+        if current.state == "yes":
+            raise ValueError("Ask again. That yes expired. " + QUESTION)
+        raise ValueError("Ask first, and wait for a yes, before taking the picture. " + QUESTION)
+    claimed = _Consent(
+        state="claimed",
+        chat=current.chat,
+        turn=current.turn,
+        turn_id=current.turn_id,
+        at=current.at,
+    )
+    _write_consent(session, claimed)
+    try:
+        held.unlink()
+    except OSError:
+        pass
+    return current
+
+
+def _spend_consent(session, record):
+    _write_consent(session, _Consent(
+        state="used",
+        chat=record.chat,
+        turn=record.turn,
+        turn_id=record.turn_id,
+        at=record.at,
+    ))
+
+
 def still(home=None):
     home_path = profile_home(home)
     session = current_session(home_path)
     record = _read_consent(session)
-    if record.state == "used":
+    if record.state in ("used", "claimed"):
         raise ValueError("The picture for this visit was already taken.")
     if record.state == "yes" and not _live_yes(record):
         raise ValueError("Ask again. That yes expired. " + QUESTION)
     if not _live_yes(record):
         raise ValueError("Ask first, and wait for a yes, before taking the picture. " + QUESTION)
-    node = resolve_node(home_path)
-    script = _script(home_path, "skills", "tess-evidence", "scripts", "spotify-window.mjs")
-    dest = session / "spotify.png"
-    proc = _run([node, script, "still", str(dest)], _child_env(home_path), 60)
-    if proc.returncode != 0:
-        raise ValueError(_output(proc))
-    if dest.is_symlink() or not dest.is_file():
-        raise ValueError("the still was not written")
-    record.state = "used"
-    _write_consent(session, record)
-    return {"ok": True}
+    held = _claim_yes(session)
+    try:
+        node = resolve_node(home_path)
+        script = _script(home_path, "skills", "tess-evidence", "scripts", "spotify-window.mjs")
+        dest = session / "spotify.png"
+        proc = _run([node, script, "still", str(dest)], _child_env(home_path), 60)
+        if proc.returncode != 0:
+            raise ValueError(_output(proc))
+        if dest.is_symlink() or not dest.is_file():
+            raise ValueError("the still was not written")
+        return {"ok": True}
+    finally:
+        # A failed capture must not put the yes back. Another picture is a new visit.
+        _spend_consent(session, held)
 
 
 def open_issues(home=None):
@@ -996,9 +1106,11 @@ def register(ctx):
         ),
         _tool(
             "tess_ask_consent",
-            "Ask before any picture. Returns the exact question to show the person. "
-            "Their next message is the answer. yes, y, and go ahead are a yes. "
-            "ok and sure are not. A no is final for this visit. You cannot record a yes yourself. " + QUESTION,
+            "Ask before any picture. Returns the exact question. Send it as its own "
+            "message: the whole message is that question, with nothing before it and "
+            "nothing after it. Their next message is the answer. yes, y, and go ahead "
+            "are a yes. ok and sure are not. A no is final for this visit, and so is a "
+            "picture already taken. You cannot record a yes yourself. " + QUESTION,
             {},
             [],
             lambda params: call(lambda _got: ask_consent(), params, ()),
@@ -1006,8 +1118,9 @@ def register(ctx):
         _tool(
             "tess_still",
             "Take one still of the Spotify window into this visit's folder. Takes no arguments. "
-            "Refuses until the person's own later message, after the question was shown, "
-            "was yes, y, or go ahead. One still, within five minutes. " + QUESTION,
+            "Refuses until the person's own later message, after the question was their "
+            "whole previous message, was yes, y, or go ahead. One still, within five "
+            "minutes. The yes is spent even if the capture fails. " + QUESTION,
             {},
             [],
             lambda params: call(lambda _got: still(), params, ()),
@@ -1093,9 +1206,11 @@ def register(ctx):
     ]
 
     for tool in tools:
-        def handle(params, _tool=tool, session_id="", turn_id="", **kwargs):
+        def handle(params, _tool=tool, session_id="", **kwargs):
+            # Production reaches this through handle_function_call, which forwards
+            # session_id and not turn_id. A turn_id on kwargs is ignored. The ask
+            # reads the id pre_llm_call stored for this chat.
             del kwargs
-            _turn_id.set(str(turn_id or ""))
             try:
                 bind_chat(session_id)
             except ValueError as exc:

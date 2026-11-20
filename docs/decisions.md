@@ -955,11 +955,18 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   reopen it. Hermes `pre_llm_call` receives the person's own message as `user_message`, the chat as
   `session_id`, the turn as `turn_id`, and `conversation_history` with this turn's message last
   (`agent/turn_context.py`) before the model runs. Consent is granted only when that chat and a later turn
-  match the ask, and the last assistant message before this turn ends with the consent question, verbatim.
-  The only yes answers are `yes`, `y`, and `go ahead`. `ok` and `sure` are a no. Any other reply, once the
-  question was shown, is a no. A yes before the question, a yes from another chat, a `/retry` of an older
-  yes, or a question that was never shown does not count. A yes lasts five minutes and one still:
-  `tess_still` sets it to `used` after the picture is written, and refuses without a live yes. The window
+  match the ask, and the last assistant message before this turn is the consent question and nothing
+  else: the whole message, trimmed. A sentence in front of the question does not count. The skill tells
+  the model to send that question as its own message. The only yes answers are `yes`, `y`, and `go ahead`.
+  `ok` and `sure` are a no. Any other reply, once the question was shown, is a no. A yes before the
+  question, a yes from another chat, a `/retry` of an older yes, or a question that was never shown does
+  not count. A yes lasts five minutes and one still. `tess_still` claims it before the capture, by an
+  exclusive rename of the consent file from `yes` to `claimed`, so two calls at once cannot both take a
+  picture. A failed capture leaves the consent `used`, not `yes`. `used` is final for that visit, the
+  same as `no`: asking again does not reopen it, and another picture needs a new visit. Hermes
+  `handle_function_call` forwards `session_id` to a plugin tool and not `turn_id`. The ask stores the
+  turn id from the latest `pre_llm_call`, which does receive it, and the reply has to be a different one.
+  The window
   capture checks `CGPreflightScreenCaptureAccess` and fails with "Screen Recording is not allowed" instead
   of saving a blank picture. The `a2a` toolset is off, and the hook also blocks `a2a_*`, `web_*`,
   `browser_*`, `vision_analyze`, `session_search`, and `manage_connections`. Node is the
