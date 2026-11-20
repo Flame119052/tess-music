@@ -1508,9 +1508,74 @@ exit 0
     assert.equal(readFileSync(join(raceProfile, 'cache', 'keep.txt'), 'utf8'), 'unsent\n');
     assert.equal(existsSync(join(raceProfile, '.env')), true);
     assert.equal(existsSync(join(raceProfile, '.tess-support.incoming')), false);
+    assert.deepEqual(
+      readdirSync(profilesOf(race.box)).filter((name) => name.startsWith('.tess-support.lock')),
+      [],
+    );
   } finally {
     raceSleeper.kill('SIGKILL');
     for (const child of raceKids) {
+      if (child.exitCode === null) child.kill('SIGKILL');
+    }
+  }
+
+  // Regular-file lock format (the format install.sh writes): a live lock blocks,
+  // and three simultaneous retries against a stale lock let only one win.
+  const fileLock = layout('lock-file-race');
+  boxes.push(fileLock.box);
+  mkdirSync(join(fileLock.box, 'tmp'));
+  const fileLockEnv = baseEnv(fileLock, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], fileLockEnv).status, 0);
+  const fileLockProfile = profileOf(fileLock.box);
+  mkdirSync(join(fileLockProfile, 'cache'), { recursive: true });
+  writeFileSync(join(fileLockProfile, 'cache', 'keep.txt'), 'unsent\n');
+  const fileSleeper = holdSleep();
+  const fileKids = [];
+  try {
+    const lockFile = join(profilesOf(fileLock.box), '.tess-support.lock');
+    writeFileSync(lockFile, `pid=${fileSleeper.pid}\nlstart=${lstartOf(fileSleeper.pid)}\n`);
+    const fileHeld = run([], fileLockEnv);
+    assert.notEqual(fileHeld.status, 0);
+    assert.match(fileHeld.stderr, /Another Tess Support install is already changing this profile/);
+
+    writeFileSync(lockFile, `pid=${fileSleeper.pid}\nlstart=Wed Jan  1 00:00:00 1970\n`);
+    const startFileRace = () => {
+      const child = spawn('/bin/sh', [install], {
+        env: { ...fileLockEnv, TESS_FAKE_MV_SLEEP: '3' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let err = '';
+      child.stderr.on('data', (chunk) => { err += chunk; });
+      const done = new Promise((resolve) => child.on('exit', (code) => resolve(code ?? 1)));
+      return { child, done, err: () => err };
+    };
+    const f1 = startFileRace();
+    const f2 = startFileRace();
+    const f3 = startFileRace();
+    fileKids.push(f1.child, f2.child, f3.child);
+    const fTimer = setTimeout(() => {
+      for (const c of fileKids) c.kill('SIGKILL');
+    }, 120000);
+    const fCodes = await Promise.all([f1.done, f2.done, f3.done]);
+    clearTimeout(fTimer);
+    assert.equal(
+      fCodes.filter((code) => code === 0).length,
+      1,
+      `${f1.err()}\n---\n${f2.err()}\n---\n${f3.err()}`,
+    );
+    assert.equal(
+      [f1.err(), f2.err(), f3.err()].filter((e) => /Another Tess Support install is already changing this profile/.test(e)).length,
+      2,
+    );
+    assert.equal(readFileSync(join(fileLockProfile, 'cache', 'keep.txt'), 'utf8'), 'unsent\n');
+    assert.equal(existsSync(join(fileLockProfile, '.env')), true);
+    assert.deepEqual(
+      readdirSync(profilesOf(fileLock.box)).filter((name) => name.startsWith('.tess-support.lock')),
+      [],
+    );
+  } finally {
+    fileSleeper.kill('SIGKILL');
+    for (const child of fileKids) {
       if (child.exitCode === null) child.kill('SIGKILL');
     }
   }

@@ -765,32 +765,57 @@ require_profile_absent() {
   fi
 }
 
-# A lock is this process and the time it started. macOS reuses a pid, so a live pid
-# alone can be a different process and must not block the next try. Two retries can
-# both see a stale lock: renaming it aside is the one step only one of them can win.
+# A lock is a regular file linked into place only after pid and start time are
+# written, so another process never sees a half-written live lock. macOS reuses
+# pids, so a live pid with a different start time is stale. Stale recovery is
+# serialized per stale inode so two retries cannot have the second move away
+# the first one's fresh live lock.
+path_inode() {
+  [ -e "$1" ] || [ -L "$1" ] || return 1
+  ino=$(ls -id -- "$1" 2>/dev/null | awk '{print $1; exit}') || return 1
+  case $ino in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$ino"
+}
+
+# POSIX ln puts the link inside the target when the target is an existing directory.
+# Check before and after so a legacy directory lock never looks like a win.
+link_exclusive() {
+  [ ! -d "$2" ] && [ ! -L "$2" ] || return 1
+  ln "$1" "$2" 2>/dev/null || return 1
+  if [ -d "$2" ] || [ -L "$2" ] || [ "$(path_inode "$2" || true)" != "$(path_inode "$1" || true)" ]; then
+    rm -f "$2/$(basename "$1")" 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+
 lock_owner_matches() {
   lock=$1
-  [ -f "$lock/pid" ] && [ ! -L "$lock/pid" ] || return 1
-  [ -f "$lock/lstart" ] && [ ! -L "$lock/lstart" ] || return 1
-  old=$(tr -d '[:space:]' < "$lock/pid" 2>/dev/null || true)
+  old=
+  recorded=
+  if [ -L "$lock" ]; then
+    return 1
+  elif [ -f "$lock" ]; then
+    old=$(sed -n 's/^pid=//p' "$lock" 2>/dev/null | head -n 1 | tr -d '[:space:]' || true)
+    recorded=$(sed -n 's/^lstart=//p' "$lock" 2>/dev/null | head -n 1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
+  elif [ -d "$lock" ]; then
+    [ -f "$lock/pid" ] && [ ! -L "$lock/pid" ] || return 1
+    [ -f "$lock/lstart" ] && [ ! -L "$lock/lstart" ] || return 1
+    old=$(tr -d '[:space:]' < "$lock/pid" 2>/dev/null || true)
+    recorded=$(sed 's/^[[:space:]]*//;s/[[:space:]]*$//' < "$lock/lstart" 2>/dev/null || true)
+  else
+    return 1
+  fi
   case $old in
     ''|*[!0-9]*) return 1 ;;
   esac
-  recorded=$(sed 's/^[[:space:]]*//;s/[[:space:]]*$//' < "$lock/lstart" 2>/dev/null || true)
   [ -n "$recorded" ] || return 1
-  now=$(ps -o lstart= -p "$old" 2>/dev/null) || return 1
+  now=$(LC_ALL=C ps -o lstart= -p "$old" 2>/dev/null) || return 1
   now=$(printf '%s' "$now" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   [ -n "$now" ] || return 1
   [ "$now" = "$recorded" ]
-}
-
-record_lock_owner() {
-  held_swap_lock=1
-  printf '%s\n' "$$" > "$swap_lock/pid" || die "Could not keep the install lock."
-  started=$(ps -o lstart= -p "$$") || die "Could not keep the install lock."
-  started=$(printf '%s' "$started" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-  [ -n "$started" ] || die "Could not keep the install lock."
-  printf '%s\n' "$started" > "$swap_lock/lstart" || die "Could not keep the install lock."
 }
 
 acquire_swap_lock() {
@@ -798,9 +823,36 @@ acquire_swap_lock() {
   if [ -L "$swap_lock" ]; then
     die "The install lock is a symlink. Refusing to follow it."
   fi
-  if mkdir "$swap_lock" 2>/dev/null; then
-    record_lock_owner
+  started=$(LC_ALL=C ps -o lstart= -p "$$") || die "Could not keep the install lock."
+  started=$(printf '%s' "$started" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  [ -n "$started" ] || die "Could not keep the install lock."
+
+  swap_lock_tmp=$profiles_dir/.tess-support.lock.tmp.$$
+  remove_tree_or_link "$swap_lock_tmp"
+  umask 077
+  printf 'pid=%s\nlstart=%s\n' "$$" "$started" > "$swap_lock_tmp" || die "Could not keep the install lock."
+  umask 022
+  my_lock_ino=$(path_inode "$swap_lock_tmp") || die "Could not keep the install lock."
+
+  if link_exclusive "$swap_lock_tmp" "$swap_lock"; then
+    held_swap_lock=1
+    rm -f "$swap_lock_tmp" || true
+    swap_lock_tmp=
     return 0
+  fi
+
+  if [ -L "$swap_lock" ]; then
+    die "The install lock is a symlink. Refusing to follow it."
+  fi
+  old_ino=$(path_inode "$swap_lock" || true)
+  if [ -z "$old_ino" ]; then
+    if link_exclusive "$swap_lock_tmp" "$swap_lock"; then
+      held_swap_lock=1
+      rm -f "$swap_lock_tmp" || true
+      swap_lock_tmp=
+      return 0
+    fi
+    die "Another Tess Support install is already changing this profile. Wait until it finishes, then run this again."
   fi
   if lock_owner_matches "$swap_lock"; then
     die "Another Tess Support install is already changing this profile. Wait until it finishes, then run this again."
@@ -808,6 +860,45 @@ acquire_swap_lock() {
   if [ -L "$swap_lock" ]; then
     die "The install lock is a symlink. Refusing to follow it."
   fi
+  cur_ino=$(path_inode "$swap_lock" || true)
+  if [ "$cur_ino" != "$old_ino" ]; then
+    die "Another Tess Support install is already changing this profile. Wait until it finishes, then run this again."
+  fi
+
+  swap_lock_claim=$profiles_dir/.tess-support.lock.claim.$old_ino
+  if [ -L "$swap_lock_claim" ]; then
+    die "The install lock is a symlink. Refusing to follow it."
+  fi
+  if ! link_exclusive "$swap_lock_tmp" "$swap_lock_claim"; then
+    if [ -L "$swap_lock_claim" ]; then
+      die "The install lock is a symlink. Refusing to follow it."
+    fi
+    claim_ino=$(path_inode "$swap_lock_claim" || true)
+    if [ -z "$claim_ino" ] || lock_owner_matches "$swap_lock_claim"; then
+      die "Another Tess Support install is already changing this profile. Wait until it finishes, then run this again."
+    fi
+    if [ "$(path_inode "$swap_lock_claim" || true)" != "$claim_ino" ]; then
+      die "Another Tess Support install is already changing this profile. Wait until it finishes, then run this again."
+    fi
+    dead_claim=$profiles_dir/.tess-support.lock.claim.dead.$$
+    remove_tree_or_link "$dead_claim"
+    if ! mv "$swap_lock_claim" "$dead_claim" 2>/dev/null; then
+      die "Another Tess Support install is already changing this profile. Wait until it finishes, then run this again."
+    fi
+    rm -rf "$dead_claim" || true
+    if ! link_exclusive "$swap_lock_tmp" "$swap_lock_claim"; then
+      die "Another Tess Support install is already changing this profile. Wait until it finishes, then run this again."
+    fi
+  fi
+
+  if [ -L "$swap_lock" ]; then
+    die "The install lock is a symlink. Refusing to follow it."
+  fi
+  cur_ino=$(path_inode "$swap_lock" || true)
+  if [ "$cur_ino" != "$old_ino" ] || lock_owner_matches "$swap_lock"; then
+    die "Another Tess Support install is already changing this profile. Wait until it finishes, then run this again."
+  fi
+
   stale=$profiles_dir/.tess-support.lock.stale.$$.$(date +%s)
   n=0
   while [ -e "$stale" ] || [ -L "$stale" ]; do
@@ -818,12 +909,15 @@ acquire_swap_lock() {
   if ! mv "$swap_lock" "$stale" 2>/dev/null; then
     die "Another Tess Support install is already changing this profile. Wait until it finishes, then run this again."
   fi
-  if ! mkdir "$swap_lock" 2>/dev/null; then
-    rm -rf "$stale"
+  if ! link_exclusive "$swap_lock_tmp" "$swap_lock"; then
+    rm -rf "$stale" || true
     die "Another Tess Support install is already changing this profile. Wait until it finishes, then run this again."
   fi
-  rm -rf "$stale"
-  record_lock_owner
+  held_swap_lock=1
+  rm -rf "$stale" || true
+  rm -f "$swap_lock_claim" "$swap_lock_tmp" || true
+  swap_lock_claim=
+  swap_lock_tmp=
 }
 
 # Quit Hermes before the folders move. The app can be on the active profile with no
@@ -1557,8 +1651,18 @@ cleanup() {
       rm -rf "$profile_incoming" || true
     fi
   fi
+  if [ -n "${swap_lock_claim:-}" ] && [ ! -L "$swap_lock_claim" ]; then
+    if [ "$(path_inode "$swap_lock_claim" 2>/dev/null || true)" = "${my_lock_ino:-}" ]; then
+      rm -f "$swap_lock_claim" || true
+    fi
+  fi
+  if [ -n "${swap_lock_tmp:-}" ] && [ ! -L "$swap_lock_tmp" ]; then
+    rm -f "$swap_lock_tmp" || true
+  fi
   if [ "${held_swap_lock:-}" = 1 ] && [ -n "${swap_lock:-}" ] && [ ! -L "$swap_lock" ]; then
-    rm -rf "$swap_lock" || true
+    if [ "$(path_inode "$swap_lock" 2>/dev/null || true)" = "${my_lock_ino:-}" ]; then
+      rm -rf "$swap_lock" || true
+    fi
   fi
   if [ -n "${mnt:-}" ]; then
     hdiutil detach "$mnt" >/dev/null 2>&1 || true
