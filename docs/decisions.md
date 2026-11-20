@@ -890,12 +890,23 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   reopen it. Hermes `pre_llm_call` receives the person's own message as `user_message`, the chat as
   `session_id`, the turn as `turn_id`, and `conversation_history` with this turn's message last
   (`agent/turn_context.py`) before the model runs. Consent is granted only when that chat and a later turn
-  match the ask, and the last assistant message before this turn is the consent question and nothing
-  else: the whole message, trimmed. A sentence in front of the question does not count. The skill tells
-  the model to send that question as its own message. The only yes answers are `yes`, `y`, and `go ahead`.
-  `ok` and `sure` are a no. Any other reply, once the question was shown, is a no. A yes before the
-  question, a yes from another chat, a `/retry` of an older yes, or a question that was never shown does
-  not count. A yes lasts five minutes and one still. `tess_still` claims it before the capture, by an
+  match the ask, and the message just before the person's turn is an assistant message with no tool
+  call whose trimmed text is the question. That is the turn ending on the question. A question sent in
+  the same message as a tool call does not count, and neither does a question with a sentence in front
+  of it, so a yes meant for an earlier prompt does not consent. The skill tells the model to send that
+  question as its own message and end the turn there. The only yes answers are `yes`, `y`, and
+  `go ahead`. `ok` and `sure` are a no. Any other reply, once the question was shown, is a no. A yes
+  before the question, a yes from another chat, a `/retry` of an older yes, or a question that was never
+  shown does not count. The profile sets `display.busy_input_mode` to `interrupt`. The TUI otherwise
+  queues a message typed while the agent is busy (`ui-tui/src/app/useConfigSync.ts`) and that queued yes
+  would be the next turn. Hermes `post_llm_call` (`agent/turn_finalizer.py`) runs once the turn's final
+  text is known, with `assistant_response` set to that text, along with `session_id`, `turn_id`,
+  `user_message`, and `conversation_history`. When that text is the question, the plugin records the
+  time. A yes whose user message carries a timestamp from `stamp_message_timestamp`
+  (`agent/message_metadata.py`) that is earlier than that time is not consent: it was typed before the
+  question was sent. The consent file is replaced from a temp file in the session folder (`os.replace`),
+  so a reader never sees it empty and a spent yes cannot be reopened that way. A yes lasts five minutes
+  and one still. `tess_still` claims it before the capture, by an
   exclusive rename of the consent file from `yes` to `claimed`, so two calls at once cannot both take a
   picture. A failed capture leaves the consent `used`, not `yes`. `used` is final for that visit, the
   same as `no`: asking again does not reopen it, and another picture needs a new visit. Hermes

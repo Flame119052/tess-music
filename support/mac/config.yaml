@@ -132,3 +132,11 @@ approvals:
   single_query_mode: deny
   unattended_mode: deny
   timeout: 300
+
+# The TUI queues a message typed while the agent is busy unless this is set
+# (ui-tui/src/app/useConfigSync.ts defaults to queue). A queued "yes" would
+# arrive as the next turn, after the picture question, and look like an answer.
+# interrupt drops that message instead of saving it. The consent hook also
+# refuses a yes whose timestamp is earlier than the question (D-110).
+display:
+  busy_input_mode: interrupt
