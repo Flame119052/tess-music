@@ -21,7 +21,7 @@ The picture can show their Spotify name, their picture, their friends' activity,
 
 > May I take one still of the Spotify window? It can show your Spotify name, your picture, your friends' activity, and your playlist names.
 
-Call `tess_ask_consent` and show the question it returns, in those words. Wait for their next message. You do not record the answer. If that message is a yes, call `tess_still`. If it is anything else, continue without a picture. `tess_still` refuses until that reply was a yes for this visit.
+Call `tess_ask_consent` and show the question it returns, in those words, as the last thing you say. Wait for their next message. You do not record the answer. `yes`, `y`, and `go ahead` are a yes: call `tess_still`. `ok` and `sure` are not. Anything else is a no, and a no is final for this visit: do not ask again. `tess_still` refuses until that reply was a yes for this chat.
 
 `tess_still` takes the picture of Spotify's window only. You do not name a file.
 
