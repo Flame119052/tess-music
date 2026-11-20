@@ -44,7 +44,7 @@ const pluginCall = (pluginPath, toolName, params, env) => new Promise((resolve, 
   // The framework venv's python is a launcher. It can exit while the real
   // interpreter still holds the pipes, so 'close' never arrives. 'exit' does.
   const child = spawn(pluginPy(), ['-c', `
-import importlib.util, json, sys
+import importlib.util, json, os, sys
 spec = importlib.util.spec_from_file_location("tess_visit", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
@@ -55,7 +55,7 @@ class Ctx:
     def register_hook(self, name, cb):
         pass
 mod.register(Ctx())
-print(tools[sys.argv[2]]["handler"](json.loads(sys.argv[3])))
+print(tools[sys.argv[2]]["handler"](json.loads(sys.argv[3]), session_id=os.environ.get("TESS_CHAT", ""), turn_id=os.environ.get("TESS_TURN", "")))
 `, pluginPath, toolName, JSON.stringify(params ?? {})], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
@@ -72,15 +72,33 @@ print(tools[sys.argv[2]]["handler"](json.loads(sys.argv[3])))
     else reject(Object.assign(new Error(stderr || stdout || 'plugin call failed'), { status, stdout, stderr }));
   });
 });
-const pluginHook = (pluginPath, message, env) => new Promise((resolve, reject) => {
+const QUESTION = 'May I take one still of the Spotify window? It can show your Spotify name, your picture, your friends\' activity, and your playlist names.';
+const pluginHook = (pluginPath, message, env, options = {}) => new Promise((resolve, reject) => {
+  const history = options.history === undefined ? [
+    { role: 'assistant', content: QUESTION },
+    { role: 'user', content: message },
+  ] : options.history;
+  const payload = JSON.stringify({
+    message,
+    session_id: options.sessionId || env.TESS_CHAT || '',
+    turn_id: options.turnId || env.TESS_TURN || '',
+    history,
+  });
   const child = spawn(pluginPy(), ['-c', `
-import importlib.util, sys
+import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("tess_visit_hook", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-mod.pre_llm_call(user_message=sys.argv[2])
+payload = json.load(sys.stdin)
+mod.pre_llm_call(
+    user_message=payload["message"],
+    session_id=payload["session_id"],
+    turn_id=payload["turn_id"],
+    conversation_history=payload["history"],
+)
 print("hooked")
-`, pluginPath, message], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+`, pluginPath], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  child.stdin.end(payload);
   let stdout = '';
   let stderr = '';
   const timer = setTimeout(() => {
@@ -217,7 +235,7 @@ try {
     'cronjob', 'video', 'video_gen', 'image_gen', 'tts', 'memory', 'todo',
     'session_search', 'vision', 'web', 'connections', 'catalog', 'project',
     'desktop_ui', 'discord', 'discord_admin', 'yuanbao', 'kanban', 'x_search',
-    'feishu_doc', 'feishu_drive', 'onboarding', 'skills',
+    'feishu_doc', 'feishu_drive', 'onboarding', 'skills', 'a2a',
   ];
   assert.match(shipped, /inline_shell:\s*false/);
   assert.match(shipped, /tool_search:\n {4}enabled:\s*"off"/);
@@ -287,6 +305,8 @@ print(json.dumps({"before": before, "after": after, "raw": raw}))
       'image_generate', 'video_generate', 'video_analyze', 'text_to_speech', 'memory', 'todo_list',
       'manage_catalog', 'desktop_project', 'feishu_drive_add_comment', 'feishu_drive_reply_comment',
       'setup_beat', 'skills_list', 'skill_view', 'skill_manage', 'tess_consent',
+      'a2a_call', 'a2a_list', 'web_search', 'vision_analyze', 'session_search',
+      'browser_navigate', 'manage_connections',
     ];
     for (const name of forbidden) {
       assert.equal(listed.before.includes(name), false, `${name} is on the model's tool list`);
@@ -337,6 +357,8 @@ print(json.dumps({"before": before, "after": after, "raw": raw}))
   assert.ok(existsSync(join(profile, 'skills/tess-evidence/scripts/spotify-window.mjs')));
   assert.ok(existsSync(join(profile, 'skills/tess-handoff/scripts/triage-inbox.mjs')));
   const windowScript = readFileSync(join(profile, 'skills/tess-evidence/scripts/spotify-window.mjs'), 'utf8');
+  assert.match(windowScript, /CGPreflightScreenCaptureAccess/);
+  assert.match(windowScript, /Screen Recording is not allowed/);
   assert.match(windowScript, /execFileSync\('\/usr\/sbin\/screencapture'/);
   assert.match(windowScript, /inRoot/);
   assert.doesNotMatch(windowScript, /'-D'|'-G'|'-V'/);
@@ -504,6 +526,7 @@ print(json.dumps({"before": before, "after": after, "raw": raw}))
     TESS_NODE: process.execPath,
     TESS_SUPPORT_TOKEN: token,
     TESS_INBOX: `http://127.0.0.1:${visitPort}`,
+    TESS_CHAT: 'chat-a',
   };
   // A planted skill with a shell snippet and a dependency. The model must not be able to open it.
   const inlineMarker = join(box, 'tess-inline-shell');
@@ -550,32 +573,54 @@ for needed in ("clarify", "tess_ask_consent", "tess_still", "tess_read_skill", "
         print("missing tool: %s in %s" % (needed, names), file=sys.stderr)
         raise SystemExit(1)
 
-def run(name, args):
-    return registry.dispatch(name, args or {})
+CHAT = "chat-a"
+question = "May I take one still of the Spotify window? It can show your Spotify name, your picture, your friends' activity, and your playlist names."
 
-def state():
+def run(name, args, session=CHAT, turn=""):
+    return registry.dispatch(name, args or {}, session_id=session, turn_id=turn)
+
+def state(session=CHAT):
     visit = loaded.module
+    visit.bind_chat(session)
     try:
-        session = visit.current_session()
+        folder = visit.current_session()
     except ValueError:
         return "", None
-    path = session / "consent.txt"
+    path = folder / "consent.txt"
     if not path.is_file():
-        return "", session
-    return path.read_text(encoding="utf-8"), session
+        return "", folder
+    return path.read_text(encoding="utf-8"), folder
 
 def fail(msg):
     print(msg, file=sys.stderr)
     raise SystemExit(1)
 
+def kind(text):
+    return text.split("\\n", 1)[0]
+
+def shown(phrase, assistant=None):
+    return [
+        {"role": "assistant", "content": question if assistant is None else assistant},
+        {"role": "user", "content": phrase},
+    ]
+
+def hook(phrase, turn, session=CHAT, assistant=None):
+    mgr.invoke_hook(
+        "pre_llm_call",
+        user_message=phrase,
+        session_id=session,
+        turn_id=turn,
+        conversation_history=shown(phrase, assistant),
+    )
+
 start = json.loads(run("tess_visit_start", {}))
 if not start.get("ok"):
     fail("visit_start failed: %s" % start)
-mgr.invoke_hook("pre_llm_call", user_message="yes")
+hook("yes", "before-ask", assistant="What broke?")
 early = json.loads(run("tess_still", {}))
 if early.get("ok") or "Ask first" not in early.get("error", ""):
     fail("a yes before the question counted: %s" % early)
-if state()[0] == "yes\\n":
+if kind(state()[0]) == "yes":
     fail("consent was yes before the question")
 unknown = run("tess_consent", {"yes": True})
 if "Unknown tool" not in unknown:
@@ -588,45 +633,202 @@ for name, args in (
     ("tess_still", {}),
 ):
     run(name, args)
-if state()[0] == "yes\\n":
+if kind(state()[0]) == "yes":
     fail("a tool call granted consent")
-asked = json.loads(run("tess_ask_consent", {}))
-question = "May I take one still of the Spotify window? It can show your Spotify name, your picture, your friends' activity, and your playlist names."
+asked = json.loads(run("tess_ask_consent", {}, turn="ask-shown"))
 if asked.get("question") != question:
     fail("question mismatch: %s" % asked)
-if state()[0] != "asked\\n":
+if kind(state()[0]) != "asked":
     fail("ask did not record the question: %r" % (state()[0],))
 if json.loads(run("tess_still", {})).get("ok"):
     fail("still ran before the reply")
+hook("yes", "ask-shown")
+if kind(state()[0]) == "yes" or json.loads(run("tess_still", {})).get("ok"):
+    fail("the turn that asked accepted its own yes")
 
 def reply(phrase):
-    text, session = state()
-    consent = session / "consent.txt"
+    _text, folder = state()
+    consent = folder / "consent.txt"
     if consent.is_file():
         consent.unlink()
     run("tess_ask_consent", {})
-    mgr.invoke_hook("pre_llm_call", user_message=phrase)
+    hook(phrase, "reply-" + phrase)
     return state()[0]
 
-for phrase in ("yes please", "yeah", "no", ""):
+for phrase in ("yes please", "yeah", "no", "", "ok", "OK!", "sure"):
     got = reply(phrase)
-    if got != "no\\n":
+    if kind(got) != "no":
         fail("not a no: %r -> %r" % (phrase, got))
     if json.loads(run("tess_still", {})).get("ok"):
         fail("still ran after %r" % phrase)
-for phrase in ("yes", "YES", "  y. ", "ok", "OK!", "sure", "go ahead", "Go ahead."):
+for phrase in ("yes", "YES", "  y. ", "go ahead", "Go ahead."):
     got = reply(phrase)
-    if got != "yes\\n":
+    if kind(got) != "yes":
         fail("not a yes: %r -> %r" % (phrase, got))
 shot = json.loads(run("tess_still", {}))
 if not shot.get("ok"):
     fail("a yes did not allow the still: %s" % shot)
+if kind(state()[0]) != "used":
+    fail("the still did not use the yes: %r" % (state()[0],))
+if json.loads(run("tess_still", {})).get("ok"):
+    fail("a second still reused the yes")
 again = json.loads(run("tess_visit_start", {}))
 if not again.get("ok"):
     fail("second visit failed: %s" % again)
-mgr.invoke_hook("pre_llm_call", user_message="yes")
-if state()[0] == "yes\\n" or json.loads(run("tess_still", {})).get("ok"):
+hook("yes", "old-visit")
+if kind(state()[0]) == "yes" or json.loads(run("tess_still", {})).get("ok"):
     fail("a previous visit's yes counted")
+
+run("tess_visit_start", {})
+run("tess_ask_consent", {}, turn="ask-no")
+hook("no", "reply-no")
+if kind(state()[0]) != "no":
+    fail("a no was not stored")
+reopened = json.loads(run("tess_ask_consent", {}))
+if reopened.get("ok"):
+    fail("ask reopened a no: %s" % reopened)
+if kind(state()[0]) != "no":
+    fail("a no was rewritten")
+hook("yes", "after-no")
+if kind(state()[0]) == "yes" or json.loads(run("tess_still", {})).get("ok"):
+    fail("a yes after a no was accepted")
+
+run("tess_visit_start", {})
+run("tess_ask_consent", {}, turn="ask-hidden")
+hook("yes", "hidden-reply", assistant="I'll send it without the picture, ok?")
+if kind(state()[0]) == "yes" or json.loads(run("tess_still", {})).get("ok"):
+    fail("a yes counted when the question was never shown")
+
+run("tess_visit_start", {}, session="chat-b")
+run("tess_ask_consent", {}, session=CHAT, turn="ask-a")
+hook("yes", "reply-b", session="chat-b")
+if kind(state(CHAT)[0]) == "yes" or kind(state("chat-b")[0]) == "yes":
+    fail("a reply from another chat granted consent")
+if json.loads(run("tess_still", {}, session=CHAT)).get("ok"):
+    fail("chat A was consented by chat B")
+
+run("tess_visit_start", {})
+run("tess_ask_consent", {}, turn="ask-photo")
+mgr.invoke_hook(
+    "pre_llm_call",
+    user_message="yes",
+    session_id=CHAT,
+    turn_id="retry-old-yes",
+    conversation_history=[
+        {"role": "user", "content": "the lyrics lag"},
+        {"role": "assistant", "content": "Should I file that?"},
+        {"role": "user", "content": "yes"},
+    ],
+)
+if kind(state()[0]) == "yes" or json.loads(run("tess_still", {})).get("ok"):
+    fail("/retry reused an old yes")
+
+import threading
+import types
+from agent.turn_context import build_turn_context
+
+class StubModel:
+    def __init__(self):
+        self.calls = 0
+    def __getattr__(self, _item):
+        def refuse(*_a, **_k):
+            self.calls += 1
+            raise AssertionError("stub model was called")
+        return refuse
+
+class FakeAgent:
+    def __init__(self):
+        self.session_id = CHAT
+        self.model = "stub-model"
+        self.provider = "stub"
+        self.requested_provider = "stub"
+        self.base_url = "http://127.0.0.1:9"
+        self.api_key = "stub"
+        self.api_mode = "chat_completions"
+        self.auth_mode = ""
+        self.platform = "cli"
+        self.quiet_mode = True
+        self.max_iterations = 4
+        self.tools = []
+        self.valid_tool_names = set()
+        self.enabled_toolsets = None
+        self.disabled_toolsets = None
+        self._skip_mcp_refresh = True
+        self.compression_enabled = False
+        self.context_compressor = types.SimpleNamespace(
+            protect_first_n=2,
+            protect_last_n=2,
+            should_compress=lambda tokens=None: False,
+            should_compress_info=lambda tokens=None: (False, None),
+        )
+        self._cached_system_prompt = "SYSTEM"
+        self._memory_store = None
+        self._memory_manager = None
+        self._memory_nudge_interval = 0
+        self._turns_since_memory = 0
+        self._user_turn_count = 1
+        self._todo_store = types.SimpleNamespace(has_items=lambda: True)
+        self._tool_guardrails = types.SimpleNamespace(reset_for_turn=lambda: None)
+        self._compression_warning = None
+        self._emit_warning = lambda *_a, **_k: None
+        self._last_ctx_overflow_warn = None
+        self._interrupt_requested = False
+        self._memory_write_origin = "assistant_tool"
+        self._stream_context_scrubber = None
+        self._stream_think_scrubber = None
+        self._invalid_tool_retries = 0
+        self._pending_cli_user_message = None
+        self._session_persist_lock = threading.RLock()
+        self._session_db = None
+        self.client = StubModel()
+
+    def _ensure_db_session(self):
+        return None
+    def _restore_primary_runtime(self):
+        return None
+    def _cleanup_dead_connections(self):
+        return False
+    def _emit_status(self, _msg):
+        return None
+    def _replay_compression_warning(self):
+        return None
+    def _hydrate_todo_store(self, *_a, **_k):
+        return None
+    def _safe_print(self, *_a, **_k):
+        return None
+    def _persist_session(self, *_a, **_k):
+        return None
+    def _warn_context_overflow_blocked(self, *_a, **_k):
+        return None
+    def _clear_context_overflow_warn(self):
+        return None
+
+turn_agent = FakeAgent()
+turn = build_turn_context(
+    agent=turn_agent,
+    user_message="yes",
+    system_message=None,
+    conversation_history=[{"role": "assistant", "content": question}],
+    task_id="turn-test",
+    stream_callback=None,
+    persist_user_message=None,
+    restore_or_build_system_prompt=lambda *_a, **_k: None,
+    install_safe_stdio=lambda: None,
+    sanitize_surrogates=lambda text: text,
+    summarize_user_message_for_log=lambda text: text if isinstance(text, str) else "",
+    set_session_context=lambda _sid: None,
+    set_current_write_origin=lambda _origin: None,
+    ra=lambda: types.SimpleNamespace(_set_interrupt=lambda *_a, **_k: None),
+)
+if turn.messages[-1].get("role") != "user" or turn.messages[-1].get("content") != "yes":
+    fail("turn_context did not append the reply")
+if not str(turn.messages[-2].get("content", "")).endswith(question):
+    fail("turn_context dropped the question")
+if turn_agent.client.calls:
+    fail("the stub model ran")
+if kind(state()[0]) != "yes" or "chat " + CHAT not in state()[0]:
+    fail("turn_context did not grant the shown yes: %r" % (state()[0],))
+print("turn-ok")
 if os.path.exists(marker):
     fail("marker existed before the skill read")
 for name in ("tess-support", "tess-gather", "tess-evidence", "tess-handoff"):
@@ -656,6 +858,7 @@ print("boundary-ok")
     console.error('mac-test: hermes dispatch returned', boundary.status);
     const boundaryText = `${boundary.stdout || ''}${boundary.stderr || ''}`;
     if (boundary.status !== 0) throw new Error(boundaryText || 'hermes dispatch failed');
+    assert.match(boundary.stdout, /turn-ok\n/);
     assert.match(boundary.stdout, /boundary-ok\n$/);
     assert.equal(existsSync(inlineMarker), false, 'a skill tool ran a command');
     assert.ok(!boundaryText.includes(token), 'the Hermes dispatch printed the token');
@@ -677,6 +880,11 @@ print("boundary-ok")
   assert.match(String(linkedStill.stderr), /link/);
   assert.equal(readFileSync(stillLink, 'utf8'), 'not-a-picture', 'the still followed a symlink');
   rmSync(join(session, 'spotify.png'));
+  const deniedEnv = { ...visitEnv, TESS_SCREEN_RECORDING: 'denied' };
+  delete deniedEnv.TESS_FAKE_CAPTURE;
+  const deniedStill = fails(windowScriptVisit, ['still', join(session, 'spotify.png')], deniedEnv);
+  assert.match(String(deniedStill.stderr), /Screen Recording is not allowed/);
+  assert.equal(existsSync(join(session, 'spotify.png')), false, 'a denied capture wrote a picture');
   const videoRefused = fails(windowScriptVisit, ['video', join(session, 'spotify.png')], visitEnv);
   assert.match(String(videoRefused.stderr), /usage/);
   run(join(visitProfile, 'skills/tess-gather/scripts/doctor.mjs'), [session], visitEnv);
@@ -806,7 +1014,7 @@ if [ -n "$TESS_SUPPORT_TOKEN" ]; then echo TOKEN_IN_ENV; fi
 if [ -f "$HERMES_HOME/.env" ]; then cat "$HERMES_HOME/.env"; fi
 `, { mode: 0o755 });
   assert.equal((await call('tess_visit_start', {})).ok, true);
-  const visitId = readFileSync(join(visitProfile, 'cache/support/current-session'), 'utf8').trim();
+  const visitId = readFileSync(join(visitProfile, 'cache/support/chats/chat-a/session'), 'utf8').trim();
   const toolSession = join(visitProfile, 'cache/support/sessions', visitId);
   await pluginHook(pluginPath, 'yes', visitEnv);
   const earlyStill = await call('tess_still', {});
@@ -867,11 +1075,44 @@ for name, text in cases.items():
   assert.equal(asked.ok, true, JSON.stringify(asked));
   assert.equal(asked.question, 'May I take one still of the Spotify window? It can show your Spotify name, your picture, your friends\' activity, and your playlist names.');
   assert.equal((await call('tess_still', {})).ok, false, 'asking is not a yes');
-  await pluginHook(pluginPath, 'no thanks', visitEnv);
-  assert.equal((await call('tess_still', {})).ok, false, 'a no was treated as consent');
-  assert.equal((await call('tess_ask_consent', {})).ok, true);
-  await pluginHook(pluginPath, 'Yes!', visitEnv);
+  const chatB = { ...visitEnv, TESS_CHAT: 'chat-b' };
+  assert.equal((await call('tess_visit_start', {}, chatB)).ok, true);
+  assert.equal((await call('tess_ask_consent', {}, chatB)).ok, true);
+  await pluginHook(pluginPath, 'no thanks', chatB, { turnId: 'b-no' });
+  assert.equal((await call('tess_still', {}, chatB)).ok, false, 'a no was treated as consent');
+  assert.equal((await call('tess_ask_consent', {}, chatB)).ok, false, 'a no was reopened');
+  await pluginHook(pluginPath, 'Yes!', chatB, { turnId: 'b-after-no' });
+  assert.equal((await call('tess_still', {}, chatB)).ok, false, 'a yes after a no was accepted');
+  const chatC = { ...visitEnv, TESS_CHAT: 'chat-c' };
+  assert.equal((await call('tess_visit_start', {}, chatC)).ok, true);
+  assert.equal((await call('tess_ask_consent', {}, chatC)).ok, true);
+  await pluginHook(pluginPath, 'yes', chatC, {
+    turnId: 'c-hidden',
+    history: [
+      { role: 'assistant', content: 'I\'ll send it without the picture, ok?' },
+      { role: 'user', content: 'yes' },
+    ],
+  });
+  assert.equal((await call('tess_still', {}, chatC)).ok, false, 'a question that was never shown counted');
+  await pluginHook(pluginPath, 'yes', visitEnv, {
+    turnId: 'retry-old',
+    history: [
+      { role: 'user', content: 'the lyrics lag' },
+      { role: 'assistant', content: 'Should I file that?' },
+      { role: 'user', content: 'yes' },
+    ],
+  });
+  assert.equal((await call('tess_still', {})).ok, false, '/retry reused an old yes');
+  await pluginHook(pluginPath, 'Yes!', visitEnv, { turnId: 'a-yes' });
+  const consentFile = join(toolSession, 'consent.txt');
+  writeFileSync(consentFile, readFileSync(consentFile, 'utf8').replace(/^at \d+$/m, `at ${Math.floor(Date.now() / 1000) - 301}`));
+  const expired = await call('tess_still', {});
+  assert.equal(expired.ok, false, 'an expired yes was accepted');
+  assert.match(expired.error, /expired/);
+  assert.equal((await call('tess_ask_consent', {})).ok, true, 'an expired yes could not be asked again');
+  await pluginHook(pluginPath, 'Yes!', visitEnv, { turnId: 'a-yes-again' });
   assert.equal((await call('tess_still', {})).ok, true);
+  assert.match((await call('tess_still', {})).error, /already taken/);
   const issues = await call('tess_open_issues', {});
   assert.equal(issues.ok, true);
   assert.equal(issues.untrusted, true);
@@ -909,7 +1150,7 @@ exit 1
   assert.doesNotMatch(guard.log, /ada@example\.com/);
   assert.ok(!guard.log.includes(token), 'the guard log returned the token');
 
-  const pluginSession = readFileSync(join(visitProfile, 'cache/support/current-session'), 'utf8').trim();
+  const pluginSession = readFileSync(join(visitProfile, 'cache/support/chats/chat-a/session'), 'utf8').trim();
   const noteHome = join(box, 'note-link-home');
   mkdirSync(join(noteHome, 'cache', 'support'), { recursive: true });
   const escapedSessions = join(box, 'escaped-sessions');
@@ -949,7 +1190,7 @@ for command in (
 ):
     got = hook("terminal", {"command": command})
     assert got and got.get("action") == "block", command
-for name in ("process", "process_manage", "write_file", "patch", "read_file", "search_files", "manage_catalog", "desktop_project", "execute_code"):
+for name in ("process", "process_manage", "write_file", "patch", "read_file", "search_files", "manage_catalog", "desktop_project", "execute_code", "a2a_call", "a2a_list", "web_search", "web_extract", "vision_analyze", "session_search", "browser_navigate", "browser_exec", "manage_connections"):
     got = hook(name, {})
     assert got and got.get("action") == "block", name
 for home in (sys.argv[2], sys.argv[3]):
@@ -961,10 +1202,10 @@ for home in (sys.argv[2], sys.argv[3]):
     raise SystemExit("a symlinked session root was accepted")
 fresh = sys.argv[4]
 os.environ["HERMES_HOME"] = fresh
-pointer = os.path.join(fresh, "cache", "support", "current-session")
+pointer = os.path.join(fresh, "cache", "support", "chats", "chat-a", "session")
 os.makedirs(os.path.dirname(pointer), exist_ok=True)
 open(pointer, "w").write(sys.argv[6] + "\\n")
-saved = json.loads(tools["tess_save_note"]["handler"]({"kind": "doctor", "text": "tess doctor is not on this Mac"}))
+saved = json.loads(tools["tess_save_note"]["handler"]({"kind": "doctor", "text": "tess doctor is not on this Mac"}, session_id="chat-a"))
 assert saved.get("ok") is True, saved
 mode = os.stat(os.path.join(mod.current_session(fresh), "doctor.txt")).st_mode & 0o777
 assert mode == 0o600, mode

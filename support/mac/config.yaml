@@ -50,6 +50,7 @@ agent:
   #   feishu_doc, feishu_drive: not used here. The drive tools post comments.
   #   onboarding: setup_beat writes the first-run record. A desktop session folds
   #     that toolset in for the onboarding chat.
+  #   a2a: a2a_call and its siblings talk to other agents over the network.
   # skills is off. skill_view searches trusted project skill directories and,
   # when a skill declares deps, installs them (tools/skills_tool.py, the roots
   # lookup inside skill_view, and pm.ensure). Hermes has no switch that limits
@@ -89,6 +90,7 @@ agent:
     - feishu_doc
     - feishu_drive
     - onboarding
+    - a2a
 
 # The skills toolset is off. These stay so a later edit that turns it on still
 # asks before a write, and still does not run !`cmd` from a SKILL.md
