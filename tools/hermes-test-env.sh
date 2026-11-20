@@ -52,10 +52,11 @@ PY
   # harness without its dependency pin so the pyproject pin wins.
   core="$scratch/requirements-core.txt"
   grep -v '^browser-harness' "$req" > "$core"
-  "$venv/bin/python" -m pip install --disable-pip-version-check -r "$core"
+  # pip's progress goes to stderr: stdout carries only the python path, which CI writes into GITHUB_ENV.
+  "$venv/bin/python" -m pip install --disable-pip-version-check -r "$core" >&2
   harness=$(grep '^browser-harness' "$req" || true)
   if [ -n "$harness" ]; then
-    "$venv/bin/python" -m pip install --disable-pip-version-check --no-deps "$harness"
+    "$venv/bin/python" -m pip install --disable-pip-version-check --no-deps "$harness" >&2
   fi
   printf '%s\n' "$pin" > "$stamp"
 fi
