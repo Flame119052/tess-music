@@ -1294,24 +1294,63 @@ exit 0
   assert.match(readFileSync(join(s6Profile, 'SOUL.md'), 'utf8'), /You are Tess Support/);
   assert.equal(existsSync(s6Incoming), false);
 
-  // Quit Tess Support before swapping. A hermes process with this profile blocks the swap.
-  const live = layout('live-hermes');
-  boxes.push(live.box);
-  mkdirSync(join(live.box, 'tmp'));
-  const liveEnv = baseEnv(live, { TESS_ARCH: 'arm64' });
-  assert.equal(run([], liveEnv).status, 0);
-  writeFileSync(join(profileOf(live.box), 'state.db'), 'open-chat\n');
-  const liveHermes = join(live.bin, 'hermes');
-  writeFileSync(liveHermes, '#!/bin/sh\nsleep 30\n');
-  chmodSync(liveHermes, 0o755);
-  const liveChild = spawn(liveHermes, ['-p', 'tess-support'], { stdio: 'ignore' });
+  // Hermes has to be quit when this home's Hermes is running, even with no profile name
+  // on its command line. That used to be missed. An unrelated command that only
+  // contains those words must not block the swap.
+  const liveHome = layout('live-home-hermes');
+  boxes.push(liveHome.box);
+  mkdirSync(join(liveHome.box, 'tmp'));
+  const liveHomeEnv = baseEnv(liveHome, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], liveHomeEnv).status, 0);
+  writeFileSync(join(profileOf(liveHome.box), 'state.db'), 'open-chat\n');
+  const homeHermes = join(liveHomeEnv.HERMES_HOME, 'hermes');
+  writeFileSync(homeHermes, '#!/bin/sh\nsleep 40\n');
+  chmodSync(homeHermes, 0o755);
+  const homeChild = spawn(homeHermes, ['gateway'], { stdio: 'ignore' });
   try {
-    const liveBlocked = run([], { ...liveEnv, TESS_CHECK_LIVE_HERMES: '1' });
-    assert.notEqual(liveBlocked.status, 0);
-    assert.match(liveBlocked.stderr, /Quit it/);
-    assert.equal(readFileSync(join(profileOf(live.box), 'state.db'), 'utf8'), 'open-chat\n');
+    const homeBlocked = run([], { ...liveHomeEnv, TESS_CHECK_LIVE_HERMES: '1' });
+    assert.notEqual(homeBlocked.status, 0);
+    assert.match(homeBlocked.stderr, /Hermes is open\. Quit Hermes, then run this again\./);
+    assert.equal(readFileSync(join(profileOf(liveHome.box), 'state.db'), 'utf8'), 'open-chat\n');
   } finally {
-    liveChild.kill('SIGKILL');
+    homeChild.kill('SIGKILL');
+  }
+
+  const liveApp = layout('live-hermes-app');
+  boxes.push(liveApp.box);
+  mkdirSync(join(liveApp.box, 'tmp'));
+  const liveAppEnv = baseEnv(liveApp, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], liveAppEnv).status, 0);
+  writeFileSync(join(profileOf(liveApp.box), 'state.db'), 'open-chat\n');
+  const appExe = join(liveAppEnv.TESS_APPLICATIONS, 'Hermes Agent.app', 'Contents', 'MacOS', 'Hermes');
+  writeFileSync(appExe, '#!/bin/sh\nsleep 40\n');
+  chmodSync(appExe, 0o755);
+  const appChild = spawn(appExe, [], { stdio: 'ignore' });
+  try {
+    const appBlocked = run([], { ...liveAppEnv, TESS_CHECK_LIVE_HERMES: '1' });
+    assert.notEqual(appBlocked.status, 0);
+    assert.match(appBlocked.stderr, /Quit Hermes/);
+    assert.equal(readFileSync(join(profileOf(liveApp.box), 'state.db'), 'utf8'), 'open-chat\n');
+  } finally {
+    appChild.kill('SIGKILL');
+  }
+
+  const liveDecoy = layout('live-hermes-decoy');
+  boxes.push(liveDecoy.box);
+  mkdirSync(join(liveDecoy.box, 'tmp'));
+  const liveDecoyEnv = baseEnv(liveDecoy, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], liveDecoyEnv).status, 0);
+  writeFileSync(join(profileOf(liveDecoy.box), 'state.db'), 'open-chat\n');
+  const decoyHermes = join(liveDecoy.bin, 'hermes');
+  writeFileSync(decoyHermes, '#!/bin/sh\nsleep 40\n');
+  chmodSync(decoyHermes, 0o755);
+  const decoyChild = spawn(decoyHermes, ['-p', 'tess-support', '--profile=tess-support'], { stdio: 'ignore' });
+  try {
+    const decoyRun = run([], { ...liveDecoyEnv, TESS_CHECK_LIVE_HERMES: '1' });
+    assert.equal(decoyRun.status, 0, decoyRun.stderr);
+    assert.equal(readFileSync(join(profileOf(liveDecoy.box), 'state.db'), 'utf8'), 'open-chat\n');
+  } finally {
+    decoyChild.kill('SIGKILL');
   }
 
   // S9. A folder recreated between the two renames is not treated as the new profile.
@@ -1367,6 +1406,187 @@ exit 0
     assert.equal(existsSync(s8Previous), false);
   } finally {
     if (s8Child.exitCode === null) s8Child.kill('SIGKILL');
+  }
+
+  const modeOf = (path) => statSync(path).mode & 0o777;
+  const lstartOf = (pid) => execFileSync('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], {
+    encoding: 'utf8',
+    env: { PATH: '/usr/bin:/bin', LANG: 'C', LC_ALL: 'C' },
+  }).replace(/^\s+|\s+$/g, '');
+  const plantLock = (box, pid, lstart) => {
+    const lock = join(profilesOf(box), '.tess-support.lock');
+    mkdirSync(lock);
+    writeFileSync(join(lock, 'pid'), `${pid}\n`);
+    writeFileSync(join(lock, 'lstart'), `${lstart}\n`);
+  };
+  const holdSleep = () => spawn('/bin/sh', ['-c', 'sleep 120'], { stdio: 'ignore' });
+
+  // A crash left a lock whose pid now belongs to a different process. The start time
+  // does not match, so the next install takes the lock and keeps the chat file's mode.
+  const reused = layout('lock-reused');
+  boxes.push(reused.box);
+  mkdirSync(join(reused.box, 'tmp'));
+  const reusedEnv = baseEnv(reused, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], reusedEnv).status, 0);
+  const reusedProfile = profileOf(reused.box);
+  writeFileSync(join(reusedProfile, 'state.db'), 'chats\n');
+  chmodSync(join(reusedProfile, 'state.db'), 0o644);
+  mkdirSync(join(reusedProfile, 'sessions'));
+  chmodSync(join(reusedProfile, 'sessions'), 0o755);
+  writeFileSync(join(reusedProfile, 'sessions', 'note.txt'), 'hello\n');
+  chmodSync(join(reusedProfile, 'sessions', 'note.txt'), 0o640);
+  const reusedSleeper = holdSleep();
+  try {
+    plantLock(reused.box, reusedSleeper.pid, 'Wed Jan  1 00:00:00 1970');
+    const reusedAgain = run([], reusedEnv);
+    assert.equal(reusedAgain.status, 0, reusedAgain.stderr);
+    assert.doesNotMatch(reusedAgain.stderr, /already changing/);
+    assert.equal(readFileSync(join(reusedProfile, 'state.db'), 'utf8'), 'chats\n');
+    assert.equal(modeOf(join(reusedProfile, 'state.db')), 0o644);
+    assert.equal(modeOf(join(reusedProfile, 'sessions')), 0o755);
+    assert.equal(modeOf(join(reusedProfile, 'sessions', 'note.txt')), 0o640);
+    assert.equal(modeOf(reusedProfile), 0o700);
+  } finally {
+    reusedSleeper.kill('SIGKILL');
+  }
+
+  // The same pid and the same start time is a real install. Do not take that lock.
+  const held = layout('lock-held');
+  boxes.push(held.box);
+  mkdirSync(join(held.box, 'tmp'));
+  const heldEnv = baseEnv(held, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], heldEnv).status, 0);
+  const heldProfile = profileOf(held.box);
+  writeFileSync(join(heldProfile, 'state.db'), 'open\n');
+  const heldSleeper = holdSleep();
+  try {
+    plantLock(held.box, heldSleeper.pid, lstartOf(heldSleeper.pid));
+    const heldBlocked = run([], heldEnv);
+    assert.notEqual(heldBlocked.status, 0);
+    assert.match(heldBlocked.stderr, /Another Tess Support install is already changing this profile\. Wait until it finishes, then run this again\./);
+    assert.equal(readFileSync(join(heldProfile, 'state.db'), 'utf8'), 'open\n');
+  } finally {
+    heldSleeper.kill('SIGKILL');
+  }
+
+  // Two retries see one stale lock. One takes it. The other is told to wait.
+  const race = layout('lock-race');
+  boxes.push(race.box);
+  mkdirSync(join(race.box, 'tmp'));
+  const raceEnv = baseEnv(race, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], raceEnv).status, 0);
+  const raceProfile = profileOf(race.box);
+  mkdirSync(join(raceProfile, 'cache'), { recursive: true });
+  writeFileSync(join(raceProfile, 'cache', 'keep.txt'), 'unsent\n');
+  const raceSleeper = holdSleep();
+  const raceKids = [];
+  try {
+    plantLock(race.box, raceSleeper.pid, 'Wed Jan  1 00:00:00 1970');
+    const startRace = () => {
+      const child = spawn('/bin/sh', [install], {
+        env: { ...raceEnv, TESS_FAKE_MV_SLEEP: '30' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let err = '';
+      child.stderr.on('data', (chunk) => { err += chunk; });
+      const done = new Promise((resolve) => child.on('exit', (code) => resolve(code ?? 1)));
+      return { child, done, err: () => err };
+    };
+    const raceA = startRace();
+    const raceB = startRace();
+    raceKids.push(raceA.child, raceB.child);
+    const raceTimer = setTimeout(() => {
+      raceA.child.kill('SIGKILL');
+      raceB.child.kill('SIGKILL');
+    }, 120000);
+    const raceCodes = await Promise.all([raceA.done, raceB.done]);
+    clearTimeout(raceTimer);
+    const raceWins = raceCodes.filter((code) => code === 0);
+    assert.equal(raceWins.length, 1, `${raceA.err()}\n---\n${raceB.err()}`);
+    const raceErr = `${raceA.err()}\n${raceB.err()}`;
+    assert.match(raceErr, /Another Tess Support install is already changing this profile/);
+    assert.equal(readFileSync(join(raceProfile, 'cache', 'keep.txt'), 'utf8'), 'unsent\n');
+    assert.equal(existsSync(join(raceProfile, '.env')), true);
+    assert.equal(existsSync(join(raceProfile, '.tess-support.incoming')), false);
+  } finally {
+    raceSleeper.kill('SIGKILL');
+    for (const child of raceKids) {
+      if (child.exitCode === null) child.kill('SIGKILL');
+    }
+  }
+
+  // The staged folder is private while the swap is still going, and the installed
+  // folder stays private. A carried file keeps the mode it had.
+  const priv = layout('private-profile');
+  boxes.push(priv.box);
+  mkdirSync(join(priv.box, 'tmp'));
+  const privEnv = baseEnv(priv, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], privEnv).status, 0);
+  const privProfile = profileOf(priv.box);
+  writeFileSync(join(privProfile, 'state.db'), 'chats\n');
+  chmodSync(join(privProfile, 'state.db'), 0o644);
+  const privChild = spawn('/bin/sh', [install], {
+    env: { ...privEnv, TESS_FAKE_MV_SLEEP: '12' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let privErr = '';
+  privChild.stderr.on('data', (chunk) => { privErr += chunk; });
+  const privDone = new Promise((resolve) => privChild.on('exit', (code) => resolve(code ?? 1)));
+  try {
+    const privIncoming = join(profilesOf(priv.box), '.tess-support.incoming');
+    const privDeadline = Date.now() + 30000;
+    while (Date.now() < privDeadline && !existsSync(privIncoming)) {
+      if (privChild.exitCode !== null) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(existsSync(privIncoming), true, privErr);
+    assert.equal(modeOf(privIncoming), 0o700);
+    const privCode = await privDone;
+    assert.equal(privCode, 0, privErr);
+    assert.equal(modeOf(privProfile), 0o700);
+    assert.equal(modeOf(join(privProfile, 'state.db')), 0o644);
+    assert.equal(readFileSync(join(privProfile, 'state.db'), 'utf8'), 'chats\n');
+  } finally {
+    if (privChild.exitCode === null) privChild.kill('SIGKILL');
+  }
+
+  // Uninstall takes the install lock first. A live install keeps the profile and the icon.
+  const unHeld = layout('uninstall-held');
+  boxes.push(unHeld.box);
+  mkdirSync(join(unHeld.box, 'tmp'));
+  const unHeldEnv = baseEnv(unHeld, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], unHeldEnv).status, 0);
+  const unHeldProfile = profileOf(unHeld.box);
+  const unHeldApp = join(unHeldEnv.HOME, 'Applications', 'Tess Support.app');
+  writeFileSync(join(unHeldProfile, 'state.db'), 'open\n');
+  const unSleeper = holdSleep();
+  try {
+    plantLock(unHeld.box, unSleeper.pid, lstartOf(unSleeper.pid));
+    const unBlocked = run(['--uninstall'], unHeldEnv);
+    assert.notEqual(unBlocked.status, 0);
+    assert.match(unBlocked.stderr, /Another Tess Support install is already changing this profile\. Wait until it finishes, then run this again\./);
+    assert.equal(readFileSync(join(unHeldProfile, 'state.db'), 'utf8'), 'open\n');
+    assert.equal(existsSync(join(unHeldProfile, '.env')), true);
+    assert.equal(existsSync(unHeldApp), true);
+  } finally {
+    unSleeper.kill('SIGKILL');
+  }
+
+  // A reused pid does not block uninstall.
+  const unStale = layout('uninstall-stale');
+  boxes.push(unStale.box);
+  mkdirSync(join(unStale.box, 'tmp'));
+  const unStaleEnv = baseEnv(unStale, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], unStaleEnv).status, 0);
+  const unStaleSleeper = holdSleep();
+  try {
+    plantLock(unStale.box, unStaleSleeper.pid, 'Wed Jan  1 00:00:00 1970');
+    const unGone = run(['--uninstall'], unStaleEnv);
+    assert.equal(unGone.status, 0, unGone.stderr);
+    assert.match(unGone.stdout, /Ask Krish to revoke your code/);
+    assert.equal(existsSync(profileOf(unStale.box)), false);
+  } finally {
+    unStaleSleeper.kill('SIGKILL');
   }
 
   const pinned = readFileSync(install, 'utf8');

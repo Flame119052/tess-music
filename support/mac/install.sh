@@ -765,54 +765,128 @@ require_profile_absent() {
   fi
 }
 
-# mkdir is the lock. The pid lets a later run replace a lock whose install is gone.
+# A lock is this process and the time it started. macOS reuses a pid, so a live pid
+# alone can be a different process and must not block the next try. Two retries can
+# both see a stale lock: renaming it aside is the one step only one of them can win.
+lock_owner_matches() {
+  lock=$1
+  [ -f "$lock/pid" ] && [ ! -L "$lock/pid" ] || return 1
+  [ -f "$lock/lstart" ] && [ ! -L "$lock/lstart" ] || return 1
+  old=$(tr -d '[:space:]' < "$lock/pid" 2>/dev/null || true)
+  case $old in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  recorded=$(sed 's/^[[:space:]]*//;s/[[:space:]]*$//' < "$lock/lstart" 2>/dev/null || true)
+  [ -n "$recorded" ] || return 1
+  now=$(ps -o lstart= -p "$old" 2>/dev/null) || return 1
+  now=$(printf '%s' "$now" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  [ -n "$now" ] || return 1
+  [ "$now" = "$recorded" ]
+}
+
+record_lock_owner() {
+  held_swap_lock=1
+  printf '%s\n' "$$" > "$swap_lock/pid" || die "Could not keep the install lock."
+  started=$(ps -o lstart= -p "$$") || die "Could not keep the install lock."
+  started=$(printf '%s' "$started" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  [ -n "$started" ] || die "Could not keep the install lock."
+  printf '%s\n' "$started" > "$swap_lock/lstart" || die "Could not keep the install lock."
+}
+
 acquire_swap_lock() {
   swap_lock=$profiles_dir/.tess-support.lock
   if [ -L "$swap_lock" ]; then
     die "The install lock is a symlink. Refusing to follow it."
   fi
-  if ! mkdir "$swap_lock" 2>/dev/null; then
-    old=
-    if [ -f "$swap_lock/pid" ] && [ ! -L "$swap_lock/pid" ]; then
-      old=$(tr -d '[:space:]' < "$swap_lock/pid" 2>/dev/null || true)
-    fi
-    case $old in
-      ''|*[!0-9]*) old= ;;
-    esac
-    if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then
-      die "Another Tess Support install is already changing this profile. Wait until it finishes, then run this again."
-    fi
-    if [ -L "$swap_lock" ]; then
-      die "The install lock is a symlink. Refusing to follow it."
-    fi
-    rm -rf "$swap_lock"
-    mkdir "$swap_lock" 2>/dev/null || die "Another Tess Support install is already changing this profile. Wait until it finishes, then run this again."
+  if mkdir "$swap_lock" 2>/dev/null; then
+    record_lock_owner
+    return 0
   fi
-  held_swap_lock=1
-  swap_started=1
-  printf '%s\n' "$$" > "$swap_lock/pid" || die "Could not keep the install lock."
+  if lock_owner_matches "$swap_lock"; then
+    die "Another Tess Support install is already changing this profile. Wait until it finishes, then run this again."
+  fi
+  if [ -L "$swap_lock" ]; then
+    die "The install lock is a symlink. Refusing to follow it."
+  fi
+  stale=$profiles_dir/.tess-support.lock.stale.$$.$(date +%s)
+  n=0
+  while [ -e "$stale" ] || [ -L "$stale" ]; do
+    n=$((n + 1))
+    [ "$n" -lt 100 ] || die "Another Tess Support install is already changing this profile. Wait until it finishes, then run this again."
+    stale=$profiles_dir/.tess-support.lock.stale.$$.$n
+  done
+  if ! mv "$swap_lock" "$stale" 2>/dev/null; then
+    die "Another Tess Support install is already changing this profile. Wait until it finishes, then run this again."
+  fi
+  if ! mkdir "$swap_lock" 2>/dev/null; then
+    rm -rf "$stale"
+    die "Another Tess Support install is already changing this profile. Wait until it finishes, then run this again."
+  fi
+  rm -rf "$stale"
+  record_lock_owner
 }
 
-# A Hermes that has this profile open can recreate the folder between the two renames.
+# Quit Hermes before the folders move. The app can be on the active profile with no
+# profile name in its command, and an unrelated command can contain those words.
+# A Hermes from this home is a program path inside HERMES_HOME. The Hermes app is
+# the program inside Hermes Agent.app or Hermes.app.
 refuse_live_hermes() {
   if [ "${TESS_TEST:-}" = 1 ] && [ "${TESS_CHECK_LIVE_HERMES:-}" != 1 ]; then
     return 0
   fi
-  list=$(ps -ax -o args= 2>/dev/null || true)
-  printf '%s\n' "$list" | awk '
-    {
-      line = $0
-      if (line ~ /install\.sh/) next
-      is_hermes = 0
-      if (line ~ /(^|[\/[:space:]])hermes([[:space:]]|$)/) is_hermes = 1
-      if (line ~ /Hermes Agent\.app/) is_hermes = 1
-      if (line ~ /Hermes\.app\/Contents/) is_hermes = 1
-      if (!is_hermes) next
-      if (line ~ /--profile[= ]tess-support([[:space:]]|$)/) found = 1
-      if (line ~ /(^|[[:space:]])-p[= ]tess-support([[:space:]]|$)/) found = 1
-    }
-    END { exit found ? 0 : 1 }
-  ' && die "Tess Support is open. Quit it, then run this again."
+  # A program path may say /var while this home says /private/var. Compare after
+  # symlinks are resolved. The words --profile and -p are not the signal.
+  list=$(ps -ax -ww -o args= 2>/dev/null || true)
+  set -f
+  oldifs=$IFS
+  IFS='
+'
+  hit=0
+  for line in $list; do
+    case $line in
+      *install.sh*) continue ;;
+    esac
+    case $line in
+      *"Hermes Agent.app/Contents/MacOS/"*|*"Hermes.app/Contents/MacOS/"*)
+        hit=1
+        break
+        ;;
+    esac
+    IFS=' '
+    for token in $line; do
+      case $token in
+        /*) ;;
+        *) continue ;;
+      esac
+      base=$(basename -- "$token")
+      case $base in
+        hermes|Hermes) ;;
+        *)
+          case $token in
+            */hermes-agent/*) ;;
+            *) continue ;;
+          esac
+          ;;
+      esac
+      dir=$(dirname -- "$token")
+      [ -d "$dir" ] || continue
+      real=$(physical "$dir" 2>/dev/null || true)
+      [ -n "$real" ] || continue
+      if [ "$real" = "$HERMES_HOME" ] || inside "$real" "$HERMES_HOME"; then
+        hit=1
+        break
+      fi
+    done
+    IFS='
+'
+    [ "$hit" = 1 ] && break
+  done
+  IFS=$oldifs
+  set +f
+  if [ "$hit" = 1 ]; then
+    die "Hermes is open. Quit Hermes, then run this again."
+  fi
+  return 0
 }
 
 move_stub_aside() {
@@ -882,7 +956,8 @@ carry_profile_items() {
     if [ "$base" = "cache" ] && [ ! -d "$item" ]; then
       die "The profile cache is a symlink. Refusing to follow it."
     fi
-    cp -R "$item" "$profile_incoming/$base"
+    # -p keeps the mode the person already had. The profile folder around it is private.
+    cp -R -p "$item" "$profile_incoming/$base"
   done
 }
 
@@ -919,6 +994,7 @@ install_profile() {
   fi
   refuse_live_hermes
   acquire_swap_lock
+  swap_started=1
   recover_profile_swap || die "Could not put the previous profile back."
   if [ -e "$profile" ] && [ ! -d "$profile" ]; then
     die "The profile path is not a folder. Nothing was changed in the profile."
@@ -926,6 +1002,8 @@ install_profile() {
   # The new profile is a sibling of the live one, so the swap is a rename on the same disk.
   remove_tree_or_link "$profile_incoming"
   mkdir -p "$profile_incoming"
+  # Other accounts must not read a carried chat file through a 755 folder.
+  chmod 700 "$profile_incoming"
   incoming_ours=1
   set -f
   for rel in $rels; do
@@ -963,6 +1041,7 @@ install_profile() {
     mv "$profile" "$profile_previous" || die "Could not replace the profile. It was left as it was."
     require_profile_absent
     if mv "$profile_incoming" "$profile"; then
+      chmod 700 "$profile"
       drop_previous
     else
       if [ -e "$profile" ] || [ -L "$profile" ]; then
@@ -977,6 +1056,7 @@ install_profile() {
     fi
     require_profile_absent
     mv "$profile_incoming" "$profile" || die "Could not install the profile. Nothing was changed in the profile."
+    chmod 700 "$profile"
   fi
 }
 
@@ -1336,6 +1416,11 @@ uninstall() {
   ensure_places uninstall
   # A symlink here would make the rm below follow it. Stop before anything is removed.
   refuse_linked_profile
+  # Same lock as an install. Take it before the icon, the Dock tile, or the profile is removed.
+  profiles_dir=$HERMES_HOME/profiles
+  if [ -d "$profiles_dir" ] && [ ! -L "$profiles_dir" ]; then
+    acquire_swap_lock
+  fi
   unpin_dock
   if [ -d "$support_app" ]; then
     rm -rf "$support_app"
@@ -1363,21 +1448,6 @@ uninstall() {
   remove_profile_leftover "$HERMES_HOME/profiles/.tess-support.previous"
   remove_profile_leftover "$HERMES_HOME/profiles/.tess-support.incoming"
   remove_profile_leftover "$HERMES_HOME/profiles/.tess-support.aside"
-  lock=$HERMES_HOME/profiles/.tess-support.lock
-  if [ -L "$lock" ]; then
-    rm -f "$lock"
-  elif [ -d "$lock" ]; then
-    old=
-    if [ -f "$lock/pid" ] && [ ! -L "$lock/pid" ]; then
-      old=$(tr -d '[:space:]' < "$lock/pid" 2>/dev/null || true)
-    fi
-    case $old in
-      *[!0-9]*) old= ;;
-    esac
-    if [ -z "$old" ] || ! kill -0 "$old" 2>/dev/null; then
-      rm -rf "$lock"
-    fi
-  fi
   if [ -f "$marker" ]; then
     installed=$(tr -d '[:space:]' < "$marker")
     if [ "$installed" = "app" ] || [ "$installed" = "cli" ]; then
