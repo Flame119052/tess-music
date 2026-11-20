@@ -1130,6 +1130,12 @@ exit 0
   }
 
   const pinned = readFileSync(install, 'utf8');
+  // CI checks out one commit; the pinned commit is older, so fetch just that one before re-pinning from it.
+  try {
+    execFileSync('git', ['cat-file', '-e', `${profileCommit}^{commit}`], { cwd: root, stdio: 'ignore' });
+  } catch {
+    execFileSync('git', ['fetch', '--no-tags', '--depth=1', 'origin', profileCommit], { cwd: root, stdio: 'ignore' });
+  }
   execFileSync(process.execPath, [join(root, 'tools/pin-support-mac.mjs'), profileCommit], { cwd: root });
   assert.equal(readFileSync(install, 'utf8'), pinned, 'pin-support-mac.mjs is idempotent');
   assert.match(readFileSync(join(root, 'support/mac/distribution.yaml'), 'utf8'), /hermes_requires:\s*">=0\.22\.0"/);
