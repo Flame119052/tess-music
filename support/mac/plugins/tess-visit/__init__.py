@@ -8,10 +8,12 @@ runtime/node/bin/node, not whatever `node` is on PATH.
 Hermes loads this from $HERMES_HOME/plugins/tess-visit once the profile is running.
 """
 
+import contextvars
 import json
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 NAMES = {
@@ -37,8 +39,16 @@ QUESTION = (
 # on deps). There is no config switch for either, so the skills toolset is off.
 SKILL_NAMES = ("tess-support", "tess-gather", "tess-evidence", "tess-handoff")
 WITHHELD = "(output withheld: the privacy filter did not run)"
-_YES = frozenset({"yes", "y", "ok", "sure", "go ahead"})
+# ok and sure are how people agree to a different question. They are not a yes
+# to the picture.
+_YES = frozenset({"yes", "y", "go ahead"})
 _EDGE = set(".,!?;:\"'`()[]{}…“”‘’")
+# A stored yes is one still, and it goes stale. Five minutes is long enough to
+# take the picture and short enough that a crashed visit cannot reuse it.
+CONSENT_SECONDS = 300
+_CHAT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$")
+_chat = contextvars.ContextVar("tess_visit_chat", default="")
+_turn_id = contextvars.ContextVar("tess_visit_turn", default="")
 
 # File tools and the other writers. The matching toolsets are off in config.yaml.
 # This hook still refuses them if one is turned back on. terminal is refused
@@ -67,7 +77,12 @@ _BLOCKED_TOOLS = frozenset({
     "text_to_speech",
     "memory",
     "todo_list",
+    "vision_analyze",
+    "session_search",
+    "manage_connections",
 })
+# Prefixes, not exact names: Hermes adds tools under these families.
+_BLOCKED_PREFIXES = ("a2a_", "web_", "browser_")
 
 # Children do not inherit the Hermes process environment. The support token is
 # added only for the two inbox calls that post.
@@ -105,16 +120,39 @@ def sessions_root(home=None):
     return real_root
 
 
-def _pointer(home, name):
-    root = profile_home(home) / "cache" / "support"
-    path = root / name
+def bind_chat(session_id):
+    """The Hermes chat these tools belong to. A missing or odd id is not a visit."""
+    text = str(session_id or "").strip()
+    if not _CHAT_ID.fullmatch(text):
+        raise ValueError("this chat has no session")
+    _chat.set(text)
+    return text
+
+
+def active_chat():
+    text = _chat.get()
+    if not text:
+        raise ValueError("this chat has no session")
+    return text
+
+
+def _chat_path(home, name):
+    """One pointer file per Hermes chat. The id is the directory name, so a second
+    chat cannot move the first chat's visit."""
+    chat = active_chat()
+    cursor = profile_home(home)
+    for part in ("cache", "support", "chats", chat):
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise ValueError("refusing to follow a link")
+    path = cursor / name
     if path.is_symlink():
         raise ValueError("refusing to follow a link")
     return path
 
 
-def _read_pointer(home, name, pattern):
-    path = _pointer(home, name)
+def _read_chat(home, name, pattern):
+    path = _chat_path(home, name)
     if not path.is_file():
         return ""
     try:
@@ -127,9 +165,9 @@ def _read_pointer(home, name, pattern):
 
 
 def current_session(home=None):
-    """The session tess_visit_start remembered. The model does not pass it."""
+    """The session tess_visit_start remembered for this chat. The model does not pass it."""
     root = sessions_root(home)
-    name = _read_pointer(home, "current-session", SESSION_ID)
+    name = _read_chat(home, "session", SESSION_ID)
     if not name:
         raise ValueError("there is no session folder yet")
     child = root / name
@@ -145,7 +183,7 @@ def current_session(home=None):
 
 
 def remembered_report(home=None):
-    report = _read_pointer(home, "report-id", REPORT_ID)
+    report = _read_chat(home, "report", REPORT_ID)
     if not report:
         raise ValueError("the report has not been posted yet")
     return report
@@ -172,16 +210,37 @@ def _write_note(dest, raw):
 
 
 def _remember(home, name, kind):
-    path = _pointer(home, kind)
+    filename = {"current-session": "session", "report-id": "report"}[kind]
+    path = _chat_path(home, filename)
     path.parent.mkdir(parents=True, exist_ok=True)
     _write_note(path, (name + "\n").encode("utf-8"))
 
 
 def _forget(home):
-    for name in ("current-session", "report-id"):
-        path = _pointer(home, name)
+    for name in ("session", "report"):
+        path = _chat_path(home, name)
         if path.is_file():
             path.unlink()
+
+
+def _turn_now(home):
+    path = _chat_path(home, "turn")
+    if not path.is_file():
+        return 0
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def _bump_turn(home):
+    """One tick per pre_llm_call for this chat. The ask stores the tick it saw.
+    The reply has to be a later tick, so the same turn cannot answer itself."""
+    path = _chat_path(home, "turn")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    nxt = _turn_now(home) + 1
+    _write_note(path, f"{nxt}\n".encode("utf-8"))
+    return nxt
 
 
 def save_note(kind, text, home=None):
@@ -477,29 +536,89 @@ def guard_log(home=None):
     return {"ok": True, "log": "\n".join(lines)}
 
 
-def _consent_state(session):
+class _Consent:
+    """One visit's picture answer.
+
+    state is asked, yes, no, or used.
+    chat is the Hermes session_id that asked.
+    turn is the pre_llm_call tick of that ask. A reply has to be a later tick.
+    turn_id is the Hermes turn id of the ask, when the tool call had one.
+    at is the unix second the yes was stored. A yes expires after CONSENT_SECONDS.
+    """
+
+    def __init__(self, state="", chat="", turn=0, turn_id="", at=0):
+        self.state = state
+        self.chat = chat
+        self.turn = turn
+        self.turn_id = turn_id
+        self.at = at
+
+
+def _read_consent(session):
     dest = _consent_path(session)
     if not dest.is_file():
-        return ""
+        return _Consent()
     try:
-        text = dest.read_text(encoding="utf-8")
+        lines = dest.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return ""
-    if text in ("asked\n", "yes\n", "no\n"):
-        return text[:-1]
-    return ""
+        return _Consent()
+    if not lines or lines[0] not in ("asked", "yes", "no", "used"):
+        return _Consent()
+    record = _Consent(state=lines[0])
+    for line in lines[1:]:
+        if line.startswith("chat "):
+            record.chat = line[5:]
+        elif line.startswith("turn "):
+            try:
+                record.turn = int(line[5:])
+            except ValueError:
+                return _Consent()
+        elif line.startswith("id "):
+            record.turn_id = line[3:]
+        elif line.startswith("at "):
+            try:
+                record.at = int(line[3:])
+            except ValueError:
+                return _Consent()
+    return record
+
+
+def _write_consent(session, record):
+    lines = [record.state, f"chat {record.chat}", f"turn {record.turn}"]
+    if record.turn_id:
+        lines.append(f"id {record.turn_id}")
+    if record.at:
+        lines.append(f"at {record.at}")
+    _write_note(_consent_path(session), ("\n".join(lines) + "\n").encode("utf-8"))
+
+
+def _live_yes(record, now=None):
+    if record.state != "yes" or not record.at:
+        return False
+    current = time.time() if now is None else now
+    return 0 <= current - record.at <= CONSENT_SECONDS
 
 
 def ask_consent(home=None):
     """Remember that the question was asked. This does not record a yes.
 
     The model can call every tool, so a boolean from it is not the person's
-    answer. A yes already stored for this visit is left alone. A no is opened
-    again, and the next message decides.
+    answer. A no already stored for this visit stays a no. Asking again does
+    not reopen it. A live yes is left alone.
     """
     session = current_session(home)
-    if _consent_state(session) != "yes":
-        _write_note(_consent_path(session), b"asked\n")
+    record = _read_consent(session)
+    if record.state == "no":
+        raise ValueError("This visit already declined the picture.")
+    if _live_yes(record):
+        return {"ok": True, "question": QUESTION}
+    chat = active_chat()
+    _write_consent(session, _Consent(
+        state="asked",
+        chat=chat,
+        turn=_turn_now(home),
+        turn_id=str(_turn_id.get() or ""),
+    ))
     return {"ok": True, "question": QUESTION}
 
 
@@ -537,27 +656,68 @@ def _plain_yes(text):
     return cleaned.lower() in _YES
 
 
-def pre_llm_call(user_message="", **kwargs):
+def _last_assistant_text(history):
+    """The assistant message before this turn. turn_context appends the person's
+    message last, so the question has to be the assistant turn just before it."""
+    if not isinstance(history, list) or len(history) < 2:
+        return ""
+    for message in reversed(history[:-1]):
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            return _message_text(message.get("content")).rstrip()
+    return ""
+
+
+def _question_shown(history):
+    return _last_assistant_text(history).endswith(QUESTION)
+
+
+def pre_llm_call(user_message="", session_id="", turn_id="", conversation_history=None, **kwargs):
     """The person's own message, before the model runs.
 
-    Hermes passes that message as user_message on pre_llm_call
-    (agent/turn_context.py). Only the next message after tess_ask_consent
-    counts, and only a plain yes is consent. Any other reply is a no.
+    Hermes calls this once per user turn (agent/turn_context.py) with that
+    turn's text, the chat id, the turn id, and the history including this
+    message last. A yes counts only when this is the same chat, a later turn
+    than the ask, and the last assistant message ends with the question.
+    Any other reply, once that question was shown, is a no. A no is final.
     """
     del kwargs
     try:
+        bind_chat(session_id)
+        turn = _bump_turn(None)
         session = current_session()
-        if _consent_state(session) != "asked":
+        record = _read_consent(session)
+        if record.state != "asked":
             return None
-        answer = b"yes\n" if _plain_yes(_message_text(user_message)) else b"no\n"
-        _write_note(_consent_path(session), answer)
+        if record.chat != active_chat() or turn <= record.turn:
+            return None
+        hook_turn = str(turn_id or "")
+        if record.turn_id and (not hook_turn or hook_turn == record.turn_id):
+            return None
+        if not _question_shown(conversation_history):
+            return None
+        if _plain_yes(_message_text(user_message)):
+            record = _Consent(
+                state="yes",
+                chat=record.chat,
+                turn=record.turn,
+                turn_id=record.turn_id,
+                at=int(time.time()),
+            )
+        else:
+            record = _Consent(
+                state="no",
+                chat=record.chat,
+                turn=record.turn,
+                turn_id=record.turn_id,
+            )
+        _write_consent(session, record)
     except ValueError:
         return None
     return None
 
 
 def _consented(session):
-    return _consent_state(session) == "yes"
+    return _live_yes(_read_consent(session))
 
 
 def read_skill(name, home=None):
@@ -580,7 +740,12 @@ def read_skill(name, home=None):
 def still(home=None):
     home_path = profile_home(home)
     session = current_session(home_path)
-    if not _consented(session):
+    record = _read_consent(session)
+    if record.state == "used":
+        raise ValueError("The picture for this visit was already taken.")
+    if record.state == "yes" and not _live_yes(record):
+        raise ValueError("Ask again. That yes expired. " + QUESTION)
+    if not _live_yes(record):
         raise ValueError("Ask first, and wait for a yes, before taking the picture. " + QUESTION)
     node = resolve_node(home_path)
     script = _script(home_path, "skills", "tess-evidence", "scripts", "spotify-window.mjs")
@@ -590,6 +755,8 @@ def still(home=None):
         raise ValueError(_output(proc))
     if dest.is_symlink() or not dest.is_file():
         raise ValueError("the still was not written")
+    record.state = "used"
+    _write_consent(session, record)
     return {"ok": True}
 
 
@@ -771,7 +938,7 @@ def pre_tool_call(tool_name="", args=None, **kwargs):
     """Refuse a shell or a file write even if a toolset is turned back on."""
     del args, kwargs
     name = str(tool_name or "").strip()
-    if name in _BLOCKED_TOOLS:
+    if name in _BLOCKED_TOOLS or name.startswith(_BLOCKED_PREFIXES):
         return {"action": "block", "message": "This profile has no shell and cannot write files that way."}
     return None
 
@@ -830,7 +997,8 @@ def register(ctx):
         _tool(
             "tess_ask_consent",
             "Ask before any picture. Returns the exact question to show the person. "
-            "Their next message is the answer. You cannot record a yes yourself. " + QUESTION,
+            "Their next message is the answer. yes, y, and go ahead are a yes. "
+            "ok and sure are not. A no is final for this visit. You cannot record a yes yourself. " + QUESTION,
             {},
             [],
             lambda params: call(lambda _got: ask_consent(), params, ()),
@@ -838,7 +1006,8 @@ def register(ctx):
         _tool(
             "tess_still",
             "Take one still of the Spotify window into this visit's folder. Takes no arguments. "
-            "Refuses until the person's own next message, after tess_ask_consent, was a plain yes. " + QUESTION,
+            "Refuses until the person's own later message, after the question was shown, "
+            "was yes, y, or go ahead. One still, within five minutes. " + QUESTION,
             {},
             [],
             lambda params: call(lambda _got: still(), params, ()),
@@ -924,8 +1093,13 @@ def register(ctx):
     ]
 
     for tool in tools:
-        def handle(params, _tool=tool, **kwargs):
+        def handle(params, _tool=tool, session_id="", turn_id="", **kwargs):
             del kwargs
+            _turn_id.set(str(turn_id or ""))
+            try:
+                bind_chat(session_id)
+            except ValueError as exc:
+                return _finish({"ok": False, "error": str(exc)}, home_box.get("home"))
             return _tool["handler"](params)
 
         ctx.register_tool(

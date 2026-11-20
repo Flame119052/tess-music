@@ -883,11 +883,21 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   model's own list instead of behind `tool_call`. The `onboarding` toolset is off, because `setup_beat`
   writes the first-run record. There is no `command_allowlist` and no deny list. The visit is plugin tools.
   Each one runs `subprocess` with an argument list the plugin builds. The model never passes a path or a
-  shell string. The plugin picks the session folder. `tess_ask_consent` records that the question was asked
-  and returns the words to show. It does not record a yes. Hermes `pre_llm_call` receives the person's own
-  message as `user_message` (`agent/turn_context.py`) before the model runs. The next message after the
-  question, and only a plain yes, is consent for this visit. Any other reply is a no. A yes before the
-  question, or in an earlier visit, does not count. `tess_still` refuses without that yes. Node is the
+  shell string. The plugin picks the session folder. The current visit is one file per Hermes chat,
+  `cache/support/chats/<session_id>/session`, so a second chat cannot point the first chat's tools at its
+  folder. `tess_ask_consent` records that the question was asked for that chat and that turn, and returns
+  the words to show. It does not record a yes. A stored no is final for that visit: asking again does not
+  reopen it. Hermes `pre_llm_call` receives the person's own message as `user_message`, the chat as
+  `session_id`, the turn as `turn_id`, and `conversation_history` with this turn's message last
+  (`agent/turn_context.py`) before the model runs. Consent is granted only when that chat and a later turn
+  match the ask, and the last assistant message before this turn ends with the consent question, verbatim.
+  The only yes answers are `yes`, `y`, and `go ahead`. `ok` and `sure` are a no. Any other reply, once the
+  question was shown, is a no. A yes before the question, a yes from another chat, a `/retry` of an older
+  yes, or a question that was never shown does not count. A yes lasts five minutes and one still:
+  `tess_still` sets it to `used` after the picture is written, and refuses without a live yes. The window
+  capture checks `CGPreflightScreenCaptureAccess` and fails with "Screen Recording is not allowed" instead
+  of saving a blank picture. The `a2a` toolset is off, and the hook also blocks `a2a_*`, `web_*`,
+  `browser_*`, `vision_analyze`, `session_search`, and `manage_connections`. Node is the
   profile's `runtime/node/bin/node`, or `TESS_NODE` when `TESS_TEST=1`. It is never `node` from `PATH`. The
   plugin reads `TESS_SUPPORT_TOKEN` from the profile `.env` and puts it in the environment of the `inbox.mjs`
   report and recording processes only. Tool output is capped and passed through `privacy.mjs` `clean()`.
