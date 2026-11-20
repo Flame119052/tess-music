@@ -116,9 +116,10 @@ Before any picture, it asks this, in these words:
 
 > May I take one still of the Spotify window? It can show your Spotify name, your picture, your friends' activity, and your playlist names.
 
-The picture is taken only after they reply with a plain yes: `yes`, `y`, `ok`, `sure` or `go ahead`, on its own (capitals
-and punctuation don't matter). Any other reply, including a yes inside a longer sentence, means the note goes out
-without a picture. It does
+The picture is taken only when their very next reply to that question is a plain yes: `yes`, `y` or `go ahead`, on its
+own (capitals and punctuation don't matter). Any other reply, including `ok`, `sure` or a yes inside a longer sentence,
+means the note goes out without a picture, and a no stays a no for that visit. A yes covers one picture and lapses
+after five minutes. If macOS hasn't allowed Screen Recording, the bot says so and sends the note without a picture. It does
 not record the screen. The first time a still needs Screen Recording, macOS asks them to allow it, which they do by
 hand. If they would rather not, the bot says so and continues with their words.
 
