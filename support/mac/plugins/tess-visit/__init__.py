@@ -13,6 +13,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -215,6 +216,46 @@ def _write_note(dest, raw):
         os.fchmod(fd, 0o600)
     finally:
         os.close(fd)
+
+
+def _atomic_write(dest, raw):
+    """Replace dest from a temp file in the same folder.
+
+    Truncating the live file first leaves it empty while the new bytes are
+    written. A concurrent reader would see that empty file and treat a spent
+    yes as if it had never been stored. os.replace keeps the old bytes visible
+    until the new file is in place.
+    """
+    if dest.is_symlink():
+        raise ValueError("refusing to follow a link")
+    directory = dest.parent
+    fd = None
+    tmp_name = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(prefix="." + dest.name + ".", dir=directory)
+        view = memoryview(raw)
+        while view:
+            wrote = os.write(fd, view)
+            if wrote <= 0:
+                raise ValueError("could not write the note")
+            view = view[wrote:]
+        os.fchmod(fd, 0o600)
+        os.close(fd)
+        fd = None
+        os.replace(tmp_name, dest)
+        tmp_name = None
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError("could not write the note") from exc
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if tmp_name is not None:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
 
 
 def _remember(home, name, kind):
@@ -633,7 +674,28 @@ def _write_consent(session, record):
         lines.append(f"id {record.turn_id}")
     if record.at:
         lines.append(f"at {record.at}")
-    _write_note(_consent_path(session), ("\n".join(lines) + "\n").encode("utf-8"))
+    _atomic_write(_consent_path(session), ("\n".join(lines) + "\n").encode("utf-8"))
+
+
+def _question_sent_path(session):
+    dest = session / "question-sent"
+    if dest.is_symlink():
+        raise ValueError("refusing to follow a link")
+    return dest
+
+
+def _read_question_sent(session):
+    dest = _question_sent_path(session)
+    if not dest.is_file():
+        return None
+    try:
+        return float(dest.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _write_question_sent(session, when):
+    _atomic_write(_question_sent_path(session), (repr(float(when)) + "\n").encode("utf-8"))
 
 
 def _live_yes(record, now=None):
@@ -703,21 +765,61 @@ def _plain_yes(text):
     return cleaned.lower() in _YES
 
 
-def _last_assistant_text(history):
-    """The assistant message before this turn. turn_context appends the person's
-    message last, so the question has to be the assistant turn just before it."""
-    if not isinstance(history, list) or len(history) < 2:
-        return ""
-    for message in reversed(history[:-1]):
-        if isinstance(message, dict) and message.get("role") == "assistant":
-            return _message_text(message.get("content")).strip()
-    return ""
+def _user_timestamp(user_message, history):
+    """The time Hermes stored on this turn's user message.
+
+    stamp_message_timestamp (agent/message_metadata.py) sets timestamp to the
+    wall clock when the message is accepted. A message typed while the agent
+    was busy keeps that earlier time when it later becomes the next turn.
+    """
+    if isinstance(history, list) and history:
+        last = history[-1]
+        if isinstance(last, dict) and last.get("role") == "user":
+            stamp = last.get("timestamp")
+            if isinstance(stamp, (int, float)) and not isinstance(stamp, bool):
+                return float(stamp)
+    if isinstance(user_message, dict):
+        stamp = user_message.get("timestamp")
+        if isinstance(stamp, (int, float)) and not isinstance(stamp, bool):
+            return float(stamp)
+    return None
 
 
 def _question_shown(history):
-    """The whole message, trimmed. A question with a sentence in front of it is
-    not the question: the person may be answering that sentence."""
-    return _last_assistant_text(history) == QUESTION
+    """The turn ended on the question.
+
+    The message just before the person's turn has to be an assistant message
+    with no tool call, and its trimmed text has to be the question. Walking
+    back past a tool result would treat a question that was sent together with
+    a tool call as the thing they are answering. They may be answering the
+    prompt from the turn before that.
+    """
+    if not isinstance(history, list) or len(history) < 2:
+        return False
+    message = history[-2]
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        return False
+    if message.get("tool_calls"):
+        return False
+    return _message_text(message.get("content")).strip() == QUESTION
+
+
+def _yes_is_after_question(user_message, history, session):
+    """A stamped yes has to be from when the question was sent, or later.
+
+    A reply with no timestamp is the test hook and the older callers. A reply
+    Hermes stamped is refused when this turn never recorded the question, or
+    when the stamp is earlier than that record: the person typed it before the
+    question was on screen. That reply is not stored as a no, so a later yes
+    can still count.
+    """
+    stamp = _user_timestamp(user_message, history)
+    if stamp is None:
+        return True
+    sent = _read_question_sent(session)
+    if sent is None or stamp < sent:
+        return False
+    return True
 
 
 def pre_llm_call(user_message="", session_id="", turn_id="", conversation_history=None, **kwargs):
@@ -726,9 +828,11 @@ def pre_llm_call(user_message="", session_id="", turn_id="", conversation_histor
     Hermes calls this once per user turn (agent/turn_context.py) with that
     turn's text, the chat id, the turn id, and the history including this
     message last. A yes counts only when this is the same chat, a later turn
-    than the ask, and the last assistant message is the question and nothing
-    else. Any other reply, once that question was shown, is a no. A no is final.
-    The turn id is stored here. The tool handler never receives one.
+    than the ask, and the message just before this turn is the question with
+    no tool call. A stamped yes also has to be from the moment that question
+    was sent, or later. Any other reply, once that question was shown, is a
+    no. A no is final. The turn id is stored here. The tool handler never
+    receives one.
     """
     del kwargs
     try:
@@ -747,6 +851,8 @@ def pre_llm_call(user_message="", session_id="", turn_id="", conversation_histor
         if not _question_shown(conversation_history):
             return None
         if _plain_yes(_message_text(user_message)):
+            if not _yes_is_after_question(user_message, conversation_history, session):
+                return None
             record = _Consent(
                 state="yes",
                 chat=record.chat,
@@ -762,6 +868,27 @@ def pre_llm_call(user_message="", session_id="", turn_id="", conversation_histor
                 turn_id=record.turn_id,
             )
         _write_consent(session, record)
+    except ValueError:
+        return None
+    return None
+
+
+def post_llm_call(assistant_response="", session_id="", **kwargs):
+    """Record when this turn's final text was the picture question.
+
+    Hermes calls this once per turn after the tool loop
+    (agent/turn_finalizer.py _apply_output_hooks) with assistant_response set
+    to that final text, plus session_id, turn_id, user_message,
+    conversation_history, model, and platform. The time is the wall clock at
+    that call. pre_llm_call refuses a yes whose user-message timestamp is
+    earlier.
+    """
+    del kwargs
+    try:
+        if _message_text(assistant_response).strip() != QUESTION:
+            return None
+        bind_chat(session_id)
+        _write_question_sent(current_session(), time.time())
     except ValueError:
         return None
     return None
@@ -1107,10 +1234,11 @@ def register(ctx):
         _tool(
             "tess_ask_consent",
             "Ask before any picture. Returns the exact question. Send it as its own "
-            "message: the whole message is that question, with nothing before it and "
-            "nothing after it. Their next message is the answer. yes, y, and go ahead "
-            "are a yes. ok and sure are not. A no is final for this visit, and so is a "
-            "picture already taken. You cannot record a yes yourself. " + QUESTION,
+            "message and end the turn on it: the whole message is that question, with "
+            "nothing before it, nothing after it, and no tool call beside it. Their "
+            "next message is the answer. yes, y, and go ahead are a yes. ok and sure "
+            "are not. A no is final for this visit, and so is a picture already taken. "
+            "You cannot record a yes yourself. " + QUESTION,
             {},
             [],
             lambda params: call(lambda _got: ask_consent(), params, ()),
@@ -1118,8 +1246,8 @@ def register(ctx):
         _tool(
             "tess_still",
             "Take one still of the Spotify window into this visit's folder. Takes no arguments. "
-            "Refuses until the person's own later message, after the question was their "
-            "whole previous message, was yes, y, or go ahead. One still, within five "
+            "Refuses until the person's own later message, after the turn ended on the "
+            "question with no tool call beside it, was yes, y, or go ahead. One still, within five "
             "minutes. The yes is spent even if the capture fails. " + QUESTION,
             {},
             [],
@@ -1229,3 +1357,4 @@ def register(ctx):
         )
     ctx.register_hook("pre_tool_call", pre_tool_call)
     ctx.register_hook("pre_llm_call", pre_llm_call)
+    ctx.register_hook("post_llm_call", post_llm_call)

@@ -228,6 +228,8 @@ try {
   assert.doesNotMatch(shipped, /command_allowlist:/);
   assert.doesNotMatch(shipped, /^  deny:/m);
   assert.match(shipped, /write_approval:\s*true/);
+  assert.match(shipped, /^display:\n  busy_input_mode: interrupt$/m);
+  assert.match(cfg, /^display:\n  busy_input_mode: interrupt$/m);
   assert.match(shipped, /allow_tool_override:\s*true/);
   assert.match(shipped, /mcp_servers:\s*\{\}/);
   const off = [
@@ -812,6 +814,14 @@ class FakeAgent:
         return None
 
 turn_agent = FakeAgent()
+mgr.invoke_hook(
+    "post_llm_call",
+    session_id=CHAT,
+    turn_id="turn-question",
+    user_message="the lyrics lag",
+    assistant_response=question,
+    conversation_history=[{"role": "assistant", "content": question}],
+)
 turn = build_turn_context(
     agent=turn_agent,
     user_message="yes",
@@ -886,6 +896,147 @@ if os.path.exists(race_log):
     race_logged = open(race_log, encoding="utf-8").read().count("1")
 if race_logged != 1:
     fail("capture ran %s times" % race_logged)
+
+# The question was sent in the same message as a slow tool, after an earlier
+# "Reply yes". The person's next "yes" is not consent: the turn did not end
+# on the question.
+run("tess_visit_start", {})
+hook("waiting", "probe-ask", assistant="What broke?")
+run("tess_ask_consent", {})
+mgr.invoke_hook(
+    "pre_llm_call",
+    user_message="yes",
+    session_id=CHAT,
+    turn_id="probe-yes",
+    conversation_history=[
+        {"role": "user", "content": "the lyrics lag"},
+        {
+            "role": "assistant",
+            "content": "Shall I keep checking your install? Reply yes.",
+            "tool_calls": [{
+                "id": "ask1",
+                "type": "function",
+                "function": {"name": "tess_ask_consent", "arguments": "{}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "ask1", "content": question},
+        {
+            "role": "assistant",
+            "content": question,
+            "tool_calls": [{
+                "id": "doc1",
+                "type": "function",
+                "function": {"name": "tess_doctor", "arguments": "{}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "doc1", "content": "still checking"},
+        {"role": "user", "content": "yes"},
+    ],
+)
+if kind(state()[0]) == "yes" or json.loads(run("tess_still", {})).get("ok"):
+    fail("a yes after a question sent with a tool call counted")
+hook("yes", "probe-clean")
+if kind(state()[0]) != "yes":
+    fail("the question as its own message was refused: %r" % (state()[0],))
+
+# post_llm_call records the question. A yes stamped earlier is refused.
+# A yes stamped later is accepted. A final text that is not only the question
+# does not move the recorded time.
+run("tess_visit_start", {})
+hook("waiting", "stamp-ask", assistant="What broke?")
+run("tess_ask_consent", {})
+mgr.invoke_hook(
+    "post_llm_call",
+    session_id=CHAT,
+    turn_id="stamp-question",
+    user_message="waiting",
+    assistant_response=question,
+    conversation_history=[
+        {"role": "user", "content": "waiting"},
+        {"role": "assistant", "content": question},
+    ],
+)
+_stamp_text, stamp_folder = state()
+sent_path = stamp_folder / "question-sent"
+if not sent_path.is_file():
+    fail("post_llm_call did not record the question")
+sent_at = float(sent_path.read_text(encoding="utf-8").strip())
+mgr.invoke_hook(
+    "pre_llm_call",
+    user_message="yes",
+    session_id=CHAT,
+    turn_id="stamp-early",
+    conversation_history=[
+        {"role": "assistant", "content": question},
+        {"role": "user", "content": "yes", "timestamp": sent_at - 5},
+    ],
+)
+if kind(state()[0]) == "yes" or json.loads(run("tess_still", {})).get("ok"):
+    fail("a yes typed before the question counted")
+recorded = sent_path.read_text(encoding="utf-8")
+mgr.invoke_hook(
+    "post_llm_call",
+    session_id=CHAT,
+    turn_id="stamp-other",
+    user_message="waiting",
+    assistant_response="Reply yes to file your report.\\n" + question,
+    conversation_history=[],
+)
+if sent_path.read_text(encoding="utf-8") != recorded:
+    fail("a message that is not only the question updated the send time")
+mgr.invoke_hook(
+    "pre_llm_call",
+    user_message="yes",
+    session_id=CHAT,
+    turn_id="stamp-later",
+    conversation_history=[
+        {"role": "assistant", "content": question},
+        {"role": "user", "content": "yes", "timestamp": sent_at + 1},
+    ],
+)
+if kind(state()[0]) != "yes":
+    fail("a yes after the question was refused: %r" % (state()[0],))
+
+# A reader of consent.txt during the write still sees the previous bytes.
+_yes_text, atomic_folder = state()
+if kind(_yes_text) != "yes":
+    fail("atomic setup was not a yes")
+held_reads = []
+started = threading.Event()
+release = threading.Event()
+real_write = os.write
+
+def slow_write(fd, data):
+    if not started.is_set():
+        started.set()
+        release.wait(3)
+    return real_write(fd, data)
+
+def reader():
+    if not started.wait(3):
+        held_reads.append("timeout")
+        release.set()
+        return
+    try:
+        held_reads.append((atomic_folder / "consent.txt").read_text(encoding="utf-8"))
+    except OSError as exc:
+        held_reads.append("err %s" % exc)
+    release.set()
+
+os.write = slow_write
+try:
+    reader_thread = threading.Thread(target=reader)
+    reader_thread.start()
+    held_record = loaded.module._read_consent(atomic_folder)
+    held_record.state = "used"
+    loaded.module._write_consent(atomic_folder, held_record)
+    reader_thread.join()
+finally:
+    os.write = real_write
+if not held_reads or not str(held_reads[0]).startswith("yes"):
+    fail("consent was empty during the write: %r" % (held_reads,))
+if kind(state()[0]) != "used":
+    fail("atomic replace did not land: %r" % (state()[0],))
 print("consent-ok")
 if os.path.exists(marker):
     fail("marker existed before the skill read")
@@ -1176,6 +1327,26 @@ for name, text in cases.items():
     ],
   });
   assert.equal((await call('tess_still', {})).ok, false, '/retry reused an old yes');
+  await pluginHook(pluginPath, 'yes', visitEnv, {
+    turnId: 'probe-tool-call',
+    history: [
+      { role: 'user', content: 'the lyrics lag' },
+      {
+        role: 'assistant',
+        content: 'Shall I keep checking your install? Reply yes.',
+        tool_calls: [{ id: 'ask1', type: 'function', function: { name: 'tess_ask_consent', arguments: '{}' } }],
+      },
+      { role: 'tool', tool_call_id: 'ask1', content: QUESTION },
+      {
+        role: 'assistant',
+        content: QUESTION,
+        tool_calls: [{ id: 'doc1', type: 'function', function: { name: 'tess_doctor', arguments: '{}' } }],
+      },
+      { role: 'tool', tool_call_id: 'doc1', content: 'still checking' },
+      { role: 'user', content: 'yes' },
+    ],
+  });
+  assert.equal((await call('tess_still', {})).ok, false, 'a yes after the question was sent with a tool call counted');
   await pluginHook(pluginPath, 'Yes!', visitEnv, { turnId: 'a-yes' });
   const consentFile = join(toolSession, 'consent.txt');
   writeFileSync(consentFile, readFileSync(consentFile, 'utf8').replace(/^at \d+$/m, `at ${Math.floor(Date.now() / 1000) - 301}`));
