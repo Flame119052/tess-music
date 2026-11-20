@@ -327,17 +327,22 @@ if [ "\${TESS_FAKE_MV_EXIT:-0}" != 0 ]; then
     esac
   done
 fi
+if [ "\${TESS_FAKE_MV_INCOMING_EXIT:-}" = 1 ]; then case $1 in */.tess-support.incoming) exit 1 ;; esac; fi
 /bin/mv "$@" || exit $?
-if [ "\${TESS_FAKE_MV_SIGNAL:-}" = 1 ]; then
-  for a in "$@"; do
-    case $a in
-      */.tess-support.previous)
-        kill -INT "$PPID"
-        exit 0
-        ;;
-    esac
-  done
-fi
+case "$2" in
+  */.tess-support.previous)
+    if [ "\${TESS_FAKE_MV_RECREATE:-}" = 1 ]; then
+      /bin/mkdir -p "$(dirname "$2")/tess-support/logs"
+    fi
+    if [ -n "\${TESS_FAKE_MV_SLEEP:-}" ]; then
+      sleep "$TESS_FAKE_MV_SLEEP"
+    fi
+    if [ "\${TESS_FAKE_MV_SIGNAL:-}" = 1 ]; then
+      kill -INT "$PPID"
+      exit 0
+    fi
+    ;;
+esac
 exit 0
 `);
   // A Mac uses PlistBuddy. Linux does not have it; the Dock checks still run.
@@ -964,6 +969,7 @@ exit 0
   const badCodeRun = run([], baseEnv(badCode, { TESS_ARCH: 'arm64', TESS_SUPPORT_TOKEN: 'tess_not-a-real-code' }));
   assert.notEqual(badCodeRun.status, 0);
   assert.match(badCodeRun.stderr, /not one Krish issued/);
+  assert.doesNotMatch(badCodeRun.stderr, /\/dev\/tty/);
   assert.equal(existsSync(join(badCode.box, 'hermes')), false, 'a bad code created HERMES_HOME');
   const badCodeRetry = run([], baseEnv(badCode, { TESS_ARCH: 'arm64' }));
   assert.equal(badCodeRetry.status, 0, badCodeRetry.stderr);
@@ -1066,9 +1072,12 @@ exit 0
   const signalHit = run([], { ...signalEnv, TESS_FAKE_MV_SIGNAL: '1' });
   assert.notEqual(signalHit.status, 0);
   const signalPrevious = join(signalPlace.box, 'hermes', 'profiles', '.tess-support.previous');
-  assert.equal(existsSync(signalProfile), false);
-  assert.equal(readFileSync(join(signalPrevious, 'cache', 'keep.txt'), 'utf8'), 'unsent\n');
-  assert.equal(readFileSync(join(signalPrevious, '.env'), 'utf8'), signalEnvText);
+  const signalIncoming = join(signalPlace.box, 'hermes', 'profiles', '.tess-support.incoming');
+  assert.equal(existsSync(signalPrevious), false);
+  assert.equal(existsSync(signalIncoming), false);
+  assert.equal(readFileSync(join(signalProfile, 'cache', 'keep.txt'), 'utf8'), 'unsent\n');
+  assert.equal(readFileSync(join(signalProfile, '.env'), 'utf8'), signalEnvText);
+  assert.doesNotMatch(signalHit.stderr, /\/dev\/tty/);
   const signalAgain = run([], signalEnv);
   assert.equal(signalAgain.status, 0, signalAgain.stderr);
   assert.equal(readFileSync(join(signalProfile, 'cache', 'keep.txt'), 'utf8'), 'unsent\n');
@@ -1127,6 +1136,237 @@ exit 0
     assert.equal(existsSync(join(extra.box, 'hermes', 'profiles', 'tess-support', 'plugins', 'tess-visit', '__pycache__')), false);
   } finally {
     rmSync(extraDir, { recursive: true, force: true });
+  }
+
+  const profilesOf = (box) => join(box, 'hermes', 'profiles');
+  const profileOf = (box) => join(profilesOf(box), 'tess-support');
+
+  // S1. Uninstall after an interrupted swap removes the leftover folders and the code.
+  const s1 = layout('s1-uninstall');
+  boxes.push(s1.box);
+  mkdirSync(join(s1.box, 'tmp'));
+  const s1Env = baseEnv(s1, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], s1Env).status, 0);
+  mkdirSync(join(profileOf(s1.box), 'cache'), { recursive: true });
+  writeFileSync(join(profileOf(s1.box), 'cache', 'keep.txt'), 'unsent\n');
+  const s1Hit = run([], { ...s1Env, TESS_FAKE_MV_SIGNAL: '1' });
+  assert.notEqual(s1Hit.status, 0);
+  const s1Un = run(['--uninstall'], s1Env);
+  assert.equal(s1Un.status, 0, s1Un.stderr);
+  assert.match(s1Un.stdout, /revoke/);
+  assert.equal(existsSync(profileOf(s1.box)), false);
+  assert.equal(existsSync(join(profilesOf(s1.box), '.tess-support.previous')), false);
+  assert.equal(existsSync(join(profilesOf(s1.box), '.tess-support.incoming')), false);
+  assert.equal(filesContaining(profilesOf(s1.box), token).length, 0);
+  assert.equal(existsSync(join(s1.box, 'home', 'Applications', 'Tess Support.app')), false);
+  const s1Again = run([], s1Env);
+  assert.equal(s1Again.status, 0, s1Again.stderr);
+  assert.equal(existsSync(join(profileOf(s1.box), 'cache', 'keep.txt')), false);
+
+  const s1Link = layout('s1-link');
+  boxes.push(s1Link.box);
+  mkdirSync(join(s1Link.box, 'tmp'));
+  const s1LinkEnv = baseEnv(s1Link, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], s1LinkEnv).status, 0);
+  const s1PrevTarget = join(s1Link.box, 'prev-target');
+  const s1IncTarget = join(s1Link.box, 'inc-target');
+  mkdirSync(s1PrevTarget);
+  mkdirSync(s1IncTarget);
+  writeFileSync(join(s1PrevTarget, 'precious'), 'keep-prev\n');
+  writeFileSync(join(s1IncTarget, 'precious'), 'keep-inc\n');
+  symlinkSync(s1PrevTarget, join(profilesOf(s1Link.box), '.tess-support.previous'));
+  symlinkSync(s1IncTarget, join(profilesOf(s1Link.box), '.tess-support.incoming'));
+  const s1LinkUn = run(['--uninstall'], s1LinkEnv);
+  assert.equal(s1LinkUn.status, 0, s1LinkUn.stderr);
+  assert.equal(existsSync(join(profilesOf(s1Link.box), '.tess-support.previous')), false);
+  assert.equal(existsSync(join(profilesOf(s1Link.box), '.tess-support.incoming')), false);
+  assert.equal(readFileSync(join(s1PrevTarget, 'precious'), 'utf8'), 'keep-prev\n');
+  assert.equal(readFileSync(join(s1IncTarget, 'precious'), 'utf8'), 'keep-inc\n');
+
+  // A stub is not a live profile. The previous folder is put back.
+  const stub = layout('stub-previous');
+  boxes.push(stub.box);
+  mkdirSync(join(stub.box, 'tmp'));
+  const stubEnv = baseEnv(stub, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], stubEnv).status, 0);
+  const stubProfile = profileOf(stub.box);
+  mkdirSync(join(stubProfile, 'cache'), { recursive: true });
+  writeFileSync(join(stubProfile, 'cache', 'keep.txt'), 'unsent\n');
+  const stubEnvText = readFileSync(join(stubProfile, '.env'), 'utf8');
+  renameSync(stubProfile, join(profilesOf(stub.box), '.tess-support.previous'));
+  mkdirSync(join(stubProfile, 'logs'), { recursive: true });
+  writeFileSync(join(stubProfile, 'logs', 'agent.log'), 'hermes started\n');
+  const stubAgain = run([], stubEnv);
+  assert.equal(stubAgain.status, 0, stubAgain.stderr);
+  assert.equal(readFileSync(join(stubProfile, 'cache', 'keep.txt'), 'utf8'), 'unsent\n');
+  assert.equal(readFileSync(join(stubProfile, '.env'), 'utf8'), stubEnvText);
+  assert.equal(existsSync(join(profilesOf(stub.box), '.tess-support.previous')), false);
+
+  // S3. A bad disk image creates nothing, so the next good run still sets the profile name.
+  const s3 = layout('s3-dmg');
+  boxes.push(s3.box);
+  mkdirSync(join(s3.box, 'tmp'));
+  const s3Env = baseEnv(s3, { TESS_ARCH: 'arm64' });
+  const s3Bad = run([], { ...s3Env, TESS_FAKE_BAD_DMG: '1' });
+  assert.notEqual(s3Bad.status, 0);
+  assert.match(s3Bad.stderr, /did not match Hermes's published checksum/);
+  assert.equal(existsSync(join(s3.box, 'hermes')), false);
+  const s3Good = run([], s3Env);
+  assert.equal(s3Good.status, 0, s3Good.stderr);
+  assert.equal(readFileSync(join(s3.box, 'hermes', 'active_profile'), 'utf8').trim(), 'tess-support');
+  assert.equal(
+    readFileSync(join(s3.box, 'home', 'Library', 'Application Support', 'Hermes', 'active-profile.json'), 'utf8').trim(),
+    '{"profile":"tess-support"}',
+  );
+
+  // A rerun keeps Hermes's own files. It replaces the files distribution.yaml owns, .env, and Node.
+  const kept = layout('kept-files');
+  boxes.push(kept.box);
+  mkdirSync(join(kept.box, 'tmp'));
+  const keptEnv = baseEnv(kept, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], keptEnv).status, 0);
+  const keptProfile = profileOf(kept.box);
+  writeFileSync(join(keptProfile, 'state.db'), 'chats\n');
+  mkdirSync(join(keptProfile, 'sessions'));
+  writeFileSync(join(keptProfile, 'sessions', 's.json'), '{}\n');
+  mkdirSync(join(keptProfile, 'memories'));
+  writeFileSync(join(keptProfile, 'memories', 'MEMORY.md'), 'm\n');
+  writeFileSync(join(keptProfile, 'auth.json'), '{}\n');
+  mkdirSync(join(keptProfile, 'cache'));
+  writeFileSync(join(keptProfile, 'cache', 'keep.txt'), 'unsent\n');
+  const keptAgain = run([], keptEnv);
+  assert.equal(keptAgain.status, 0, keptAgain.stderr);
+  assert.equal(readFileSync(join(keptProfile, 'state.db'), 'utf8'), 'chats\n');
+  assert.equal(readFileSync(join(keptProfile, 'sessions', 's.json'), 'utf8'), '{}\n');
+  assert.equal(readFileSync(join(keptProfile, 'memories', 'MEMORY.md'), 'utf8'), 'm\n');
+  assert.equal(readFileSync(join(keptProfile, 'auth.json'), 'utf8'), '{}\n');
+  assert.equal(readFileSync(join(keptProfile, 'cache', 'keep.txt'), 'utf8'), 'unsent\n');
+  assert.match(readFileSync(join(keptProfile, 'SOUL.md'), 'utf8'), /You are Tess Support/);
+
+  const keptLink = layout('kept-link');
+  boxes.push(keptLink.box);
+  mkdirSync(join(keptLink.box, 'tmp'));
+  const keptLinkEnv = baseEnv(keptLink, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], keptLinkEnv).status, 0);
+  const keptOutside = join(keptLink.box, 'outside-notes');
+  mkdirSync(keptOutside);
+  writeFileSync(join(keptOutside, 'secret'), 'do-not-copy\n');
+  symlinkSync(keptOutside, join(profileOf(keptLink.box), 'notes'));
+  const keptLinkRun = run([], keptLinkEnv);
+  assert.notEqual(keptLinkRun.status, 0);
+  assert.match(keptLinkRun.stderr, /notes is a symlink/);
+  assert.equal(readFileSync(join(keptOutside, 'secret'), 'utf8'), 'do-not-copy\n');
+  assert.equal(existsSync(join(profileOf(keptLink.box), '.env')), true);
+  assert.equal(existsSync(join(profilesOf(keptLink.box), '.tess-support.incoming')), false);
+
+  // S5. The second rename fails. The previous profile comes back, and the new folder does not stay.
+  const s5 = layout('s5-rename');
+  boxes.push(s5.box);
+  mkdirSync(join(s5.box, 'tmp'));
+  const s5Env = baseEnv(s5, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], s5Env).status, 0);
+  const s5Profile = profileOf(s5.box);
+  mkdirSync(join(s5Profile, 'cache'), { recursive: true });
+  writeFileSync(join(s5Profile, 'cache', 'keep.txt'), 'unsent\n');
+  const s5EnvText = readFileSync(join(s5Profile, '.env'), 'utf8');
+  const s5Hit = run([], { ...s5Env, TESS_FAKE_MV_INCOMING_EXIT: '1' });
+  assert.notEqual(s5Hit.status, 0);
+  assert.match(s5Hit.stderr, /previous one was put back/);
+  assert.doesNotMatch(s5Hit.stderr, /\/dev\/tty/);
+  assert.equal(readFileSync(join(s5Profile, 'cache', 'keep.txt'), 'utf8'), 'unsent\n');
+  assert.equal(readFileSync(join(s5Profile, '.env'), 'utf8'), s5EnvText);
+  assert.equal(existsSync(join(profilesOf(s5.box), '.tess-support.incoming')), false);
+  assert.equal(existsSync(join(profilesOf(s5.box), '.tess-support.previous')), false);
+
+  // S6. A leftover incoming is rebuilt from the pinned files. A tampered file is not kept.
+  const s6 = layout('s6-incoming');
+  boxes.push(s6.box);
+  mkdirSync(join(s6.box, 'tmp'));
+  const s6Env = baseEnv(s6, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], s6Env).status, 0);
+  const s6Profile = profileOf(s6.box);
+  const s6Incoming = join(profilesOf(s6.box), '.tess-support.incoming');
+  renameSync(s6Profile, s6Incoming);
+  writeFileSync(join(s6Incoming, 'SOUL.md'), 'tampered\n');
+  const s6Again = run([], s6Env);
+  assert.equal(s6Again.status, 0, s6Again.stderr);
+  assert.notEqual(readFileSync(join(s6Profile, 'SOUL.md'), 'utf8'), 'tampered\n');
+  assert.match(readFileSync(join(s6Profile, 'SOUL.md'), 'utf8'), /You are Tess Support/);
+  assert.equal(existsSync(s6Incoming), false);
+
+  // Quit Tess Support before swapping. A hermes process with this profile blocks the swap.
+  const live = layout('live-hermes');
+  boxes.push(live.box);
+  mkdirSync(join(live.box, 'tmp'));
+  const liveEnv = baseEnv(live, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], liveEnv).status, 0);
+  writeFileSync(join(profileOf(live.box), 'state.db'), 'open-chat\n');
+  const liveHermes = join(live.bin, 'hermes');
+  writeFileSync(liveHermes, '#!/bin/sh\nsleep 30\n');
+  chmodSync(liveHermes, 0o755);
+  const liveChild = spawn(liveHermes, ['-p', 'tess-support'], { stdio: 'ignore' });
+  try {
+    const liveBlocked = run([], { ...liveEnv, TESS_CHECK_LIVE_HERMES: '1' });
+    assert.notEqual(liveBlocked.status, 0);
+    assert.match(liveBlocked.stderr, /Quit it/);
+    assert.equal(readFileSync(join(profileOf(live.box), 'state.db'), 'utf8'), 'open-chat\n');
+  } finally {
+    liveChild.kill('SIGKILL');
+  }
+
+  // S9. A folder recreated between the two renames is not treated as the new profile.
+  const s9 = layout('s9-recreate');
+  boxes.push(s9.box);
+  mkdirSync(join(s9.box, 'tmp'));
+  const s9Env = baseEnv(s9, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], s9Env).status, 0);
+  const s9Profile = profileOf(s9.box);
+  mkdirSync(join(s9Profile, 'cache'), { recursive: true });
+  writeFileSync(join(s9Profile, 'cache', 'keep.txt'), 'unsent\n');
+  const s9Hit = run([], { ...s9Env, TESS_FAKE_MV_RECREATE: '1' });
+  assert.notEqual(s9Hit.status, 0);
+  assert.match(s9Hit.stderr, /appeared during the install/);
+  assert.doesNotMatch(s9Hit.stderr, /\/dev\/tty/);
+  assert.equal(existsSync(join(s9Profile, '.env')), true);
+  assert.equal(readFileSync(join(s9Profile, 'cache', 'keep.txt'), 'utf8'), 'unsent\n');
+  assert.equal(existsSync(join(s9Profile, '.tess-support.incoming')), false);
+  assert.ok(readFileSync(join(s9Profile, '.env'), 'utf8').includes(token));
+
+  // S8. Two installs at once. The second waits. The first finishes with the visit intact.
+  const s8 = layout('s8-lock');
+  boxes.push(s8.box);
+  mkdirSync(join(s8.box, 'tmp'));
+  const s8Env = baseEnv(s8, { TESS_ARCH: 'arm64' });
+  assert.equal(run([], s8Env).status, 0);
+  const s8Profile = profileOf(s8.box);
+  mkdirSync(join(s8Profile, 'cache'), { recursive: true });
+  writeFileSync(join(s8Profile, 'cache', 'keep.txt'), 'unsent\n');
+  const s8Previous = join(profilesOf(s8.box), '.tess-support.previous');
+  const s8Child = spawn('/bin/sh', [install], {
+    env: { ...s8Env, TESS_FAKE_MV_SLEEP: '25' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let s8Err = '';
+  s8Child.stderr.on('data', (chunk) => { s8Err += chunk; });
+  const s8Done = new Promise((resolve) => s8Child.on('exit', (code) => resolve(code ?? 1)));
+  try {
+    const s8Deadline = Date.now() + 20000;
+    while (Date.now() < s8Deadline && !existsSync(s8Previous)) {
+      if (s8Child.exitCode !== null) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(existsSync(s8Previous), true, s8Err);
+    const s8Other = run([], s8Env);
+    assert.notEqual(s8Other.status, 0);
+    assert.match(s8Other.stderr, /Another Tess Support install is already changing this profile/);
+    const s8Code = await s8Done;
+    assert.equal(s8Code, 0, s8Err);
+    assert.equal(readFileSync(join(s8Profile, 'cache', 'keep.txt'), 'utf8'), 'unsent\n');
+    assert.equal(existsSync(join(s8Profile, '.env')), true);
+    assert.equal(existsSync(join(s8Profile, '.tess-support.incoming')), false);
+    assert.equal(existsSync(s8Previous), false);
+  } finally {
+    if (s8Child.exitCode === null) s8Child.kill('SIGKILL');
   }
 
   const pinned = readFileSync(install, 'utf8');

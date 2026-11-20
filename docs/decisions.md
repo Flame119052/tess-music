@@ -880,9 +880,16 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   `hermes profile install`, because installer scripts may not need `node` and the
   tests never start Hermes. `HERMES_HOME` follows `install.mjs`'s rule: a real install uses `~/.hermes` and refuses
   any other folder inside the login home, a test refuses the login home, and both refuse a symlinked `HERMES_HOME`
-  or profile folder. A reinstall builds the new profile and its Node together in `.tess-support.incoming`, next to
-  the live profile, and renames them on the same disk. `cache/` is carried across, so an unsent visit survives.
-  The cleanup trap never deletes `.tess-support.previous`. A later run puts that folder back if the swap was interrupted.
+  or profile folder.   A reinstall builds the new profile and its Node together in `.tess-support.incoming`, next to
+  the live profile, and renames them on the same disk. The installer replaces only what `distribution.yaml` lists
+  under `distribution_owned`, plus `.env` and the Node `runtime`. Every other top-level item, including `cache/`,
+  `state.db`, `sessions/`, `memories/` and `auth.json`, is carried across. A symlink in that set is refused, the
+  same way a symlinked `cache/` is refused. An unsent visit survives, and so does the person's support chat.
+  The cleanup trap never deletes `.tess-support.previous`. It removes a `.tess-support.incoming` this run created,
+  and if the swap was interrupted it puts the previous profile back before it exits. A profile counts as the live
+  one only when it has both `.env` and `distribution.yaml`. A stub is moved aside and the previous profile is
+  restored. Uninstall removes the profile and also `.tess-support.previous` and `.tess-support.incoming`. When one
+  of those is a symlink, uninstall removes the link and leaves the folder it points at.
   A code that is not one Krish issued, and a Node or profile file that fails its checksum, create no Hermes app,
   no command, and no `~/.hermes`. The command-line sticky profile is
   written only when this run created `HERMES_HOME`. On a later run it is overwritten only while it still says

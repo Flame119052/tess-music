@@ -7,14 +7,16 @@
 # Apple Silicon: the bundled Hermes.app, checksum then codesign and spctl, and only then Applications.
 # Intel: Hermes's command-line installer, pinned to one commit. That installer then downloads Hermes
 # and its Python packages without its own pins. The Dock icon opens the same chat in the browser.
-# Safe to run again. --uninstall removes only this profile, this icon, and this Dock tile:
+# Safe to run again. --uninstall removes this profile, a half-finished swap, this icon, and this Dock tile:
 #
 #   curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/support/mac/install.sh | sh -s -- --uninstall
 #
 # The profile files are the ones distribution.yaml lists, the same list install.mjs copies. This script cannot use
 # install.mjs: a person's Mac may not have node. It downloads a pinned Node.js and keeps only bin/node under the
 # profile, so a visit does not use a node from PATH. HERMES_HOME follows install.mjs's rule: a real install uses
-# ~/.hermes, a test refuses the login home, and both refuse a symlink. --uninstall removes that Node with the profile.
+# ~/.hermes, a test refuses the login home, and both refuse a symlink. --uninstall removes that Node with the profile,
+# and also .tess-support.previous and .tess-support.incoming. A reinstall keeps every top-level item this installer
+# does not own, so the person's chat history stays. It replaces the listed files, .env, and the Node runtime.
 # >>> tess script guard: keep this block identical in every installer script (issue #107) >>>
 # This file used to be able to act on a real Mac when nobody meant it, three ways: being sourced (a shell one-liner
 # like `sh -c '. installer/tess-install.sh; …'` ran the whole real installer), having its text handed to a shell to run
@@ -298,7 +300,7 @@ prepare_places() {
   support_app=$HOME/Applications/Tess\ Support.app
 }
 
-# Create the folders only after the code, the inbox, and the downloads have been checked.
+# Create the folders only after the code, the inbox, Node, the profile files, and the Hermes download have been checked.
 # --uninstall never creates a missing HERMES_HOME.
 ensure_places() {
   if [ "${1:-}" = "uninstall" ]; then
@@ -728,24 +730,160 @@ owned_names() {
   ' "$1"
 }
 
-# A signal between the two renames leaves the good profile at .previous. Put it back.
-# This never deletes .previous: that folder is the only copy until the rename home finishes.
-recover_profile_swap() {
-  profiles_dir=$HERMES_HOME/profiles
-  incoming=$profiles_dir/.tess-support.incoming
-  previous=$profiles_dir/.tess-support.previous
-  if [ ! -e "$profile" ] && [ -d "$previous" ] && [ ! -L "$previous" ]; then
-    if [ -e "$incoming" ]; then
-      rm -rf "$incoming"
+# A directory is removed. A symlink is removed as a link, and the folder it points at stays.
+remove_tree_or_link() {
+  if [ -L "$1" ]; then
+    rm -f "$1"
+  elif [ -e "$1" ]; then
+    rm -rf "$1"
+  fi
+}
+
+# Live means the folder this installer finished: the support code and the file list. A logs stub is not live.
+profile_is_live() {
+  [ -e "$profile" ] || return 1
+  [ -L "$profile" ] && return 1
+  [ -f "$profile/.env" ] || return 1
+  [ -f "$profile/distribution.yaml" ] || return 1
+  return 0
+}
+
+# .previous is the only complete copy until the new folder is in place. Never delete it before that is true.
+drop_previous() {
+  if [ ! -e "$profile_previous" ] && [ ! -L "$profile_previous" ]; then
+    return 0
+  fi
+  if [ ! -f "$profile/.env" ] || [ -e "$profile/.tess-support.incoming" ] || [ -L "$profile/.tess-support.incoming" ]; then
+    die "The previous profile was kept because this folder is not a complete Tess Support profile."
+  fi
+  remove_tree_or_link "$profile_previous"
+}
+
+require_profile_absent() {
+  if [ -e "$profile" ] || [ -L "$profile" ]; then
+    die "The profile folder appeared during the install. Quit Tess Support and run this again. The previous profile was kept."
+  fi
+}
+
+# mkdir is the lock. The pid lets a later run replace a lock whose install is gone.
+acquire_swap_lock() {
+  swap_lock=$profiles_dir/.tess-support.lock
+  if [ -L "$swap_lock" ]; then
+    die "The install lock is a symlink. Refusing to follow it."
+  fi
+  if ! mkdir "$swap_lock" 2>/dev/null; then
+    old=
+    if [ -f "$swap_lock/pid" ] && [ ! -L "$swap_lock/pid" ]; then
+      old=$(tr -d '[:space:]' < "$swap_lock/pid" 2>/dev/null || true)
     fi
-    mv "$previous" "$profile" || die "Could not put the previous profile back."
+    case $old in
+      ''|*[!0-9]*) old= ;;
+    esac
+    if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then
+      die "Another Tess Support install is already changing this profile. Wait until it finishes, then run this again."
+    fi
+    if [ -L "$swap_lock" ]; then
+      die "The install lock is a symlink. Refusing to follow it."
+    fi
+    rm -rf "$swap_lock"
+    mkdir "$swap_lock" 2>/dev/null || die "Another Tess Support install is already changing this profile. Wait until it finishes, then run this again."
   fi
-  if [ -e "$profile" ] && [ -e "$incoming" ]; then
-    rm -rf "$incoming"
+  held_swap_lock=1
+  swap_started=1
+  printf '%s\n' "$$" > "$swap_lock/pid" || die "Could not keep the install lock."
+}
+
+# A Hermes that has this profile open can recreate the folder between the two renames.
+refuse_live_hermes() {
+  if [ "${TESS_TEST:-}" = 1 ] && [ "${TESS_CHECK_LIVE_HERMES:-}" != 1 ]; then
+    return 0
   fi
-  if [ ! -e "$profile" ] && [ ! -d "$previous" ] && [ -e "$incoming" ]; then
-    rm -rf "$incoming"
+  list=$(ps -ax -o args= 2>/dev/null || true)
+  printf '%s\n' "$list" | awk '
+    {
+      line = $0
+      if (line ~ /install\.sh/) next
+      is_hermes = 0
+      if (line ~ /(^|[\/[:space:]])hermes([[:space:]]|$)/) is_hermes = 1
+      if (line ~ /Hermes Agent\.app/) is_hermes = 1
+      if (line ~ /Hermes\.app\/Contents/) is_hermes = 1
+      if (!is_hermes) next
+      if (line ~ /--profile[= ]tess-support([[:space:]]|$)/) found = 1
+      if (line ~ /(^|[[:space:]])-p[= ]tess-support([[:space:]]|$)/) found = 1
+    }
+    END { exit found ? 0 : 1 }
+  ' && die "Tess Support is open. Quit it, then run this again."
+}
+
+move_stub_aside() {
+  if [ ! -e "$profile" ] && [ ! -L "$profile" ]; then
+    return 0
   fi
+  aside=$profiles_dir/.tess-support.aside
+  remove_tree_or_link "$aside" || return 1
+  mv "$profile" "$aside" || return 1
+}
+
+# A signal between the two renames leaves the good profile at .previous. Put it back.
+# This never deletes .previous. A folder without .env and distribution.yaml is not the live profile.
+# Safe to call again, including from the exit trap. It does not exit the script.
+recover_profile_swap() {
+  if [ -L "$HERMES_HOME/profiles" ] || [ -L "$profile" ]; then
+    return 1
+  fi
+  profiles_dir=$HERMES_HOME/profiles
+  profile_incoming=$profiles_dir/.tess-support.incoming
+  profile_previous=$profiles_dir/.tess-support.previous
+  if profile_is_live; then
+    remove_tree_or_link "$profile_incoming" || return 1
+    return 0
+  fi
+  if [ -d "$profile_previous" ] && [ ! -L "$profile_previous" ]; then
+    move_stub_aside || return 1
+    remove_tree_or_link "$profile_incoming" || return 1
+    if [ -e "$profile" ] || [ -L "$profile" ]; then
+      return 1
+    fi
+    mv "$profile_previous" "$profile" || return 1
+    return 0
+  fi
+  if [ -e "$profile" ] || [ -L "$profile" ]; then
+    move_stub_aside || return 1
+  fi
+  if [ ! -e "$profile" ] && [ ! -L "$profile" ]; then
+    remove_tree_or_link "$profile_incoming" || return 1
+  fi
+  return 0
+}
+
+# Chat history, cache, and anything else Hermes wrote. Not the files distribution.yaml owns, .env, or Node.
+carry_profile_items() {
+  set +f
+  for item in "$profile"/* "$profile"/.[!.]* "$profile"/..?*; do
+    if [ ! -e "$item" ] && [ ! -L "$item" ]; then
+      continue
+    fi
+    base=$(basename "$item")
+    case $base in
+      .|..|.env|runtime|.tess-support.*) continue ;;
+    esac
+    owned=0
+    set -f
+    for name in $names; do
+      if [ "$base" = "$name" ]; then
+        owned=1
+      fi
+    done
+    set +f
+    [ "$owned" = 1 ] && continue
+    if [ -L "$item" ]; then
+      die "The profile $base is a symlink. Refusing to follow it."
+    fi
+    if [ "$base" = "cache" ] && [ ! -d "$item" ]; then
+      die "The profile cache is a symlink. Refusing to follow it."
+    fi
+    cp -R "$item" "$profile_incoming/$base"
+  done
 }
 
 install_profile() {
@@ -765,11 +903,13 @@ install_profile() {
   done
   set +f
   profiles_dir=$HERMES_HOME/profiles
-  incoming=$profiles_dir/.tess-support.incoming
-  previous=$profiles_dir/.tess-support.previous
-  recover_profile_swap
+  profile_incoming=$profiles_dir/.tess-support.incoming
+  profile_previous=$profiles_dir/.tess-support.previous
+  # A symlink has to be refused before recovery renames anything inside it.
   refuse_linked_profile
-  mkdir -p "$profiles_dir"
+  if [ ! -e "$profiles_dir" ]; then
+    mkdir -p "$profiles_dir"
+  fi
   refuse_linked_profile
   if [ -L "$profile" ]; then
     die "The profile folder is a symlink. Refusing to follow it."
@@ -777,10 +917,16 @@ install_profile() {
   if [ -e "$profile" ] && [ ! -d "$profile" ]; then
     die "The profile path is not a folder. Nothing was changed in the profile."
   fi
+  refuse_live_hermes
+  acquire_swap_lock
+  recover_profile_swap || die "Could not put the previous profile back."
+  if [ -e "$profile" ] && [ ! -d "$profile" ]; then
+    die "The profile path is not a folder. Nothing was changed in the profile."
+  fi
   # The new profile is a sibling of the live one, so the swap is a rename on the same disk.
-  # cache/ is not in the download, so it is carried across. Node is written into this same folder.
-  rm -rf "$incoming"
-  mkdir -p "$incoming"
+  remove_tree_or_link "$profile_incoming"
+  mkdir -p "$profile_incoming"
+  incoming_ours=1
   set -f
   for rel in $rels; do
     case $rel in
@@ -789,46 +935,48 @@ install_profile() {
         case $dest in
           /*|*..*) die "The profile file $rel is not one this installer will copy." ;;
         esac
-        mkdir -p "$incoming/$(dirname -- "$dest")"
-        cp "$root/$rel" "$incoming/$dest"
+        mkdir -p "$profile_incoming/$(dirname -- "$dest")"
+        cp "$root/$rel" "$profile_incoming/$dest"
         ;;
       support/bot/skills/tess-support/scripts/*)
-        mkdir -p "$incoming/skills/tess-support/scripts"
-        cp "$root/$rel" "$incoming/skills/tess-support/scripts/${rel##*/}"
+        mkdir -p "$profile_incoming/skills/tess-support/scripts"
+        cp "$root/$rel" "$profile_incoming/skills/tess-support/scripts/${rel##*/}"
         ;;
       *) die "The profile file $rel is not one this installer will copy." ;;
     esac
   done
   set +f
-  find "$incoming" -name .env -exec rm -rf {} +
-  if [ -e "$profile/cache" ]; then
-    if [ -L "$profile/cache" ] || [ ! -d "$profile/cache" ]; then
-      die "The profile cache is a symlink. Refusing to follow it."
-    fi
-    cp -R "$profile/cache" "$incoming/cache"
+  find "$profile_incoming" -name .env -exec rm -rf {} +
+  if profile_is_live; then
+    carry_profile_items
   fi
-  place_node "$incoming"
+  place_node "$profile_incoming"
   if [ -L "$profile/.env" ]; then
     die "The profile .env is a symlink. Refusing to follow it."
   fi
   umask 077
-  printf 'TESS_SUPPORT_TOKEN=%s\nTESS_INBOX=%s\n' "$token" "$inbox" > "$incoming/.env"
-  chmod 600 "$incoming/.env"
+  printf 'TESS_SUPPORT_TOKEN=%s\nTESS_INBOX=%s\n' "$token" "$inbox" > "$profile_incoming/.env"
+  chmod 600 "$profile_incoming/.env"
   umask 022
-  if [ -d "$profile" ]; then
-    # Drop an older backup only while the live profile is still here.
-    if [ -e "$previous" ]; then
-      rm -rf "$previous"
-    fi
-    mv "$profile" "$previous" || die "Could not replace the profile. It was left as it was."
-    if mv "$incoming" "$profile"; then
-      rm -rf "$previous" || true
+  if profile_is_live; then
+    drop_previous
+    mv "$profile" "$profile_previous" || die "Could not replace the profile. It was left as it was."
+    require_profile_absent
+    if mv "$profile_incoming" "$profile"; then
+      drop_previous
     else
-      mv "$previous" "$profile" || die "Could not put the previous profile back."
+      if [ -e "$profile" ] || [ -L "$profile" ]; then
+        die "Could not install the profile, and the folder was in the way. The previous profile was kept."
+      fi
+      mv "$profile_previous" "$profile" || die "Could not put the previous profile back."
       die "Could not install the profile. The previous one was put back."
     fi
   else
-    mv "$incoming" "$profile" || die "Could not install the profile. Nothing was changed in the profile."
+    if [ -e "$profile" ] || [ -L "$profile" ]; then
+      die "The profile folder is incomplete, and there is no previous profile to put back."
+    fi
+    require_profile_absent
+    mv "$profile_incoming" "$profile" || die "Could not install the profile. Nothing was changed in the profile."
   fi
 }
 
@@ -934,6 +1082,42 @@ find_hermes_app() {
   return 1
 }
 
+# Download and check the disk image before any Hermes folder is created. The copy into Applications is later.
+prepare_desktop() {
+  desktop_ready=0
+  if [ -d "$apps/Hermes.app" ] || [ -d "$apps/Hermes Agent.app" ]; then
+    return 0
+  fi
+  fetch "$work/stable-mac.yml" "$FEED_URL"
+  parse_feed "$work/stable-mac.yml"
+  fetch "$work/Hermes.dmg" "$ASSET_ORIGIN$dmg_path"
+  got=$(/usr/bin/openssl dgst -sha512 -binary "$work/Hermes.dmg" | /usr/bin/openssl base64 | tr -d '\n')
+  if [ "$got" != "$dmg_hash" ]; then
+    leave_applications "The download did not match Hermes's published checksum. Nothing was copied into Applications."
+  fi
+  mnt=$work/mnt
+  mkdir -p "$mnt"
+  hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$work/Hermes.dmg"
+  desktop_mounted=$(find_hermes_app "$mnt") || leave_applications "The download did not contain Hermes. Nothing was copied into Applications."
+  if ! codesign --verify --deep --strict -R="anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = \"${HERMES_TEAM}\" and identifier \"${HERMES_ID}\"" "$desktop_mounted"; then
+    leave_applications "The Hermes app did not pass Apple's signature check. Nothing was copied into Applications. Do not open the download."
+  fi
+  if ! spctl --assess --type execute "$desktop_mounted"; then
+    leave_applications "Apple's check refused the Hermes app. Nothing was copied into Applications. Do not open the download."
+  fi
+  ver=$(app_version "$desktop_mounted")
+  need=$(hermes_need)
+  if [ -z "$ver" ] || ! version_at_least "$ver" "$need"; then
+    leave_applications "This Hermes is ${ver:-unknown}. Tess Support needs Hermes $need or newer. Nothing was copied into Applications."
+  fi
+  desktop_app_name=$(basename "$desktop_mounted")
+  case $desktop_app_name in
+    Hermes.app|"Hermes Agent.app") ;;
+    *) leave_applications "The download did not contain Hermes. Nothing was copied into Applications." ;;
+  esac
+  desktop_ready=1
+}
+
 install_desktop() {
   hermes_app=
   if [ -d "$apps/Hermes.app" ]; then
@@ -956,39 +1140,14 @@ install_desktop() {
     require_hermes_cli
     return 0
   fi
-  fetch "$work/stable-mac.yml" "$FEED_URL"
-  parse_feed "$work/stable-mac.yml"
-  fetch "$work/Hermes.dmg" "$ASSET_ORIGIN$dmg_path"
-  got=$(/usr/bin/openssl dgst -sha512 -binary "$work/Hermes.dmg" | /usr/bin/openssl base64 | tr -d '\n')
-  if [ "$got" != "$dmg_hash" ]; then
-    leave_applications "The download did not match Hermes's published checksum. Nothing was copied into Applications."
-  fi
-  mnt=$work/mnt
-  mkdir -p "$mnt"
-  hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$work/Hermes.dmg"
-  mounted=$(find_hermes_app "$mnt") || leave_applications "The download did not contain Hermes. Nothing was copied into Applications."
-  if ! codesign --verify --deep --strict -R="anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = \"${HERMES_TEAM}\" and identifier \"${HERMES_ID}\"" "$mounted"; then
-    leave_applications "The Hermes app did not pass Apple's signature check. Nothing was copied into Applications. Do not open the download."
-  fi
-  if ! spctl --assess --type execute "$mounted"; then
-    leave_applications "Apple's check refused the Hermes app. Nothing was copied into Applications. Do not open the download."
-  fi
-  ver=$(app_version "$mounted")
-  need=$(hermes_need)
-  if [ -z "$ver" ] || ! version_at_least "$ver" "$need"; then
-    leave_applications "This Hermes is ${ver:-unknown}. Tess Support needs Hermes $need or newer. Nothing was copied into Applications."
-  fi
-  app_name=$(basename "$mounted")
-  case $app_name in
-    Hermes.app|"Hermes Agent.app") ;;
-    *) leave_applications "The download did not contain Hermes. Nothing was copied into Applications." ;;
-  esac
+  [ "${desktop_ready:-}" = 1 ] || die "The Hermes app was not checked. Nothing was copied into Applications."
+  app_name=$desktop_app_name
   # Checks passed. A failed copy removes only the temporary name, never an existing Hermes app.
   incoming="$apps/.$app_name.tess-incoming"
   if [ -d "$incoming" ]; then
     rm -rf "$incoming"
   fi
-  ditto "$mounted" "$incoming"
+  ditto "$desktop_mounted" "$incoming"
   if ! mv "$incoming" "$apps/$app_name"; then
     rm -rf "$incoming"
     leave_applications "Could not put Hermes into Applications. Applications was left as it was."
@@ -998,6 +1157,24 @@ install_desktop() {
   printf '%s\n' "$app_name" > "$HERMES_HOME/tess-support-app-name"
   hermes_app=$apps/$app_name
   launch=desktop
+}
+
+# Download and check the Intel installer before any Hermes folder is created. It is run later.
+prepare_cli() {
+  cli_ready=0
+  if [ -f "$marker" ] && [ "$(tr -d '[:space:]' < "$marker")" = "cli" ]; then
+    return 0
+  fi
+  if command -v hermes >/dev/null 2>&1 || [ -x "$HOME/.local/bin/hermes" ]; then
+    return 0
+  fi
+  apply_cli_test_pins
+  fetch "$work/hermes-install.sh" "$CLI_URL"
+  got=$(sha256_file "$work/hermes-install.sh")
+  if [ "$got" != "$CLI_SHA" ]; then
+    die "The Hermes installer did not match its pinned checksum. It was not run."
+  fi
+  cli_ready=1
 }
 
 install_cli() {
@@ -1013,12 +1190,7 @@ install_cli() {
     require_hermes_cli
     return 0
   fi
-  apply_cli_test_pins
-  fetch "$work/hermes-install.sh" "$CLI_URL"
-  got=$(sha256_file "$work/hermes-install.sh")
-  if [ "$got" != "$CLI_SHA" ]; then
-    die "The Hermes installer did not match its pinned checksum. It was not run."
-  fi
+  [ "${cli_ready:-}" = 1 ] || die "The Hermes installer was not checked. It was not run."
   # v0.23.2's scripts/install.sh (commit ae2a81cc) honours these and would follow a stray value.
   # HERMES_REPO_URL redirects the clone. HERMES_INSTALL_DIR is not the folder uninstall removes.
   # HERMES_INSTALL_CHANNEL, HERMES_INSTALL_VERBOSE and HERMES_RUNTIME_DIR are read the same way.
@@ -1187,6 +1359,25 @@ uninstall() {
       *) die "Refusing to remove a folder that is not the tess-support profile." ;;
     esac
   fi
+  # An interrupted swap leaves the code in these folders. A symlink is only the link.
+  remove_profile_leftover "$HERMES_HOME/profiles/.tess-support.previous"
+  remove_profile_leftover "$HERMES_HOME/profiles/.tess-support.incoming"
+  remove_profile_leftover "$HERMES_HOME/profiles/.tess-support.aside"
+  lock=$HERMES_HOME/profiles/.tess-support.lock
+  if [ -L "$lock" ]; then
+    rm -f "$lock"
+  elif [ -d "$lock" ]; then
+    old=
+    if [ -f "$lock/pid" ] && [ ! -L "$lock/pid" ]; then
+      old=$(tr -d '[:space:]' < "$lock/pid" 2>/dev/null || true)
+    fi
+    case $old in
+      *[!0-9]*) old= ;;
+    esac
+    if [ -z "$old" ] || ! kill -0 "$old" 2>/dev/null; then
+      rm -rf "$lock"
+    fi
+  fi
   if [ -f "$marker" ]; then
     installed=$(tr -d '[:space:]' < "$marker")
     if [ "$installed" = "app" ] || [ "$installed" = "cli" ]; then
@@ -1248,6 +1439,11 @@ install_main() {
   fi
   stage_node
   stage_profile_files
+  if [ "$arch" = "arm64" ]; then
+    prepare_desktop
+  elif [ "$arch" = "x86_64" ]; then
+    prepare_cli
+  fi
   ensure_places
   launch=web
   if [ "$arch" = "arm64" ]; then
@@ -1265,16 +1461,39 @@ install_main() {
 work=$(mktemp -d "${TMPDIR:-/tmp}/tess-support.XXXXXX")
 mnt=
 restore_echo() {
-  stty echo </dev/tty 2>/dev/null || true
+  { stty echo </dev/tty; } 2>/dev/null || true
+}
+
+remove_profile_leftover() {
+  case $1 in
+    "$HERMES_HOME"/profiles/.tess-support.previous|\
+    "$HERMES_HOME"/profiles/.tess-support.incoming|\
+    "$HERMES_HOME"/profiles/.tess-support.aside) ;;
+    *) die "Refusing to remove a folder that is not a Tess Support leftover." ;;
+  esac
+  remove_tree_or_link "$1"
 }
 
 cleanup() {
   restore_echo
+  # Put a half-finished swap back before this process goes away. Never delete .previous here.
+  if [ "${swap_started:-}" = 1 ]; then
+    recover_profile_swap || true
+  fi
+  if [ "${incoming_ours:-}" = 1 ] && [ -n "${profile_incoming:-}" ]; then
+    if [ -L "$profile_incoming" ]; then
+      rm -f "$profile_incoming" || true
+    elif [ -e "$profile_incoming" ]; then
+      rm -rf "$profile_incoming" || true
+    fi
+  fi
+  if [ "${held_swap_lock:-}" = 1 ] && [ -n "${swap_lock:-}" ] && [ ! -L "$swap_lock" ]; then
+    rm -rf "$swap_lock" || true
+  fi
   if [ -n "${mnt:-}" ]; then
     hdiutil detach "$mnt" >/dev/null 2>&1 || true
   fi
   drop_incoming
-  # .tess-support.previous is the previous profile. A signal during the swap must not lose it.
   if [ -n "${work:-}" ]; then
     rm -rf "$work"
   fi
