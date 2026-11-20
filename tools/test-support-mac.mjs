@@ -550,7 +550,7 @@ sys.path.insert(0, sys.argv[3])
 token, marker = sys.argv[4], sys.argv[5]
 try:
     import tools.terminal_tool
-    from model_tools import get_tool_definitions
+    from model_tools import get_tool_definitions, handle_function_call
     from tools.registry import registry
     from hermes_cli.plugins import get_plugin_manager
 except Exception as exc:
@@ -576,8 +576,10 @@ for needed in ("clarify", "tess_ask_consent", "tess_still", "tess_read_skill", "
 CHAT = "chat-a"
 question = "May I take one still of the Spotify window? It can show your Spotify name, your picture, your friends' activity, and your playlist names."
 
-def run(name, args, session=CHAT, turn=""):
-    return registry.dispatch(name, args or {}, session_id=session, turn_id=turn)
+def run(name, args, session=CHAT):
+    # The real path. handle_function_call forwards session_id and not turn_id.
+    # A turn id passed here would not be what production sends.
+    return handle_function_call(name, args or {}, session_id=session)
 
 def state(session=CHAT):
     visit = loaded.module
@@ -635,11 +637,14 @@ for name, args in (
     run(name, args)
 if kind(state()[0]) == "yes":
     fail("a tool call granted consent")
-asked = json.loads(run("tess_ask_consent", {}, turn="ask-shown"))
+hook("waiting", "ask-shown", assistant="What broke?")
+asked = json.loads(run("tess_ask_consent", {}))
 if asked.get("question") != question:
     fail("question mismatch: %s" % asked)
 if kind(state()[0]) != "asked":
     fail("ask did not record the question: %r" % (state()[0],))
+if "id ask-shown" not in state()[0]:
+    fail("ask stored a turn id the tool call does not receive: %r" % (state()[0],))
 if json.loads(run("tess_still", {})).get("ok"):
     fail("still ran before the reply")
 hook("yes", "ask-shown")
@@ -672,6 +677,9 @@ if kind(state()[0]) != "used":
     fail("the still did not use the yes: %r" % (state()[0],))
 if json.loads(run("tess_still", {})).get("ok"):
     fail("a second still reused the yes")
+reask = json.loads(run("tess_ask_consent", {}))
+if reask.get("ok") or kind(state()[0]) != "used":
+    fail("ask reopened a used yes: %s %r" % (reask, state()[0]))
 again = json.loads(run("tess_visit_start", {}))
 if not again.get("ok"):
     fail("second visit failed: %s" % again)
@@ -680,7 +688,7 @@ if kind(state()[0]) == "yes" or json.loads(run("tess_still", {})).get("ok"):
     fail("a previous visit's yes counted")
 
 run("tess_visit_start", {})
-run("tess_ask_consent", {}, turn="ask-no")
+run("tess_ask_consent", {})
 hook("no", "reply-no")
 if kind(state()[0]) != "no":
     fail("a no was not stored")
@@ -694,13 +702,13 @@ if kind(state()[0]) == "yes" or json.loads(run("tess_still", {})).get("ok"):
     fail("a yes after a no was accepted")
 
 run("tess_visit_start", {})
-run("tess_ask_consent", {}, turn="ask-hidden")
+run("tess_ask_consent", {})
 hook("yes", "hidden-reply", assistant="I'll send it without the picture, ok?")
 if kind(state()[0]) == "yes" or json.loads(run("tess_still", {})).get("ok"):
     fail("a yes counted when the question was never shown")
 
 run("tess_visit_start", {}, session="chat-b")
-run("tess_ask_consent", {}, session=CHAT, turn="ask-a")
+run("tess_ask_consent", {}, session=CHAT)
 hook("yes", "reply-b", session="chat-b")
 if kind(state(CHAT)[0]) == "yes" or kind(state("chat-b")[0]) == "yes":
     fail("a reply from another chat granted consent")
@@ -708,7 +716,7 @@ if json.loads(run("tess_still", {}, session=CHAT)).get("ok"):
     fail("chat A was consented by chat B")
 
 run("tess_visit_start", {})
-run("tess_ask_consent", {}, turn="ask-photo")
+run("tess_ask_consent", {})
 mgr.invoke_hook(
     "pre_llm_call",
     user_message="yes",
@@ -822,13 +830,63 @@ turn = build_turn_context(
 )
 if turn.messages[-1].get("role") != "user" or turn.messages[-1].get("content") != "yes":
     fail("turn_context did not append the reply")
-if not str(turn.messages[-2].get("content", "")).endswith(question):
+if str(turn.messages[-2].get("content", "")).strip() != question:
     fail("turn_context dropped the question")
 if turn_agent.client.calls:
     fail("the stub model ran")
 if kind(state()[0]) != "yes" or "chat " + CHAT not in state()[0]:
     fail("turn_context did not grant the shown yes: %r" % (state()[0],))
 print("turn-ok")
+
+run("tess_visit_start", {})
+hook("waiting", "ask-words", assistant="What broke?")
+run("tess_ask_consent", {})
+hook("yes", "prefix-reply", assistant="Reply yes to file your report.\\n" + question)
+if kind(state()[0]) == "yes" or json.loads(run("tess_still", {})).get("ok"):
+    fail("a yes counted when the question was only the ending")
+hook("yes", "exact-reply", assistant="  " + question + "\\n")
+if kind(state()[0]) != "yes":
+    fail("the question alone was refused: %r" % (state()[0],))
+
+run("tess_visit_start", {})
+hook("waiting", "ask-fail", assistant="What broke?")
+run("tess_ask_consent", {})
+hook("yes", "fail-reply")
+os.environ["TESS_SCREEN_RECORDING"] = "denied"
+failed = json.loads(run("tess_still", {}))
+os.environ.pop("TESS_SCREEN_RECORDING", None)
+if failed.get("ok") or kind(state()[0]) != "used":
+    fail("a failed capture left the yes: %s %r" % (failed, state()[0]))
+if json.loads(run("tess_ask_consent", {})).get("ok") or kind(state()[0]) != "used":
+    fail("ask reopened a failed capture: %r" % (state()[0],))
+
+run("tess_visit_start", {})
+hook("waiting", "ask-race", assistant="What broke?")
+run("tess_ask_consent", {})
+hook("yes", "race-reply")
+_race_text, race_folder = state()
+race_log = str(race_folder / "captures.log")
+os.environ["TESS_CAPTURE_LOG"] = race_log
+os.environ["TESS_CAPTURE_DELAY_MS"] = "400"
+race = []
+def shoot():
+    race.append(json.loads(run("tess_still", {})))
+race_threads = [threading.Thread(target=shoot) for _ in range(2)]
+for race_thread in race_threads:
+    race_thread.start()
+for race_thread in race_threads:
+    race_thread.join()
+os.environ.pop("TESS_CAPTURE_LOG", None)
+os.environ.pop("TESS_CAPTURE_DELAY_MS", None)
+race_ok = [item for item in race if item.get("ok")]
+if len(race) != 2 or len(race_ok) != 1 or kind(state()[0]) != "used":
+    fail("two stills both captured: %s %r" % (race, state()[0]))
+race_logged = 0
+if os.path.exists(race_log):
+    race_logged = open(race_log, encoding="utf-8").read().count("1")
+if race_logged != 1:
+    fail("capture ran %s times" % race_logged)
+print("consent-ok")
 if os.path.exists(marker):
     fail("marker existed before the skill read")
 for name in ("tess-support", "tess-gather", "tess-evidence", "tess-handoff"):
@@ -844,7 +902,8 @@ for name in ("tess-inline-probe", "../.env", "tess-support/../../.env", "other")
     if token and token in json.dumps(got):
         fail("refused skill leaked the token")
 refused = run("skill_view", {"name": "tess-inline-probe"})
-if "Unknown tool" not in refused and "cannot use that skill tool" not in refused:
+# handle_function_call runs the pre_tool_call hook, which blocks this tool.
+if "Unknown tool" not in refused and "cannot use that skill tool" not in refused and "no shell" not in refused:
     fail("skill_view still runs: %s" % refused[:300])
 run("skills_list", {})
 if os.path.exists(marker):
@@ -859,6 +918,7 @@ print("boundary-ok")
     const boundaryText = `${boundary.stdout || ''}${boundary.stderr || ''}`;
     if (boundary.status !== 0) throw new Error(boundaryText || 'hermes dispatch failed');
     assert.match(boundary.stdout, /turn-ok\n/);
+    assert.match(boundary.stdout, /consent-ok\n/);
     assert.match(boundary.stdout, /boundary-ok\n$/);
     assert.equal(existsSync(inlineMarker), false, 'a skill tool ran a command');
     assert.ok(!boundaryText.includes(token), 'the Hermes dispatch printed the token');
