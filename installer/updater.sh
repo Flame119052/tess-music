@@ -501,5 +501,130 @@ done < "$TMP/components.txt"
 [ "$changed" -gt 0 ] && log "parts current ($changed updated)"
 # a newer patcher may support a Spotify version the old one could not
 [ -n "$new_patcher" ] && reapply now
+
+# --- 3. A private Tess Support invite (issue #137) ----------------------------------------------------------------
+# Krish invites one Mac by its 32-hex install id (`tools/reports.mjs support invite add …`, run on his Mac). Nothing about Tess
+# Support is downloaded, shown or even mentioned unless this Mac was invited, and the check answers only yes or no.
+# A yes asks once, in the person's own words; Not now is remembered for that invite for good, and a dialog nobody was
+# there to answer is not a decision, so it asks again next time.
+#
+# The invite is not spent until the signed installer has passed the verifier: a failed download or a bad signature
+# costs nothing. The token is minted by the inbox at claim time and only ever reaches the installer through its
+# environment, never a command line, and it is gone before anything else runs. This function never reads or writes
+# Spotify, so tools/check-safety.sh's rule about Spotify's folder is untouched by it.
+#
+# Runs inside the 20-minute parts check above (which is where TESS_FORCE=1 already lands), so it asks no more often.
+SUPPORT_INBOX="https://tess-music-player.janus.ing"
+# A sandbox may point the check at its own fake; a real Mac always uses the one inbox, so an env var cannot send a
+# person's invite elsewhere.
+[ -n "$TESS_TEST" ] && [ -n "${TESS_INBOX:-}" ] && SUPPORT_INBOX=$TESS_INBOX
+# A sandbox keeps its support profile inside its own folder (TESS_TEST only); a real Mac always uses ~/.hermes.
+SUPPORT_CONFIG="${TESS_SUPPORT_CONFIG:-$HOME/.hermes/profiles/tess-support/config.yaml}"
+
+# What the person clicked: install, decline, or nothing at all. A timeout (or a dialog that could not be shown) is not
+# an answer, so the invite asks again the next time someone is at the Mac.
+support_ask() {
+  if [ -n "$TESS_TEST" ]; then
+    case "${TESS_TEST_INVITE_ANSWER:-}" in
+      install|decline) printf '%s\n' "$TESS_TEST_INVITE_ANSWER" ;;
+    esac
+    return 0
+  fi
+  local res
+  res=$(osascript -e 'display dialog "Krish invited you to Tess Support — a private helper in your Dock that can check Spotify and send him a bug note when something looks off. Nothing runs unless you open it.
+
+Install Tess Support?" with title "Tess Music" buttons {"Not now", "Install"} default button 2 giving up after 900' 2>/dev/null) || res=""
+  case "$res" in
+    *"gave up:true"*) return 0 ;;                        # they were not there; ask again next check
+    *"button returned:Install"*) printf '%s\n' install ;;
+    *"button returned:Not now"*) printf '%s\n' decline ;;
+  esac
+  return 0
+}
+
+# Once it is installed, say what it is and offer to open it. This is the only place a person is told it is a thing.
+support_welcome() {
+  local app="$HOME/Applications/Tess Support.app"
+  if [ -n "$TESS_TEST" ]; then
+    [ "${TESS_TEST_WELCOME_ANSWER:-}" = open ] && open "$app" >/dev/null 2>&1
+    return 0
+  fi
+  local res
+  res=$(osascript -e 'display dialog "Tess Support is now in your Dock.
+
+Click Tess Support anytime something in Spotify looks off — it can run a quick check, ask before taking a screenshot, and send Krish a note. Nothing runs unless you open it." with title "Tess Music" buttons {"Done", "Open Tess Support"} default button 1 giving up after 900' 2>/dev/null) || res=""
+  case "$res" in
+    *"button returned:Open Tess Support"*) [ -d "$app" ] && open "$app" >/dev/null 2>&1 ;;
+  esac
+  return 0
+}
+
+check_support_invite() {
+  [ -x "$VERIFY" ] || return 0
+  # They already have it: never mention it, never ask again.
+  [ -f "$SUPPORT_CONFIG" ] && return 0
+  local iid invited invite_id body tok rc
+  iid=$(tr -d '[:space:]' < "$HOME_TESS/install-id" 2>/dev/null) || iid=""
+  # A report id is 32 lowercase hex characters; anything else is not an id this Mac can be invited by.
+  case "$iid" in ''|*[!0-9a-f]*) return 0 ;; esac
+  [ ${#iid} -eq 32 ] || return 0
+  curl -fsS --max-time 30 -H "content-type: application/json" --data-binary "{\"install\":\"$iid\"}" \
+    "$SUPPORT_INBOX/v1/support/invite/check" -o "$TMP/invite-check.json" 2>/dev/null \
+    || { log "support invite: check failed"; return 0; }
+  body=$(cat "$TMP/invite-check.json" 2>/dev/null) || body=""
+  invited=$(printf '%s' "$body" | sed -n 's/.*"invited"[[:space:]]*:[[:space:]]*true.*/1/p')
+  [ "$invited" = 1 ] || return 0
+  invite_id=$(printf '%s' "$body" | sed -n 's/.*"invite_id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')
+  case "$invite_id" in ''|*[!0-9]*) return 0 ;; esac
+  [ -f "$STATE/.support-invite-asked-$invite_id" ] && return 0
+  case "$(support_ask)" in
+    decline) touch "$STATE/.support-invite-asked-$invite_id"; log "support invite $invite_id: not now"; return 0 ;;
+    install) ;;
+    *) return 0 ;;   # nobody answered: ask again next time, and do not spend the invite
+  esac
+  # Signed first, claimed second: a bad download or a bad signature must not use up the invite.
+  if ! get support-install.sh "$TMP/support-install.sh" || ! get support-install.sig "$TMP/support-install.sig"; then
+    problem "support invite $invite_id: installer download failed"
+    return 0
+  fi
+  if ! "$VERIFY" "$TMP/support-install.sh" "$(tr -d '\n' < "$TMP/support-install.sig")"; then
+    problem "support invite $invite_id: installer failed its signature check; nothing was installed"
+    return 0
+  fi
+  notify "Installing Tess Support… this takes about a minute."
+  if ! body=$(curl -fsS --max-time 30 -H "content-type: application/json" \
+    --data-binary "{\"install\":\"$iid\",\"invite_id\":$invite_id}" "$SUPPORT_INBOX/v1/support/invite/claim" 2>/dev/null); then
+    body=""
+    # A network miss is not an answer: the invite is still open, so the next check asks again.
+    problem "support invite $invite_id: the invite could not be claimed"
+    return 0
+  fi
+  tok=$(printf '%s' "$body" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\(tess_[0-9a-f]*\)".*/\1/p')
+  body=""
+  case "$tok" in tess_*) ;; *) tok="" ;; esac
+  if [ ${#tok} -lt 20 ]; then
+    # The inbox answered and there is no usable token, so this invite is spent or gone. Never ask again for it.
+    touch "$STATE/.support-invite-asked-$invite_id"
+    problem "support invite $invite_id: the invite could not be claimed"
+    return 0
+  fi
+  # The token is in this one command's environment and nowhere else: not argv (which any process can read), not the
+  # log, not the shell it came from. The installer copies it out and unsets it itself.
+  TESS_SUPPORT_TOKEN="$tok" sh "$TMP/support-install.sh" >> "$LOG" 2>&1
+  rc=$?
+  tok=""
+  touch "$STATE/.support-invite-asked-$invite_id"
+  if [ "$rc" -eq 0 ]; then
+    log "support installed"
+    support_welcome
+  else
+    # Not "nothing was changed": the installer runs one step at a time and may have finished some of them.
+    problem "support invite $invite_id: installer exited $rc"
+    notify "Tess Support couldn't finish installing; some files may have been partially set up. Run the uninstall command or ask Krish."
+  fi
+  return 0
+}
+check_support_invite
+
 [ -n "$trouble" ] && doctor --auto
 exit 0
