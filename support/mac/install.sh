@@ -126,6 +126,13 @@ support/bot/skills/tess-support/scripts/session.mjs 01e0447a8ab88163ae478dc60e3a
 # <<< support profile pins <<<
 PROFILE_ORIGIN=https://raw.githubusercontent.com/Flame119052/tess-music/$PROFILE_COMMIT
 INBOX_DEFAULT=https://tess-music-player.janus.ing
+# The window recorder is a Tess release part. Its SHA-256 comes from the stable
+# channel's signed components list, verified with the release public key by the
+# pinned Node this installer already downloads — the same trust the updater gets
+# from tess-verify, with no second binary to ship first. A channel too old to
+# have the part is fine: the visit then takes a still only.
+COMPONENTS_ORIGIN=https://raw.githubusercontent.com/Flame119052/tess-music/stable/dist
+RELEASE_KEY_X='XOYW72EMGoUz6Km-BpIgzTdliV6VzywqMmALhAdr1ws'
 # Current LTS (Lithium). The darwin tarball's bin/node links only macOS system libraries.
 NODE_VERSION=v26.13.1
 NODE_ORIGIN=https://nodejs.org
@@ -346,7 +353,7 @@ ensure_places() {
 
 allow_url() {
   case $1 in
-    "$ASSET_ORIGIN"/*|"$CLI_URL"|"$PROFILE_ORIGIN"/*|"$NODE_ORIGIN"/dist/*) ;;
+    "$ASSET_ORIGIN"/*|"$CLI_URL"|"$PROFILE_ORIGIN"/*|"$NODE_ORIGIN"/dist/*|"$COMPONENTS_ORIGIN"/*|"https://github.com/Flame119052/tess-music/releases/download/"*) ;;
     *) die "Refusing a download from an unknown address." ;;
   esac
 }
@@ -558,6 +565,46 @@ stage_node() {
   fi
 }
 
+# The window recorder, checked before any folder moves. TESS_RECORD_TEST_FILE is
+# the sandbox's stand-in: a real install never sets it.
+stage_record() {
+  record_file=
+  if [ "${TESS_TEST:-}" = 1 ] && [ -n "${TESS_RECORD_TEST_FILE:-}" ]; then
+    if [ ! -f "$TESS_RECORD_TEST_FILE" ] || [ -L "$TESS_RECORD_TEST_FILE" ]; then
+      die "TESS_RECORD_TEST_FILE is not a file."
+    fi
+    record_file=$TESS_RECORD_TEST_FILE
+    return 0
+  fi
+  fetch "$work/components.txt" "$COMPONENTS_ORIGIN/components.txt"
+  fetch "$work/components.sig" "$COMPONENTS_ORIGIN/components.sig"
+  node_bin=${srcfile:-}
+  if [ -z "$node_bin" ] || [ ! -f "$node_bin" ]; then
+    node_bin=$profile/runtime/node/bin/node
+  fi
+  if [ ! -x "$node_bin" ]; then
+    die "The pinned Node is missing, so the components list cannot be checked."
+  fi
+  "$node_bin" -e 'const{createPublicKey,verify}=require("crypto");const fs=require("fs");const key=createPublicKey({key:{kty:"OKP",crv:"Ed25519",x:process.env.TESS_RELEASE_KEY_X},format:"jwk"});const ok=verify(null,fs.readFileSync(process.argv[1]),key,Buffer.from(fs.readFileSync(process.argv[2],"utf8").trim(),"base64"));process.exit(ok?0:1)' "$work/components.txt" "$work/components.sig" || die "The release components list failed its signature."
+  record_line=$(awk '$1 == "record" { print $2, $3; exit }' "$work/components.txt")
+  if [ -z "$record_line" ]; then
+    return 0
+  fi
+  record_sha=$(printf '%s\n' "$record_line" | awk '{ print $1 }')
+  record_url=$(printf '%s\n' "$record_line" | awk '{ print $2 }')
+  is_sha256 "$record_sha" || die "The record part in the components list has no SHA-256."
+  case $record_url in
+    "https://github.com/Flame119052/tess-music/releases/download/"*) ;;
+    *) die "Refusing a record download from an unknown address." ;;
+  esac
+  fetch "$work/tess-record" "$record_url"
+  got=$(sha256_file "$work/tess-record")
+  if [ "$got" != "$record_sha" ]; then
+    die "The window recorder download did not match its checksum. Nothing was unpacked into the profile."
+  fi
+  record_file=$work/tess-record
+}
+
 # The new profile and its Node are built together, so a failed swap does not leave one without the other.
 place_node() {
   dest=$1
@@ -577,6 +624,16 @@ place_node() {
   cp "$srcfile" "$dest/runtime/node/bin/node"
   chmod 755 "$dest/runtime/node/bin/node"
   printf '%s\n' "$NODE_VERSION" > "$dest/runtime/node/VERSION"
+}
+
+# place_record runs after place_node so a reused runtime folder is already in
+# place; an older install with no recorder simply gains runtime/bin here.
+place_record() {
+  dest=$1
+  [ -z "${record_file:-}" ] && return 0
+  mkdir -p "$dest/runtime/bin"
+  cp "$record_file" "$dest/runtime/bin/tess-record"
+  chmod 755 "$dest/runtime/bin/tess-record"
 }
 
 read_token() {
@@ -1121,6 +1178,7 @@ install_profile() {
     carry_profile_items
   fi
   place_node "$profile_incoming"
+  place_record "$profile_incoming"
   if [ -L "$profile/.env" ]; then
     die "The profile .env is a symlink. Refusing to follow it."
   fi
@@ -1600,6 +1658,7 @@ install_main() {
     exit 1
   fi
   stage_node
+  stage_record
   stage_profile_files
   if [ "$arch" = "arm64" ]; then
     prepare_desktop

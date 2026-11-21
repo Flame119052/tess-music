@@ -34,6 +34,17 @@ QUESTION = (
     "May I take one still of the Spotify window? It can show your Spotify name, "
     "your picture, your friends' activity, and your playlist names."
 )
+QUESTION_VIDEO = (
+    "May I record a short clip of just the Spotify window, about ten seconds? "
+    "It can show your Spotify name, your picture, your friends' activity, and "
+    "your playlist names. No other window and no sound are in it."
+)
+# One consent lane per capture kind: a yes to the still is not a yes to the
+# clip, and each lane spends its own answer.
+CONSENT_FILES = {
+    "still": ("consent.txt", "consent.held", "question-sent"),
+    "video": ("consent-video.txt", "consent-video.held", "question-video-sent"),
+}
 # The only skills this profile will show the model. Hermes's skill_view also
 # searches trusted project directories and installs a skill's deps
 # (tools/skills_tool.py skill_view, the search at the roots call and pm.ensure
@@ -382,7 +393,7 @@ def _script(home, *parts):
     return str(real)
 
 
-def _child_env(home, *, token=None, inbox=None):
+def _child_env(home, *, token=None, inbox=None, recorder=None):
     """An environment with no support token, unless this call is the one that posts."""
     env = {}
     for key in _ENV_KEEP:
@@ -399,6 +410,8 @@ def _child_env(home, *, token=None, inbox=None):
         env["TESS_SUPPORT_TOKEN"] = token
     if inbox:
         env["TESS_INBOX"] = inbox
+    if recorder is not None:
+        env["TESS_RECORD"] = recorder
     return env
 
 
@@ -547,8 +560,8 @@ def _output(proc):
     return (err or out or "that step failed")[:400]
 
 
-def _consent_path(session):
-    dest = session / "consent.txt"
+def _consent_path(session, kind="still"):
+    dest = session / CONSENT_FILES[kind][0]
     if dest.is_symlink():
         raise ValueError("refusing to follow a link")
     return dest
@@ -650,12 +663,12 @@ def _parse_consent(lines):
     return record
 
 
-def _read_consent(session):
-    dest = _consent_path(session)
+def _read_consent(session, kind="still"):
+    dest = _consent_path(session, kind)
     if not dest.is_file():
         # rename moved the file aside and the process died before writing claimed.
         # That attempt is spent. Asking again must not restore the yes.
-        held = session / "consent.held"
+        held = session / CONSENT_FILES[kind][1]
         if held.is_symlink():
             raise ValueError("refusing to follow a link")
         if held.is_file():
@@ -668,24 +681,24 @@ def _read_consent(session):
     return _parse_consent(lines)
 
 
-def _write_consent(session, record):
+def _write_consent(session, record, kind="still"):
     lines = [record.state, f"chat {record.chat}", f"turn {record.turn}"]
     if record.turn_id:
         lines.append(f"id {record.turn_id}")
     if record.at:
         lines.append(f"at {record.at}")
-    _atomic_write(_consent_path(session), ("\n".join(lines) + "\n").encode("utf-8"))
+    _atomic_write(_consent_path(session, kind), ("\n".join(lines) + "\n").encode("utf-8"))
 
 
-def _question_sent_path(session):
-    dest = session / "question-sent"
+def _question_sent_path(session, kind="still"):
+    dest = session / CONSENT_FILES[kind][2]
     if dest.is_symlink():
         raise ValueError("refusing to follow a link")
     return dest
 
 
-def _read_question_sent(session):
-    dest = _question_sent_path(session)
+def _read_question_sent(session, kind="still"):
+    dest = _question_sent_path(session, kind)
     if not dest.is_file():
         return None
     try:
@@ -694,8 +707,8 @@ def _read_question_sent(session):
         return None
 
 
-def _write_question_sent(session, when):
-    _atomic_write(_question_sent_path(session), (repr(float(when)) + "\n").encode("utf-8"))
+def _write_question_sent(session, when, kind="still"):
+    _atomic_write(_question_sent_path(session, kind), (repr(float(when)) + "\n").encode("utf-8"))
 
 
 def _live_yes(record, now=None):
@@ -713,22 +726,32 @@ def ask_consent(home=None):
     yes stays spent: another picture needs a new visit. Asking again does not
     reopen either. A live yes is left alone.
     """
+    return _ask_consent("still", "picture", home)
+
+
+def ask_consent_video(home=None):
+    """The clip question, in its own lane. The still's answer never counts here."""
+    return _ask_consent("video", "clip", home)
+
+
+def _ask_consent(kind, noun, home=None):
     session = current_session(home)
-    record = _read_consent(session)
+    question = QUESTION if kind == "still" else QUESTION_VIDEO
+    record = _read_consent(session, kind)
     if record.state == "no":
-        raise ValueError("This visit already declined the picture.")
+        raise ValueError(f"This visit already declined the {noun}.")
     if record.state in ("used", "claimed"):
-        raise ValueError("This visit already took the picture. Start a new visit for another.")
+        raise ValueError(f"This visit already took the {noun}. Start a new visit for another.")
     if _live_yes(record):
-        return {"ok": True, "question": QUESTION}
+        return {"ok": True, "question": question}
     chat = active_chat()
     _write_consent(session, _Consent(
         state="asked",
         chat=chat,
         turn=_turn_now(home),
         turn_id=_stored_turn_id(home),
-    ))
-    return {"ok": True, "question": QUESTION}
+    ), kind)
+    return {"ok": True, "question": question}
 
 
 def _message_text(user_message):
@@ -785,7 +808,7 @@ def _user_timestamp(user_message, history):
     return None
 
 
-def _question_shown(history):
+def _question_shown(history, question):
     """The turn ended on the question.
 
     The message just before the person's turn has to be an assistant message
@@ -801,10 +824,10 @@ def _question_shown(history):
         return False
     if message.get("tool_calls"):
         return False
-    return _message_text(message.get("content")).strip() == QUESTION
+    return _message_text(message.get("content")).strip() == question
 
 
-def _yes_is_after_question(user_message, history, session):
+def _yes_is_after_question(user_message, history, session, kind="still"):
     """A stamped yes has to be from when the question was sent, or later.
 
     A reply with no timestamp is the test hook and the older callers. A reply
@@ -816,10 +839,42 @@ def _yes_is_after_question(user_message, history, session):
     stamp = _user_timestamp(user_message, history)
     if stamp is None:
         return True
-    sent = _read_question_sent(session)
+    sent = _read_question_sent(session, kind)
     if sent is None or stamp < sent:
         return False
     return True
+
+
+def _stamp_answer(user_message, conversation_history, session, kind, turn, hook_turn):
+    """Write this turn's answer into one consent lane, when it qualifies."""
+    record = _read_consent(session, kind)
+    if record.state != "asked":
+        return
+    if record.chat != active_chat() or turn <= record.turn:
+        return
+    if record.turn_id and (not hook_turn or hook_turn == record.turn_id):
+        return
+    question = QUESTION if kind == "still" else QUESTION_VIDEO
+    if not _question_shown(conversation_history, question):
+        return
+    if _plain_yes(_message_text(user_message)):
+        if not _yes_is_after_question(user_message, conversation_history, session, kind):
+            return
+        record = _Consent(
+            state="yes",
+            chat=record.chat,
+            turn=record.turn,
+            turn_id=record.turn_id,
+            at=int(time.time()),
+        )
+    else:
+        record = _Consent(
+            state="no",
+            chat=record.chat,
+            turn=record.turn,
+            turn_id=record.turn_id,
+        )
+    _write_consent(session, record, kind)
 
 
 def pre_llm_call(user_message="", session_id="", turn_id="", conversation_history=None, **kwargs):
@@ -840,41 +895,16 @@ def pre_llm_call(user_message="", session_id="", turn_id="", conversation_histor
         _remember_turn_id(None, turn_id)
         turn = _bump_turn(None)
         session = current_session()
-        record = _read_consent(session)
-        if record.state != "asked":
-            return None
-        if record.chat != active_chat() or turn <= record.turn:
-            return None
         hook_turn = str(turn_id or "").replace("\n", " ").strip()
-        if record.turn_id and (not hook_turn or hook_turn == record.turn_id):
-            return None
-        if not _question_shown(conversation_history):
-            return None
-        if _plain_yes(_message_text(user_message)):
-            if not _yes_is_after_question(user_message, conversation_history, session):
-                return None
-            record = _Consent(
-                state="yes",
-                chat=record.chat,
-                turn=record.turn,
-                turn_id=record.turn_id,
-                at=int(time.time()),
-            )
-        else:
-            record = _Consent(
-                state="no",
-                chat=record.chat,
-                turn=record.turn,
-                turn_id=record.turn_id,
-            )
-        _write_consent(session, record)
+        for kind in ("still", "video"):
+            _stamp_answer(user_message, conversation_history, session, kind, turn, hook_turn)
     except ValueError:
         return None
     return None
 
 
 def post_llm_call(assistant_response="", session_id="", **kwargs):
-    """Record when this turn's final text was the picture question.
+    """Record when this turn's final text was the picture or clip question.
 
     Hermes calls this once per turn after the tool loop
     (agent/turn_finalizer.py _apply_output_hooks) with assistant_response set
@@ -885,17 +915,22 @@ def post_llm_call(assistant_response="", session_id="", **kwargs):
     """
     del kwargs
     try:
-        if _message_text(assistant_response).strip() != QUESTION:
+        text = _message_text(assistant_response).strip()
+        if text == QUESTION:
+            kind = "still"
+        elif text == QUESTION_VIDEO:
+            kind = "video"
+        else:
             return None
         bind_chat(session_id)
-        _write_question_sent(current_session(), time.time())
+        _write_question_sent(current_session(), time.time(), kind)
     except ValueError:
         return None
     return None
 
 
-def _consented(session):
-    return _live_yes(_read_consent(session))
+def _consented(session, kind="still"):
+    return _live_yes(_read_consent(session, kind))
 
 
 def read_skill(name, home=None):
@@ -915,22 +950,22 @@ def read_skill(name, home=None):
     return {"ok": True, "name": name, "skill": real.read_text(encoding="utf-8")}
 
 
-def _claim_yes(session):
+def _claim_yes(session, kind="still", noun="picture", question=QUESTION):
     """Move a live yes to claimed before any capture.
 
     rename of the consent file is the claim: only one caller gets the file.
     The other finds it gone. A capture that then fails is still spent.
     """
-    live = _consent_path(session)
-    held = session / "consent.held"
+    live = _consent_path(session, kind)
+    held = session / CONSENT_FILES[kind][1]
     if held.is_symlink():
         raise ValueError("refusing to follow a link")
     if held.exists():
-        raise ValueError("The picture for this visit was already taken.")
+        raise ValueError(f"The {noun} for this visit was already taken.")
     try:
         os.rename(live, held)
     except OSError:
-        raise ValueError("The picture for this visit was already taken.") from None
+        raise ValueError(f"The {noun} for this visit was already taken.") from None
     current = _parse_consent([])
     try:
         current = _parse_consent(held.read_text(encoding="utf-8").splitlines())
@@ -942,10 +977,10 @@ def _claim_yes(session):
         except OSError:
             pass
         if current.state in ("used", "claimed"):
-            raise ValueError("The picture for this visit was already taken.")
+            raise ValueError(f"The {noun} for this visit was already taken.")
         if current.state == "yes":
-            raise ValueError("Ask again. That yes expired. " + QUESTION)
-        raise ValueError("Ask first, and wait for a yes, before taking the picture. " + QUESTION)
+            raise ValueError("Ask again. That yes expired. " + question)
+        raise ValueError("Ask first, and wait for a yes, before taking the " + noun + ". " + question)
     claimed = _Consent(
         state="claimed",
         chat=current.chat,
@@ -953,7 +988,7 @@ def _claim_yes(session):
         turn_id=current.turn_id,
         at=current.at,
     )
-    _write_consent(session, claimed)
+    _write_consent(session, claimed, kind)
     try:
         held.unlink()
     except OSError:
@@ -961,14 +996,14 @@ def _claim_yes(session):
     return current
 
 
-def _spend_consent(session, record):
+def _spend_consent(session, record, kind="still"):
     _write_consent(session, _Consent(
         state="used",
         chat=record.chat,
         turn=record.turn,
         turn_id=record.turn_id,
         at=record.at,
-    ))
+    ), kind)
 
 
 def still(home=None):
@@ -981,7 +1016,7 @@ def still(home=None):
         raise ValueError("Ask again. That yes expired. " + QUESTION)
     if not _live_yes(record):
         raise ValueError("Ask first, and wait for a yes, before taking the picture. " + QUESTION)
-    held = _claim_yes(session)
+    held = _claim_yes(session, "still", "picture", QUESTION)
     try:
         node = resolve_node(home_path)
         script = _script(home_path, "skills", "tess-evidence", "scripts", "spotify-window.mjs")
@@ -995,6 +1030,66 @@ def still(home=None):
     finally:
         # A failed capture must not put the yes back. Another picture is a new visit.
         _spend_consent(session, held)
+
+
+def resolve_recorder(home=None):
+    """The profile's own window recorder. Missing means this install cannot record.
+
+    TESS_RECORD is the test double. A real install reads only the file the
+    installer placed under runtime/bin, refusing a link anywhere in that path.
+    """
+    home_path = profile_home(home)
+    if os.environ.get("TESS_TEST") == "1":
+        override = os.environ.get("TESS_RECORD", "")
+        if override:
+            real = Path(override).resolve()
+            if real.is_file() and not Path(override).is_symlink():
+                return str(real)
+            raise ValueError("this profile cannot record the window")
+    cursor = home_path
+    for part in ("runtime", "bin"):
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise ValueError("refusing to follow a link")
+        if not cursor.is_dir():
+            return ""
+    binary = cursor / "tess-record"
+    if binary.is_symlink():
+        raise ValueError("refusing to follow a link")
+    if not binary.is_file():
+        return ""
+    real = binary.resolve()
+    if not real.is_file() or not real.is_relative_to(home_path):
+        raise ValueError("the recorder is outside the profile")
+    return str(real)
+
+
+def record(home=None):
+    home_path = profile_home(home)
+    session = current_session(home_path)
+    record = _read_consent(session, "video")
+    if record.state in ("used", "claimed"):
+        raise ValueError("The clip for this visit was already taken.")
+    if record.state == "yes" and not _live_yes(record):
+        raise ValueError("Ask again. That yes expired. " + QUESTION_VIDEO)
+    if not _live_yes(record):
+        raise ValueError("Ask first, and wait for a yes, before recording the window. " + QUESTION_VIDEO)
+    helper = resolve_recorder(home_path)
+    if not helper:
+        raise ValueError("this install cannot record the window; a still is the most it can take")
+    held = _claim_yes(session, "video", "clip", QUESTION_VIDEO)
+    try:
+        node = resolve_node(home_path)
+        script = _script(home_path, "skills", "tess-evidence", "scripts", "spotify-window.mjs")
+        dest = session / "spotify.mov"
+        proc = _run([node, script, "video", str(dest)], _child_env(home_path, recorder=helper), 90)
+        if proc.returncode != 0:
+            raise ValueError(_output(proc))
+        if dest.is_symlink() or not dest.is_file():
+            raise ValueError("the recording was not written")
+        return {"ok": True}
+    finally:
+        _spend_consent(session, held, "video")
 
 
 def open_issues(home=None):
@@ -1059,14 +1154,22 @@ def triage(related=None, also=None, home=None):
     return {"ok": True}
 
 
-def _still_file(session):
-    dest = session / "spotify.png"
+def _session_file(session, name):
+    dest = session / name
     if dest.is_symlink() or not dest.is_file():
         return None
     real = dest.resolve()
     if real.parent != session:
         return None
     return dest
+
+
+def _still_file(session):
+    return _session_file(session, "spotify.png")
+
+
+def _video_file(session):
+    return _session_file(session, "spotify.mov")
 
 
 def post(home=None):
@@ -1086,6 +1189,17 @@ def post(home=None):
         raise ValueError("the inbox did not return a report id")
     report = match.group(1)
     picture = False
+    clip = False
+    video_path = _video_file(session)
+    if video_path is not None:
+        uploaded = _run(
+            [node, script, "recording", report, str(video_path)],
+            env,
+            60,
+        )
+        if uploaded.returncode != 0:
+            raise ValueError(_output(uploaded))
+        clip = True
     still_path = _still_file(session)
     if still_path is not None:
         uploaded = _run(
@@ -1096,10 +1210,10 @@ def post(home=None):
         if uploaded.returncode != 0:
             raise ValueError(_output(uploaded))
         picture = True
-    # Remember only after the still, when there is one, has been accepted.
-    # A failed upload must not let handoff delete the picture.
+    # Remember only after the capture, when there is one, has been accepted.
+    # A failed upload must not let handoff delete the evidence.
     _remember(home_path, report, "report-id")
-    return {"ok": True, "id": report, "picture": picture}
+    return {"ok": True, "id": report, "picture": picture, "clip": clip}
 
 
 def handoff(home=None):
@@ -1252,6 +1366,28 @@ def register(ctx):
             {},
             [],
             lambda params: call(lambda _got: still(), params, ()),
+        ),
+        _tool(
+            "tess_ask_consent_video",
+            "Ask before any clip. Returns the exact question. Send it as its own "
+            "message and end the turn on it: the whole message is that question, with "
+            "nothing before it, nothing after it, and no tool call beside it. Their "
+            "next message is the answer. yes, y, and go ahead are a yes. ok and sure "
+            "are not. A no is final for this visit, and so is a clip already taken. "
+            "You cannot record a yes yourself. " + QUESTION_VIDEO,
+            {},
+            [],
+            lambda params: call(lambda _got: ask_consent_video(), params, ()),
+        ),
+        _tool(
+            "tess_record",
+            "Record one short clip of the Spotify window into this visit's folder. Takes no arguments. "
+            "Refuses until the person's own later message, after the turn ended on the "
+            "question with no tool call beside it, was yes, y, or go ahead. One clip, within five "
+            "minutes. The yes is spent even if the capture fails. " + QUESTION_VIDEO,
+            {},
+            [],
+            lambda params: call(lambda _got: record(), params, ()),
         ),
         _tool(
             "tess_read_skill",

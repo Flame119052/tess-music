@@ -50,6 +50,9 @@ const nodeVersion = readFileSync(install, 'utf8').match(/^NODE_VERSION=(v\d+\.\d
 const fakeNode = join(mkdtempSync(join(tmpdir(), 'tess-support-fake-node-')), 'node');
 writeFileSync(fakeNode, '#!/bin/sh\nprintf \'%s\\n\' tess-support-node\n');
 chmodSync(fakeNode, 0o755);
+const fakeRecord = join(mkdtempSync(join(tmpdir(), 'tess-support-fake-record-')), 'tess-record');
+writeFileSync(fakeRecord, '#!/bin/sh\nprintf \'%s\\n\' tess-record\n');
+chmodSync(fakeRecord, 0o755);
 const packNode = (arch) => {
   const dir = mkdtempSync(join(tmpdir(), `tess-support-node-${arch}-`));
   const top = `node-${nodeVersion}-darwin-${arch}`;
@@ -445,6 +448,7 @@ const baseEnv = (place, extra) => ({
   TESS_NODE_SHA_ARM64: armHash,
   TESS_NODE_SHA_X64: x64Hash,
   TESS_HERMES_CLI_SHA: cliHash,
+  TESS_RECORD_TEST_FILE: fakeRecord,
   OPENCODE_GO_API_KEY: decoy,
   LANG: 'C',
   ...extra,
@@ -491,6 +495,7 @@ try {
       PATH: '/usr/bin:/bin', HOME: join(ref, 'home'), HERMES_HOME: join(ref, 'hermes'), TMPDIR: tmpdir(),
       LANG: 'C', TESS_TEST: '1', TESS_SUPPORT_TOKEN: token, TESS_INBOX: 'http://127.0.0.1:9',
       TESS_NODE_RUNTIME: fakeNode,
+      TESS_RECORD: fakeRecord,
     },
   });
   assert.equal(refOut, 'via copy\n');
@@ -498,7 +503,7 @@ try {
   for (const name of ['plugins/tess-visit/__init__.py', 'plugins/tess-visit/plugin.yaml', 'skills/tess-gather/scripts/doctor.mjs',
     'skills/tess-evidence/scripts/spotify-window.mjs', 'skills/tess-handoff/scripts/triage-inbox.mjs',
     'skills/tess-support/scripts/session.mjs', 'config.yaml', 'distribution.yaml', 'SOUL.md', '.env',
-    'runtime/node/bin/node', 'runtime/node/VERSION']) {
+    'runtime/node/bin/node', 'runtime/node/VERSION', 'runtime/bin/tess-record']) {
     assert.ok(reference.has(name), `install.mjs did not install ${name}`);
   }
   assert.ok(reference.get('runtime/node/bin/node').equals(readFileSync(fakeNode)));

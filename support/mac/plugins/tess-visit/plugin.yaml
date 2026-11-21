@@ -8,6 +8,8 @@ provides_tools:
   - tess_guard_log
   - tess_ask_consent
   - tess_still
+  - tess_ask_consent_video
+  - tess_record
   - tess_read_skill
   - tess_save_note
   - tess_open_issues

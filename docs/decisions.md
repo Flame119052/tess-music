@@ -1076,3 +1076,19 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   from Cloudflare alone. *Trade-off:* `go` stays the committed default in `inbox/wrangler.toml` until `zen` +
   `hy4-flash-free` is live-tested with `OPENCODE_GO_API_KEY`; a `wrangler deploy --var` override is temporary and
   reverted by the next plain deploy unless also committed in `inbox/wrangler.toml`.
+
+- **D-114 · 21 Nov 2026 · Agent** — A support visit records a **short silent clip of the Spotify window only** through a
+  dedicated ScreenCaptureKit helper, `mini/TessRecord.swift`, shipped as the signed `record` release part and installed
+  at `runtime/bin/tess-record` (#128). `screencapture -V` is never used: it ignores `-l` and grabs the whole display.
+  The helper resolves the window from `SCShareableContent` by window id — a bogus id or a non-Spotify window exits
+  nonzero, so nothing can degrade into a full-screen capture. Clips are h264 `.mov`, capped at ten seconds, with no
+  audio track at all. Consent for a clip is a **separate lane** from the still: its own question, files
+  (`consent-video.txt`, `consent-video.held`, `question-video-sent`), and affirmative set (`yes`, `y`, `go ahead` only).
+  A still yes never runs a clip, a clip yes never runs a still, a failed run still spends the consent, and the same
+  five-minute expiry and atomic-claim rules apply. The installer fetches the recorder's SHA-256 from the stable
+  channel's signed `components.txt`, verified with the release public key by the pinned Node it already downloads — the
+  same trust the updater gets from `tess-verify`, with no second verifier binary to bootstrap. A channel too old to
+  carry the part simply leaves the visit still-only. *Why:* #128 needs video evidence for layout bugs a still cannot
+  show, and the privacy cost of video demands a second, explicit opt-in rather than widening the still consent.
+  *Trade-off:* ScreenCaptureKit needs macOS 12.3+ for window capture and 13+ preferred; the helper targets 13.0 like
+  Tess Mini. Intel and Apple Silicon share one universal binary signed in `tools/release.mjs` beside the Mini.

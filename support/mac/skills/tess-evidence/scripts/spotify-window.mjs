@@ -3,9 +3,12 @@
 // get a shell line that can grow -D (the whole display) or -G (the microphone).
 //   $HERMES_HOME/runtime/node/bin/node spotify-window.mjs                         prints the window id
 //   $HERMES_HOME/runtime/node/bin/node spotify-window.mjs still <session>/spotify.png
-// A still uses screencapture -l, which is the window. Video is not here:
-// screencapture -V ignores -l and records the whole display. A window recording
-// needs ScreenCaptureKit, which this profile does not ship.
+//   $HERMES_HOME/runtime/node/bin/node spotify-window.mjs video <session>/spotify.mov
+// A still uses screencapture -l, which is the window. A recording can never
+// take that path: its video flag ignores -l and records the whole display.
+// Video comes
+// only from the tess-record helper (TESS_RECORD), which captures that one
+// window. No helper, no video: there is no display-wide fallback.
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, lstatSync, writeFileSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
@@ -39,16 +42,16 @@ const windowId = () => {
   return id;
 };
 
-const stillPath = (out) => {
-  if (!out || out.startsWith('-') || out.split(/[/\\]/).includes('..')) die('the still must be <session>/spotify.png');
+const capturePath = (out, name, label) => {
+  if (!out || out.startsWith('-') || out.split(/[/\\]/).includes('..')) die(`the ${label} must be <session>/${name}`);
   let session;
   try { session = inRoot(dirname(out)); } catch (err) { die(err.message); }
   let dirStat;
   try { dirStat = lstatSync(session); } catch { die('that path is not a session folder'); }
   if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) die('refusing to follow a link');
-  if (basename(resolve(out)) !== 'spotify.png') die('the still must be named spotify.png');
+  if (basename(resolve(out)) !== name) die(`the ${label} must be named ${name}`);
   const dest = resolve(out);
-  if (dirname(dest) !== session) die('the still must be named spotify.png');
+  if (dirname(dest) !== session) die(`the ${label} must be named ${name}`);
   try {
     if (lstatSync(dest).isSymbolicLink()) die('refusing to follow a link');
   } catch (err) {
@@ -56,6 +59,8 @@ const stillPath = (out) => {
   }
   return dest;
 };
+const stillPath = (out) => capturePath(out, 'spotify.png', 'still');
+const videoPath = (out) => capturePath(out, 'spotify.mov', 'recording');
 
 const [mode, out, extra] = process.argv.slice(2);
 if (process.argv.length === 2) {
@@ -78,6 +83,24 @@ if (process.argv.length === 2) {
   } else {
     execFileSync('/usr/sbin/screencapture', ['-x', '-l', windowId(), dest], { stdio: 'inherit' });
   }
+} else if (!extra && mode === 'video' && out) {
+  const dest = videoPath(out);
+  // TESS_RECORD names the only program allowed to write video, and the helper
+  // checks the window belongs to Spotify itself. Without it there is no way to
+  // record the window alone, so this stops rather than reach for the display.
+  const helper = process.env.TESS_RECORD;
+  if (!helper || helper.includes('..')) die('this profile cannot record the window');
+  if (recordingDenied()) die('Screen Recording is not allowed');
+  if (process.env.TESS_TEST === '1' && process.env.TESS_FAKE_CAPTURE === '1') {
+    try { writeFileSync(dest, Buffer.from('tess-fake-recording'), { mode: 0o600 }); }
+    catch { die('cannot write the recording'); }
+  } else {
+    try {
+      execFileSync(helper, [windowId(), dest], { stdio: 'inherit' });
+    } catch (err) {
+      die(scrub(String(err.stderr || err.message || 'the recording failed')));
+    }
+  }
 } else {
-  die('usage: spotify-window.mjs [still <session>/spotify.png]');
+  die('usage: spotify-window.mjs [still <session>/spotify.png] [video <session>/spotify.mov]');
 }

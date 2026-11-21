@@ -315,7 +315,7 @@ print(json.dumps({"before": before, "after": after, "raw": raw}))
       assert.equal(listed.after.includes(name), false, `${name} came back after the plugin loaded`);
       assert.equal(listed.raw.includes(name), false, `${name} is in the catalog the bridge can call`);
     }
-    for (const name of ['clarify', 'tess_visit_start', 'tess_doctor', 'tess_guard_log', 'tess_ask_consent', 'tess_still', 'tess_read_skill', 'tess_save_note', 'tess_open_issues', 'tess_triage', 'tess_post', 'tess_handoff']) {
+    for (const name of ['clarify', 'tess_visit_start', 'tess_doctor', 'tess_guard_log', 'tess_ask_consent', 'tess_ask_consent_video', 'tess_still', 'tess_record', 'tess_read_skill', 'tess_save_note', 'tess_open_issues', 'tess_triage', 'tess_post', 'tess_handoff']) {
       assert.equal(listed.after.includes(name), true, `${name} was removed from the model tool list`);
     }
     for (const name of ['tool_search', 'tool_describe', 'tool_call']) {
@@ -364,7 +364,9 @@ print(json.dumps({"before": before, "after": after, "raw": raw}))
   assert.match(windowScript, /execFileSync\('\/usr\/sbin\/screencapture'/);
   assert.match(windowScript, /inRoot/);
   assert.doesNotMatch(windowScript, /'-D'|'-G'|'-V'/);
-  assert.doesNotMatch(windowScript, /mode === 'video'/);
+  assert.match(windowScript, /mode === 'video'/);
+  assert.match(windowScript, /TESS_RECORD/);
+  assert.doesNotMatch(windowScript, /screencapture[^']*-V/);
   const wrapper = join(root, 'support/mac/skills/tess-handoff/scripts/triage-inbox.mjs');
   const notInbox = fails(wrapper, ['--report', '/tmp/doctor.txt', '--mode', 'issue'], baseEnv);
   assert.match(String(notInbox.stderr), /--mode inbox/);
@@ -519,12 +521,15 @@ print(json.dumps({"before": before, "after": after, "raw": raw}))
   mkdirSync(bin);
   writeFileSync(join(bin, 'tess'), '#!/bin/sh\necho "can\'t find Spotify"\necho "ada@example.com"\necho "/Users/ada/Library/Application Support/Tess/guard.log"\n', { mode: 0o755 });
   chmodSync(join(bin, 'tess'), 0o755);
+  // A stand-in for the real tess-record: writes a small fake clip at the path it is given.
+  writeFileSync(join(bin, 'tess-record'), '#!/bin/sh\nprintf \'fake-clip\\n\' > "$2"\n', { mode: 0o755 });
   const visitEnv = {
     ...baseEnv,
     PATH: `${bin}:${process.env.PATH}`,
     HERMES_HOME: visitProfile,
     TESS_TEST: '1',
     TESS_FAKE_CAPTURE: '1',
+    TESS_RECORD: join(bin, 'tess-record'),
     TESS_NODE: process.execPath,
     TESS_SUPPORT_TOKEN: token,
     TESS_INBOX: `http://127.0.0.1:${visitPort}`,
@@ -570,7 +575,7 @@ for banned in ("skills_list", "skill_view", "skill_manage", "tess_consent", "ter
     if banned in names:
         print("tool still offered: %s" % banned, file=sys.stderr)
         raise SystemExit(1)
-for needed in ("clarify", "tess_ask_consent", "tess_still", "tess_read_skill", "tess_visit_start"):
+for needed in ("clarify", "tess_ask_consent", "tess_ask_consent_video", "tess_still", "tess_record", "tess_read_skill", "tess_visit_start"):
     if needed not in names:
         print("missing tool: %s in %s" % (needed, names), file=sys.stderr)
         raise SystemExit(1)
@@ -1038,6 +1043,36 @@ if not held_reads or not str(held_reads[0]).startswith("yes"):
 if kind(state()[0]) != "used":
     fail("atomic replace did not land: %r" % (state()[0],))
 print("consent-ok")
+
+# The clip lane: its own file, its own question, never the still lane's yes.
+vquestion = "May I record a short clip of just the Spotify window, about ten seconds? It can show your Spotify name, your picture, your friends' activity, and your playlist names. No other window and no sound are in it."
+hook("waiting", "video-ask-shown", assistant="What broke?")
+vasked = json.loads(run("tess_ask_consent_video", {}))
+if vasked.get("question") != vquestion:
+    fail("video question mismatch: %s" % vasked)
+_, vfolder = state()
+vpath = vfolder / "consent-video.txt"
+if vpath.read_text(encoding="utf-8").split("\\n", 1)[0] != "asked":
+    fail("video ask was not recorded")
+# The turn that asked cannot answer its own question.
+hook("yes", "video-ask-shown", assistant=vquestion)
+if json.loads(run("tess_record", {})).get("ok"):
+    fail("the video question turn accepted its own yes")
+# A yes that follows the still question is not a yes to the clip question.
+hook("yes", "video-wrong-question")
+if json.loads(run("tess_record", {})).get("ok"):
+    fail("a yes under the still question ran a video")
+hook("go ahead", "video-yes", assistant=vquestion)
+clip = json.loads(run("tess_record", {}))
+if not clip.get("ok"):
+    fail("a video yes did not allow the clip: %s" % clip)
+if not (vfolder / "spotify.mov").is_file():
+    fail("the clip was not written")
+if vpath.read_text(encoding="utf-8").split("\\n", 1)[0] != "used":
+    fail("the clip did not spend the yes")
+if json.loads(run("tess_record", {})).get("ok"):
+    fail("a second clip ran on the spent yes")
+print("video-consent-ok")
 if os.path.exists(marker):
     fail("marker existed before the skill read")
 for name in ("tess-support", "tess-gather", "tess-evidence", "tess-handoff"):
@@ -1070,6 +1105,7 @@ print("boundary-ok")
     if (boundary.status !== 0) throw new Error(boundaryText || 'hermes dispatch failed');
     assert.match(boundary.stdout, /turn-ok\n/);
     assert.match(boundary.stdout, /consent-ok\n/);
+    assert.match(boundary.stdout, /video-consent-ok\n/);
     assert.match(boundary.stdout, /boundary-ok\n$/);
     assert.equal(existsSync(inlineMarker), false, 'a skill tool ran a command');
     assert.ok(!boundaryText.includes(token), 'the Hermes dispatch printed the token');
@@ -1096,8 +1132,15 @@ print("boundary-ok")
   const deniedStill = fails(windowScriptVisit, ['still', join(session, 'spotify.png')], deniedEnv);
   assert.match(String(deniedStill.stderr), /Screen Recording is not allowed/);
   assert.equal(existsSync(join(session, 'spotify.png')), false, 'a denied capture wrote a picture');
-  const videoRefused = fails(windowScriptVisit, ['video', join(session, 'spotify.png')], visitEnv);
-  assert.match(String(videoRefused.stderr), /usage/);
+  const videoName = fails(windowScriptVisit, ['video', join(session, 'spotify.png')], visitEnv);
+  assert.match(String(videoName.stderr), /spotify\.mov/);
+  const noHelperEnv = { ...visitEnv };
+  delete noHelperEnv.TESS_RECORD;
+  const noHelper = fails(windowScriptVisit, ['video', join(session, 'spotify.mov')], noHelperEnv);
+  assert.match(String(noHelper.stderr), /cannot record/);
+  assert.equal(existsSync(join(session, 'spotify.mov')), false, 'a refused run wrote a clip');
+  run(windowScriptVisit, ['video', join(session, 'spotify.mov')], visitEnv);
+  assert.ok(statSync(join(session, 'spotify.mov')).size > 0, 'the helper did not write a clip');
   run(join(visitProfile, 'skills/tess-gather/scripts/doctor.mjs'), [session], visitEnv);
   run(windowScriptVisit, ['still', join(session, 'spotify.png')], visitEnv);
   const triageInbox = join(visitProfile, 'skills/tess-handoff/scripts/triage-inbox.mjs');
