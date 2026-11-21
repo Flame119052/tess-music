@@ -106,9 +106,9 @@ providerDetails.antigravity.home = [antigravityTokenRelative];
 // not Krish's tokens, and they are not copied into this repo: GitHub push protection refuses them as
 // literals. Each anchor occurs once in that pinned build. A binary that does not have both, each followed
 // by the expected shape, fails closed.
-const antigravityClientIdAnchor = 'sion (low|medium|high|xhigh|max)';
-const antigravityClientSecretAnchor = 'https://auth.cloud.google/authorize';
-const antigravityClientIdShape = /^[0-9]{12}-[a-z0-9]{32}\.apps\.googleusercontent\.com/;
+const antigravityClientIdAnchor = 'classification.deprecated_as_an_error';
+const antigravityClientSecretAnchor = 'v1beta/models/%s:generateContent';
+const antigravityClientIdShape = /^[0-9]{13}-[a-z0-9]{32}\.apps\.googleusercontent\.com/;
 const antigravityClientSecretShape = /^GOCSPX-[A-Za-z0-9_-]{28}/;
 
 export function readAntigravityOAuthClient(binary) {

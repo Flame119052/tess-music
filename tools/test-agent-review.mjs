@@ -629,9 +629,9 @@ test('Antigravity is a GitHub reviewer on the Google plan, and a machine tag is 
 });
 
 test('the Google sign-in client is read from the agy binary, and a binary without the anchors fails closed', () => {
-  const idAnchor = 'sion (low|medium|high|xhigh|max)';
-  const secretAnchor = 'https://auth.cloud.google/authorize';
-  const id = ['123456789012', '-', 'a'.repeat(32), '.apps.', 'googleusercontent.com'].join('');
+  const idAnchor = 'classification.deprecated_as_an_error';
+  const secretAnchor = 'v1beta/models/%s:generateContent';
+  const id = ['1234567890123', '-', 'a'.repeat(32), '.apps.', 'googleusercontent.com'].join('');
   const secret = ['GOC', 'SPX-', 'b'.repeat(28)].join('');
   const bin = Buffer.from(`noise ${idAnchor}${id} mid ${secretAnchor}${secret}https://next`);
   assert.deepEqual(readAntigravityOAuthClient(bin), { id, secret });
