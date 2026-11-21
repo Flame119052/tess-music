@@ -104,7 +104,7 @@ HERMES_ID='com.nousresearch.hermes-bundled'
 # The same minimum distribution.yaml names. A checkout whose file disagrees is refused.
 HERMES_REQUIRES='>=0.22.0'
 # >>> support profile pins >>>
-PROFILE_COMMIT=c866c5b30b48a88d807561d7e272564efba050ba
+PROFILE_COMMIT=b6d067836f700944d8977dfca33e6dc14fae790f
 PROFILE_PINS='
 support/mac/config.yaml 7f7ed106b34a83666281084295e685d6e64c90c92cbaf3700a57f29687535341
 support/mac/distribution.yaml eadfc479acbfbba4ea2a628e2786b32e5370294e7162d185de0a8d6b06f32bd4
@@ -1093,8 +1093,8 @@ install_profile() {
   fi
   # The new profile is a sibling of the live one, so the swap is a rename on the same disk.
   remove_tree_or_link "$profile_incoming"
-  mkdir -p "$profile_incoming"
   # Other accounts must not read a carried chat file through a 755 folder.
+  mkdir -p -m 700 "$profile_incoming"
   chmod 700 "$profile_incoming"
   incoming_ours=1
   set -f
