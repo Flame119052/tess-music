@@ -304,6 +304,9 @@ async function supportInviteClaim(request, env) {
   } catch { return reply(503); }
   const took = (r) => r?.meta?.changes === 1;
   if (!Array.isArray(results) || results.length !== 2 || !took(results[0]) || !took(results[1])) {
+    if (took(results?.[0])) {
+      try { await env.DB.prepare('UPDATE support_tokens SET revoked = ? WHERE sha = ?').bind(now, tokenHash).run(); } catch {}
+    }
     return inviteJson(404, { error: 'not found' });
   }
   return inviteJson(200, { token: raw });

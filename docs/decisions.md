@@ -1087,8 +1087,10 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   changed row. Every miss — wrong install id, expired, revoked, already claimed — is the same 404. Both routes share
   `env.LIMIT`, keyed by a salted hash of the caller when `SALT` is present (and the raw IP only if `SALT` is missing;
   the limiter binding does not persist keys), and a 2 KB body cap. `tools/release.mjs` publishes a signed copy of
-  the already-public `support/mac/install.sh` as `dist/support-install.sh` + `.sig`, deliberately not in
-  `components.txt`. `installer/updater.sh` drops the main `.installing` lock before checking for an invite (so a
+  the already-public `support/mac/install.sh` as `dist/support-install.sh` + `.sig`, and pins its SHA-256 as a
+  URL-less `support-install <sha>` line in the signed `components.txt` (the parts loop skips it, so no Mac downloads
+  it as a part), so an invited Mac refuses an older signed copy replayed by a stale mirror. `installer/updater.sh` drops
+  the main `.installing` lock before checking for an invite (so a
   waiting dialog never blocks `wake.sh` or updates, and finishing never deletes another run's lock) and uses its own
   `.support-invite.lock`, checking after the 20-minute parts check only when the Mac has no
   `~/.hermes/profiles/tess-support/config.yaml`. The dialog is `{"Not now", "Install"}`, default Install, `giving up
