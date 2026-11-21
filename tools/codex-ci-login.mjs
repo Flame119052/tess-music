@@ -2,9 +2,9 @@
 // Create or renew the ChatGPT-plan login the hosted reviewer uses, without touching the login on this Mac.
 //
 // Why a separate CODEX_HOME: a ChatGPT-plan login is an `auth.json` holding a refresh token, and refreshing it can rotate
-// that token. A GitHub runner is disposable, so a rotation there would be lost; this script keeps the one login the review
-// uses in its own folder on Krish's machine, where a rotation can be written back and uploaded. `~/.codex` is never read or
-// written, so his own Codex session cannot be disturbed by anything here.
+// that token. The scheduled workflow (D-111) is what renews the secret. This script is the fallback for when that
+// refresh is broken: run it only after the codex-refresh schedule is off. Uploading this folder while the schedule is
+// on replaces the rotated secret with a stale copy. `~/.codex` is never read or written.
 //
 // Usage:
 //   node tools/codex-ci-login.mjs            # sign in if needed, then upload the secret
@@ -112,4 +112,4 @@ const raw = readFileSync(authPath, 'utf8');
 execFileSync('gh', ['secret', 'set', 'CODEX_AUTH_JSON', '-R', repo], { input: raw, stdio: ['pipe', 'inherit', 'inherit'] });
 writeFileSync(join(home, '.uploaded'), new Date().toISOString());
 say(`Uploaded CODEX_AUTH_JSON to ${repo}. ${describe(freshExpiry)}.`);
-say('Renew with this same command before it expires; a review refuses to start inside the last 12 hours.');
+say('Leave this copy alone while the codex-refresh schedule is on. Uploading it again replaces the rotated secret.');
