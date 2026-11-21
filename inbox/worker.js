@@ -19,6 +19,8 @@ const MAX_SUPPORT = 48 * 1024;
 // video cap is generous; it exists so a stray 500 MB file can't land in R2. A still is smaller.
 const MAX_RECORDING = 50 * 1024 * 1024;
 const MAX_IMAGE = 5 * 1024 * 1024;
+// An invite request is one install id and one number. Anything larger is not this route.
+const MAX_INVITE = 2 * 1024;
 const RECORDING_DAYS = 14;
 const DAILY_CAP = 2000;
 // One model, one URL. The client does not get to choose either. Defaults match the support chat plan; wrangler
@@ -214,6 +216,93 @@ async function support(request, env) {
   return new Response(JSON.stringify({ ok: true, id: row.meta?.last_row_id ?? null }), {
     status: 201, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
   });
+}
+
+// --- private Tess Support invites: POST /v1/support/invite/check and /v1/support/invite/claim (#137).
+//
+// Krish invites one Mac by its 32-hex install id (`node tools/reports.mjs support invite add …`). The database never
+// holds that id, only its SHA-256, and never holds a token: the one-time `tess_...` token is minted here at claim time,
+// stored hashed in support_tokens, and returned once with `Cache-Control: no-store`.
+//
+// The check answers yes or no and an id. It does not name the invite's label, so an uninvited Mac (or someone guessing
+// install ids) learns nothing. The claim answers the same 404 whether the install id is wrong, the invite expired, it
+// was revoked or it was already claimed, so it is not an oracle either.
+const INVITE_INSTALL = /^[0-9a-f]{32}$/;
+
+function inviteJson(status, obj) {
+  return new Response(JSON.stringify(obj), {
+    status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+  });
+}
+
+// Both invite routes share one gate: Cloudflare's limiter first, keyed by a salted hash of the caller (no address is
+// stored, and the key cannot be reversed without the salt), then strict JSON, then a body counted as it arrives so a
+// Content-Length cannot lie about its size.
+async function inviteGate(request, env) {
+  if (!env.DB) return { failed: reply(503) };
+  if (!env.LIMIT || typeof env.LIMIT.limit !== 'function') return { failed: reply(503) };
+  if (request.headers.get('content-type') !== 'application/json') return { failed: reply(415) };
+  const len = Number(request.headers.get('content-length') || 0);
+  if (!len || len > MAX_INVITE) return { failed: reply(413) };
+  const ip = request.headers.get('cf-connecting-ip') || '';
+  const key = typeof env.SALT === 'string' && env.SALT.length >= MIN_SALT ? await shaFull(`${env.SALT}|${ip}`) : ip;
+  try {
+    const { success } = await env.LIMIT.limit({ key });
+    if (!success) return { failed: reply(429) };
+  } catch { return { failed: reply(503) }; }
+  const bytes = await readCapped(request, MAX_INVITE);
+  if (!bytes) return { failed: reply(413) };
+  let body;
+  try { body = JSON.parse(new TextDecoder().decode(bytes)); } catch { return { failed: reply(400) }; }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return { failed: reply(400) };
+  return { install: body.install, body };
+}
+
+async function supportInviteCheck(request, env) {
+  const gate = await inviteGate(request, env);
+  if (gate.failed) return gate.failed;
+  if (typeof gate.install !== 'string' || !INVITE_INSTALL.test(gate.install)) return reply(400);
+  let row;
+  try {
+    row = await env.DB.prepare(
+      'SELECT id FROM support_invites WHERE install_hash = ? AND claimed_at IS NULL AND revoked_at IS NULL AND expires_at > ? ORDER BY id DESC LIMIT 1',
+    ).bind(await shaFull(gate.install), Date.now()).first();
+  } catch { return reply(503); }
+  // Newest pending invite for this Mac: a re-invite does not have to wait for the old one to expire.
+  return inviteJson(200, row ? { invited: true, invite_id: row.id } : { invited: false });
+}
+
+async function supportInviteClaim(request, env) {
+  const gate = await inviteGate(request, env);
+  if (gate.failed) return gate.failed;
+  if (typeof gate.install !== 'string' || !INVITE_INSTALL.test(gate.install)) return reply(400);
+  const id = gate.body.invite_id;
+  if (!Number.isSafeInteger(id) || id < 1) return reply(400);
+  const installHash = await shaFull(gate.install);
+  const raw = `tess_${[...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, '0')).join('')}`;
+  const tokenHash = await shaFull(raw);
+  const now = Date.now();
+  // One window, used by both statements, so the insert and the claim can never disagree about the invite's state.
+  const open = 'id = ? AND install_hash = ? AND claimed_at IS NULL AND revoked_at IS NULL AND expires_at > ?';
+  let results;
+  try {
+    // D1 runs a batch as one transaction: the token exists only if it was inserted, and the invite is claimed only if
+    // that insert happened and the invite was still open. A crash or a failed statement leaves neither behind.
+    results = await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO support_tokens (label, sha, added) SELECT label, ?, ? FROM support_invites WHERE ${open}`,
+      ).bind(tokenHash, now, id, installHash, now),
+      env.DB.prepare(
+        `UPDATE support_invites SET claimed_at = ?, token_id = (SELECT id FROM support_tokens WHERE sha = ?)
+         WHERE ${open} AND EXISTS (SELECT 1 FROM support_tokens WHERE sha = ?)`,
+      ).bind(now, tokenHash, id, installHash, now, tokenHash),
+    ]);
+  } catch { return reply(503); }
+  const took = (r) => r?.meta?.changes === 1;
+  if (!Array.isArray(results) || results.length !== 2 || !took(results[0]) || !took(results[1])) {
+    return inviteJson(404, { error: 'not found' });
+  }
+  return inviteJson(200, { token: raw });
 }
 
 // The titles of open issues, so a bot can check "is this already known" without a GitHub login. Public on purpose:
@@ -873,6 +962,8 @@ export default {
     const { pathname } = new URL(request.url);
     if (request.method === 'POST' && pathname === '/v1/report') return report(request, env);
     if (request.method === 'POST' && pathname === '/v1/support') return support(request, env);
+    if (request.method === 'POST' && pathname === '/v1/support/invite/check') return supportInviteCheck(request, env);
+    if (request.method === 'POST' && pathname === '/v1/support/invite/claim') return supportInviteClaim(request, env);
     if (request.method === 'GET' && pathname === '/v1/issues') return issueTitles(request, env);
     if (request.method === 'PUT' && /^\/v1\/support\/recording\/\d+$/.test(pathname)) return recording(request, env, pathname.split('/').pop());
     if (request.method === 'GET' && (pathname === '/v1/rescue.txt' || pathname === '/v1/rescue.sig')) {
