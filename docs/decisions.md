@@ -1099,7 +1099,8 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   *Why:* the code-in-a-message path needs a private channel and a Terminal paste, and every extra step is a way for a
   person to leak a token or give up. An invite is authorised by a value only that Mac holds, is invisible to everyone
   else, and cannot survive the person's own refusal.
-  *Trade-off:* the install id is a report identifier, not a secret shared over a private channel, so an invite is only
-  as private as the Mac's id; an id seen in a report cannot be used by a stranger without physical access to that Mac's
-  `install-id` file, and `support invites` + `support invite revoke` close one that is still open. The updater's invite
-  check rides the parts check, so a Mac whose parts download is failing sees the invite only once that recovers.
+  *Trade-off:* the install id is a report identifier, not a secret, and the claim is authorised by that id alone: anyone
+  who has seen it (a report, `reports.mjs show`, a pasted doctor report) can claim an open invite before the Mac does.
+  Keep invites short (`--hours`), and if `support invites` shows `claimed` but the person never saw the dialog, revoke
+  the label's token at once. `support invites` + `support invite revoke` close one that is still open. The updater's
+  invite check rides the parts check, so a Mac whose parts download is failing sees the invite only once that recovers.

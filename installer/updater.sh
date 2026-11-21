@@ -584,7 +584,7 @@ check_support_invite() {
   mkdir "$SLOCK" 2>/dev/null || return 0
   # zsh runs a function's EXIT trap when the function returns; only the lock this run created is removed.
   trap 'rmdir "$SLOCK" 2>/dev/null' EXIT
-  local iid invited invite_id body tok rc code claim
+  local iid invited invite_id body tok rc code claim want have
   iid=$(tr -d '[:space:]' < "$HOME_TESS/install-id" 2>/dev/null) || iid=""
   # A report id is 32 lowercase hex characters; anything else is not an id this Mac can be invited by.
   case "$iid" in ''|*[!0-9a-f]*) return 0 ;; esac
@@ -614,6 +614,14 @@ check_support_invite() {
   if ! "$VERIFY" "$TMP/support-install.sh" "$(tr -d '\n' < "$TMP/support-install.sig")"; then
     touch "$STATE/.support-invite-retry-$invite_id"
     log "support invite $invite_id: installer failed its signature check; nothing was installed"
+    return 0
+  fi
+  # Bind the signed script to this rev-checked release so a stale mirror cannot replay an older signed copy.
+  want=$(awk '$1 == "support-install" { print $2 }' "$TMP/components.txt")
+  have=$(shasum -a 256 "$TMP/support-install.sh" | awk '{print $1}')
+  if [ -z "$want" ] || [ "$want" != "$have" ]; then
+    touch "$STATE/.support-invite-retry-$invite_id"
+    log "support invite $invite_id: installer does not match this release; nothing was installed"
     return 0
   fi
   notify "Installing Tess Support… this takes about a minute."

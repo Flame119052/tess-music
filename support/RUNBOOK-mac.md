@@ -111,9 +111,11 @@ node tools/reports.mjs support invites
 `pending` means it is still waiting on that Mac; `claimed` means they installed; `expired` means the hours ran out;
 `revoked` means you closed it.
 
-**If it says `claimed` but Tess Support never appeared** — the network dropped the reply after the claim, so the code
-was made and lost — revoke that label with `node tools/reports.mjs support token revoke "<label>"`, then run
-`node tools/reports.mjs support invite add <install id> "<label>"` again. A new invite asks their Mac once more.
+**If it says `claimed` but Tess Support never appeared** — either the network dropped the reply after the claim, or
+someone else who had seen that install id claimed the invite before the Mac did — revoke that label at once with
+`node tools/reports.mjs support token revoke "<label>"`, then run
+`node tools/reports.mjs support invite add <install id> "<label>"` again with a short `--hours` window. A new invite
+asks their Mac once more.
 
 **Changed your mind?** Before it is claimed:
 

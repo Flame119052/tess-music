@@ -168,16 +168,18 @@ exec /usr/bin/ditto "$@"
 
   const asset = '#!/bin/sh\necho new installer\n';
   const assetSha = sha(asset);
-  writeFileSync(join(fixtures, 'installer.sh'), asset);
-  writeFileSync(join(fixtures, 'components.txt'), `installer ${assetSha} test://installer test-source\nversion 9.9.9\n`);
-  writeFileSync(join(fixtures, 'components.sig'), 'test-signature\n');
-  // The signed Tess Support installer (real one: support/mac/install.sh). The sandbox stands in for it with a stub that
-  // records the token it was handed, so the test can prove how it arrived.
-  writeFileSync(join(fixtures, 'support-install.sh'), `#!/bin/sh
+  const supportInstall = `#!/bin/sh
 printf '%s' "\${TESS_SUPPORT_TOKEN-}" > "$TESS_INSTALL_TOKEN_OUT"
 printf '%s' "$*" > "$TESS_INSTALL_ARGV_OUT"
 exit "\${TESS_INSTALL_EXIT:-0}"
-`);
+`;
+  const supportInstallSha = sha(supportInstall);
+  writeFileSync(join(fixtures, 'installer.sh'), asset);
+  writeFileSync(join(fixtures, 'components.txt'), `installer ${assetSha} test://installer test-source\nversion 9.9.9\nsupport-install ${supportInstallSha}\n`);
+  writeFileSync(join(fixtures, 'components.sig'), 'test-signature\n');
+  // The signed Tess Support installer (real one: support/mac/install.sh). The sandbox stands in for it with a stub that
+  // records the token it was handed, so the test can prove how it arrived.
+  writeFileSync(join(fixtures, 'support-install.sh'), supportInstall);
   writeFileSync(join(fixtures, 'support-install.sig'), 'support-signature\n');
 
   const env = {
@@ -691,6 +693,20 @@ esac
     assert.ok(!existsSync(join(s.state, '.support-invite-asked-12')), 'the invite is not burned by a bad download');
     assert.match(readFileSync(join(s.tess, 'guard.log'), 'utf8'), /installer failed its signature check; nothing was installed/);
     assert.ok(!doctorCalls(s).includes('--auto'), 'a bad signature never asks the doctor to repair Spotify');
+  }
+
+  {
+    // #140: a valid signature on an older (replayed) support-install.sh still fails because its SHA-256 is not the
+    // one pinned inside the rev-checked components.txt.
+    const s = sandbox();
+    const stale = join(s.fixtures, 'stale-support-install.sh');
+    writeFileSync(stale, '#!/bin/sh\necho older signed copy\n');
+    s.run({ TESS_INVITE_CHECK_JSON: '{"invited":true,"invite_id":19}', TESS_TEST_INVITE_ANSWER: 'install', TESS_SUPPORT_INSTALL: stale });
+    assert.doesNotMatch(readFileSync(join(s.box, 'curl.log'), 'utf8'), /invite\/claim/, 'a stale signed installer never claims the invite');
+    assert.ok(!existsSync(join(s.box, 'support-token.out')), 'and never runs the installer');
+    assert.ok(!existsSync(join(s.state, '.support-invite-asked-19')), 'the invite is not burned by a stale mirror');
+    assert.ok(existsSync(join(s.state, '.support-invite-retry-19')), 'and backs off for 24 hours');
+    assert.match(readFileSync(join(s.tess, 'guard.log'), 'utf8'), /installer does not match this release; nothing was installed/);
   }
 
   {
