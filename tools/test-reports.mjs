@@ -4,6 +4,7 @@
 // Proves: the real GitHub labels are used ("P2: medium", not "P2"); a title full of shell syntax is inert; the body
 // arrives through a pipe rather than as an argument; and a report number that isn't one is refused.
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -123,6 +124,64 @@ process.stdout.write(JSON.stringify([{ results, success: true }]));
   assert.notEqual(again.status, 0, 'revoking an already-revoked token exited 0');
   assert.match(again.stderr, /no active token labelled "Ada \(Mac\)" — run support tokens to see exact names/);
 
+  // 9. Private Tess Support invites (#137). The command names one Mac by its 32-hex install id and stores only its
+  // SHA-256; the list says where each invite stands; a revoke only closes an invite that is still open.
+  const mac = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+  const invites = () => JSON.parse(execFileSync('sqlite3', ['-json', db, 'SELECT * FROM support_invites ORDER BY id'], { encoding: 'utf8' }) || '[]');
+  const added2 = reportsRun(['support', 'invite', 'add', mac, 'Krish Mac', '--hours', '24']);
+  assert.equal(added2.status, 0, added2.stderr);
+  assert.match(added2.stdout, /invite 1 for "Krish Mac" — expires \d{4}-\d\d-\d\d \d\d:\d\d \(24 hours\)/, 'the invite names its id, label and expiry');
+  const [first] = invites();
+  assert.equal(first.label, 'Krish Mac');
+  assert.equal(first.install_hash, createHash('sha256').update(mac).digest('hex'), 'only the SHA-256 of the install id is stored');
+  assert.ok(!JSON.stringify(first).includes(mac), 'the install id itself never reaches the database');
+  assert.equal(Math.round((first.expires_at - first.created_at) / 3600000), 24, 'the expiry is the hours that were asked for');
+  assert.equal(first.claimed_at, null, 'and a new invite is open');
+
+  // The default is 72 hours, and the cap is a week: a longer invite would be a standing offer nobody is watching.
+  const byDefault = reportsRun(['support', 'invite', 'add', 'b'.repeat(32), 'Second Mac']);
+  assert.equal(byDefault.status, 0, byDefault.stderr);
+  const second = invites()[1];
+  assert.equal(Math.round((second.expires_at - second.created_at) / 3600000), 72, 'an invite without --hours lasts 72 hours');
+  for (const hours of ['0', '169', '-1', 'two']) {
+    const bad = reportsRun(['support', 'invite', 'add', 'c'.repeat(32), 'Third Mac', '--hours', hours]);
+    assert.notEqual(bad.status, 0, `--hours ${hours} was accepted`);
+    assert.match(bad.stderr, /--hours must be a whole number of hours between 1 and 168/);
+  }
+  for (const [install, label] of [['nothex', 'Fourth Mac'], [mac.toUpperCase(), 'Fourth Mac'], [mac.slice(1), 'Fourth Mac'], [mac, '']]) {
+    const bad = reportsRun(['support', 'invite', 'add', install, label]);
+    assert.notEqual(bad.status, 0, `an invite for ${JSON.stringify([install, label])} was accepted`);
+  }
+  assert.match(reportsRun(['support', 'invite', 'add', 'z'.repeat(32), 'Fourth Mac']).stderr, /install ids are 32 hex characters/);
+  assert.match(reportsRun(['support', 'invite', 'add', mac]).stderr, /usage: support invite add/);
+
+  // The list says what is still open. A claimed invite, an expired one and a revoked one all read differently, so
+  // "did they accept it?" is answerable at a glance.
+  execFileSync('sqlite3', [db, `UPDATE support_invites SET expires_at = ${Date.now() - 1000} WHERE id = 2`]);
+  const listed = reportsRun(['support', 'invites']);
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.match(listed.stdout, /^ *1 {2}pending {2}expires \d{4}-\d\d-\d\d \d\d:\d\d {2}Krish Mac$/m, 'an open invite reads pending');
+  assert.match(listed.stdout, /^ *2 {2}expired {2}expires \d{4}-\d\d-\d\d \d\d:\d\d {2}Second Mac$/m, 'a past expiry reads expired');
+
+  const revoked2 = reportsRun(['support', 'invite', 'revoke', '1']);
+  assert.equal(revoked2.status, 0, revoked2.stderr);
+  assert.match(revoked2.stdout, /invite 1 revoked — that Mac is no longer invited/);
+  assert.match(reportsRun(['support', 'invites']).stdout, /^ *1 {2}revoked/m, 'a revoked invite reads revoked');
+  const again2 = reportsRun(['support', 'invite', 'revoke', '1']);
+  assert.notEqual(again2.status, 0, 'revoking an already-revoked invite exited 0');
+  assert.match(again2.stderr, /no pending invite 1 — run support invites to see them/);
+  for (const id of ['0', 'one', '1; DROP TABLE support_invites']) {
+    assert.notEqual(reportsRun(['support', 'invite', 'revoke', id]).status, 0, `revoke ${id} was accepted`);
+  }
+
+  // A claimed invite cannot be revoked, and it never reads as pending.
+  execFileSync('sqlite3', [db, `INSERT INTO support_invites (created_at, expires_at, install_hash, label, claimed_at) VALUES (${Date.now()}, ${Date.now() + 3600000}, '${createHash('sha256').update('d'.repeat(32)).digest('hex')}', 'Claimed Mac', ${Date.now()})`]);
+  assert.match(reportsRun(['support', 'invites']).stdout, /^ *3 {2}claimed/m, 'a claimed invite reads claimed');
+  assert.notEqual(reportsRun(['support', 'invite', 'revoke', '3']).status, 0, 'a claimed invite was revoked');
+
+  // Nothing in this feature ever writes a token: the Worker mints it at claim time, and this table holds no token.
+  assert.ok(!JSON.stringify(invites()).includes('tess_'), 'the invite table holds no token');
+
   console.log('support filing line: all checks passed\n');
   console.log([
     'checked:',
@@ -134,6 +193,8 @@ process.stdout.write(JSON.stringify([{ results, success: true }]));
     '  · every command reads the live inbox unless TESS_D1_LOCAL names a local folder, and never both',
     '  · support usage lines show requests and tokens against the wrangler.toml caps',
     '  · support token revoke of a missing or already-revoked name exits non-zero and leaves the active token alone',
+    '  · an invite stores only the SHA-256 of the Mac\'s install id, with 72 hours by default and 168 at most',
+    '  · support invites reads pending, claimed, revoked and expired, and a revoke only closes an open invite',
     '',
   ].join('\n'));
 } finally {

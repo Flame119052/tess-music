@@ -114,6 +114,13 @@ const uninstallText = readFileSync(`${root}installer/uninstall.sh`, 'utf8');
 writeFileSync(`${out}dist/install.sh`, installText);
 writeFileSync(`${out}dist/uninstall.sh`, uninstallText);
 writeFileSync(`${out}dist/install.sig`, sig(installText) + '\n');
+// Tess Support's installer travels as a signed copy of the already-public support/mac/install.sh, so an invited Mac can
+// check the script with tess-verify before it runs anything (#137). It is deliberately not in components.txt: only an
+// invited Mac fetches it, and only after the person says yes to the dialog. No token, no invite and no identity is
+// ever in this file or its signature.
+const supportInstallText = readFileSync(`${root}support/mac/install.sh`, 'utf8');
+writeFileSync(`${out}dist/support-install.sh`, supportInstallText);
+writeFileSync(`${out}dist/support-install.sig`, sig(supportInstallText) + '\n');
 writeFileSync(`${out}README.md`, `Release channel \`${channel}\` of Tess Music. Source and install: https://github.com/Flame119052/tess-music\n`);
 // the patcher, built from patcher/ (fork of Spicetify CLI) plus Spicetify's compiled helper scripts
 const pdir = `${build}patcher/`;
