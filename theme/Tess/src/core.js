@@ -241,6 +241,29 @@
   // work while music plays). Tess finds those elements here instead, when Spotify draws, and marks them with a data
   // attribute (Spotify's code never touches unknown data attributes), so the CSS stays a cheap, direct match.
   const mark = (node, attr, value = '') => { if (node && node.getAttribute(attr) !== value) node.setAttribute(attr, value); };
+  // one passive listener per shelf: arrows show whenever it can scroll, and the arrow pointing at a dead end fades.
+  // sync is also stashed on the element so markLayout's slow pass can re-check as cards stream in.
+  function wireCarouselArrows(car, sc) {
+    if (car.hasAttribute('data-tess-arrows')) return;
+    car.setAttribute('data-tess-arrows', '');
+    const sync = () => {
+      car.toggleAttribute('data-tess-overflow', sc.scrollWidth > sc.clientWidth + 4);
+      car.toggleAttribute('data-at-start', sc.scrollLeft <= 4);
+      car.toggleAttribute('data-at-end', sc.scrollLeft + sc.clientWidth >= sc.scrollWidth - 4);
+    };
+    car.__tessArrowSync = sync;
+    listen(sc, 'scroll', sync, { passive: true });
+    listen(window, 'resize', sync);
+    sync();
+  }
+  // the arrows sit in their own little box beside the scroll area, so ancestors are no help — the smallest
+  // box wrapping both is the shelf to mark, and the scroll-timeline animation already names the scroller
+  const commonRoot = (hint, sc) => {
+    const shelf = hint.closest('[data-testid="component-shelf"]');
+    if (shelf) return shelf.contains(sc) ? shelf : null;
+    for (let n = hint.parentElement, depth = 0; n && depth < 10; n = n.parentElement, depth++) if (n.contains(sc)) return n;
+    return null;
+  };
   let lastScrollHints = 0;
   function markLayout() {
     const root = document.querySelector('.Root');
@@ -294,8 +317,9 @@
     }
     // Spotify's shelf arrows fade in with an animation tied to each shelf's scroll position. Those animations are
     // always "running", so every arrow was its own GPU layer (~40 of them, plus everything forced over them),
-    // composited every frame. They now appear when you point at the shelf instead (CSS below), at most re-checked
-    // every 2 s (reading the page's animations is not free).
+    // composited every frame. The same affordance now comes from marks on the carousel — arrows show whenever the
+    // shelf can scroll and the dead-end one fades — with no per-arrow layers, re-checked every 2 s
+    // (reading the page's animations is not free).
     if (typeof ScrollTimeline !== 'undefined' && performance.now() - lastScrollHints > 2000) {
       lastScrollHints = performance.now();
       for (const an of document.getAnimations()) {
@@ -307,9 +331,19 @@
         // only the small arrow buttons; never a shelf itself (Spotify animates some whole shelves the same way)
         const box = t.getBoundingClientRect();
         if (box.width > 64 || box.height > 64 || t.querySelector('img, a, [data-encore-id="card"]')) continue;
+        const sc = an.timeline.source;
+        // not scrollable yet (cards still loading), or the animation is not tied to a scroll element: retry later
+        if (!(sc instanceof Element) || sc.scrollWidth <= sc.clientWidth + 4) continue;
+        const car = commonRoot(t, sc);
+        if (!car) continue;
         mark(t, 'data-tess-scrollhint');
-        mark(t.parentElement?.parentElement, 'data-tess-carousel');
+        const cr = car.getBoundingClientRect();
+        mark(t, 'data-tess-hint', box.left + box.width / 2 < cr.left + cr.width / 2 ? 'prev' : 'next');
+        mark(car, 'data-tess-carousel');
+        wireCarouselArrows(car, sc);
       }
+      // shelves grow as art streams in, so re-check scrollability on the same slow pass
+      for (const car of document.querySelectorAll('[data-tess-carousel]')) car.__tessArrowSync?.();
     }
     const home = document.querySelector('[data-testid="home-page"]');
     if (home) {
@@ -552,6 +586,11 @@
     // the same picture also becomes the page's own background, so every panel and the top bar sit on it
     // regardless of how Spotify stacks its layers
     html.style.setProperty('--tess-aurora', `url("${back.toDataURL()}")`);
+    // Apple's glass takes a whisper of the scene's colour; desaturate the dominant hue so it tints without dying
+    const t = colors[0];
+    const lum = Math.round(t[0] * 0.2126 + t[1] * 0.7152 + t[2] * 0.0722);
+    const tint = t.map((v) => Math.round(v * 0.55 + lum * 0.45));
+    html.style.setProperty('--tess-glass-tint', `rgba(${tint[0]}, ${tint[1]}, ${tint[2]}, 0.16)`);
   }
   every(60000, paintAurora); // picks up the next part of the day
 
@@ -631,8 +670,8 @@
       <div class="tn-stage">
         <div class="tn-player">
           <div class="tn-flow" aria-hidden="true"></div>
-          <div class="tn-cover"><img alt=""><video muted loop playsinline></video><i class="tn-spindle"></i></div>
-          <svg class="tn-arm" viewBox="0 0 60 220" aria-hidden="true"><circle cx="30" cy="22" r="18" fill="rgba(255,255,255,.18)" stroke="rgba(255,255,255,.5)"/><circle cx="30" cy="22" r="6" fill="#ddd"/><path d="M30 22 L30 170 L44 200" stroke="#e8e8ea" stroke-width="5" fill="none" stroke-linecap="round"/><rect x="36" y="194" width="16" height="22" rx="3" fill="#cfcfd4"/></svg>
+          <div class="tn-disc"><div class="tn-cover"><img alt=""><video muted loop playsinline></video><i class="tn-spindle"></i></div>
+          <svg class="tn-arm" viewBox="0 0 60 220" aria-hidden="true"><circle cx="30" cy="22" r="18" fill="rgba(255,255,255,.18)" stroke="rgba(255,255,255,.5)"/><circle cx="30" cy="22" r="6" fill="#ddd"/><path d="M30 22 L30 170 L44 200" stroke="#e8e8ea" stroke-width="5" fill="none" stroke-linecap="round"/><rect x="36" y="194" width="16" height="22" rx="3" fill="#cfcfd4"/></svg></div>
           <div class="tn-meta">
             <div class="tn-text"><h2></h2><p class="tess-marquee"><span></span></p></div>
             <button class="tn-round tn-heart" aria-label="Add to playlist">${I.unsaved}</button>
@@ -747,7 +786,12 @@
     return t[t.length - 1][1];
   };
   function measureArm() {
-    const rec = q(np, '.tn-cover').getBoundingClientRect();
+    // rects are honest only once the player's opening scale has landed — transforms do not fire
+    // ResizeObserver, so measuring mid-animation built an angle table that stayed wrong for good.
+    if (getComputedStyle(np).transform !== 'none') { armMeasured = false; return; }
+    // measured on .tn-disc rather than the cover: the cover scales itself down while paused, and
+    // a table built against that smaller record left the stylus hanging off the vinyl afterwards
+    const rec = q(np, '.tn-disc').getBoundingClientRect();
     if (!rec.width) { armMeasured = false; return; }
     const [px, py] = pivot();
     const sc = (arm.clientWidth || 96) / 60;
@@ -761,14 +805,16 @@
     const rInner = Math.max(rec.width * 0.205, minD + 2);   // the label's edge, or as close to it as the arm reaches
     const table = [];
     for (let d = -40; d <= dMin; d += 0.25) { const r = dist(d); if (r <= rOuter + 2 && r >= rInner - 0.01) table.push([d, r]); }
-    if (table.length < 2) return;
+    if (table.length < 2) { armMeasured = false; return; }
     armTable = table;
     ARM_START = angleForDist(rOuter); ARM_END = angleForDist(rInner); ARM_REST = ARM_START - 26;
     armTable = [[ARM_START, rOuter], ...table.filter(([d]) => d > ARM_START && d < ARM_END), [ARM_END, rInner]];
+    armMeasured = true;
   }
-  // re-measure whenever the record changes size or the player is narrowed (queue open), not only on window resize
-  const armObserver = new ResizeObserver(() => { if (np.classList.contains('vinyl')) { measureArm(); armMeasured = true; } });
-  armObserver.observe(q(np, '.tn-cover')); armObserver.observe(np);
+  // re-measure whenever the record changes size or the player is narrowed (queue open), not only on
+  // window resize — and only a completed measurement counts, so a transient bail retried next draw
+  const armObserver = new ResizeObserver(() => { if (np.classList.contains('vinyl')) measureArm(); });
+  armObserver.observe(q(np, '.tn-disc')); armObserver.observe(np);
   onDispose(() => armObserver.disconnect());
   const arm = q(np, '.tn-arm');
   let armDrag = null;
@@ -780,7 +826,7 @@
   };
   function placeArm(ms) {
     if (armDrag || !np.classList.contains('vinyl')) return;
-    if (!armMeasured) { armMeasured = true; measureArm(); }
+    if (!armMeasured) measureArm();
     arm.style.transform = `rotate(${P.isPlaying() ? armAngleFor(ms) : ARM_REST}deg)`;
   }
   // the pivot from the arm's unrotated box (its rotated bounding box moves as it turns)
@@ -873,40 +919,23 @@
     if (e.key === ' ' && e.target === document.body) { e.preventDefault(); P.togglePlay(); }
   });
 
-  // A subtitle only scrolls when it is too long to fit.
+  // A subtitle only scrolls when it is too long to fit; the scroll loops while it is on screen and restarts
+  // from the left whenever the text changes (the animation only resets if 'scrolling' leaves and returns).
   function fitMarquees() {
     for (const box of document.querySelectorAll('.tess-marquee')) {
       const span = box.firstElementChild;
       if (!span) continue;
       const overflow = span.scrollWidth - box.clientWidth;
+      if (box.dataset.txt !== span.textContent) {
+        box.dataset.txt = span.textContent;
+        box.classList.remove('scrolling');
+        void box.offsetWidth;
+      }
       box.classList.toggle('scrolling', overflow > 4);
       box.style.setProperty('--tess-marquee-shift', `-${Math.max(0, overflow + 24)}px`);
     }
   }
   listen(window, 'resize', fitMarquees);
-  // one marquee pass at a time (see core.css): on a new song and on hover
-  const marqueePass = (box) => {
-    if (!box.classList.contains('scrolling') || box.classList.contains('pass')) return;
-    box.classList.add('pass');
-    box.firstElementChild?.addEventListener('animationend', () => box.classList.remove('pass'), { once: true });
-  };
-  const allPasses = () => { if (!document.hidden) document.querySelectorAll('.tess-marquee').forEach(marqueePass); };
-  // (no timed passes: a pass every 20 s kept the window redrawing half the time; song change and hover are enough)
-  listen(document, 'mouseover', (e) => { const box = e.target.closest?.('.tess-marquee'); if (box) marqueePass(box); }, { passive: true });
-  // records spin for 12 s after a song starts or play is pressed (and on hover, in CSS), then rest
-  let spinTimer = 0;
-  const spinBurst = () => {
-    if (!P.isPlaying()) return;
-    html.classList.add('tess-spin-burst');
-    clearTimeout(spinTimer);
-    spinTimer = setTimeout(() => html.classList.remove('tess-spin-burst'), 12000);
-  };
-  P.addEventListener('songchange', spinBurst);
-  P.addEventListener('onplaypause', spinBurst);
-  onDispose(() => { P.removeEventListener('songchange', spinBurst); P.removeEventListener('onplaypause', spinBurst); clearTimeout(spinTimer); html.classList.remove('tess-spin-burst'); });
-  const marqueeOnSong = () => setTimeout(allPasses, 1500);
-  P.addEventListener('songchange', marqueeOnSong);
-  onDispose(() => P.removeEventListener('songchange', marqueeOnSong));
 
   // ---------------- first-run welcome ----------------
   // A single glass sheet on first launch to pick the defaults; everything here is also in Settings → Theme.
@@ -1238,7 +1267,36 @@
   const linesEl = q(np, '.tn-lines');
   const noteEl = q(np, '.tn-note');
 
-  async function loadLyrics() {
+  // a user's fixes to fallback lyrics, kept per track so his version wins every later play
+  const lyricEdits = (() => { try { return JSON.parse(localStorage.getItem('tess:lyricEdits') || '{}'); } catch { return {}; } })();
+  const saveLyricEdits = () => { try { localStorage.setItem('tess:lyricEdits', JSON.stringify(lyricEdits)); } catch {} };
+  // LRCLIB carries synced lyrics for plenty of songs Spotify has none for; the answer is trusted only
+  // when its duration matches the track within two seconds, so a wrong-song hit can't slip in
+  async function lrcLibLines() {
+    try {
+      const t = item();
+      if (!t?.name) return null;
+      const dur = Math.round((P.getDuration() || t.duration?.milliseconds || 0) / 1000);
+      const q = new URLSearchParams({
+        artist_name: (t.artists || []).map((a) => a.name).join(', ') || '',
+        track_name: t.name,
+        album_name: t.album?.name || '',
+        duration: String(dur),
+      });
+      const j = await fetch(`https://lrclib.net/api/get?${q}`, { signal: AbortSignal.timeout(6000) })
+        .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      if (!j || j.instrumental || !j.syncedLyrics || Math.abs(j.duration - dur) > 2) return null;
+      const out = [];
+      for (const raw of j.syncedLyrics.split('\n')) {
+        const m = raw.match(/\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)/);
+        if (m && m[3].trim()) out.push({ start: (+m[1] * 60 + +m[2]) * 1000, text: m[3].trim() });
+      }
+      out.forEach((l, i) => { l.end = out[i + 1]?.start ?? P.getDuration(); });
+      return out.length ? out : null;
+    } catch { return null; }
+  }
+
+  async function loadLyrics(tries = 0) {
     const uri = item()?.uri;
     if (!uri || uri === lyrics.uri) return;
     lyrics = { uri, sync: 'LOADING', lines: [] };
@@ -1247,25 +1305,56 @@
     linesEl.innerHTML = '';
     noteEl.textContent = '';
     lastLine = -2;
+    let res = null;
     try {
       const id = uri.split(':')[2];
-      const res = await Spicetify.CosmosAsync.get(
-        `https://spclient.wg.spotify.com/color-lyrics/v2/track/${id}?format=json&vocalRemoval=false&market=from_token`
-      );
-      if (item()?.uri !== uri) return;
+      // a request that never settles would leave the stage on its cleared, half-empty state for good
+      res = await Promise.race([
+        Spicetify.CosmosAsync.get(
+          `https://spclient.wg.spotify.com/color-lyrics/v2/track/${id}?format=json&vocalRemoval=false&market=from_token`
+        ),
+        new Promise((_, reject) => setTimeout(reject, 8000)),
+      ]);
+    } catch {}
+    // the player item can flicker empty between reads; a momentarily unreadable item is still this track —
+    // only a DIFFERENT uri means the song really moved on
+    const curUri = item()?.uri;
+    if (curUri === uri || !curUri) {
       const raw = res?.lyrics?.lines || [];
-      lyrics = {
-        uri,
-        sync: res?.lyrics?.syncType || 'UNSYNCED',
-        lines: raw.map((l, i) => ({
-          start: Number(l.startTimeMs),
-          end: Number(raw[i + 1]?.startTimeMs ?? P.getDuration()),
-          text: (l.words || '').trim(),
-        })),
-      };
-    } catch {
-      if (item()?.uri !== uri) return;
-      lyrics = { uri, sync: 'NONE', lines: [] };
+      let lines = raw.map((l, i) => ({
+        start: Number(l.startTimeMs),
+        end: Number(raw[i + 1]?.startTimeMs ?? P.getDuration()),
+        text: (l.words || '').trim(),
+      }));
+      let source = 'spotify';
+      if (!lines.length) {
+        const lrc = await lrcLibLines();
+        if (lrc) { lines = lrc; source = 'lrclib'; }
+      }
+      if (item()?.uri === uri || !item()?.uri) {
+        // his saved fixes apply on top of whatever source served the lines, so they always win
+        const edits = lyricEdits[uri];
+        if (edits) for (const [i, e] of Object.entries(edits)) {
+          const l = lines[+i];
+          if (!l) continue;
+          if (e.text != null) l.text = e.text;
+          if (e.start != null) { l.start = e.start; if (lines[+i - 1]) lines[+i - 1].end = e.start; }
+        }
+        lyrics = {
+          uri,
+          source,
+          editable: source === 'lrclib',
+          sync: lines.length ? (source === 'lrclib' ? 'LINE_SYNCED' : res?.lyrics?.syncType || 'UNSYNCED') : 'NONE',
+          lines,
+        };
+      }
+    }
+    // the track (or the player state behind it) moved while the fetch was out: reloading for what is
+    // actually playing is the only way back — returning here used to leave the right side blank for
+    // good, since the uri guard above then refused every later load for this same track
+    if (item()?.uri && item()?.uri !== uri) {
+      if (lyrics.uri === uri) lyrics = { uri: null, sync: 'NONE', lines: [] };
+      if (tries < 4 && item()?.uri) return loadLyrics(tries + 1);
     }
     renderLyrics();
   }
@@ -1297,16 +1386,58 @@
       v.lines.innerHTML = '';
       v.lines.style.transform = '';
       v.last = -2;
-      for (const l of lyrics.lines) {
+      for (let li = 0; li < lyrics.lines.length; li++) {
+        const l = lyrics.lines[li];
         const isGap = !l.text || /^♪+$/.test(l.text.replace(/\s/g, ''));
         const line = el(`<div class="tn-line${isGap ? ' gap' : ''}"></div>`);
         line.textContent = isGap ? '• • •' : l.text;
         if (lyrics.sync !== 'UNSYNCED') line.onclick = () => P.seek(l.start + 1);
+        // fallback lyrics are the user's to fix: double-click edits the words and lets the timing be nudged
+        if (lyrics.editable && !isGap) {
+          line.title = 'Double-click to fix this line';
+          line.ondblclick = () => editLyricLine(line, li, l);
+        }
         v.lines.appendChild(line);
       }
     }
     lastLine = -2;
     renderRibbon();
+  }
+
+  // Inline fix for one line: words on the left, a timing nudge on the right; saved fixes land in
+  // lyricEdits so they win over every later fetch of the same song
+  function editLyricLine(lineEl, idx, l) {
+    if (lineEl.querySelector('.tn-edit')) return;
+    const uri = lyrics.uri;
+    let start = l.start;
+    const row = el(`<div class="tn-edit">
+      <input type="text" value="">
+      <div class="tn-edit-time"><button data-d="-500">−½s</button><span></span><button data-d="500">+½s</button></div>
+      <button class="tn-edit-save" aria-label="Save lyric fix">${I.check || '✓'}</button>
+    </div>`);
+    const input = row.querySelector('input');
+    const readout = row.querySelector('.tn-edit-time span');
+    input.value = l.text;
+    const fmt = () => { readout.textContent = (start / 1000).toFixed(1) + 's'; };
+    fmt();
+    row.querySelectorAll('.tn-edit-time button').forEach((b) => { b.onclick = (e) => { e.stopPropagation(); start = Math.max(0, start + +b.dataset.d); fmt(); }; });
+    const save = (e) => {
+      e?.stopPropagation?.();
+      (lyricEdits[uri] ||= {})[idx] = { text: input.value.trim() || l.text, start: Math.round(start) };
+      saveLyricEdits();
+      l.text = input.value.trim() || l.text;
+      l.start = Math.round(start);
+      if (lyrics.lines[idx - 1]) lyrics.lines[idx - 1].end = l.start;
+      renderLyrics();
+    };
+    row.querySelector('.tn-edit-save').onclick = save;
+    input.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') save(e); if (e.key === 'Escape') renderLyrics(); };
+    row.onclick = (e) => e.stopPropagation();
+    lineEl.textContent = '';
+    lineEl.appendChild(row);
+    lineEl.onclick = null;
+    input.focus();
+    input.select();
   }
 
   // The lyric ribbon: the progress bar is cut into one segment per sung line, so you can see the song's shape;
@@ -1702,6 +1833,68 @@
     b.style.setProperty('--dj', sd.style.backgroundColor || '');
   }
 
+  // Spotify anchors its popovers to its own hidden DJ button, so nudges like the "Want different
+  // music?" hint pop up pointing at thin air. Slide the invisible stock button onto Tess's copy —
+  // anything anchored to it then lands where the button is actually seen.
+  let djShift = { x: 0, y: 0 };
+  function alignDj() {
+    const sd = stockDj(), b = q(bar, '.tb-dj');
+    if (!sd || b.hidden) { djShift = { x: 0, y: 0 }; return; }
+    const s = sd.getBoundingClientRect(), t = b.getBoundingClientRect();
+    const dx = t.left + t.width / 2 - (s.left + s.width / 2);
+    const dy = t.top + t.height / 2 - (s.top + s.height / 2);
+    if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+      djShift = { x: djShift.x + dx, y: djShift.y + dy };
+      sd.style.transform = `translate(${djShift.x}px, ${djShift.y}px)`;
+    }
+  }
+  onDraw(alignDj);
+
+  // The chrome, library header, playbar extras and card/row play buttons still carry Spotify's own glyphs, which
+  // read as a different family next to Tess's set. Restyle them to the same 24-unit grid and 1.75 strokes, stamped
+  // on the svg itself so a React re-render just gets swapped back on the next draw.
+  const PLAY_BODY = '<path d="M7.6 4.3a1.3 1.3 0 0 0-2 1.1v13.2a1.3 1.3 0 0 0 2 1.1l10.4-6.6a1.3 1.3 0 0 0 0-2.2z"/>';
+  const PAUSE_BODY = '<rect x="5.5" y="4" width="4.6" height="16" rx="1.6"/><rect x="13.9" y="4" width="4.6" height="16" rx="1.6"/>';
+  const STOCK_ICONS = new Map([
+    ['Go back', '<path d="M14.5 5 8 12l6.5 7"/>'],
+    ['Go forward', '<path d="M9.5 5 16 12l-6.5 7"/>'],
+    ['Home', '<path d="M4.8 10.4 12 4l7.2 6.4"/><path d="M6.6 9.8V19h10.8V9.8"/><path d="M10.2 19v-4.6h3.6V19"/>'],
+    ['Search', '<circle cx="10.4" cy="10.4" r="6.2"/><path d="m15.4 15.4 4.6 4.6"/>'],
+    ['Browse', '<circle cx="12" cy="12" r="8.4"/><path d="m15.4 8.6-2.3 4.5-4.5 2.3 2.3-4.5z" fill="currentColor" stroke="none"/>'],
+    ['Clear search field', '<circle cx="12" cy="12" r="8.6"/><path d="M9 9l6 6M15 9l-6 6"/>'],
+    ["What's New", '<path d="M12 3.8a5 5 0 0 0-5 5v2.8l-1.6 3a.7.7 0 0 0 .62 1h11.96a.7.7 0 0 0 .62-1l-1.6-3V8.8a5 5 0 0 0-5-5z"/><path d="M10.1 18.6a2.1 2.1 0 0 0 3.8 0"/>'],
+    ['Listening activity', '<circle cx="8.6" cy="8.4" r="3.1"/><path d="M3.8 19.2c.55-3.2 2.5-4.9 4.8-4.9s4.25 1.7 4.8 4.9"/><circle cx="16.4" cy="9.6" r="2.3"/><path d="M16.2 14.6c1.9.3 3.1 1.7 3.5 3.9"/>'],
+    ['Create', '<path d="M12 4.6v14.8M4.6 12h14.8"/>'],
+    ['Expand Your Library', '<path d="M14.5 4.5H20V10M9.5 19.5H4V14M20 4.5 13.4 11M4 19.5l6.6-6.6"/>'],
+    ['Minimize Your Library', '<path d="M4.5 9.5H10V4M19.5 14.5H14V20"/>'],
+    ['Collapse Your Library', '<path d="M14.5 5 8 12l6.5 7"/>'],
+    ['Now playing view', '<circle cx="12" cy="12" r="8.2"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/>'],
+    ['Queue', '<path d="M9 6.5h11M9 12h11M9 17.5h7"/><path d="M4 5.6v1.8M4 11.1v1.8M4 16.6v1.8" stroke-width="2.4"/>'],
+    ['Connect to a device', '<path d="M6.2 16.5A8 8 0 1 1 17.8 16.5"/><path d="M8.9 13.8a4.2 4.2 0 1 1 6.2 0"/><path d="M12 15.2 15.4 20H8.6z" fill="currentColor" stroke="none"/>'],
+    ['Open Miniplayer', '<rect x="3" y="4.5" width="18" height="15" rx="3.5"/><rect x="11.5" y="12" width="7" height="5" rx="1.5" fill="currentColor" stroke="none"/>'],
+    ['Enter Full screen', '<path d="M14 4h6v6M10 20H4v-6M20 4l-6.5 6.5M4 20l6.5-6.5"/>'],
+    ['Exit Full screen', '<path d="M4 14.5h6v6M4 9.5h6v-5M20 9.5h-6v-5M20 14.5h-6v6"/>'],
+  ]);
+  const FILLED_ICONS = new Set(['Browse', 'Now playing view']);
+  const TESS_OWNED = '#tess-bar, #tess-np, #tess-timeline, #tess-menu, #tess-spot, #tess-welcome, #tess-settings, #tess-ambient';
+  const stockSel = [...STOCK_ICONS.keys()].map((l) => `button[aria-label="${l}"]`).join(',')
+    + ', button[aria-label^="Play"], button[aria-label^="Pause"], button[aria-label*="lyrics" i]';
+  function restyleStockIcons() {
+    for (const b of document.querySelectorAll(stockSel)) {
+      const svg = b.querySelector('svg');
+      if (!svg || b.closest(TESS_OWNED)) continue;
+      const label = b.getAttribute('aria-label');
+      const [body, key, fill] = STOCK_ICONS.has(label) ? [STOCK_ICONS.get(label), label, FILLED_ICONS.has(label)]
+        : /^Play($| )/.test(label) ? [PLAY_BODY, 'play', true]
+        : /^Pause($| )/.test(label) ? [PAUSE_BODY, 'pause', true]
+        : [I.lyrics.match(/<svg[^>]*>(.*)<\/svg>/)[1], 'lyrics', false];
+      if (svg.dataset.tessIco === key) continue;
+      const w = Math.min(Math.max(parseFloat(svg.getAttribute('width')) || 16, 15), 26);
+      svg.outerHTML = ico(w, w, body, fill).replace('<svg', `<svg data-tess-ico="${key}"`);
+    }
+  }
+  onDraw(restyleStockIcons);
+
   // The bar's progress line moves about a pixel a second, so it is updated only when it would move a whole pixel
   // (checked twice a second, a GPU-only transform change). A smooth 60 fps animation of it, or a width change four
   // times a second, had kept the whole window redrawing for as long as anything played.
@@ -1767,6 +1960,8 @@
   ];
   const kindOf = (i) => {
     if (i.type === 'playlist') {
+      // Spotify generates every Blend in the 37i9dQZF1EJ… id range; trust the uri before the name
+      if (i.uri?.startsWith('spotify:playlist:37i9dQZF1EJ')) return 'blend';
       const own = (i.owner?.name || i.owner?.displayName || '').toLowerCase();
       if (own === 'spotify') return / \+ /.test(i.name) ? 'blend' : 'spotify';
       return i.isOwnedBySelf ? 'mine' : 'others';
@@ -2006,7 +2201,8 @@
     img.src = url;
   }
   const SHELVES = [
-    ['Playlists', (k) => k === 'mine' || k === 'others' || k === 'spotify' || k === 'blend' || k === 'folder' || k === 'local'],
+    ['Playlists', (k) => k === 'mine' || k === 'others' || k === 'spotify' || k === 'folder' || k === 'local'],
+    ['Blends', (k) => k === 'blend'],
     ['Albums', (k) => k === 'album'],
     ['Artists', (k) => k === 'artist'],
     ['Podcasts & books', (k) => k === 'show' || k === 'audiobook'],
@@ -2032,25 +2228,36 @@
       s.style.setProperty('--mag', (m * m * (3 - 2 * m)).toFixed(3));
     }
   }
-  // records arrive on the shelf one after another when the library opens full size
+  // shelves deal in one after another on expand: each gets a beat (--shelf-i), and its records tip in behind it
   function stagger() {
     let i = 0;
-    for (const s of ttList.querySelectorAll('.ts-sleeve, .ts-artist')) {
-      if (i > 60) break;
-      s.style.animationDelay = (i++ * 14) + 'ms';
-      s.classList.add('ts-arrive');
-    }
+    ttList.querySelectorAll('.ts-shelf').forEach((shelf, s) => {
+      shelf.style.setProperty('--shelf-i', s);
+      shelf.querySelectorAll('.ts-sleeve, .ts-artist').forEach((rec, j) => {
+        if (i > 90) return;
+        rec.style.animationDelay = (s * 90 + j * 12) + 'ms';
+        rec.classList.add('ts-arrive');
+        i++;
+      });
+    });
   }
 
   function renderShelves() {
     timeline.classList.remove('river');
     timeline.classList.add('shelves');
+    // only a real expand lands the shelves; typing or a library change mid-session just re-renders them
+    if (libArrived) {
+      libArrived = false;
+      timeline.classList.add('arriving');
+      setTimeout(() => timeline.classList.remove('arriving'), 1600);
+    }
     q(timeline, '.tt-ruler')?.remove();
     const needle = ttSearch.value.trim().toLowerCase();
     const shown = libItems.filter((i) => libFilter.has(kindOf(i)) && (!needle || i.name.toLowerCase().includes(needle)));
     shown.sort(byRecent);
     const kinds = shown.reduce((m, i) => { const k = kindOf(i); m[k] = (m[k] || 0) + 1; return m; }, {});
-    q(timeline, '.tt-river-sub').textContent = `${shown.length} items · ${kinds.artist || 0} artists · ${shown.length - (kinds.artist || 0) - (kinds.album || 0)} playlists · ${kinds.album || 0} albums`;
+    const blends = kinds.blend || 0;
+    q(timeline, '.tt-river-sub').textContent = `${shown.length} items · ${kinds.artist || 0} artists · ${shown.length - (kinds.artist || 0) - (kinds.album || 0) - blends - (kinds.event || 0)} playlists · ${kinds.album || 0} albums` + (blends ? ` · ${blends} blends` : '');
     const frag = document.createDocumentFragment();
     for (const [label, test] of SHELVES) {
       const items = shown.filter((i) => test(kindOf(i)));
@@ -2140,7 +2347,7 @@
   onDraw(placeTimeline);
   placeTimeline();
   // Expand / minimise / collapse the library as one morph (View Transitions) instead of a jump.
-  let libMorphing = false;
+  let libMorphing = false, libArrived = false;
   listen(document, 'click', (e) => {
     const btn = e.target instanceof Element && e.target.closest('#Desktop_LeftSidebar_Id button, #Desktop_LeftSidebar_Id ~ * button');
     const label = btn?.getAttribute('aria-label') || '';
@@ -2148,6 +2355,7 @@
     e.preventDefault();
     e.stopImmediatePropagation();
     libMorphing = true;
+    libArrived = /^Expand/.test(label);
     const lib = document.getElementById('Desktop_LeftSidebar_Id');
     const before = lib?.getBoundingClientRect().width;
     const vt = document.startViewTransition(async () => {
@@ -2157,6 +2365,8 @@
     });
     vt.ready.catch(() => {});
     vt.finished.catch(() => {}).finally(() => { libMorphing = false; });
+    // if the window hides mid-morph, finished can stall forever — never leave the latch stuck
+    setTimeout(() => { libMorphing = false; }, 1500);
   }, true);
   // Spotify announces every library change (pin, unpin, save, remove, rename); reload right away on those,
   // coalesced so a burst of changes is one reload. The slow timer is only a backup.
@@ -2443,6 +2653,16 @@
         .then((c) => { const cv = c?.data?.trackUnion?.canvas; return cv?.fileId && String(cv.type).startsWith('VIDEO') ? cv.fileId : ''; })
         .catch(() => '')));
       fileId = found.find(Boolean) || '';
+      if (!fileId) {
+        // many artists have a Canvas on a deep cut but none on a top-6 song. Their watch feed (the same feed
+        // Spotify's "related music videos" row reads) lists a wider set of tracks with the video attached
+        const feedUri = r?.data?.artistUnion?.watchFeedEntrypoint?.entrypointUri;
+        if (feedUri) {
+          const feed = await Spicetify.GraphQL.Request(Spicetify.GraphQL.Definitions.watchFeedEntity, { watchFeedUri: feedUri }).catch(() => null);
+          const item = feed?.data?.getWatchFeedForEntity?.items?.find((it) => it?.data?.canvas?.fileId && String(it.data.canvas.type).startsWith('VIDEO'));
+          fileId = item?.data?.canvas?.fileId || '';
+        }
+      }
     } catch {}
     // remember only real answers; a failed or empty lookup is retried next time
     if (fileId) canvasCache.set(artistUri, fileId);
@@ -2495,9 +2715,13 @@
   }
   onDispose(() => html.style.removeProperty('--tess-hero-h'));
 
-  let lastArtistPage = null;
+  let lastArtistPage = null, lastArtistUri = '', routeRun = 0;
   async function onRoute() {
+    const run = ++routeRun;
     const path = route();
+    // a newer run (another page, or the Photo/Video switch re-running this one) retires every earlier run:
+    // without this, a run still waiting on the video fetch could finish last and put the wrong header back
+    const fresh = () => run === routeRun && route() === path;
     const isArtist = path.startsWith('/artist/');
     html.classList.toggle('tess-artist', isArtist);
     html.classList.toggle('tess-on-settings', path.startsWith('/preferences'));
@@ -2519,7 +2743,7 @@
     const heroPrefs = (() => { try { return JSON.parse(localStorage.getItem('tess:heroPref') || '{}'); } catch { return {}; } })();
     const wantVideo = settings.artistVideo && heroPrefs[artistUri] !== 'photo';
     html.classList.toggle('tess-hero-wait', wantVideo);
-    const unwait = () => { if (route() === path) html.classList.remove('tess-hero-wait'); };
+    const unwait = () => { if (fresh()) html.classList.remove('tess-hero-wait'); };
     setTimeout(unwait, 3000);
     const early = wantVideo ? (async () => {
       const fileId = await artistCanvas(artistUri);
@@ -2532,15 +2756,18 @@
       v.playsInline = true;
       return (await playCanvas(v, fileId)) ? v : null;
     })() : Promise.resolve(null);
-    // wait for the NEW artist's page; right after a route change the previous page is still in the DOM
+    // wait for the NEW artist's page; right after a route change the previous page is still in the DOM.
+    // A re-run for the SAME artist (the Photo/Video switch) keeps the same page element, so accept it
+    // at once — waiting for a different element used to stall the repaint by the whole loop.
     const oldPage = lastArtistPage;
     for (let t = 0; t < 60; t++) {
       const pg = document.querySelector('[data-testid="artist-page"]');
-      if (pg && pg !== oldPage && pg.querySelector('.main-entityHeader-container')) break;
+      if (pg && pg.querySelector('.main-entityHeader-container') && (pg !== oldPage || lastArtistUri === artistUri)) break;
       await new Promise((r) => setTimeout(r, 50));
     }
+    if (!fresh()) return;
     lastArtistPage = document.querySelector('[data-testid="artist-page"]');
-    if (route() !== path) return;
+    lastArtistUri = artistUri;
     let bg = null;
     for (let tries = 0; tries < 60 && !bg; tries++) {
       // Spotify marks artists without a header photo with a "Norm" header: stop waiting for one
@@ -2548,7 +2775,7 @@
       bg = findHeaderBackground();
       if (!bg) await new Promise((r) => setTimeout(r, tries < 20 ? 50 : 200));
     }
-    if (!bg && route() === path) {
+    if (!bg && fresh()) {
       // No header photo (smaller artists): build one from their portrait, softly blurred and enlarged, so the page
       // still opens on a full-height picture; the portrait itself is centred above the name.
       const hdr = document.querySelector('[data-testid="artist-page"] .main-entityHeader-container');
@@ -2563,12 +2790,12 @@
         bg = wrap.firstElementChild;
       }
     }
-    if (!bg || route() !== path) { unwait(); return; }
+    if (!bg || !fresh()) { unwait(); return; }
     bg.classList.add('tess-hero-bg');
     // the Photo / Video switch, top right of the header; shown only when this artist has a video
     document.querySelectorAll('.tess-hero-switch').forEach((n) => n.remove());
     const hasVideo = settings.artistVideo && !!(await artistCanvas(artistUri));
-    if (hasVideo && route() === path) {
+    if (hasVideo && fresh()) {
       const sw = el('<div class="tess-hero-switch" role="radiogroup" aria-label="Header"><button data-v="photo">Photo</button><button data-v="video">Video</button></div>');
       const current = heroPrefs[artistUri] === 'photo' ? 'photo' : 'video';
       sw.querySelectorAll('button').forEach((b) => {
@@ -2602,16 +2829,17 @@
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
-      if (route() === path) { artistColors = paletteOf(img); if (artistColors) { auroraColors = artistColors; paintAurora(); } }
+      if (fresh()) { artistColors = paletteOf(img); if (artistColors) { auroraColors = artistColors; paintAurora(); } }
       const light = headerIsLight(img);
-      if (light !== null && route() === path) html.classList.toggle('tess-hero-light', light);
+      if (light !== null && fresh()) html.classList.toggle('tess-hero-light', light);
     };
     img.src = (getComputedStyle(bg).backgroundImage.match(/url\("?(.*?)"?\)/) || [])[1] || '';
 
     bg.querySelectorAll('video.tess-hero-video').forEach((old) => old.remove());
+    bg.classList.remove('video-ready');
     if (!wantVideo) { unwait(); return; }
     const v = await early;
-    if (route() !== path) return;
+    if (!fresh()) return;
     if (!v) { unwait(); return; }
     bg.appendChild(v);
     v.classList.add('ready');
@@ -2669,7 +2897,7 @@
   onDispose(() => typeof unlisten === 'function' && unlisten());
   listen(window, 'resize', () => { setHeroHeight(); setTimeout(onRoute, 100); });
   // for checking things from DevTools: window.__tessDebug.artistCanvas(uri), .playCanvas(video, fileId)
-  self.debug = { artistCanvas, playCanvas, trackCanvas, onRoute: () => onRoute(), place: () => runPlacers(), whatsNew: () => whatsNew(true) };
+  self.debug = { artistCanvas, playCanvas, trackCanvas, onRoute: () => onRoute(), place: () => runPlacers(), whatsNew: () => whatsNew(true), npTick: () => syncProgress(), libState: () => ({ libMorphing, libArrived }) };
   onboarding();
   whatsNew();
   onDraw(applyGlass, 4000);

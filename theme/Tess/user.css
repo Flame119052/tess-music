@@ -6,6 +6,7 @@
 :root {
   --tess-accent: #1ed760;
   --tess-glass: rgba(48, 48, 52, 0.62);
+  --tess-glass-tint: transparent;
   --tess-glass-line: rgba(255, 255, 255, 0.13);
   --tess-pill: rgba(255, 255, 255, 0.12);
   --tess-text: #fff;
@@ -248,8 +249,8 @@ html.tess .main-view-container__scroll-node-child {
 .tess-marquee.scrolling {
   -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent) !important;
 }
-.tess-marquee.scrolling.pass span {
-  animation: tess-marquee 11s ease-in-out 1;
+.tess-marquee.scrolling span {
+  animation: tess-marquee 11s ease-in-out infinite;
 }
 @keyframes tess-marquee {
   0%, 12% { transform: translateX(0); }
@@ -279,6 +280,9 @@ html.tess .main-view-container__scroll-node-child {
   background: rgba(255, 255, 255, 0.8);
   transform-origin: 0 50%;
   transform: scaleX(0);
+  /* the position is written twice a second; the transition between writes reads as a continuous glide
+     on the GPU, so the line moves smoothly without animating at 60 fps */
+  transition: transform 0.5s linear;
 }
 .tb-tools {
   display: flex;
@@ -547,6 +551,39 @@ html.tess .main-view-container__scroll-node-child {
   transform: scale(1.02);
 }
 .tn-line.gap { letter-spacing: 0.25em; font-size: 28px; }
+/* the inline fixer for fallback lyrics: words field, timing nudge, save — one compact row on the line */
+.tn-edit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  letter-spacing: 0;
+}
+.tn-edit input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 8px;
+  color: #fff;
+  font: inherit;
+  padding: 6px 10px;
+  outline: none;
+}
+.tn-edit input:focus { border-color: rgba(255, 255, 255, 0.6); }
+.tn-edit-time { display: flex; align-items: center; gap: 4px; white-space: nowrap; font-size: 12px; opacity: 0.9; }
+.tn-edit-time button,
+.tn-edit-save {
+  background: rgba(255, 255, 255, 0.12);
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 4px 7px;
+}
+.tn-edit-time button:hover,
+.tn-edit-save:hover { background: rgba(255, 255, 255, 0.28); }
 #tess-np.unsynced .tn-lines { top: 12%; }
 #tess-np.unsynced .tn-line { color: rgba(255, 255, 255, 0.85); cursor: default; font-size: 28px; }
 /* ---- a song with no lyrics: the visual takes the stage, and a small note sits in the corner ---- */
@@ -2473,16 +2510,19 @@ html.tess-lib-wide #Desktop_LeftSidebar_Id header h1 {
   border-radius: 50%;
   background: radial-gradient(circle at 35% 35%, #f4f4f6, #9a9aa2);
 }
+/* the record's own square box: the arm anchors to this, never the stage, so it tracks the vinyl
+   wherever the stage puts it — and it does not shrink when a paused cover scales down */
+.tn-disc { position: relative; }
 #tess-np.vinyl .tn-arm {
   display: block !important;
   position: absolute;
-  right: -6%;
-  top: -6%;
-  width: 16%;
+  right: -4%;
+  top: -5%;
+  width: 21%;
   z-index: 5;
   transform-origin: 50% 10%;
   transform: rotate(-28deg);
-  transition: transform 0.5s linear;
+  transition: transform 0.45s var(--tess-ease-out);
   filter: drop-shadow(0 8px 14px rgba(0, 0, 0, 0.5));
   cursor: grab;
   touch-action: none;
@@ -2586,6 +2626,7 @@ html.tess .tess-liquid {
   -webkit-backdrop-filter: var(--tess-lens, blur(10px)) blur(7px) saturate(1.35) !important;
   backdrop-filter: var(--tess-lens, blur(10px)) blur(7px) saturate(1.35) !important;
   background:
+    linear-gradient(var(--tess-glass-tint, transparent), var(--tess-glass-tint, transparent)),
     radial-gradient(120% 140% at 50% 50%, rgba(18, 18, 22, 0.42), rgba(18, 18, 22, 0.18) 70%, rgba(18, 18, 22, 0.08)) !important;
   box-shadow:
     inset 0 1px 0.5px rgba(255, 255, 255, 0.75),
@@ -2960,6 +3001,27 @@ html.tess ::-webkit-scrollbar-track {
 }
 @media (prefers-reduced-motion: reduce) {
   #tess-timeline .ts-arrive { animation: none; }
+}
+/* expanding deals the shelves in one after another: the plank draws, the title rises,
+   and its records tip in behind it (each shelf's beat is --shelf-i, set in renderShelves) */
+@keyframes ts-plank-in {
+  from { transform: scaleX(0); opacity: 0; }
+}
+@keyframes ts-head-in {
+  from { opacity: 0; transform: translateY(14px); }
+}
+#tess-timeline.shelves.arriving .ts-plank {
+  transform-origin: 12px 50%;
+  animation: ts-plank-in 0.45s var(--tess-spring) both;
+  animation-delay: calc(var(--shelf-i, 0) * 90ms);
+}
+#tess-timeline.shelves.arriving .ts-shelf header {
+  animation: ts-head-in 0.5s var(--tess-ease-out) both;
+  animation-delay: calc(var(--shelf-i, 0) * 90ms);
+}
+@media (prefers-reduced-motion: reduce) {
+  #tess-timeline.shelves.arriving .ts-plank,
+  #tess-timeline.shelves.arriving .ts-shelf header { animation: none; }
 }
 
 /* ================= first-run welcome ================= */
@@ -3361,8 +3423,7 @@ html.tess.tess-artist [data-testid="artist-page"] [data-tess-artist-clear] {
   animation: tn-spin 3.4s steps(102) infinite;
   animation-play-state: paused;
 }
-html.tess-playing.tess-spin-burst .tess-cover-wrap.vinyl .tess-side-cover,
-html.tess-playing .tess-cover-wrap.vinyl:hover .tess-side-cover { animation-play-state: running; }
+html.tess-playing .tess-cover-wrap.vinyl .tess-side-cover { animation-play-state: running; }
 .tess-cover-wrap.vinyl .tess-side-cover img {
   inset: 30%; width: 40%; height: 40%; border-radius: 50%; box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.5);
 }
@@ -3541,17 +3602,24 @@ html.tess [data-encore-id="card"] * {
   will-change: auto !important;
 }
 
-/* Spotify's shelf arrows: shown when you point at the shelf, instead of a scroll-linked animation that kept every
-   arrow on its own GPU layer (see core.js markLayout) */
+/* Spotify's shelf arrows: always there when the shelf can scroll, and the arrow you cannot use fades —
+   the affordance scroll-linked animations gave, without keeping every arrow on its own GPU layer
+   (see core.js markLayout) */
 html.tess [data-tess-scrollhint] {
   animation: none !important;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s;
 }
+html.tess [data-tess-carousel][data-tess-overflow] [data-tess-scrollhint],
 html.tess [data-tess-carousel]:hover [data-tess-scrollhint] {
   opacity: 1;
   pointer-events: auto;
+}
+html.tess [data-tess-carousel][data-at-start] [data-tess-scrollhint][data-tess-hint="prev"],
+html.tess [data-tess-carousel][data-at-end] [data-tess-scrollhint][data-tess-hint="next"] {
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* ================= design pass (Emil Kowalski's design-engineering rules, Impeccable's craft floor) ================= */
@@ -3826,11 +3894,9 @@ html.tess [data-testid="home-ads-container"] {
   animation: td-spin 5.5s steps(165) infinite;
   animation-play-state: paused;
 }
-/* While music plays the record spins for a while after a song starts or you press play, and whenever you point at
-   it, then comes to rest. Any motion that never stops makes the whole window redraw continuously (about a third of a
-   CPU core on a Retina screen), so nothing on Home moves for ever. */
-html.tess-playing.tess-spin-burst .td-record,
-html.tess-playing #tess-dial:hover .td-record {
+/* While music plays the record spins. A fully hidden window draws no frames, so a covered or hidden Spotify
+   costs nothing anyway. */
+html.tess-playing .td-record {
   animation-play-state: running;
 }
 .td-record i {
