@@ -1148,6 +1148,19 @@ print(json.dumps({name: sorted(props) for name, props in tools.items()}))
     try { return JSON.parse(raw); }
     catch { assert.fail(`${name} returned ${raw.slice(0, 300)}`); }
   };
+  const bundledNode = join(visitProfile, 'runtime/node/bin/node');
+  assert.ok(existsSync(bundledNode), 'the installer did not put Node where the visit plugin looks');
+  const resolvedNode = execFileSync(pluginPy(), ['-c', `
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("tess_visit_installed", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(mod.resolve_node(sys.argv[2]))
+`, pluginPath, visitProfile], { encoding: 'utf8', env: visitEnv, timeout: 20000 }).trim();
+  assert.equal(resolvedNode, realpathSync(bundledNode));
+  // The refusal below is the profile with that runtime taken away. The later
+  // steps use TESS_NODE, which must not hide a runtime that is still there.
+  rmSync(join(visitProfile, 'runtime'), { recursive: true });
   const noNode = { ...visitEnv };
   delete noNode.TESS_NODE;
   const missingNode = await call('tess_visit_start', {}, noNode);

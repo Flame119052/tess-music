@@ -839,6 +839,71 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   can start a process without passing the shell deny list. The installer refuses a `HERMES_HOME` inside the real login
   home when `TESS_TEST=1`, so the tests never touch this Mac. A real install is not `TESS_TEST`: it allows `~/.hermes`,
   which is where Hermes lives, and it still refuses a symlink and any write outside `profiles/tess-support`.
+- **D-105 · 18 Nov 2026 · Agent** — The one-command Mac install is `support/mac/install.sh` (#121). On Apple Silicon
+  the script downloads the bundled disk image named in Hermes's `stable-mac.yml` feed, checks the published SHA-512, then checks
+  the mounted app with `codesign` and `spctl`. The signature requirement pins Nous Research's team `763K57MW7Z`
+  (`certificate leaf[subject.OU]`), the Developer ID intermediate (`certificate 1[field.1.2.840.113635.100.6.2.6]`)
+  and leaf (`certificate leaf[field.1.2.840.113635.100.6.1.13]`), and the bundle identifier
+  `com.nousresearch.hermes-bundled`. The team and the identifier were read with `codesign -dvv` on `Hermes Agent.app`
+  inside a read-only mount of `HermesBundled-0.22.0-mac-arm64.dmg`, the Apple Silicon image named in the live
+  `stable-mac.yml` on 19 Nov 2026. The published SHA-512 matched. The same requirement accepts that app, and a
+  different identifier is rejected. The image was then unmounted and deleted, and it was not copied into `/Applications`.
+  A symlink named `Hermes.app` is not treated as the app. The bundle on that image is named `Hermes Agent.app`.
+  The copy into Applications happens only after the checks. A failed
+  check leaves Applications unchanged. An Intel Mac does not download that image. It downloads
+  `https://raw.githubusercontent.com/NousResearch/hermes-agent/ae2a81ccc00e9b7c06301523e5bb09608397149c/scripts/install.sh`
+  (the commit `v0.23.2` points at, not the tag), checks SHA-256
+  `c73dad4dcf7c9ecadb98578e28cc763d23d7be3fa1b513545319038795493214`, and only then runs it with
+  `--non-interactive --skip-browser --skip-computer-use`. The `HERMES_*` and `UV_*` variables that script honours,
+  other than `HERMES_HOME`, are removed from its environment first. That script still makes its own downloads:
+  it then downloads Hermes and its Python packages without pins of its own. The script says
+  macOS may ask once to install Command Line Tools. The Dock icon is `~/Applications/Tess Support.app`. The script adds
+  that icon to `persistent-apps` once, and a second run does not add it again. When this script installed Hermes on
+  Apple Silicon, the icon opens that app with `--profile=tess-support`. On Intel, and when Hermes was already installed,
+  the icon runs the absolute path of `hermes` found at install time (`~/.local/bin`, `command -v`, or the copy inside
+  the app) as `hermes -p tess-support webapp`. If none is found, the script stops and says so. The version has to meet
+  `hermes_requires` (`>=0.22.0`). `webapp.enabled` is set, because `hermes webapp` stays off until it is. The
+  code is read from the environment or from `/dev/tty`, then written only to the profile `.env` at mode 600.
+  `install.sh --uninstall` (pasted as `curl … | sh -s -- --uninstall`) removes the profile, the icon, and the Dock tile.
+  It removes Hermes only when this script installed Hermes and the person agrees. The recorded app name keeps its
+  spaces, so `Hermes Agent.app` is the app that is removed. A name this installer does not know is left in place,
+  and the marker stays. It never touches Spotify or Tess.
+  It then tells them to ask Krish to revoke the code. The ticket named `tess support uninstall`; it is not a `tess`
+  subcommand because `tess-command.sh` is signed Tess release content that reaches people only after a promote, the
+  installer embeds it byte for byte, and a person who removes Tess first would lose the command. A Support uninstall
+  that edits Tess is also the coupling this decision avoids. The profile files are the ones `distribution.yaml`
+  lists, the same list `install.mjs` copies, and the piped install downloads each of them from one pinned commit,
+  checking a SHA-256 for every file before anything in the profile changes. The pins make an install reproducible.
+  After this branch is merged, those pins have to be written again from `main`. A squash or a rebase would not keep the commit they name.
+  Whether this support line goes through dev, then beta, then stable promotion is still open. They are copied in the
+  shell, one pinned file at a time, not a whole `skills` or `plugins` folder, and not with `install.mjs` or
+  `hermes profile install`, because installer scripts may not need `node` and the
+  tests never start Hermes. `HERMES_HOME` follows `install.mjs`'s rule: a real install uses `~/.hermes` and refuses
+  any other folder inside the login home, a test refuses the login home, and both refuse a symlinked `HERMES_HOME`
+  or profile folder.   A reinstall builds the new profile and its Node together in `.tess-support.incoming`, next to
+  the live profile, and renames them on the same disk. The installer replaces only what `distribution.yaml` lists
+  under `distribution_owned`, plus `.env` and the Node `runtime`. Every other top-level item, including `cache/`,
+  `state.db`, `sessions/`, `memories/` and `auth.json`, is carried across. A symlink in that set is refused, the
+  same way a symlinked `cache/` is refused. An unsent visit survives, and so does the person's support chat.
+  The cleanup trap never deletes `.tess-support.previous`. It removes a `.tess-support.incoming` this run created,
+  and if the swap was interrupted it puts the previous profile back before it exits. A profile counts as the live
+  one only when it has both `.env` and `distribution.yaml`. A stub is moved aside and the previous profile is
+  restored. Uninstall removes the profile and also `.tess-support.previous` and `.tess-support.incoming`. When one
+  of those is a symlink, uninstall removes the link and leaves the folder it points at.
+  A code that is not one Krish issued, and a Node or profile file that fails its checksum, create no Hermes app,
+  no command, and no `~/.hermes`. The command-line sticky profile is
+  written only when this run created `HERMES_HOME`. On a later run it is overwritten only while it still says
+  `tess-support`. A name the person chose is left alone. The Dock icon passes the profile itself. The desktop
+  `active-profile.json` follows the same rule when the icon will open the desktop app.
+  *Why:* one paste, Gatekeeper before Applications changes, and the code stays out of shell history and out of argv.
+  *Trade-off:* the Dock write is a private preference the script reads back before it adds a tile. An Intel chat
+  needs `webapp.enabled`, or the browser chat never starts. The visit's Node is Node.js 26.13.1, the current LTS.
+  The script checks that pin against the version's `SHASUMS256.txt`, then checks the download against the same
+  SHA-256, and only then unpacks `bin/node` into `profiles/tess-support/runtime/node/`. The official binary links
+  only macOS system libraries, so nothing else from the archive is kept. A mismatch leaves the profile as it was.
+  A reinstall downloads again only when the pin changes. Uninstall removes the runtime with the profile. The
+  profile has no command list to rewrite. The visit plugin resolves this profile's
+  `runtime/node/bin/node` (D-110). A `node` on `PATH` is not that binary.
 - **D-106 · 19 Nov 2026 · Agent** — A Mac support visit finishes without a shell approval (#121). The profile
   takes a still of the Spotify window (`screencapture -x -l <window id>`) and writes it only to that visit's
   `spotify.png`. It does not record video. `screencapture -V` ignores `-l` and records the whole display, so a
@@ -861,6 +926,32 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   *Trade-off:* an existing inbox database needs `ALTER TABLE support_reports ADD COLUMN image TEXT` before a still
   can be stored. Until then a still is answered 503 and a video still stores. A moving bug has no automatic
   recording until the ScreenCaptureKit helper exists. This change does not deploy the Worker.
+- **D-107 · 19 Nov 2026 · Krish** — Reviews rotate through Claude Opus 5.5, GPT Sol and Gemini 4 Neon, in that order,
+  each on the provider with the most usage left and the soonest reset, and a review never uses the model that wrote the
+  change. Gemini 4 Neon reviews belong in the GitHub `@tess-review` job with the reviewer in full access inside the
+  job's sandbox: the throwaway VM, bubblewrap, no GitHub token, and only the job posts. Adding Antigravity to the job is
+  separate work. Until it lands, a Gemini 4 Neon review runs as a T3 thread with full access (approval-required stalls
+  on every tool call) and its findings are posted on the pull request, naming the commit it read.
+  *Trade-off:* until then the job's checks (the allowlist, CI green on the exact head, the author check, the stripped
+  review copy) do not guard a Gemini review. It is a second opinion beside a job review.
+- **D-109 · 19 Nov 2026 · Agent** — The GitHub review job can run Antigravity (`agy` 1.5.12, `gemini-4-neon`) on the
+  Google plan (D-107). On Linux with no D-Bus session, including an SSH session on the Dell and a GitHub-hosted VM,
+  agy stores that login in `~/.gemini/antigravity-cli/antigravity-oauth-token` and does not use the OS keyring. The job
+  process redeems the refresh token at Google before bubblewrap starts, writes a file that holds only the access
+  token, its type and its expiry, and mounts that file read-only. The refresh token is never written to disk and never
+  enters the sandbox. The access-token file is deleted when the run ends. The job passes
+  `--dangerously-skip-permissions` and does not pass `--mode plan`. `GH_TOKEN` is removed before `agy` starts, and
+  only the job posts. `machine=mac` and `machine=omarchy` still refuse `provider=antigravity`: Krish chose the GitHub
+  path.
+  *Why:* D-107 already puts this reviewer in the GitHub job with full access inside the sandbox. The missing piece was
+  a plan login a fresh Linux VM can read. A headless run on the Dell with `--dangerously-skip-permissions` logged
+  that it auto-approves tool permissions, then exited at once because the throwaway home had no login. The same run
+  with `--mode plan` also exited at once, but it never reached a tool call, so plan mode is not used.
+  *Trade-off:* inside the sandbox the CLI is allowed to ask for writes and shell. Bubblewrap hides the runner's own
+  files and keeps the review copy and the access-token file read-only. It does not stop the reviewer from reading that
+  access token or sending it over the network. The token lasts about an hour, and a review that quotes it is refused.
+  A signed-in tool turn still needs the one-time login; it was not run here. `GEMINI_API_KEY` and Application Default
+  Credentials are refused.
 - **D-110 · 19 Nov 2026 · Agent** — A Mac support visit has no shell (#121). D-106 said a command that is not on
   `command_allowlist` stops and asks. That is false. In Hermes 0.22.6, `check_all_command_guards`
   (`tools/approval.py`) approves every command `detect_dangerous_command` does not flag, in manual mode and in
@@ -927,15 +1018,6 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   *Trade-off:* the model cannot run an ad-hoc command when the doctor output is surprising. It can save a note
   and post what it has. This does not change the VPS bot, which still has a terminal. This change does not
   deploy the Worker.
-
-- **D-107 · 19 Nov 2026 · Krish** — Reviews rotate through Claude Opus 5.5, GPT Sol and Gemini 4 Neon, in that order,
-  each on the provider with the most usage left and the soonest reset, and a review never uses the model that wrote the
-  change. Gemini 4 Neon reviews belong in the GitHub `@tess-review` job with the reviewer in full access inside the
-  job's sandbox: the throwaway VM, bubblewrap, no GitHub token, and only the job posts. Adding Antigravity to the job is
-  separate work. Until it lands, a Gemini 4 Neon review runs as a T3 thread with full access (approval-required stalls
-  on every tool call) and its findings are posted on the pull request, naming the commit it read.
-  *Trade-off:* until then the job's checks (the allowlist, CI green on the exact head, the author check, the stripped
-  review copy) do not guard a Gemini review. It is a second opinion beside a job review.
 - **D-108 · 19 Nov 2026 · Agent** — The support chat route answers a missing, unknown or revoked token with one JSON
   401: `{"error":{"message":"This support code is not active. Ask Krish for a new one.","type":"authentication_error",
   "code":"invalid_api_key"}}` (#121). The report routes keep their empty 401. *Why:* Hermes builds its error text from

@@ -6,7 +6,7 @@
 // Writes .env with the support token only — never an OpenCode key.
 // Uses `hermes profile install` when that command actually runs, and copies the profile otherwise.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { closeSync, constants, cpSync, existsSync, fchmodSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, constants, cpSync, existsSync, fchmodSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -186,6 +186,47 @@ const main = () => {
     const destReal = realpathSync(dest);
     if (!inside(destReal, home)) die('the profile folder points outside HERMES_HOME');
 
+    // The same Node layout as install.sh: one binary, plus the pinned version.
+    // TESS_NODE_RUNTIME is a regular file the tests supply. Otherwise this copies
+    // the node that is running the installer. A matching VERSION is left in place.
+    const placeRuntime = () => {
+      const pins = readFileSync(join(src, 'install.sh'), 'utf8');
+      const pinned = pins.match(/^NODE_VERSION=(v\d+\.\d+\.\d+)$/m);
+      if (!pinned) die('install.sh has no NODE_VERSION pin');
+      const version = pinned[1];
+      const runtimeRoot = join(dest, 'runtime');
+      const runtime = join(runtimeRoot, 'node');
+      const bin = join(runtime, 'bin', 'node');
+      const marker = join(runtime, 'VERSION');
+      for (const path of [dest, runtimeRoot, runtime, join(runtime, 'bin'), bin]) {
+        if (isLink(path)) die('the Node runtime path is a symlink. Refusing to follow it.');
+      }
+      if (existsSync(marker) && existsSync(bin) && readFileSync(marker, 'utf8').trim() === version) return;
+      let from = process.execPath;
+      if (process.env.TESS_NODE_RUNTIME) {
+        from = resolve(process.env.TESS_NODE_RUNTIME);
+        let info;
+        try { info = lstatSync(from); } catch { die('TESS_NODE_RUNTIME must be a regular file'); }
+        if (info.isSymbolicLink() || !info.isFile()) die('TESS_NODE_RUNTIME must be a regular file');
+      }
+      const incoming = join(runtimeRoot, '.node-incoming');
+      const previous = join(runtimeRoot, '.node-previous');
+      rmSync(incoming, { recursive: true, force: true });
+      mkdirSync(join(incoming, 'bin'), { recursive: true });
+      cpSync(from, join(incoming, 'bin', 'node'));
+      chmodSync(join(incoming, 'bin', 'node'), 0o755);
+      writeFileSync(join(incoming, 'VERSION'), `${version}\n`);
+      rmSync(previous, { recursive: true, force: true });
+      if (existsSync(runtime)) renameSync(runtime, previous);
+      try {
+        renameSync(incoming, runtime);
+      } catch {
+        if (existsSync(previous)) renameSync(previous, runtime);
+        die('Could not install Node. The previous runtime was left in place.');
+      }
+      rmSync(previous, { recursive: true, force: true });
+    };
+
     // Replace whatever the installer wrote. Two lines, mode 600, no other key.
     // Only inside the profile folder.
     const envPath = join(dest, '.env');
@@ -201,6 +242,7 @@ const main = () => {
     } finally {
       closeSync(fd);
     }
+    placeRuntime();
     console.log(`via ${via}`);
   } finally {
     rmSync(stage, { recursive: true, force: true });

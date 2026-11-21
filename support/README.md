@@ -8,6 +8,32 @@ A person's own Mac uses a separate profile, [`mac/`](mac/). The unit files below
 
 **Giving someone Tess Support on their Mac** (make a code, send it, watch, revoke, set the daily limits): [`RUNBOOK-mac.md`](RUNBOOK-mac.md).
 
+## For the person
+
+Paste this line into Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/support/mac/install.sh | sh
+```
+
+When Terminal asks, type the code Krish gave you and press Return. The code is not part of the line, so it does not stay in Terminal's history.
+
+**Tess Support** appears in the Dock. Click that icon, then type what went wrong.
+
+The same command puts a pinned copy of Node.js inside the Tess Support profile. A visit uses that copy. The Mac does not need Node installed already.
+
+macOS asks once to allow screen recording the first time Tess Support needs to see Spotify. Turn it on for Tess Support in System Settings, under Privacy and Security, then click the Dock icon again.
+
+On an Intel Mac, macOS may ask once to install Command Line Tools. If a window opens, click Install. The Hermes installer then downloads Hermes and its Python packages. Those downloads are not pinned by Tess.
+
+To remove Tess Support, paste this line. It removes the Dock icon and the Tess Support profile, including that Node, and does not touch Spotify or Tess. It leaves Hermes unless this install put Hermes on the Mac and you type `yes`.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/support/mac/install.sh | sh -s -- --uninstall
+```
+
+Then ask Krish to revoke your code. Until he does, that code can still reach Tess support.
+
 ## For Krish: turn it on and give someone access
 
 ### 1. Gather four things (plus an optional tester id)
@@ -103,7 +129,7 @@ Paperclip owns its own directories and services on the VPS and always has priori
 4. Paste back what it printed.
 5. Get told what's happening, and that fixes arrive on their own.
 
-They never file anything, never need a GitHub account, and the bot never touches their Mac.
+They never file anything, never need a GitHub account, and the bot never touches their Mac. A person Krish set up on their own Mac follows [For the person](#for-the-person) instead of these Telegram steps.
 
 ## The proxy, skills, and plugin
 
@@ -162,7 +188,8 @@ person ──message──▶ tess-support on VPS ──127.0.0.1:4193──▶ 
 
 | Where | What |
 | --- | --- |
-| Their Mac | The profile in [`mac/`](mac/). They open the chat. The model has no shell. It runs the doctor, asks before a still of the Spotify window, and posts through the support gate. The picture waits for their own reply. |
+| Their Mac (Telegram) | Spotify, Tess, and `tess report`, which they start. The bot does not install anything. |
+| Their Mac (Dock) | **Tess Support** in the Dock and the profile in [`mac/`](mac/). Hermes is added only when it was not already there (D-105). They open the chat. The model has no shell. It runs the doctor, asks before a still of the Spotify window, and posts through the support gate. The picture waits for their own reply. |
 | Krish's VPS (`tess-cap`) | Isolated `tess-cap` user + systemd service, real `OPENCODE_GO_API_KEY`, `cap-proxy/proxy.mjs`, enforced `StateDirectory=tess-cap`. |
 | Krish's VPS (`tess-support`) | Isolated `tess-support` user + systemd service, proxy token + Telegram/inbox `.env`, early-UX `daily-cap` plugin. |
 | Paperclip on VPS | Completely untouched (`/srv/paperclip`, PostgreSQL, Paperclip services, Tincan relay). |
@@ -180,6 +207,8 @@ node tools/test-cap-proxy.mjs        # route/host allowlist, cap persistence, ma
 node tools/test-inbox-support.mjs    # endpoint + D1 + privacy.mjs + token hashing (no deploy)
 node tools/test-session.mjs          # session caps, sweeping, symlink/hardlink checks
 node tools/test-support.mjs          # triage, inbox handoff, allowlist, daily-cap plugin, setup.sh
+node tools/test-support-mac.mjs      # Mac profile in a scratch home, and a refused token
+node tools/test-support-mac-install.mjs  # installer with a fake Dock, fake disk tools, and fake curl
 ```
 
 Once installed on the VPS, check in order:

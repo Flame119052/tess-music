@@ -119,6 +119,19 @@ jobs:
           # The agent file on main is what limits OpenCode's reads; the review stops if the installed copy differs.
           mkdir -p "$HOME/.config/opencode/agents"
           cp tools/opencode-reviewer.md "$HOME/.config/opencode/agents/tess-reviewer.md"
+      - name: Install Antigravity
+        id: install_antigravity
+        if: steps.pick.outputs.provider == 'antigravity'
+        run: |
+          # agy@1.5.12, the Linux x64 build. The archive's binary is named antigravity; the job calls it agy.
+          # The sha256 was checked against a download of that release. A changed archive fails here, before tar.
+          version=1.5.12
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o /tmp/agy.tgz "https://github.com/google-antigravity/antigravity-cli/releases/download/${version}/agy_cli_linux_x64.tar.gz"
+          echo "0f0cb851cdc9fbedd50432570aa6ae9c4c398b9ea3f1e23e7776f707643c5b3e  /tmp/agy.tgz" | sha256sum -c -
+          tar -xzf /tmp/agy.tgz -C /tmp
+          install -m 755 /tmp/antigravity "$HOME/.local/bin/agy"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Run read-only reviewer
         id: review
@@ -146,6 +159,10 @@ jobs:
           CODEX_AUTH_JSON: ${{ steps.pick.outputs.provider == 'codex' && secrets.CODEX_AUTH_JSON || '' }}
           OPENCODE_API_KEY: ${{ steps.pick.outputs.provider == 'opencode' && secrets.OPENCODE_API_KEY || '' }}
           ZHIPU_API_KEY: ${{ steps.pick.outputs.provider == 'opencode' && secrets.ZHIPU_API_KEY || '' }}
+          # The Google-plan file agy writes (tools/agy-ci-login.mjs). Not an API key. The job redeems the
+          # refresh token before bubblewrap and mounts only a short-lived access token. The refresh token is
+          # not written to disk and is not passed into the sandbox.
+          AGY_OAUTH_TOKEN: ${{ steps.pick.outputs.provider == 'antigravity' && secrets.AGY_OAUTH_TOKEN || '' }}
           # Needed to read the PR and post the comment. `tools/agent-review.mjs` never passes it to the reviewer.
           GH_TOKEN: ${{ github.token }}
         run: node tools/agent-review.mjs "$REVIEW_ROLE" "$REVIEW_NUMBER"
@@ -164,11 +181,12 @@ jobs:
           CLAUDE: ${{ steps.install_claude.outcome }}
           CODEX: ${{ steps.install_codex.outcome }}
           OPENCODE: ${{ steps.install_opencode.outcome }}
+          ANTIGRAVITY: ${{ steps.install_antigravity.outcome }}
           REVIEW: ${{ steps.review.outcome }}
         run: |
           why="the job stopped"
           if [ "$REVIEW" = failure ]; then why="the reviewer stopped without posting a verdict"
-          elif [ "$CLAUDE" = failure ] || [ "$CODEX" = failure ] || [ "$OPENCODE" = failure ]; then why="installing the reviewer's CLI failed"
+          elif [ "$CLAUDE" = failure ] || [ "$CODEX" = failure ] || [ "$OPENCODE" = failure ] || [ "$ANTIGRAVITY" = failure ]; then why="installing the reviewer's CLI failed"
           elif [ "$PICK" = failure ]; then why="choosing the reviewer failed"
           fi
           node tools/agent-review.mjs stop "$why"

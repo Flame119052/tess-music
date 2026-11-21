@@ -15,14 +15,15 @@ const box = mkdtempSync(join(tmpdir(), 'tess-guard-test-'));
 // Every script a person or an agent could run by hand. installer/redact.sh is a library (a function other scripts copy)
 // and is meant to be sourced, so it is not one of these.
 const scripts = [
-  { name: 'install.sh', shell: 'sh' },
-  { name: 'tess-install.sh', shell: 'sh' },
-  { name: 'uninstall.sh', shell: 'sh' },
-  { name: 'tess-command.sh', shell: 'sh' },
-  { name: 'updater.sh', shell: 'zsh' },
-  { name: 'doctor.sh', shell: 'zsh' },
-  { name: 'rescue.sh', shell: 'zsh' },
-  { name: 'wake.sh', shell: 'zsh' },
+  { name: 'install.sh', shell: 'sh', folder: 'installer' },
+  { name: 'tess-install.sh', shell: 'sh', folder: 'installer' },
+  { name: 'uninstall.sh', shell: 'sh', folder: 'installer' },
+  { name: 'tess-command.sh', shell: 'sh', folder: 'installer' },
+  { name: 'updater.sh', shell: 'zsh', folder: 'installer' },
+  { name: 'doctor.sh', shell: 'zsh', folder: 'installer' },
+  { name: 'rescue.sh', shell: 'zsh', folder: 'installer' },
+  { name: 'wake.sh', shell: 'zsh', folder: 'installer' },
+  { name: 'install.sh', shell: 'sh', folder: 'support/mac' },
 ];
 
 // A checkout (.git folder), a worktree (.git file) and an installed-style folder with no repository above it.
@@ -34,6 +35,8 @@ mkdirSync(worktreeDir, { recursive: true });
 mkdirSync(installedDir, { recursive: true });
 for (const dir of [checkoutDir, worktreeDir, installedDir]) {
   cpSync(join(root, 'installer'), join(dir, 'installer'), { recursive: true });
+  mkdirSync(join(dir, 'support', 'mac'), { recursive: true });
+  cpSync(join(root, 'support/mac/install.sh'), join(dir, 'support/mac/install.sh'));
 }
 writeFileSync(join(worktreeDir, '.git'), 'gitdir: /somewhere/.git/worktrees/wt\n');
 
@@ -69,6 +72,9 @@ const fakeTool = (name, status) => {
 };
 fakeTool('launchctl', 0);
 fakeTool('pgrep', 1);
+// updater.sh lints the LaunchAgent with plutil before it asks launchd. A Mac has plutil.
+// Without a stand-in the script returns first, and the test never sees music.tess.guard.
+fakeTool('plutil', 0);
 fakeTool('pmset', 0);
 fakeTool('osascript', 0);
 fakeTool('open', 0);
@@ -109,9 +115,9 @@ const resetToolLog = () => rmSync(fakeLog, { force: true });
 
 try {
   // 1. Sourcing does nothing, and says why. This is the accident that ran the real installer (#107).
-  for (const { name, shell } of scripts) {
+  for (const { name, shell, folder } of scripts) {
     for (const [where, dir] of [['a checkout', checkoutDir], ['an installed copy', installedDir]]) {
-      const r = run(shell, ['-c', `. "${join(dir, 'installer', name)}"; echo TESS-AFTER-SOURCE`]);
+      const r = run(shell, ['-c', `. "${join(dir, folder, name)}"; echo TESS-AFTER-SOURCE`]);
       assert.match(r.out, /was sourced, so it did nothing/, `${name} sourced from ${where}: says why`);
       assert.match(r.out, /run it as its own command/, `${name} sourced from ${where}: says what to do instead`);
       assert.match(r.out, /sh \.\/file or zsh \.\/file/, `${name} sourced from ${where}: names a command that actually runs the file`);
@@ -119,13 +125,13 @@ try {
       untouched(`${name} sourced from ${where}`);
       noToolRan(`${name} sourced from ${where}`);
     }
-    const alone = run(shell, ['-c', `. "${join(checkoutDir, 'installer', name)}"`]);
+    const alone = run(shell, ['-c', `. "${join(checkoutDir, folder, name)}"`]);
     assert.notEqual(alone.status, 0, `${name} sourced: the shell is told it refused`);
   }
 
   // 2. Outside a sandbox, a checkout's copy refuses: it is for developing, not for a real Mac.
-  for (const { name, shell } of scripts) {
-    const r = run(shell, [join(checkoutDir, 'installer', name)], { cwd: box });
+  for (const { name, shell, folder } of scripts) {
+    const r = run(shell, [join(checkoutDir, folder, name)], { cwd: box });
     assert.notEqual(r.status, 0, `${name} from a checkout: refused`);
     assert.match(r.out, /is inside a git checkout/, `${name} from a checkout: says why`);
     assert.match(r.out, /set TESS_REAL_INSTALL=1/, `${name} from a checkout: names the way through`);
@@ -136,8 +142,8 @@ try {
   // 2b. Handing the file's text to a shell skips the file itself: there is no source to detect and no path to walk, so
   // `sh -c "$(cat file)"` and zsh's `eval` of that text used to start a real install. Both are refused now. The published
   // `curl … | sh` line is a different shape (the shell reads the pipe, with no `-c` and no file) and stays allowed.
-  for (const { name, shell } of scripts) {
-    const body = readFileSync(join(checkoutDir, 'installer', name), 'utf8');
+  for (const { name, shell, folder } of scripts) {
+    const body = readFileSync(join(checkoutDir, folder, name), 'utf8');
     const dashC = run(shell, ['-c', body]);
     assert.notEqual(dashC.status, 0, `${name} handed to ${shell} -c: refused`);
     assert.match(dashC.out, /was handed to a shell to run/, `${name} handed to ${shell} -c: says why`);
@@ -145,7 +151,7 @@ try {
     untouched(`${name} handed to ${shell} -c`);
     noToolRan(`${name} handed to ${shell} -c`);
 
-    const evaled = run('zsh', ['-c', `eval "$(cat "${join(checkoutDir, 'installer', name)}")"`]);
+    const evaled = run('zsh', ['-c', `eval "$(cat "${join(checkoutDir, folder, name)}")"`]);
     assert.notEqual(evaled.status, 0, `${name} eval'd under zsh: refused`);
     assert.match(evaled.out, /was handed to a shell to run/, `${name} eval'd under zsh: says why`);
     untouched(`${name} eval'd under zsh`);
@@ -153,7 +159,7 @@ try {
 
     // The ordinary case: a zsh script outside any checkout that evals the text (context `toplevel:eval`, not `eval…`).
     const evaler = join(checkoutDir, '..', `eval-${name}.zsh`);
-    writeFileSync(evaler, `eval "$(cat "${join(checkoutDir, 'installer', name)}")"\n`);
+    writeFileSync(evaler, `eval "$(cat "${join(checkoutDir, folder, name)}")"\n`);
     const fromFile = run('zsh', [evaler]);
     assert.notEqual(fromFile.status, 0, `${name} eval'd from a zsh script: refused`);
     assert.match(fromFile.out, /was handed to a shell to run/, `${name} eval'd from a zsh script: says why`);
@@ -162,9 +168,11 @@ try {
   }
 
   // The escape still lets the text run, so a sandbox run of a script handed to a shell is not refused.
-  for (const { name, shell } of scripts) {
-    const body = readFileSync(join(checkoutDir, 'installer', name), 'utf8');
+  for (const { name, shell, folder } of scripts) {
+    const body = readFileSync(join(checkoutDir, folder, name), 'utf8');
     for (const flag of ['TESS_TEST', 'TESS_REAL_INSTALL']) {
+      // TESS_REAL_INSTALL=1 would let support/mac/install.sh continue into a real Applications folder.
+      if (folder === 'support/mac' && flag === 'TESS_REAL_INSTALL') continue;
       const allowed = run(shell, ['-c', body], { env: env({ [flag]: '1', TESS_HOME: '', TESS_CONFIG: '', TESS_SPOTIFY: '' }) });
       assert.doesNotMatch(allowed.out, /was handed to a shell to run/, `${name} handed to ${shell} -c with ${flag}=1: not refused`);
     }
@@ -172,10 +180,10 @@ try {
   resetToolLog();
 
   // 2c. The way through is exactly 1. `0` and `false` mean off to a person, and both used to start the real installer.
-  for (const { name, shell } of scripts) {
+  for (const { name, shell, folder } of scripts) {
     for (const value of ['', '0', 'false']) {
       const shown = value === '' ? 'empty' : value;
-      const r = run(shell, [join(checkoutDir, 'installer', name)], { cwd: box, env: env({ TESS_REAL_INSTALL: value }) });
+      const r = run(shell, [join(checkoutDir, folder, name)], { cwd: box, env: env({ TESS_REAL_INSTALL: value }) });
       assert.notEqual(r.status, 0, `${name} with TESS_REAL_INSTALL=${shown}: refused`);
       assert.match(r.out, /is inside a git checkout/, `${name} with TESS_REAL_INSTALL=${shown}: says why`);
       untouched(`${name} with TESS_REAL_INSTALL=${shown}`);
@@ -184,16 +192,16 @@ try {
   }
 
   // 3. A worktree's .git file counts as a checkout, and so does a folder under one.
-  for (const { name, shell } of scripts) {
-    const wt = run(shell, [join(worktreeDir, 'installer', name)], { cwd: box });
+  for (const { name, shell, folder } of scripts) {
+    const wt = run(shell, [join(worktreeDir, folder, name)], { cwd: box });
     assert.match(wt.out, /is inside a git checkout/, `${name} from a worktree: refused`);
-    const deep = run(shell, [join(checkoutDir, 'installer', name)], { cwd: checkoutDir });
+    const deep = run(shell, [join(checkoutDir, folder, name)], { cwd: checkoutDir });
     assert.match(deep.out, /is inside a git checkout/, `${name} from a folder inside a checkout: refused`);
   }
 
   // 4. `cd installer && sh tess-install.sh` names no folder, and must not slip past the guard.
-  for (const { name, shell } of scripts.filter((s) => s.shell === 'sh')) {
-    const r = run(shell, [name], { cwd: join(checkoutDir, 'installer') });
+  for (const { name, shell, folder } of scripts.filter((s) => s.shell === 'sh')) {
+    const r = run(shell, [name], { cwd: join(checkoutDir, folder) });
     assert.notEqual(r.status, 0, `${name} run from its own folder in a checkout: refused`);
     assert.match(r.out, /is inside a git checkout/, `${name} run from its own folder in a checkout: says why`);
   }
@@ -202,6 +210,18 @@ try {
   const piped = run('sh', [], { cwd: checkoutDir, input: readFileSync(join(checkoutDir, 'installer', 'install.sh'), 'utf8') });
   assert.doesNotMatch(piped.out, /was sourced|is inside a git checkout|was handed to a shell/, 'a piped install line is not refused');
   assert.match(piped.out, /Couldn't download Tess's signature checker/, 'a piped install line starts its own work');
+  // The support install is the same shape. No TESS_TEST, so this is the guard a real pipe hits.
+  // uname reports Linux, and the script stops before it asks for a folder or touches a Mac.
+  resetToolLog();
+  const supportPiped = run('sh', [], {
+    cwd: checkoutDir,
+    input: readFileSync(join(checkoutDir, 'support/mac/install.sh'), 'utf8'),
+    env: env({ PATH: `${fakeBinLinux}:${fakeBin}:${process.env.PATH}` }),
+  });
+  assert.doesNotMatch(supportPiped.out, /was sourced|is inside a git checkout|was handed to a shell/, 'a piped support install is not refused by the guard');
+  assert.match(supportPiped.out, /Tess Support installs on a Mac/, 'a piped support install gets past the guard');
+  untouched('a piped support install');
+  noToolRan('a piped support install');
   // The old README uninstall line is the same shape as the install line, but it must not run: that file is whatever
   // is on main. Removal is the signed script already on the Mac.
   const pipedUninstall = run('sh', [], { cwd: checkoutDir, input: readFileSync(join(checkoutDir, 'installer', 'uninstall.sh'), 'utf8') });
@@ -216,9 +236,20 @@ try {
   untouched('sourcing installer/redact.sh');
 
   // 7. A sandbox (TESS_TEST=1) and the documented escape (TESS_REAL_INSTALL=1) both get past the guard.
-  for (const { name, shell } of scripts) {
+  for (const { name, shell, folder } of scripts) {
     for (const flag of ['TESS_TEST', 'TESS_REAL_INSTALL']) {
-      const r = run(shell, [join(checkoutDir, 'installer', name)], { cwd: box, env: env({ [flag]: '1' }) });
+      // TESS_REAL_INSTALL=1 lets the checkout copy past the guard. uname reports Linux, so it stops
+      // before Applications, the Dock, or the home folder.
+      if (folder === 'support/mac' && flag === 'TESS_REAL_INSTALL') {
+        const stopped = run(shell, [join(checkoutDir, folder, name)], {
+          cwd: box,
+          env: env({ TESS_REAL_INSTALL: '1', PATH: `${fakeBinLinux}:${fakeBin}:${process.env.PATH}` }),
+        });
+        assert.doesNotMatch(stopped.out, /was sourced|is inside a git checkout/, `${name} with TESS_REAL_INSTALL=1: not refused by the guard`);
+        assert.match(stopped.out, /Tess Support installs on a Mac/, `${name} with TESS_REAL_INSTALL=1: stops because this is not a Mac`);
+        continue;
+      }
+      const r = run(shell, [join(checkoutDir, folder, name)], { cwd: box, env: env({ [flag]: '1' }) });
       assert.doesNotMatch(r.out, /was sourced|is inside a git checkout/, `${name} with ${flag}=1: not refused`);
     }
   }
@@ -265,7 +296,7 @@ try {
   assert.equal(dotfilesOut.status, 0, dotfilesOut.out);
   assert.match(dotfilesOut.out, /music\.tess\.wake/, 'an install under a home folder that is a repository still runs');
 
-  console.log('script guard tests passed (8 scripts: sourcing does nothing; a body handed to sh -c or eval is refused; '
+  console.log('script guard tests passed (9 scripts: sourcing does nothing; a body handed to sh -c or eval is refused; '
     + 'a checkout or worktree copy refuses, so do TESS_REAL_INSTALL=0/false; the piped install line, TESS_TEST=1, '
     + 'TESS_REAL_INSTALL=1 and installed copies run)');
 } finally {
