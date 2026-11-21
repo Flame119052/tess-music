@@ -116,9 +116,11 @@ jobs:
           # `opencode` binary this repo calls. `opencode-ai` is the 1.x package (same publisher, `opencode` binary), which
           # does not take the v2 flags; checked with `npm view <pkg> version bin repository.url`, not from memory.
           npm install -g --no-audit --no-fund @opencode/cli@2.3.0
-          # The agent file on main is what limits OpenCode's reads; the review stops if the installed copy differs.
+          # The agent file and provider config on main are what limit OpenCode; the review stops if either copy differs,
+          # or if this folder holds anything besides those two files.
           mkdir -p "$HOME/.config/opencode/agents"
           cp tools/opencode-reviewer.md "$HOME/.config/opencode/agents/tess-reviewer.md"
+          cp tools/opencode-config.json "$HOME/.config/opencode/opencode.json"
       - name: Install Antigravity
         id: install_antigravity
         if: steps.pick.outputs.provider == 'antigravity'
@@ -154,11 +156,14 @@ jobs:
           # a review can only ever hold its own. Claude's plan token and Codex's ChatGPT-plan login stop in the review
           # process: the CLI is pointed at tools/review-proxy.mjs with a per-review token, and the proxy writes its config
           # (holding the real credential) to RUNNER_TEMP at 0600, outside the sandbox bubblewrap gives the CLI (D-69,
-          # D-73). OpenCode keeps its own key, which its agent file cannot read from inside the copy.
+          # D-73). OpenCode gets only the connector key for the model prefix, and a Zen free opencode/* model gets none.
+          # The script checks the same map again and refuses an unknown prefix or a missing key (D-112).
           CLAUDE_CODE_OAUTH_TOKEN: ${{ steps.pick.outputs.provider == 'claude' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
           CODEX_AUTH_JSON: ${{ steps.pick.outputs.provider == 'codex' && secrets.CODEX_AUTH_JSON || '' }}
-          OPENCODE_API_KEY: ${{ steps.pick.outputs.provider == 'opencode' && secrets.OPENCODE_API_KEY || '' }}
-          ZHIPU_API_KEY: ${{ steps.pick.outputs.provider == 'opencode' && secrets.ZHIPU_API_KEY || '' }}
+          OPENCODE_API_KEY: ${{ steps.pick.outputs.provider == 'opencode' && startsWith(steps.pick.outputs.model, 'opencode-go/') && secrets.OPENCODE_API_KEY || '' }}
+          ZHIPU_API_KEY: ${{ steps.pick.outputs.provider == 'opencode' && startsWith(steps.pick.outputs.model, 'zai-coding-plan/') && secrets.ZHIPU_API_KEY || '' }}
+          NVIDIA_API_KEY: ${{ steps.pick.outputs.provider == 'opencode' && startsWith(steps.pick.outputs.model, 'nvidia/') && secrets.NVIDIA_API_KEY || '' }}
+          SARVAM_API_KEY: ${{ steps.pick.outputs.provider == 'opencode' && startsWith(steps.pick.outputs.model, 'sarvam/') && secrets.SARVAM_API_KEY || '' }}
           # The Google-plan file agy writes (tools/agy-ci-login.mjs). Not an API key. The job redeems the
           # refresh token before bubblewrap and mounts only a short-lived access token. The refresh token is
           # not written to disk and is not passed into the sandbox.

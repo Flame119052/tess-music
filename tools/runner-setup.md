@@ -18,8 +18,10 @@ not bill by the token, so `CODEX_API_KEY` and `CURSOR_API_KEY` are gone and must
 | --- | --- | --- |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude (plan) | Run `claude setup-token` on a machine signed in to the Claude account and paste the token it prints. It is a long-lived headless sign-in (about a year); run it again when it expires. <https://code.claude.com/docs/en/authentication> |
 | `CODEX_AUTH_JSON` | Codex (ChatGPT plan) | `node tools/codex-ci-login.mjs` — see below. Never an OpenAI API key. |
-| `OPENCODE_API_KEY` | OpenCode Go (plan) | Subscribe to OpenCode Go (or Go Plus) in the OpenCode console, then copy the key. Both the `opencode` and `opencode-go` providers read this one variable. <https://opencode.ai/docs/console/go> |
-| `ZHIPU_API_KEY` | OpenCode, Z.ai coding plan only (plan) | The GLM Coding Plan key from the Z.ai console. The `zai-coding-plan` provider reads `ZHIPU_API_KEY` (models.dev). Optional: without it the Z.ai connector is refused by name and OpenCode Go still reviews. |
+| `OPENCODE_API_KEY` | OpenCode Go only (`opencode-go/*`) | Subscribe to OpenCode Go (or Go Plus) in the OpenCode console, then copy the key. Passed only when the model starts with `opencode-go/`. Zen free models (`opencode/*`) get no key. <https://opencode.ai/docs/console/go> |
+| `ZHIPU_API_KEY` | OpenCode, Z.ai coding plan only (`zai-coding-plan/*`) | The GLM Coding Plan key from the Z.ai console. Passed only when the model starts with `zai-coding-plan/`. Without it a Z.ai model is refused by name and the other connectors still review. |
+| `NVIDIA_API_KEY` | Nvidia NIM (`nvidia/*`) | The Nvidia NIM key already connected in OpenCode. Passed only when the model starts with `nvidia/`. |
+| `SARVAM_API_KEY` | Sarvam (`sarvam/*`) | The Sarvam key for the free/subscription plan Krish confirmed (D-112). Passed only when the model starts with `sarvam/`. `tools/opencode-config.json` stores `{env:SARVAM_API_KEY}`, never the key itself. |
 
 Each secret is a repository secret, never an environment or a job-level variable: the review step is the only place it
 is used, and the workflow gives it a value only when that provider is the one the tag named. `tools/agent-review.mjs`
@@ -70,6 +72,8 @@ gh secret set CLAUDE_CODE_OAUTH_TOKEN -R Flame119052/tess-music
 gh secret set CODEX_AUTH_JSON -R Flame119052/tess-music   # prefer node tools/codex-ci-login.mjs
 gh secret set OPENCODE_API_KEY -R Flame119052/tess-music
 gh secret set ZHIPU_API_KEY -R Flame119052/tess-music
+gh secret set NVIDIA_API_KEY -R Flame119052/tess-music
+gh secret set SARVAM_API_KEY -R Flame119052/tess-music
 ```
 
 ## Variables Krish sets (Settings → Secrets and variables → Actions → Variables)

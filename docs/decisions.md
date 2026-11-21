@@ -1026,3 +1026,17 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   a 401 as the auth layer); that was not run here. *Trade-off:* none on secrecy. The three cases get the same words,
   so the answer does not say whether a code ever existed. `tools/test-support-mac-chat.mjs` proves the gate side on a
   real chat turn: the next turn after `support token revoke` gets this line and the upstream is not called.
+- **D-112 · 21 Nov 2026 · Krish** — GitHub reviews may use OpenCode Zen free (`opencode/*`, no key), Nvidia NIM
+  (`nvidia/*`, `NVIDIA_API_KEY`), Sarvam (`sarvam/*`, `SARVAM_API_KEY`), and the extra OpenCode Go and Z.ai models
+  (#131). Krish confirmed Sarvam is on a free/subscription plan, so it stays inside the plans/free-only rule. Zen free
+  is only the four named models (`deepseek-v4.1-flash-free`, `mimo-v2.6-flash-free`, `nemotron-3.5-super-vl-free`,
+  `big-pickle`). OpenCode may keep prompts from those free models for training. That is acceptable because this
+  repository and its pull request diffs are public. `strong` stays `zai-coding-plan/glm-5.3`, `gpt-6.1-sol`, and
+  `claude-opus-5-5`. A review receives one connector key, chosen by model prefix, and `opencode/*` receives none. An
+  unknown prefix or a missing key refuses the run. `tools/opencode-config.json` holds `$schema` and `providers` only,
+  Sarvam's key is `{env:SARVAM_API_KEY}`, and the runner folder may contain only that file and `agents/tess-reviewer.md`.
+  *Why:* the remaining connectors Krish already uses in OpenCode were not on the GitHub job, and handing every
+  OpenCode review both existing keys would put a second secret in a sandbox that only needs one. *Trade-off:* the new
+  models are not in `strong`, and their per-review shares are cautious copies of a similar measured model until a
+  window is watched. Nvidia NIM and Sarvam need their secrets set on the repository before a live review of those
+  models can start.

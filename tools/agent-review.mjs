@@ -33,15 +33,47 @@ const providerDetails = {
 
 // The plan logins each provider signs in with, as GitHub Actions secrets on a hosted job. A review gets only its own
 // provider's login and nothing else. Every one of them is a subscription: Claude's plan (`claude setup-token`), the
-// ChatGPT plan (`CODEX_AUTH_JSON`, a `codex login` on a throwaway CODEX_HOME), OpenCode Go and the Z.ai coding plan,
-// and the Google plan (`AGY_OAUTH_TOKEN`, the file `agy` writes under a throwaway HOME). No per-token API key is on
-// this list, because a review must never bill Krish per use.
+// ChatGPT plan (`CODEX_AUTH_JSON`, a `codex login` on a throwaway CODEX_HOME), OpenCode's connectors, and the Google
+// plan (`AGY_OAUTH_TOKEN`, the file `agy` writes under a throwaway HOME). No per-token API key is on this list,
+// because a review must never bill Krish per use. OpenCode's four names are every connector secret the job can hold.
+// `reviewerEnv` still forwards only the one name `opencodeKeyForModel` picks, and none for Zen free (`opencode/`).
 export const providerKeys = {
   claude: ['CLAUDE_CODE_OAUTH_TOKEN'],
   codex: ['CODEX_AUTH_JSON'],
-  opencode: ['OPENCODE_API_KEY', 'ZHIPU_API_KEY'],
+  opencode: ['OPENCODE_API_KEY', 'ZHIPU_API_KEY', 'NVIDIA_API_KEY', 'SARVAM_API_KEY'],
   antigravity: ['AGY_OAUTH_TOKEN'],
 };
+
+// One OpenCode review, one connector. The longest matching prefix wins, so `opencode-go/` is not treated as the
+// Zen prefix `opencode/`. `null` means the model runs with no connector key. An unknown prefix throws: it must
+// not fall through to "no key" or to every OpenCode key.
+export const opencodeConnectorKey = {
+  'opencode/': null,
+  'opencode-go/': 'OPENCODE_API_KEY',
+  'zai-coding-plan/': 'ZHIPU_API_KEY',
+  'nvidia/': 'NVIDIA_API_KEY',
+  'sarvam/': 'SARVAM_API_KEY',
+};
+
+export function opencodeKeyForModel(model) {
+  const id = String(model || '');
+  const prefixes = Object.keys(opencodeConnectorKey)
+    .filter((prefix) => id.startsWith(prefix))
+    .sort((left, right) => right.length - left.length);
+  if (!prefixes.length) {
+    throw new Error(`opencode model ${id || '(none)'} has no connector key mapping`);
+  }
+  return opencodeConnectorKey[prefixes[0]];
+}
+
+export function assertOpencodeConnector(model, env = process.env) {
+  const key = opencodeKeyForModel(model);
+  if (key === null) return;
+  const value = env?.[key];
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`${key} is missing for ${model}`);
+  }
+}
 
 // The secrets that were a pay-per-use API key in an earlier design. They are named only so a test can assert that
 // neither the workflow nor this file still uses them.
@@ -164,9 +196,9 @@ export function forgetMintedSecrets() {
 // `tools/opencode-reviewer.md` denies every read outside the copy).
 export const proxiedProviders = ['claude', 'codex'];
 
-// The OpenCode agent file decides what the OpenCode reviewer may read, so loosening it is a security change even though
-// it ends in .md. It is never a docs-only path.
-const reviewerPolicy = ['tools/opencode-reviewer.md'];
+// The OpenCode agent file and the checked-in provider config decide what the OpenCode reviewer may do, so loosening
+// either is a security change. Neither is a docs-only path.
+const reviewerPolicy = ['tools/opencode-reviewer.md', 'tools/opencode-config.json'];
 const docsPath = (path) => !reviewerPolicy.includes(path) && (path.startsWith('docs/')
   || path.endsWith('.md')
   || path.startsWith('.github/ISSUE_TEMPLATE/'));
@@ -1495,12 +1527,17 @@ const proxySettings = (provider, proxy) => (proxy ? proxyReviewerConfig(provider
 // The reviewer never sees GH_TOKEN or another provider's keys. For a proxied provider it sees neither the key nor any
 // env var it lives in: the CLI is pointed at the review proxy with a token that can spend nothing outside this job
 // (`proxiedProviders`). Any other provider gets only its own CLI's key (CLAUDE_CODE_OAUTH_TOKEN is Claude's headless
-// sign-in, made with `claude setup-token`).
-export function reviewerEnv(env = process.env, provider, proxy = null) {
+// sign-in, made with `claude setup-token`). OpenCode gets only the one connector key for `model`, or none when
+// `opencodeKeyForModel` returns null (Zen free). An unknown OpenCode prefix throws here too.
+export function reviewerEnv(env = process.env, provider, proxy = null, model = '') {
   const names = ['HOME', 'PATH', 'TMPDIR', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL'];
   const settings = proxySettings(provider, proxy);
   // AGY_OAUTH_TOKEN is the file the sandbox mounts. It is not also an environment variable the CLI could print.
-  const keys = (settings ? [] : (providerKeys[provider] || [])).filter((name) => name !== 'AGY_OAUTH_TOKEN');
+  let keys = (settings ? [] : (providerKeys[provider] || [])).filter((name) => name !== 'AGY_OAUTH_TOKEN');
+  if (provider === 'opencode' && !settings) {
+    const key = opencodeKeyForModel(model);
+    keys = key ? [key] : [];
+  }
   const kept = Object.fromEntries([...names, ...keys].flatMap((name) => env[name] ? [[name, env[name]]] : []));
   if (!settings) return kept;
   const cleaned = { ...kept };
@@ -1724,6 +1761,42 @@ export function assertReviewerAgent(
   if (readFileSync(installed, 'utf8') !== expected) {
     throw new Error(`opencode reviewer agent at ${installed} differs from ${reviewerAgentFile} on main; copy it again (tools/runner-setup.md)`);
   }
+}
+
+export const opencodeConfigFile = 'tools/opencode-config.json';
+
+// The runner's `opencode.json` is mounted into every OpenCode review, so it has to be the copy on main, and the
+// folder around it can hold nothing else. A stray `opencode.jsonc` or `config.json` would be merged in by the CLI
+// and could add an agent, a plugin or a permission the agent file does not allow.
+export function assertOpencodeConfig(
+  configDir = join(homedir(), '.config/opencode'),
+  source = join(root, opencodeConfigFile),
+) {
+  if (!existsSync(source)) throw new Error(`opencode config template is missing: ${source}`);
+  const installed = join(configDir, 'opencode.json');
+  if (!existsSync(installed)) {
+    throw new Error(`opencode config missing at ${installed}; copy ${opencodeConfigFile} there (tools/runner-setup.md)`);
+  }
+  const expected = readFileSync(source);
+  const actual = readFileSync(installed);
+  if (!expected.equals(actual)) {
+    throw new Error(`opencode config at ${installed} differs from ${opencodeConfigFile} on main; copy it again (tools/runner-setup.md)`);
+  }
+  const names = readdirSync(configDir);
+  const allowed = new Set(['agents', 'opencode.json']);
+  if (names.length !== allowed.size || names.some((name) => !allowed.has(name))) {
+    throw new Error(`opencode config folder ${configDir} must contain only opencode.json and agents, found ${names.sort().join(', ') || 'nothing'}`);
+  }
+  const agents = readdirSync(join(configDir, 'agents'));
+  if (agents.length !== 1 || agents[0] !== 'tess-reviewer.md') {
+    throw new Error(`opencode agents folder must contain only tess-reviewer.md, found ${agents.sort().join(', ') || 'nothing'}`);
+  }
+}
+
+function guardOpencodeLaunch(model, options = {}) {
+  assertOpencodeConnector(model, options.env || process.env);
+  assertReviewerAgent(options.agentInstalled, options.agentSource);
+  assertOpencodeConfig(options.opencodeConfigDir, options.opencodeConfigSource);
 }
 
 // Claude's `--output-format json` wraps the review in one object; an older CLI answers with plain text, which is fine too.
@@ -2068,7 +2141,7 @@ async function runSandboxed(provider, model, prompt, effort, work, options, prox
   const result = await streamCommand(sandbox.command, sandbox.args, {
     cwd: work,
     env: {
-      ...reviewerEnv(options.env || process.env, provider, proxy),
+      ...reviewerEnv(options.env || process.env, provider, proxy, model),
       HOME: sandbox.home,
       TMPDIR: '/tmp',
       PATH: sandbox.path,
@@ -2085,7 +2158,7 @@ async function runSandboxed(provider, model, prompt, effort, work, options, prox
 }
 
 export async function invokeReviewerCli(provider, model, prompt, effort, work = root, options = {}) {
-  if (provider === 'opencode') assertReviewerAgent(options.agentInstalled, options.agentSource);
+  if (provider === 'opencode') guardOpencodeLaunch(model, options);
   const proxy = options.proxy === undefined ? startReviewProxy(provider, options.proxyOptions) : options.proxy;
   try {
     if (provider === 'antigravity') {
@@ -2103,12 +2176,12 @@ async function cliInvocationAsync(provider, model, prompt, effort, work = root, 
   return invokeReviewerCli(provider, model, prompt, effort, work, options);
 }
 
-function cliInvocation(provider, model, prompt, effort, work = root, options = {}) {
+export function cliInvocation(provider, model, prompt, effort, work = root, options = {}) {
   if (provider === 'antigravity') {
     throw new Error('an Antigravity review mints its access token on the async path');
   }
   const caps = options.caps || defaultCaps;
-  if (provider === 'opencode') assertReviewerAgent(options.agentInstalled, options.agentSource);
+  if (provider === 'opencode') guardOpencodeLaunch(model, options);
   const proxy = options.proxy === undefined ? startReviewProxy(provider, options.proxyOptions) : options.proxy;
   try {
     const promptIsArg = provider === 'cursor';
@@ -2118,10 +2191,11 @@ function cliInvocation(provider, model, prompt, effort, work = root, options = {
     const timeout = timeoutSeconds({ provider, model }, caps) * 1000;
     // A review that runs past its limit is killed, not waited on. bubblewrap's --die-with-parent takes the CLI with it, so
     // nothing keeps spending after the job moves to the next reviewer.
-    const result = spawnSync(sandbox.command, sandbox.args, {
+    const run = options.spawnSync || spawnSync;
+    const result = run(sandbox.command, sandbox.args, {
       cwd: work,
       env: {
-        ...reviewerEnv(options.env || process.env, provider, proxy),
+        ...reviewerEnv(options.env || process.env, provider, proxy, model),
         HOME: sandbox.home,
         TMPDIR: '/tmp',
         PATH: sandbox.path,
