@@ -576,14 +576,14 @@ check_support_invite() {
   [ -x "$VERIFY" ] || return 0
   # They already have it: never mention it, never ask again.
   [ -f "$SUPPORT_CONFIG" ] && return 0
-  # A dialog can wait 15 minutes, and the install runs after it. Nothing below touches Spotify, so the main lock —
-  # the one that holds off wake.sh, the installer and every other update — is dropped here. A lock of its own keeps
-  # two invite dialogs from ever opening at once without ever standing in the way of an update.
-  rm -f "$LOCK"
+  # A dialog can wait 15 minutes, and the install runs after it. The caller has already dropped the main update lock
+  # (.installing) and removed it from the top-level EXIT trap. A lock of its own keeps two invite dialogs from ever
+  # opening at once without ever standing in the way of an update or deleting another run's .installing lock on exit.
   # A run killed mid-dialog leaves the folder behind; an hour is longer than any dialog plus install.
   [ -d "$SLOCK" ] && [ -n "$(find "$SLOCK" -maxdepth 0 -mmin +60 2>/dev/null)" ] && rmdir "$SLOCK" 2>/dev/null
   mkdir "$SLOCK" 2>/dev/null || return 0
-  trap 'rm -rf "$TMP"; rm -f "$LOCK"; rmdir "$SLOCK" 2>/dev/null' EXIT
+  # zsh runs a function's EXIT trap when the function returns; only the lock this run created is removed.
+  trap 'rmdir "$SLOCK" 2>/dev/null' EXIT
   local iid invited invite_id body tok rc code claim
   iid=$(tr -d '[:space:]' < "$HOME_TESS/install-id" 2>/dev/null) || iid=""
   # A report id is 32 lowercase hex characters; anything else is not an id this Mac can be invited by.
@@ -659,6 +659,8 @@ check_support_invite() {
   fi
   return 0
 }
+# From here on this run no longer owns .installing, so leaving must never delete a lock someone else took meanwhile.
+rm -f "$LOCK"; trap 'rm -rf "$TMP"' EXIT
 check_support_invite
 
 exit 0

@@ -812,7 +812,8 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
 - **D-103 · 18 Nov 2026 · Agent** — Support chat goes through the inbox Worker, not the VPS cap proxy (#121).
   `POST /v1/support/chat/completions` checks the same `support_tokens` row as `POST /v1/support`. It accepts one model
   (`SUPPORT_MODEL`, default `deepseek-v4.1-flash`) and forwards only to
-  `https://opencode.ai/zen/go/v1/chat/completions`. `OPENCODE_GO_API_KEY` is a Worker secret and is attached on that
+  `https://opencode.ai/zen/go/v1/chat/completions`. (D-113 allows a second, allowlisted Zen URL and any syntactically
+  valid client model name; the model sent upstream is still always `SUPPORT_MODEL`.) `OPENCODE_GO_API_KEY` is a Worker secret and is attached on that
   upstream request alone. Per-person and shared request caps are spent in D1 with the existing one-statement `hit()`
   before the call, so two requests cannot both take the last slot. If the shared request cap is the one that
   refuses, the person's slot is refunded. A normal reply moves token totals only when `usage` parses, and a
@@ -1060,7 +1061,22 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   models are not in `strong`, and their per-review shares are cautious copies of a similar measured model until a
   window is watched. Nvidia NIM and Sarvam need their secrets set on the repository before a live review of those
   models can start.
-- **D-113 · 21 Nov 2026 · Agent** — Tess Support can be offered to one Mac without a code to type (#137). Krish invites a
+- **D-113 · 21 Nov 2026 · Agent** — Support chat sends a daily-rotating fallback `x-opencode-session` header and lets
+  `inbox/wrangler.toml` switch between two allowlisted OpenCode endpoints (`go` and `zen`) plus any `SUPPORT_MODEL`
+  without updating Macs (#136). Live testing on 21 Nov proved OpenCode Go rejects requests missing `x-opencode-session`
+  with HTTP 400 (`MissingSessionID`) and accepts any non-empty value. Hermes's custom provider (`tess-gate`) does not
+  send that header. The Worker therefore forwards a sanitized client header when present and otherwise generates
+  `tess-support-${sha(token_digest + ':' + utc_day)}`, which stays stable within one UTC day for prompt routing and
+  rotates at midnight without exposing token bytes, labels, or sequential token ids. `SUPPORT_UPSTREAM` selects
+  strictly between `go` (`https://opencode.ai/zen/go/v1/chat/completions`, default when unset) and `zen`
+  (`https://opencode.ai/zen/v1/chat/completions`), validated before any D1 cap is spent (any unknown value fails
+  closed with 503). `chatBodyOk` checks only model-name syntax while `chatPayload` still substitutes `SUPPORT_MODEL`
+  unconditionally upstream, so changing `SUPPORT_MODEL` never 400s Macs whose installed profile still names an older
+  model. *Why:* unblocks live Mac support chat against OpenCode Go and allows switching between Go and free Zen models
+  from Cloudflare alone. *Trade-off:* `go` stays the committed default in `inbox/wrangler.toml` until `zen` +
+  `hy4-flash-free` is live-tested with `OPENCODE_GO_API_KEY`; a `wrangler deploy --var` override is temporary and
+  reverted by the next plain deploy unless also committed in `inbox/wrangler.toml`.
+- **D-114 · 21 Nov 2026 · Agent** — Tess Support can be offered to one Mac without a code to type (#137). Krish invites a
   Mac by its 32-hex Tess install id (`node tools/reports.mjs support invite add <id> "<label>" [--hours N]`, 72 hours by
   default and 168 at most). D1's new `support_invites` table holds only `SHA-256(install id)`, the label, the expiry and
   the claim/revoke times — never the install id and never a token. `POST /v1/support/invite/check` answers exactly
@@ -1069,10 +1085,13 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   `Cache-Control: no-store`. Both statements run in one D1 `batch()`, an insert of the token conditional on the open
   invite and an update of the invite conditional on that insert, and the token is returned only when both report one
   changed row. Every miss — wrong install id, expired, revoked, already claimed — is the same 404. Both routes share
-  `env.LIMIT`, keyed by a salted hash of the caller, and a 2 KB body cap. `tools/release.mjs` publishes a signed copy of
+  `env.LIMIT`, keyed by a salted hash of the caller when `SALT` is present (and the raw IP only if `SALT` is missing;
+  the limiter binding does not persist keys), and a 2 KB body cap. `tools/release.mjs` publishes a signed copy of
   the already-public `support/mac/install.sh` as `dist/support-install.sh` + `.sig`, deliberately not in
-  `components.txt`. `installer/updater.sh` checks after the 20-minute parts check, and only when the Mac has no
-  `~/.hermes/profiles/tess-support/config.yaml`; the dialog is `{"Not now", "Install"}`, default Install, `giving up
+  `components.txt`. `installer/updater.sh` drops the main `.installing` lock before checking for an invite (so a
+  waiting dialog never blocks `wake.sh` or updates, and finishing never deletes another run's lock) and uses its own
+  `.support-invite.lock`, checking after the 20-minute parts check only when the Mac has no
+  `~/.hermes/profiles/tess-support/config.yaml`. The dialog is `{"Not now", "Install"}`, default Install, `giving up
   after 900`. Not now writes `state/.support-invite-asked-<id>` and claims nothing; a timeout or a dialog that could not
   be shown writes nothing and asks again; Install downloads and verifies the signature before claiming, passes the
   token only in the installer's environment, unsets it immediately, and never logs it. A failed install says files may

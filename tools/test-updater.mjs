@@ -639,9 +639,10 @@ esac
       encoding: 'utf8',
     });
     assert.ok(!existsSync(join(s.state, '.support-invite-asked-22')), 'a second run cannot open a second dialog');
+    writeFileSync(join(s.tess, '.installing'), ''); // tess-install.sh / another run takes the lock mid-dialog
     await exited;
     assert.ok(!existsSync(slock), 'the invite lock is removed when the run ends');
-    assert.ok(!existsSync(join(s.tess, '.installing')), 'and the update lock is not left behind');
+    assert.ok(existsSync(join(s.tess, '.installing')), 'finishing the invite does not delete a lock it no longer owns');
   }
 
   {

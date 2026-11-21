@@ -18,8 +18,11 @@ const box = mkdtempSync(join(tmpdir(), 'tess-chat-test-'));
 const dbFile = join(box, 'inbox.db');
 const KEY = `oc-go-${'k'.repeat(48)}`;
 const TOKEN = `tess_${'a'.repeat(48)}`;
+const TOKEN2 = `tess_${'d'.repeat(48)}`;
 const REVOKED = `tess_${'b'.repeat(48)}`;
 const UPSTREAM = 'https://opencode.ai/zen/go/v1/chat/completions';
+const ZEN_UPSTREAM = 'https://opencode.ai/zen/v1/chat/completions';
+const ALLOWED_UPSTREAMS = new Set([UPSTREAM, ZEN_UPSTREAM]);
 const MODEL = 'deepseek-v4.1-flash';
 
 const lit = (v) => (v === null || v === undefined ? 'NULL'
@@ -91,8 +94,13 @@ const req = (path, { method = 'POST', body = chatBody(), headers = {}, token = T
     'x-api-key': 'client-supplied-key',
     'user-agent': 'Hermes/0.22.6',
     'x-opencode-session': 'support:visit-1',
-    ...headers,
   };
+  // `undefined` deletes the key, so a test can truly omit a header. Spreading it would make Headers send the literal
+  // string "undefined", which silently exercises the client-supplied branch instead of the fallback.
+  for (const [key, value] of Object.entries(headers)) {
+    if (value === undefined) delete h[key];
+    else h[key] = value;
+  }
   if (token) h.authorization = `Bearer ${token}`;
   return new Request(`https://inbox.test${path}`, { method, headers: h, body: method === 'GET' ? undefined : payload });
 };
@@ -129,6 +137,7 @@ try {
   execFileSync('sh', ['-c', `sqlite3 "${dbFile}" < "${join(inbox, 'schema.sql')}"`]);
   const now = Date.now();
   execFileSync('sqlite3', [dbFile, `INSERT INTO support_tokens (label, sha, added) VALUES ('Ada', '${shaOf(TOKEN)}', ${now})`]);
+  execFileSync('sqlite3', [dbFile, `INSERT INTO support_tokens (label, sha, added) VALUES ('Bea', '${shaOf(TOKEN2)}', ${now})`]);
   execFileSync('sqlite3', [dbFile, `INSERT INTO support_tokens (label, sha, added, revoked) VALUES ('Old', '${shaOf(REVOKED)}', ${now}, ${now})`]);
   installFetch();
 
@@ -203,7 +212,7 @@ try {
   assert.equal(JSON.stringify(plainBody).includes(KEY), false);
   assert.equal(limitOf(`chat:tp:${shaOf(TOKEN)}`).n, 26);
 
-  // A revoked token, a missing token, a second model, a GET, a query, a dot segment, and a non-chat body never call upstream.
+  // A revoked token, a missing token, a malformed model name, a GET, a query, a dot segment, and a non-chat body never call upstream.
   const silent = async (label, request) => {
     const before = calls.length;
     const res = await worker.fetch(request, env());
@@ -221,7 +230,7 @@ try {
   const unknown = await silent('unknown token', req('/v1/support/chat/completions', { token: `tess_${'c'.repeat(48)}` }));
   assert.equal(unknown.status, 401);
   assert.equal(await unknown.text(), revokedText, 'an unknown and a revoked token get the same answer');
-  const wrong = await silent('second model', req('/v1/support/chat/completions', { body: chatBody({ model: 'gpt-4o' }) }));
+  const wrong = await silent('malformed model', req('/v1/support/chat/completions', { body: chatBody({ model: 'not a model!' }) }));
   assert.equal(wrong.status, 400);
   const get = await silent('GET', req('/v1/support/chat/completions', { method: 'GET', body: null }));
   assert.equal(get.status, 405);
@@ -241,6 +250,87 @@ try {
   assert.equal(shaped.status, 400);
   const textBody = await silent('non-json body', req('/v1/support/chat/completions', { body: 'not-json' }));
   assert.equal(textBody.status, 400);
+
+  // OpenCode requires x-opencode-session. A client without one gets a per-token, per-UTC-day fallback: stable across
+  // that person's turns, unlinkable across days, and free of the token, the key and the label.
+  clearCaps();
+  upstreamImpl = async () => jsonReply({ choices: [{ message: { content: 'session' } }], usage: { total_tokens: 4 } });
+  const sessionOf = (call) => new Headers(call.init.headers).get('x-opencode-session');
+  const day0 = new Date().toISOString().slice(0, 10);
+  calls.length = 0;
+  const noSession = await worker.fetch(req('/v1/support/chat/completions', { headers: { 'x-opencode-session': undefined } }), env());
+  assert.equal(noSession.status, 200);
+  await noSession.text();
+  assert.equal(calls.length, 1);
+  const fallback1 = sessionOf(calls[0]);
+  assert.match(fallback1, /^tess-support-[0-9a-f]{32}$/, 'the fallback session has the wrong shape');
+  assert.equal(fallback1.includes(TOKEN) || fallback1.includes(KEY) || fallback1.includes('Ada'), false, 'the fallback session carries a secret or a label');
+
+  calls.length = 0;
+  const noSessionAgain = await worker.fetch(req('/v1/support/chat/completions', { headers: { 'x-opencode-session': undefined } }), env());
+  assert.equal(noSessionAgain.status, 200);
+  await noSessionAgain.text();
+  const fallback2 = sessionOf(calls[0]);
+  // Guarded against a UTC midnight between the two requests, when the fallback is meant to change.
+  if (new Date().toISOString().slice(0, 10) === day0) {
+    assert.equal(fallback2, fallback1, 'the same token on the same UTC day got two fallback sessions');
+  }
+
+  calls.length = 0;
+  const otherToken = await worker.fetch(
+    req('/v1/support/chat/completions', { headers: { 'x-opencode-session': undefined }, token: TOKEN2 }), env(),
+  );
+  assert.equal(otherToken.status, 200);
+  await otherToken.text();
+  assert.notEqual(sessionOf(calls[0]), fallback1, 'two tokens shared one fallback session');
+
+  // A client header that is present still wins, unchanged (the stream turn above proves the same path).
+  calls.length = 0;
+  const clientSession = await worker.fetch(
+    req('/v1/support/chat/completions', { headers: { 'x-opencode-session': 'support:visit-2' } }), env(),
+  );
+  assert.equal(clientSession.status, 200);
+  await clientSession.text();
+  assert.equal(sessionOf(calls[0]), 'support:visit-2');
+
+  // A Mac that still ships the old model name keeps working; only the model in SUPPORT_MODEL goes upstream.
+  clearCaps();
+  calls.length = 0;
+  const staleModel = await worker.fetch(req('/v1/support/chat/completions'), env({ SUPPORT_MODEL: 'hy4-flash-free' }));
+  assert.equal(staleModel.status, 200, 'a stale client model was refused');
+  await staleModel.text();
+  assert.equal(JSON.parse(calls[0].init.body).model, 'hy4-flash-free', 'the env model was not the one sent upstream');
+
+  // SUPPORT_UPSTREAM is an allowlist of two exact URLs. Zen and Go both work; unset keeps Go.
+  clearCaps();
+  calls.length = 0;
+  const zen = await worker.fetch(req('/v1/support/chat/completions'), env({ SUPPORT_UPSTREAM: 'zen' }));
+  assert.equal(zen.status, 200);
+  await zen.text();
+  assert.equal(calls[0].url, ZEN_UPSTREAM, 'SUPPORT_UPSTREAM=zen did not use the Zen URL');
+  clearCaps();
+  calls.length = 0;
+  const go = await worker.fetch(req('/v1/support/chat/completions'), env({ SUPPORT_UPSTREAM: ' go ' }));
+  assert.equal(go.status, 200);
+  await go.text();
+  assert.equal(calls[0].url, UPSTREAM, 'SUPPORT_UPSTREAM=go did not use the Go URL');
+  clearCaps();
+  calls.length = 0;
+  const unset = await worker.fetch(req('/v1/support/chat/completions'), env({ SUPPORT_UPSTREAM: '  ' }));
+  assert.equal(unset.status, 200);
+  await unset.text();
+  assert.equal(calls[0].url, UPSTREAM, 'a blank SUPPORT_UPSTREAM did not fall back to Go');
+
+  // An unknown upstream fails closed before a slot is spent and before any socket is opened.
+  clearCaps();
+  const spentBeforeUpstream = limitOf(`chat:p:${shaOf(TOKEN)}`)?.n ?? 0;
+  calls.length = 0;
+  const badUpstream = await worker.fetch(req('/v1/support/chat/completions'), env({ SUPPORT_UPSTREAM: 'evil' }));
+  assert.equal(badUpstream.status, 503, 'an unknown SUPPORT_UPSTREAM was not refused');
+  const badUpstreamBody = await badUpstream.json();
+  assert.equal(badUpstreamBody.error.code, 'unavailable');
+  assert.equal(calls.length, 0, 'an unknown SUPPORT_UPSTREAM opened an upstream socket');
+  assert.equal(limitOf(`chat:p:${shaOf(TOKEN)}`)?.n ?? 0, spentBeforeUpstream, 'an unknown SUPPORT_UPSTREAM spent a request slot');
 
   // Over the request cap: the fake upstream sees nothing.
   clearCaps();
@@ -527,7 +617,7 @@ try {
   assert.equal(support.status, 401);
   assert.equal(hits.limit, limitBeforeReport + 1, 'a support report did not use the reports limiter');
   assert.equal(hits.chat, chatBeforeReport, 'a support report used the chat limiter');
-  assert.equal(calls.filter((c) => c.url === UPSTREAM).length, calls.length);
+  assert.equal(calls.every((c) => ALLOWED_UPSTREAMS.has(c.url)), true, 'a call left the two allowlisted upstreams');
 } finally {
   globalThis.fetch = realFetch;
   console.log = origLog;

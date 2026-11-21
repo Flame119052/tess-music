@@ -29,7 +29,6 @@ const mode = gateArg ? gateArg.slice('--gate='.length) : 'wrangler';
 if (!['wrangler', 'node'].includes(mode)) { console.error('usage: node tools/test-support-mac-chat.mjs [--gate=wrangler|node]'); process.exit(2); }
 
 const KEY = `oc-go-test-${'k'.repeat(40)}`;
-const UPSTREAM = 'https://opencode.ai/zen/go/v1/chat/completions';
 const LABEL = 'Ada test Mac';
 const REFUSED = 'This support code is not active. Ask Krish for a new one.';
 const QUESTION = 'May I take one still of the Spotify window? It can show your Spotify name, your picture, your friends\' activity, and your playlist names.';
@@ -59,6 +58,12 @@ const personPath = `${dirname(process.execPath)}:/usr/bin:/bin`;
 const sha = (t) => createHash('sha256').update(t).digest('hex');
 const vars = Object.fromEntries([...readFileSync(join(inbox, 'wrangler.toml'), 'utf8').split(/^\[vars\]$/m)[1].split(/^\[/m)[0]
   .matchAll(/^([A-Z_]+) = "([^"]*)"$/gm)].map((m) => [m[1], m[2]]));
+// The gate's URL and the fake upstream's route follow the committed var, so flipping it in wrangler.toml does not
+// silently leave this test pointed at the other endpoint.
+const UPSTREAM = vars.SUPPORT_UPSTREAM === 'zen'
+  ? 'https://opencode.ai/zen/v1/chat/completions'
+  : 'https://opencode.ai/zen/go/v1/chat/completions';
+const UPSTREAM_PATH = new URL(UPSTREAM).pathname;
 
 const readBody = async (stream) => {
   const parts = [];
@@ -102,7 +107,7 @@ const upstream = createServer(async (req, res) => {
     return;
   }
   const body = (await readBody(req)).toString('utf8');
-  if (req.method !== 'POST' || req.url !== '/zen/go/v1/chat/completions') { res.writeHead(404).end(); return; }
+  if (req.method !== 'POST' || req.url !== UPSTREAM_PATH) { res.writeHead(404).end(); return; }
   up.calls.push({ headers: req.headers, body });
   const asked = JSON.parse(body);
   if (asked.stream) {
@@ -379,7 +384,7 @@ const walk = (dir) => readdirSync(dir).flatMap((n) => {
 const shown = [];
 try {
   const upPort = await listen(upstream);
-  const fakeUrl = `http://127.0.0.1:${upPort}/zen/go/v1/chat/completions`;
+  const fakeUrl = `http://127.0.0.1:${upPort}${UPSTREAM_PATH}`;
   const gatePort = mode === 'wrangler' ? await startWranglerGate(fakeUrl) : await startNodeGate(fakeUrl);
   gate = `http://127.0.0.1:${gatePort}`;
 
@@ -413,6 +418,8 @@ try {
   shown.push(`installed the profile into a scratch HERMES_HOME with TESS_TEST=1, TESS_INBOX=${gate}`);
 
   const personEnv = { PATH: personPath, HOME: personHome, HERMES_HOME: hermesHome, TESS_TEST: '1', TEST_RELEASE_URL: `http://127.0.0.1:${upPort}/release` };
+  // The fallback session is per UTC day, so the cross-turn check below is skipped if midnight lands between turns.
+  const day0 = new Date().toISOString().slice(0, 10);
 
   // 3. One streamed turn, shaped like Hermes's.
   const turn = await run([client, 'The lyrics are two seconds late'], personEnv);
@@ -429,13 +436,16 @@ try {
   assert.equal(c1.headers.authorization, `Bearer ${KEY}`, "the upstream got Krish's key");
   assert.equal(c1.body.includes(token) || JSON.stringify(c1.headers).includes(token), false, 'the person token went upstream');
   const sent = JSON.parse(c1.body);
-  assert.equal(sent.model, 'deepseek-v4.1-flash');
+  assert.equal(sent.model, vars.SUPPORT_MODEL);
   assert.equal(sent.stream, true);
   assert.deepEqual(sent.stream_options, { include_usage: true });
   assert.deepEqual(sent.tools.map((tool) => tool.function.name), VISIT_TOOLS, 'the visit tools reach the model');
   assert.equal(sent.tools.some((tool) => tool.function.name === 'terminal'), false);
   assert.equal(sent.messages[0].content.includes(QUESTION), true, 'the still question is missing from the turn');
   assert.equal(sent.messages[1].content, 'The lyrics are two seconds late');
+  // Neither client sends x-opencode-session (support/mac/config.yaml cannot), so this is the Worker's fallback.
+  const session1 = c1.headers['x-opencode-session'];
+  assert.match(session1 || '', /^tess-support-[0-9a-f]{32}$/, 'the upstream did not get the fallback session');
   shown.push(`streamed turn: "${t1.content}" (first delta reached the client before the upstream finished), ${t1.usage.total_tokens} tokens`);
 
   // 4. The per-person cap counted that turn. The token total is written when the stream ends, so wait for it.
@@ -456,6 +466,11 @@ try {
   assert.equal(JSON.parse(plain.stdout).choices[0].message.content, 'Hi, this is the gate.');
   assert.equal(up.calls.length, 2);
   assert.equal(up.calls[1].headers.authorization, `Bearer ${KEY}`);
+  const session2 = up.calls[1].headers['x-opencode-session'];
+  assert.match(session2 || '', /^tess-support-[0-9a-f]{32}$/, 'the second turn lost the fallback session');
+  if (new Date().toISOString().slice(0, 10) === day0) {
+    assert.equal(session2, session1, 'one token on one UTC day got two fallback sessions');
+  }
   const after2 = await until('the second turn', async () => { const u = await usage(); return u.tokens === 34 ? u : null; });
   assert.equal(after2.requests, 2);
   shown.push('support/mac/chat.mjs: plain reply, 2 requests and 34 tokens counted');
