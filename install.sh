@@ -1,203 +1,148 @@
 #!/bin/sh
-# Tess Music installer for macOS.
-#   curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-releases/main/install.sh | sh
-# Installs Tess into the Spotify desktop app, a helper that re-applies it after Spotify updates, and Tess Mini.
-# Nothing else to set up; run it again any time to repair. Remove with: ~/Library/Application\ Support/Tess/tess uninstall
-set -e
-
-REPO="Flame119052/tess-releases"
-DL="https://github.com/$REPO/releases/latest/download"
-HOME_TESS="$HOME/Library/Application Support/Tess"
-CONF="$HOME/.config/tess-patcher"
-MIN_SPOTIFY="1.2.40"
-
-bold() { printf '\033[1m%s\033[0m\n' "$1"; }
-step() { printf '  \033[32m●\033[0m %s\n' "$1"; }
-fail() { printf '\n  \033[31m✕\033[0m %s\n\n' "$1"; exit 1; }
-ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | head -1)" = "$2" ]; }
-
-echo; bold "Tess Music"; echo
-
-# --- the Mac ---------------------------------------------------------------------------------------------------
-[ "$(uname -s)" = "Darwin" ] || fail "Tess Music runs on macOS."
-MACOS=$(sw_vers -productVersion)
-step "macOS $MACOS on $(uname -m)"
-
-# --- Spotify -----------------------------------------------------------------------------------------------------
-SPOTIFY="${TESS_SPOTIFY:-}"   # TESS_SPOTIFY / TESS_TEST=1 are for testing against a copy of Spotify
-if [ -z "$SPOTIFY" ]; then
-  for p in "/Applications/Spotify.app" "$HOME/Applications/Spotify.app"; do [ -d "$p" ] && SPOTIFY="$p" && break; done
+# Tess Music install line. The verifier is fetched from main and checked against the pin below; that verifier checks
+# the channel installer's signature. A channel or mirror can change the installer but cannot make this Mac run an
+# unverified one. A channel with no signed installer refuses: nothing runs.
+# >>> tess script guard: keep this block identical in every installer script (issue #107) >>>
+# This file used to be able to act on a real Mac when nobody meant it, three ways: being sourced (a shell one-liner
+# like `sh -c '. installer/tess-install.sh; …'` ran the whole real installer), having its text handed to a shell to run
+# (`sh -c "$(cat installer/tess-install.sh)"`, or `eval` of that text), and being run from a git checkout, whose copy is
+# for developing and for sandboxed tests, not for a real install. All three stop here, before anything is read,
+# downloaded or changed. The published `curl … | sh` line is none of them: that shell reads the pipe as its own script,
+# so it starts with no `-c` and no file to resolve.
+_tess_sourced=""
+_tess_embedded=""
+if [ -n "${ZSH_VERSION-}" ]; then
+  # zsh says where it is evaluating: a sourced file ends in ":file", `zsh -c …` and `eval` begin with "cmdarg", and a
+  # script run as its own command is exactly "toplevel".
+  case ${ZSH_EVAL_CONTEXT-} in
+    *:file) _tess_sourced=1 ;;
+    cmdarg|cmdarg:*|eval|eval:*|*:eval|*:eval:*) _tess_embedded=1 ;;
+  esac
+else
+  # sh/bash puts a `c` in $- only when the commands were given to the shell as an argument (`sh -c …`), and `return`
+  # works in a subshell only when this file was sourced.
+  case $- in *c*) _tess_embedded=1 ;; esac
+  if (return 0 2>/dev/null); then _tess_sourced=1; fi
 fi
-[ -n "$SPOTIFY" ] || fail "Spotify isn't installed. Get the desktop app from https://www.spotify.com/download/mac/ , open it once and sign in, then run this again."
-SPV=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$SPOTIFY/Contents/Info.plist" 2>/dev/null || echo 0)
-if ! ver_ge "$SPV" "$MIN_SPOTIFY"; then
-  open -a "$SPOTIFY" 2>/dev/null || true
-  fail "Spotify $SPV is too old for Tess (needs $MIN_SPOTIFY or newer). In Spotify open the Spotify menu → About Spotify (or Check for Updates), update, then run this again."
+# A shell that kept the `-c` out of $- still shows it in its own command line. Only the argument list is compared: a
+# piped script's is just "/bin/sh", so the published install line is left alone.
+case "$(ps -o args= -p $$ 2>/dev/null) " in *" -c "*) _tess_embedded=1 ;; esac
+if [ -n "$_tess_sourced" ]; then
+  echo "Tess: this file was sourced, so it did nothing. Tess's installer, updater, doctor, rescue line and uninstaller act only when they are run as their own command, so sourcing one can never install, update, repair or remove anything." >&2
+  echo "Tess: run it as its own command (sh ./file or zsh ./file), or use Tess's published install line." >&2
+  return 1
 fi
-step "Spotify $SPV"
-i=0; while pgrep -f "Install Spotify" >/dev/null && [ $i -lt 120 ]; do [ $i -eq 0 ] && step "Waiting for Spotify's installer to finish…"; sleep 2; i=$((i+1)); done
-if [ ! -f "$HOME/Library/Application Support/Spotify/prefs" ]; then
-  step "Opening Spotify once so it can set itself up…"
-  open -a "$SPOTIFY"; i=0
-  while [ ! -f "$HOME/Library/Application Support/Spotify/prefs" ] && [ $i -lt 60 ]; do sleep 1; i=$((i+1)); done
-  [ -f "$HOME/Library/Application Support/Spotify/prefs" ] || fail "Open Spotify, sign in, then run this again."
+if [ -n "$_tess_embedded" ] && [ -z "${TESS_TEST-}" ] && [ "${TESS_REAL_INSTALL-}" != 1 ]; then
+  echo "Tess: not run. This file's text was handed to a shell to run, as in sh -c \"...\" or eval, so the file itself is not what runs and its own checks cannot see it. Tess's installer, updater, doctor, rescue line and uninstaller act only when they are run as their own command." >&2
+  echo "Tess: run it as its own command (sh ./file or zsh ./file), or use Tess's published install line; TESS_REAL_INSTALL=1 is the deliberate way through." >&2
+  exit 1
 fi
-if [ ! -w "$SPOTIFY/Contents/Resources" ]; then
-  step "Spotify belongs to another user; asking for your password to let Tess update it"
-  sudo chown -R "$(id -un)" "$SPOTIFY" </dev/tty || fail "Couldn't get permission to update Spotify."
+unset _tess_sourced _tess_embedded
+# A development copy sits inside a git checkout or worktree (a .git folder or file somewhere above it). Outside a
+# sandbox it must not act on a real Mac: it is not the installed copy, and its parts are not the signed ones users get.
+# TESS_TEST=1 is the sandbox (AGENTS.md rule 2); TESS_REAL_INSTALL=1 is a person deliberately letting this exact copy act.
+# zsh makes $0 the function's own name inside a function, so the path is taken once, here.
+_tess_self=$0
+# The home folder can be a symlink (`/tmp` is `/private/tmp`; a sandbox often is), so compare its real path as well.
+_tess_home=$(CDPATH= cd -P -- "$HOME" 2>/dev/null && pwd -P) || _tess_home=$HOME
+tess_guard_checkout() {
+  _tg=$_tess_self
+  case $_tg in
+    */*) ;;
+    # `cd installer && sh tess-install.sh` names no folder, so the folder is the current one. A piped copy
+    # (`curl … | sh`) names the shell itself, not a file here, so it takes the branch above and the walk starts outside
+    # any checkout: the pipe is allowed by that, not by this branch.
+    *) [ -f "./$_tg" ] || return 1; _tg="./$_tg" ;;
+  esac
+  _tg=$(CDPATH= cd -P -- "$(dirname -- "$_tg")" 2>/dev/null && pwd -P) || return 1
+  while [ -n "$_tg" ] && [ "$_tg" != "/" ]; do
+    # A dotfiles repository in the home folder (`git init` in ~) is not a copy of Tess.
+    [ "$_tg" = "$HOME" ] && return 1
+    [ "$_tg" = "$_tess_home" ] && return 1
+    [ -e "$_tg/.git" ] && return 0
+    _tg=$(dirname -- "$_tg")
+  done
+  return 1
+}
+if [ -z "${TESS_TEST-}" ] && [ "${TESS_REAL_INSTALL-}" != 1 ] && tess_guard_checkout; then
+  echo "Tess: not run. This copy ($_tg) is inside a git checkout, and a checkout's copy is for developing and for sandboxed tests, not for changing a real Mac." >&2
+  echo "Tess: use Tess's published install line, or set TESS_REAL_INSTALL=1 if you really do mean to let this checkout act on this Mac." >&2
+  exit 1
+fi
+# <<< tess script guard <<<
+CH="${TESS_CHANNEL:-stable}"
+case "$CH" in stable|beta|dev) ;; *) echo "TESS_CHANNEL must be stable, beta or dev"; exit 1 ;; esac
+BASE="https://raw.githubusercontent.com/Flame119052/tess-music"
+[ -n "$TESS_TEST" ] && [ -n "$TESS_TEST_BASE" ] && BASE="$TESS_TEST_BASE"
+VERIFY_SHA='c2917cd95f880965657d8cabbf5f9d2abccacfb32d9b06b24e49bb0bcaf163a4'
+[ -n "$TESS_TEST" ] && [ -n "$TESS_VERIFY_SHA" ] && VERIFY_SHA="$TESS_VERIFY_SHA"
+D=$(mktemp -d) || exit 1
+trap 'rm -rf "$D"' EXIT
+fail() { echo "$1"; exit 1; }
+
+# 1. The verifier comes from main and must match the pin above. A channel cannot swap it.
+curl -fsSL --max-time 60 "$BASE/main/installer/verify/$VERIFY_SHA" -o "$D/tess-verify" \
+  || fail "Couldn't download Tess's signature checker. Check your connection and try again."
+[ "$(shasum -a 256 "$D/tess-verify" | cut -d' ' -f1)" = "$VERIFY_SHA" ] \
+  || fail "Tess's signature checker didn't match its published checksum, so nothing was installed."
+chmod +x "$D/tess-verify" || fail "Couldn't prepare Tess's signature checker."
+
+# 2. The channel's installer and its signature, as one pair. raw.githubusercontent caches each file on
+# its own, so just after a promote one can be the new release and the other the old one, and a good
+# install fails its signature check. The contents API is live. Both files of one try come from the same
+# place. A signature miss fetches the pair once more. A live 404 is not replaced with the raw cache.
+API=""
+if [ -z "${TESS_TEST-}" ] || [ -n "${TESS_TEST_API-}" ]; then
+  API="${TESS_TEST_API:-https://api.github.com/repos/Flame119052/tess-music}"
 fi
 
-# --- download --------------------------------------------------------------------------------------------------
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-step "Downloading Tess"
-curl -fsSL "$DL/tess-patcher-macos-universal.tar.gz" -o "$TMP/patcher.tgz" || fail "Download failed. Check your connection and try again."
-curl -fsSL "$DL/tess-theme.tar.gz" -o "$TMP/theme.tgz" || fail "Download failed. Check your connection and try again."
-curl -fsSL "$DL/tess-mini.zip" -o "$TMP/mini.zip" || true
-mkdir -p "$HOME_TESS/bin"
-rm -rf "$HOME_TESS/bin/patcher"; mkdir -p "$HOME_TESS/bin/patcher"
-tar -xzf "$TMP/patcher.tgz" -C "$HOME_TESS/bin/patcher"
-PATCHER="$HOME_TESS/bin/patcher/tess-patcher"
-chmod +x "$PATCHER"
-
-# --- pause the update helper while we work (it must never run at the same time) --------------------------------------
-launchctl bootout "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 || true
-mkdir -p "$HOME_TESS"; touch "$HOME_TESS/.installing"
-
-# --- quit Spotify, undo any earlier patching ---------------------------------------------------------------------
-WAS_RUNNING=""
-if [ -z "$TESS_TEST" ] && pgrep -x Spotify >/dev/null; then
-  WAS_RUNNING=1; step "Closing Spotify"
-  osascript -e 'tell application "Spotify" to quit' >/dev/null 2>&1 || true
-  i=0; while pgrep -x Spotify >/dev/null && [ $i -lt 40 ]; do sleep 0.5; i=$((i+1)); done
-  pkill -x Spotify 2>/dev/null || true
-fi
-if [ -d "$SPOTIFY/Contents/Resources/Apps/xpui" ]; then
-  # Spotify was already modified (an earlier Tess, or Spicetify): put it back to stock first
-  if [ -f "$CONF/config-xpui.ini" ]; then "$PATCHER" config spotify_path "$SPOTIFY/Contents/Resources" >/dev/null 2>&1; "$PATCHER" restore >/dev/null 2>&1 || true
-  elif [ -z "$TESS_TEST" ] && command -v spicetify >/dev/null 2>&1 && spicetify -c 2>/dev/null | xargs grep -q "spotify_path *= *$SPOTIFY" 2>/dev/null; then step "Spicetify found: restoring stock Spotify first"; spicetify restore >/dev/null 2>&1 || true
-  fi
-  [ -d "$SPOTIFY/Contents/Resources/Apps/xpui" ] && fail "Spotify has been modified by another tool. Reinstall Spotify from https://www.spotify.com/download/mac/ and run this again."
-fi
-
-# --- keep the original interface files, so nothing can be lost ------------------------------------------------------
-APPS="$SPOTIFY/Contents/Resources/Apps"
-[ -f "$APPS/xpui.spa" ] || fail "Spotify's files look incomplete. Reinstall Spotify from https://www.spotify.com/download/mac/ and run this again."
-ORIG="$HOME_TESS/original-$SPV"
-rm -rf "$HOME_TESS"/original-*
-ditto "$APPS" "$ORIG" || fail "Couldn't make a safety copy of Spotify's files; nothing was changed."
-put_back() {
-  rm -rf "$APPS"
-  ditto "$ORIG" "$APPS"
-  rm -f "$HOME_TESS/.installing"
+pair_from_api() {
+  [ -n "$API" ] || return 2
+  rm -f "$D/install.sh" "$D/install.sig"
+  code=$(curl -sS -L --max-time 60 -H "Accept: application/vnd.github.raw" -w '%{http_code}' -o "$D/install.sh" "$API/contents/dist/install.sh?ref=$CH" 2>/dev/null) || code=000
+  if [ "$code" = 404 ]; then pair_err=missing; return 1; fi
+  if [ "$code" != 200 ]; then rm -f "$D/install.sh"; return 2; fi
+  code=$(curl -sS -L --max-time 60 -H "Accept: application/vnd.github.raw" -w '%{http_code}' -o "$D/install.sig" "$API/contents/dist/install.sig?ref=$CH" 2>/dev/null) || code=000
+  if [ "$code" = 404 ]; then pair_err=nosig; return 1; fi
+  if [ "$code" != 200 ]; then rm -f "$D/install.sh" "$D/install.sig"; return 2; fi
+  return 0
 }
 
-# --- install the theme --------------------------------------------------------------------------------------------
-step "Installing Tess into Spotify"
-"$PATCHER" -c >/dev/null 2>&1 || true
-mkdir -p "$CONF/Themes"
-rm -rf "$CONF/Themes/Tess"
-tar -xzf "$TMP/theme.tgz" -C "$CONF/Themes"
-"$PATCHER" config spotify_path "$SPOTIFY/Contents/Resources" >/dev/null
-"$PATCHER" config current_theme Tess >/dev/null
-"$PATCHER" config color_scheme base >/dev/null
-"$PATCHER" config inject_theme_js 1 >/dev/null
-"$PATCHER" config check_spicetify_update 0 >/dev/null
-rm -rf "$CONF/Backup" 2>/dev/null || true
-if ! "$PATCHER" backup apply --no-restart >"$TMP/apply.log" 2>&1; then
-  put_back
-  if grep -q "operation not permitted" "$TMP/apply.log"; then
-    fail "macOS blocked Terminal from updating Spotify. Open System Settings > Privacy & Security > App Management, turn on your terminal app, then run this again."
+pair_from_raw() {
+  rm -f "$D/install.sh" "$D/install.sig"
+  code=$(curl -sS -L --max-time 60 -w '%{http_code}' -o "$D/install.sh" "$BASE/$CH/dist/install.sh" 2>/dev/null) || code=000
+  if [ "$code" = 404 ]; then pair_err=missing; return 1; fi
+  if [ "$code" != 200 ]; then pair_err="HTTP $code"; return 1; fi
+  code=$(curl -sS -L --max-time 60 -w '%{http_code}' -o "$D/install.sig" "$BASE/$CH/dist/install.sig" 2>/dev/null) || code=000
+  if [ "$code" = 404 ]; then pair_err=nosig; return 1; fi
+  if [ "$code" != 200 ]; then pair_err="HTTP $code"; return 1; fi
+  return 0
+}
+
+fetch_pair() {
+  pair_err=
+  if [ -n "$API" ]; then
+    pair_from_api
+    api_st=$?
+    if [ "$api_st" -eq 0 ]; then return 0; fi
+    if [ "$api_st" -eq 1 ]; then return 1; fi
   fi
-  tail -5 "$TMP/apply.log" 2>/dev/null || true
-  fail "Couldn't apply Tess to Spotify $SPV. Spotify was put back exactly as it was."
+  pair_from_raw
+}
+
+explain_pair() {
+  case "$pair_err" in
+    missing) fail "Tess's $CH channel has no signed installer ready, so nothing was installed. Try again after Tess is released for this channel." ;;
+    nosig) fail "Tess's installer has no signature on $CH, so nothing was installed." ;;
+    HTTP*) fail "Couldn't download Tess's installer ($pair_err). Check your connection and try again." ;;
+    *) fail "Couldn't download Tess's installer. Check your connection and try again." ;;
+  esac
+}
+
+fetch_pair || explain_pair
+if ! "$D/tess-verify" "$D/install.sh" "$(tr -d '\n' < "$D/install.sig")"; then
+  fetch_pair || explain_pair
+  "$D/tess-verify" "$D/install.sh" "$(tr -d '\n' < "$D/install.sig")" \
+    || fail "Tess's installer didn't pass its signature check, so nothing was installed."
 fi
-if [ ! -f "$APPS/xpui/index.html" ] || ! grep -q "spicetifyWrapper" "$APPS/xpui/index.html"; then
-  put_back
-  fail "Tess didn't apply cleanly. Spotify was put back exactly as it was; please report this."
-fi
-rm -f "$HOME_TESS/.installing"
-
-if [ -n "$TESS_TEST" ]; then echo; bold "Test install into $SPOTIFY finished."; exit 0; fi
-
-# --- the guard: re-apply after Spotify updates itself -----------------------------------------------------------------
-step "Keeping Tess on through Spotify updates"
-cat > "$HOME_TESS/reapply.sh" <<EOF
-#!/bin/zsh
-# Re-applies Tess after Spotify updates itself. It never restores or deletes anything: it only acts on a clean,
-# just-updated Spotify, and tells you if macOS doesn't let it.
-APPS="$SPOTIFY/Contents/Resources/Apps"
-LOCK="$HOME_TESS/.installing"
-[ -e "\$LOCK" ] && exit 0
-[ -f "\$APPS/xpui.spa" ] || exit 0
-[ -d "\$APPS/xpui" ] && exit 0
-sleep 8
-{ [ -f "\$APPS/xpui.spa" ] && [ ! -d "\$APPS/xpui" ]; } || exit 0
-touch "\$LOCK"
-echo "\$(date) Spotify updated; re-applying Tess" >> "$HOME_TESS/guard.log"
-running=\$(pgrep -x Spotify >/dev/null && echo 1)
-if "$PATCHER" backup apply --no-restart >> "$HOME_TESS/guard.log" 2>&1 && [ -d "\$APPS/xpui" ]; then
-  if [ -n "\$running" ]; then
-    osascript -e 'tell application "Spotify" to quit' >/dev/null 2>&1
-    for i in {1..40}; do pgrep -x Spotify >/dev/null || break; sleep 0.5; done
-    open -a "$SPOTIFY"
-  fi
-else
-  osascript -e 'display notification "Spotify updated. Run the Tess install line again to bring Tess back." with title "Tess Music"' >/dev/null 2>&1
-fi
-rm -f "\$LOCK"
-EOF
-chmod +x "$HOME_TESS/reapply.sh"
-mkdir -p "$HOME/Library/LaunchAgents"
-cat > "$HOME/Library/LaunchAgents/music.tess.guard.plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>Label</key><string>music.tess.guard</string>
-<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$HOME_TESS/reapply.sh</string></array>
-<key>WatchPaths</key><array><string>$SPOTIFY/Contents/Resources/Apps</string></array>
-<key>StartInterval</key><integer>300</integer>
-<key>RunAtLoad</key><true/>
-</dict></plist>
-EOF
-launchctl bootout "gui/$(id -u)/music.tess.guard" >/dev/null 2>&1 || true
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.guard.plist" 2>/dev/null || true
-
-# --- Tess Mini (macOS 13+) ----------------------------------------------------------------------------------------------
-if [ -s "$TMP/mini.zip" ] && ver_ge "$MACOS" "13.0"; then
-  step "Installing Tess Mini"
-  mkdir -p "$HOME/Applications"
-  launchctl bootout "gui/$(id -u)/music.tess.mini" >/dev/null 2>&1 || true
-  rm -rf "$HOME/Applications/Tess Mini.app"
-  ditto -x -k "$TMP/mini.zip" "$HOME/Applications"
-  cat > "$HOME/Library/LaunchAgents/music.tess.mini.plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>Label</key><string>music.tess.mini</string>
-<key>ProgramArguments</key><array><string>$HOME/Applications/Tess Mini.app/Contents/MacOS/TessMini</string></array>
-<key>RunAtLoad</key><true/>
-<key>KeepAlive</key><true/>
-</dict></plist>
-EOF
-  sleep 1
-  launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.mini.plist" 2>/dev/null || true
-fi
-
-# --- the tess command (update / repair / uninstall) -----------------------------------------------------------------
-cat > "$HOME_TESS/tess" <<'EOF'
-#!/bin/sh
-case "$1" in
-  update|repair) curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-releases/main/install.sh | sh ;;
-  uninstall) curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-releases/main/uninstall.sh | sh ;;
-  *) echo "usage: tess update | repair | uninstall" ;;
-esac
-EOF
-chmod +x "$HOME_TESS/tess"
-
-echo
-bold "Tess is installed."
-echo "  Spotify opens now. The theme updates itself; Spotify updates are handled for you."
-echo "  The first time you open the miniplayer, macOS asks to let Tess Mini control Spotify: choose Allow."
-echo "  To remove it: \"$HOME_TESS/tess\" uninstall"
-echo
-open -a "$SPOTIFY"
+TESS_CHANNEL="$CH" TESS_VERIFY="$D/tess-verify" sh "$D/install.sh"
