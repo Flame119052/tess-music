@@ -2,7 +2,9 @@
 
 A support bot people message, built as a **Hermes bot** — a profile called `tess-support` — running on **Krish's VPS** as its own isolated system user (`tess-support`) on **OpenCode Go** (`opencode-go/deepseek-v4.1-flash`) with a **daily cap**. Someone says what broke, it reads Tess's own doctor report and their screenshots, works out what it is, and sends the whole thing to the **inbox** Krish already runs (`tess-music-player.janus.ing`). Krish's side (or his agents) turns that into a GitHub issue with its priority and labels.
 
-Nobody installs anything, nobody needs a GitHub account, and nothing of Tess's runs on their Mac.
+Nobody needs a GitHub account. The VPS bot on this page is the one Krish runs.
+
+A person's own Mac uses a separate profile, [`mac/`](mac/). The unit files below stay on the VPS. On the Mac they open a chat. The model has no shell. It runs the doctor, asks before it takes a still of the Spotify window, and posts through the support gate with their own token. Only their own reply, after that question, allows the picture. The model reads the four skills shipped in the profile and cannot install anything from a skill.
 
 ## For Krish: turn it on and give someone access
 
@@ -158,7 +160,7 @@ person ──message──▶ tess-support on VPS ──127.0.0.1:4193──▶ 
 
 | Where | What |
 | --- | --- |
-| Their Mac | Nothing new. Spotify, Tess, and `tess report` which they start. |
+| Their Mac | The profile in [`mac/`](mac/). They open the chat. The model has no shell. It runs the doctor, asks before a still of the Spotify window, and posts through the support gate. The picture waits for their own reply. |
 | Krish's VPS (`tess-cap`) | Isolated `tess-cap` user + systemd service, real `OPENCODE_GO_API_KEY`, `cap-proxy/proxy.mjs`, enforced `StateDirectory=tess-cap`. |
 | Krish's VPS (`tess-support`) | Isolated `tess-support` user + systemd service, proxy token + Telegram/inbox `.env`, early-UX `daily-cap` plugin. |
 | Paperclip on VPS | Completely untouched (`/srv/paperclip`, PostgreSQL, Paperclip services, Tincan relay). |

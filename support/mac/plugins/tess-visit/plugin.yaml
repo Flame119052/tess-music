@@ -1,0 +1,16 @@
+name: tess-visit
+version: "1.0.0"
+description: "The Mac support visit. Each step is a fixed tool. The model never gets a shell or a path."
+author: Tess Music
+provides_tools:
+  - tess_visit_start
+  - tess_doctor
+  - tess_guard_log
+  - tess_ask_consent
+  - tess_still
+  - tess_read_skill
+  - tess_save_note
+  - tess_open_issues
+  - tess_triage
+  - tess_post
+  - tess_handoff

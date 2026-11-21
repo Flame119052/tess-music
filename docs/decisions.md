@@ -824,6 +824,43 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   *Why:* a person's Mac must not hold the Go key or be able to reset a counter, and the public internet must not reach
   `support/cap-proxy/`. *Trade-off:* chat and rescue share a Worker process. The route's code does not touch rescue
   state; splitting them into a second Worker can wait. This decision does not deploy the Worker.
+- **D-104 · 18 Nov 2026 · Agent** — Support on a person's own Mac is a separate Hermes profile, `support/mac/`, and
+  it does not change the VPS unit files (#121). The model is a custom provider named `tess-gate`: `model.provider`,
+  `model.default: deepseek-v4.1-flash`, `providers.tess-gate.base_url: ${TESS_INBOX}/v1/support`,
+  `providers.tess-gate.key_env: TESS_SUPPORT_TOKEN`, `api_mode: chat_completions`. Those are the keys Hermes reads
+  (`hermes_cli/runtime_provider_custom.py`). It is not `opencode-go`, whose key variable is `OPENCODE_GO_API_KEY`.
+  The profile `.env` holds the per-person support token and the inbox origin, and nothing that looks like an OpenCode
+  key. Approvals stay `manual`, with `cron_mode`, `single_query_mode` and `unattended_mode` set to `deny`.
+  *Why:* the VPS bot can read its own environment (D-102). On someone else's Mac the same is true, so the only
+  credential there is a token Krish can revoke. The gate holds the Go key. Hermes appends `/chat/completions` to a
+  base URL (`agent/agent_runtime_helpers.py`), so the profile stores the base `${TESS_INBOX}/v1/support` and the
+  gate serves `POST /v1/support/chat/completions` (D-103); the dry-run builds the same URL.
+  *Trade-off:* none on the path; the bare `/v1/support/chat` is refused by the gate. `code_execution` is disabled as well as the toolsets in the plan, because a script
+  can start a process without passing the shell deny list. The installer refuses a `HERMES_HOME` inside the real login
+  home when `TESS_TEST=1`, so the tests never touch this Mac. A real install is not `TESS_TEST`: it allows `~/.hermes`,
+  which is where Hermes lives, and it still refuses a symlink and any write outside `profiles/tess-support`.
+- **D-106 · 19 Nov 2026 · Agent** — A Mac support visit finishes without a shell approval (#121). The profile
+  takes a still of the Spotify window (`screencapture -x -l <window id>`) and writes it only to that visit's
+  `spotify.png`. It does not record video. `screencapture -V` ignores `-l` and records the whole display, so a
+  window-only recording has to wait for a ScreenCaptureKit helper (#128). `mini/` is Swift, which is where that helper
+  belongs. Until then a person can still attach their own recording in the chat, and the VPS bot still sends one:
+  the Worker and `inbox.mjs` keep the video path. A still is posted on `PUT /v1/support/recording` as `image/png`
+  or `image/jpeg`, capped at 5 MB, counted on the same per-token upload budget as a video, stored on
+  `support_reports.image`, and deleted with the recording when the report is filed or after 14 days. The person's
+  words, the title, the summary and a doctor note are written by the profile plugin tool `tess_save_note`, which
+  only creates `words.txt`, `title.txt`, `summary.txt` or `doctor.txt` in the current session folder.
+  `doctor.mjs` runs `tess doctor` and saves `doctor.txt` itself. `spotify-window.mjs` is the only capture.
+  The shell sentences this decision used to carry were wrong, and D-110 replaces them. There is no command
+  list. A command that is not on a list does not stop and ask, because Hermes approves it. The model has no
+  shell. The `skills` toolset is off. The model reads the four profile skills with `tess_read_skill` (D-110).
+  `skills.write_approval` stays on as a second check. The `vision` toolset is off: an attached chat image
+  still reaches the model through `image_input_mode: auto`, which does not need `vision_analyze`.
+  *Why:* a visit that asks the person to approve a redirect, or that captures a picture and then throws it away, does
+  not do the job the profile exists for. Recording the whole display to get eight seconds of Spotify would show
+  everything else on the Mac. Krish's filing agents can see the still.
+  *Trade-off:* an existing inbox database needs `ALTER TABLE support_reports ADD COLUMN image TEXT` before a still
+  can be stored. Until then a still is answered 503 and a video still stores. A moving bug has no automatic
+  recording until the ScreenCaptureKit helper exists. This change does not deploy the Worker.
 - **D-107 · 19 Nov 2026 · Krish** — Reviews rotate through Claude Opus 5.5, GPT Sol and Gemini 4 Neon, in that order,
   each on the provider with the most usage left and the soonest reset, and a review never uses the model that wrote the
   change. Gemini 4 Neon reviews belong in the GitHub `@tess-review` job with the reviewer in full access inside the
@@ -850,4 +887,70 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   access token or sending it over the network. The token lasts about an hour, and a review that quotes it is refused.
   A signed-in tool turn still needs the one-time login; it was not run here. `GEMINI_API_KEY` and Application Default
   Credentials are refused.
+- **D-110 · 19 Nov 2026 · Agent** — A Mac support visit has no shell (#121). D-106 said a command that is not on
+  `command_allowlist` stops and asks. That is false. In Hermes 0.22.6, `check_all_command_guards`
+  (`tools/approval.py`) approves every command `detect_dangerous_command` does not flag, in manual mode and in
+  the deny modes. The allowlist only pre-approves flagged commands. It refuses nothing. A prompt-injected model
+  could run `curl`, `node /tmp/…`, `printenv` and `cat .env` with no prompt, and a zsh glob qualifier inside an
+  allowed wildcard line runs code. `inbox.mjs issues` feeds the model public GitHub issue titles, and it also
+  reads the person's words, `guard.log` and the doctor output.
+  The profile turns off the `terminal` toolset, which is `terminal` and `process_manage`, and every other
+  toolset that can start a process or write a file. `clarify` stays, because it only asks a question.
+  The `skills` toolset is off. `skill_view` searches trusted project skill directories and, when a skill
+  declares `deps`, calls `pm.ensure` (`tools/skills_tool.py`, the roots lookup inside `skill_view`, and the
+  `deps` loop). `skill_search_dirs` always calls `get_skill_search_roots` with project directories included.
+  There is no config key that limits the read to this profile or skips that install. `tess_read_skill` reads
+  only `tess-support`, `tess-gather`, `tess-evidence` and `tess-handoff` from this profile, as text, with no
+  shell and no install. SOUL.md tells the model to read those four. Hermes omits its skills index when
+  `skills_list`, `skill_view` and `skill_manage` are absent (`agent/system_prompt.py`). A profile plugin is
+  not allowed to delete those process-global tools, so `tess-visit` registers a scoped replacement whose
+  availability check never passes. The hook still blocks the call. `skills.inline_shell` stays false
+  (`agent/skill_preprocessing.py`). `tools.tool_search.enabled` is `off`, so the visit tools stay on the
+  model's own list instead of behind `tool_call`. The `onboarding` toolset is off, because `setup_beat`
+  writes the first-run record. There is no `command_allowlist` and no deny list. The visit is plugin tools.
+  Each one runs `subprocess` with an argument list the plugin builds. The model never passes a path or a
+  shell string. The plugin picks the session folder. The current visit is one file per Hermes chat,
+  `cache/support/chats/<session_id>/session`, so a second chat cannot point the first chat's tools at its
+  folder. `tess_ask_consent` records that the question was asked for that chat and that turn, and returns
+  the words to show. It does not record a yes. A stored no is final for that visit: asking again does not
+  reopen it. Hermes `pre_llm_call` receives the person's own message as `user_message`, the chat as
+  `session_id`, the turn as `turn_id`, and `conversation_history` with this turn's message last
+  (`agent/turn_context.py`) before the model runs. Consent is granted only when that chat and a later turn
+  match the ask, and the message just before the person's turn is an assistant message with no tool
+  call whose trimmed text is the question. That is the turn ending on the question. A question sent in
+  the same message as a tool call does not count, and neither does a question with a sentence in front
+  of it, so a yes meant for an earlier prompt does not consent. The skill tells the model to send that
+  question as its own message and end the turn there. The only yes answers are `yes`, `y`, and
+  `go ahead`. `ok` and `sure` are a no. Any other reply, once the question was shown, is a no. A yes
+  before the question, a yes from another chat, a `/retry` of an older yes, or a question that was never
+  shown does not count. The profile sets `display.busy_input_mode` to `interrupt`. The TUI otherwise
+  queues a message typed while the agent is busy (`ui-tui/src/app/useConfigSync.ts`) and that queued yes
+  would be the next turn. Hermes `post_llm_call` (`agent/turn_finalizer.py`) runs once the turn's final
+  text is known, with `assistant_response` set to that text, along with `session_id`, `turn_id`,
+  `user_message`, and `conversation_history`. When that text is the question, the plugin records the
+  time. A yes whose user message carries a timestamp from `stamp_message_timestamp`
+  (`agent/message_metadata.py`) that is earlier than that time is not consent: it was typed before the
+  question was sent. The consent file is replaced from a temp file in the session folder (`os.replace`),
+  so a reader never sees it empty and a spent yes cannot be reopened that way. A yes lasts five minutes
+  and one still. `tess_still` claims it before the capture, by an
+  exclusive rename of the consent file from `yes` to `claimed`, so two calls at once cannot both take a
+  picture. A failed capture leaves the consent `used`, not `yes`. `used` is final for that visit, the
+  same as `no`: asking again does not reopen it, and another picture needs a new visit. Hermes
+  `handle_function_call` forwards `session_id` to a plugin tool and not `turn_id`. The ask stores the
+  turn id from the latest `pre_llm_call`, which does receive it, and the reply has to be a different one.
+  The window
+  capture checks `CGPreflightScreenCaptureAccess` and fails with "Screen Recording is not allowed" instead
+  of saving a blank picture. The `a2a` toolset is off, and the hook also blocks `a2a_*`, `web_*`,
+  `browser_*`, `vision_analyze`, `session_search`, and `manage_connections`. Node is the
+  profile's `runtime/node/bin/node`, or `TESS_NODE` when `TESS_TEST=1`. It is never `node` from `PATH`. The
+  plugin reads `TESS_SUPPORT_TOKEN` from the profile `.env` and puts it in the environment of the `inbox.mjs`
+  report and recording processes only. Tool output is capped and passed through `privacy.mjs` `clean()`.
+  If that filter is missing, fails, or times out, the tool returns "(output withheld: the privacy filter did
+  not run)" and not the original text. The token string is removed when the filter does run.
+  *Why:* the person is not there to approve a shell line, and a public issue title is enough to inject one.
+  A tool the model can call is not their permission to take the picture. A broken privacy filter must not
+  hand the raw doctor text to the model.
+  *Trade-off:* the model cannot run an ad-hoc command when the doctor output is surprising. It can save a note
+  and post what it has. This does not change the VPS bot, which still has a terminal. This change does not
+  deploy the Worker.
 

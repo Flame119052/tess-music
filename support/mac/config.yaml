@@ -1,0 +1,142 @@
+# Tess Support on a person's Mac. They open the chat in the app. There is no messaging platform here.
+# The model is reached only through the support gate. Hermes reads providers.<name>.base_url,
+# key_env and api_mode (hermes_cli/runtime_provider_custom.py). The bearer is the support token,
+# never an OpenCode key (D-104).
+
+model:
+  provider: tess-gate
+  default: deepseek-v4.1-flash
+  # The base of the gate. Hermes's own client appends /chat/completions (agent/agent_runtime_helpers.py),
+  # which is the gate's route, POST /v1/support/chat/completions (D-103). The dry-run builds the same URL.
+  base_url: ${TESS_INBOX}/v1/support
+
+providers:
+  tess-gate:
+    name: tess-gate
+    base_url: ${TESS_INBOX}/v1/support
+    key_env: TESS_SUPPORT_TOKEN
+    api_mode: chat_completions
+    default_model: deepseek-v4.1-flash
+
+agent:
+  # A picture attached in the chat stays an image. Hermes puts those pixels on the
+  # message itself (agent/image_routing.py). That does not use the vision toolset.
+  image_input_mode: auto
+  # The model has no shell (D-110). Hermes 0.22.6 approves any command its danger
+  # detector does not flag, so an allowlist refuses nothing. The visit tools in
+  # tess-visit run the fixed steps. Each line below is a toolset that can start a
+  # process or write a file, and why it is off.
+  #   terminal: the shell and process_manage. There is no separate process toolset.
+  #   code_execution: execute_code starts Python without a shell line.
+  #   delegation: delegate_task starts another agent.
+  #   browser: browser_exec runs host Python when terminal is also on, and it can
+  #     navigate and download.
+  #   computer_use: drives the mouse, the keyboard and the screen.
+  #   file: write_file and patch write arbitrary files. read_file would also show .env.
+  #   cronjob: cronjob_manage schedules a command.
+  #   video: video_analyze downloads a file and accepts a local path.
+  #   video_gen, image_gen: write generated media.
+  #   tts: writes an audio file.
+  #   memory, todo: write the profile's memory and todo files.
+  #   session_search: reads past chats, which can hold the token.
+  #   vision: vision_analyze fetches a URL or opens a file.
+  #   web: web_extract fetches a URL. Disabling web also removes the search toolset's
+  #     only tool, web_search.
+  #   connections: can store a connector credential.
+  #   catalog, project, desktop_ui: install a catalog entry, create a project, or
+  #     open a pane. A desktop session would otherwise add these itself.
+  #   discord, discord_admin, yuanbao, kanban, x_search: not used here, and several
+  #     of them post or attach.
+  #   feishu_doc, feishu_drive: not used here. The drive tools post comments.
+  #   onboarding: setup_beat writes the first-run record. A desktop session folds
+  #     that toolset in for the onboarding chat.
+  #   a2a: a2a_call and its siblings talk to other agents over the network.
+  # skills is off. skill_view searches trusted project skill directories and,
+  # when a skill declares deps, installs them (tools/skills_tool.py, the roots
+  # lookup inside skill_view, and pm.ensure). Hermes has no switch that limits
+  # that read to this profile or skips the install. The model reads the four
+  # shipped skills with tess_read_skill. Hermes omits its own skills index when
+  # skills_list, skill_view and skill_manage are absent (agent/system_prompt.py).
+  # clarify stays: it only asks a question.
+  # Do not disable a hermes-* bundle instead. Hermes subtracts only that bundle's
+  # extra tools and leaves the core ones (model_tools.py).
+  disabled_toolsets:
+    - computer_use
+    - desktop_ui
+    - browser
+    - file
+    - web
+    - cronjob
+    - delegation
+    - code_execution
+    - image_gen
+    - video_gen
+    - video
+    - x_search
+    - tts
+    - memory
+    - session_search
+    - connections
+    - discord
+    - discord_admin
+    - yuanbao
+    - kanban
+    - todo
+    - vision
+    - catalog
+    - project
+    - terminal
+    - skills
+    - feishu_doc
+    - feishu_drive
+    - onboarding
+    - a2a
+
+# The skills toolset is off. These stay so a later edit that turns it on still
+# asks before a write, and still does not run !`cmd` from a SKILL.md
+# (agent/skill_preprocessing.py expand_inline_shell). The plugin also hides
+# skill_manage, skill_view and skills_list, and the hook blocks them.
+skills:
+  write_approval: true
+  inline_shell: false
+
+# No MCP servers. A server can start a process or write a file, and this profile
+# does not load one.
+mcp_servers: {}
+
+# The visit tools stay on the model's own list. Hermes otherwise folds every
+# plugin tool behind tool_search / tool_call, and the skills name each tool.
+# The bridge can only call a tool this session already has, but the visit
+# should not depend on the model finding that door.
+tools:
+  tool_search:
+    enabled: "off"
+
+# No shell, so there is no command_allowlist and no deny list. In Hermes 0.22.6
+# those lists never see a command the danger detector does not flag: that command
+# just runs (tools/approval.py check_all_command_guards). Keeping a list here
+# would look like a boundary and not be one. The boundary is the missing terminal.
+plugins:
+  enabled:
+    - tess-visit
+  entries:
+    tess-visit:
+      # Lets this plugin replace the skill tools, which it does not own, with a
+      # check that never passes. The model cannot use the opt-in. It only
+      # applies to the plugin's own register().
+      allow_tool_override: true
+
+approvals:
+  mode: manual
+  cron_mode: deny
+  single_query_mode: deny
+  unattended_mode: deny
+  timeout: 300
+
+# The TUI queues a message typed while the agent is busy unless this is set
+# (ui-tui/src/app/useConfigSync.ts defaults to queue). A queued "yes" would
+# arrive as the next turn, after the picture question, and look like an answer.
+# interrupt drops that message instead of saving it. The consent hook also
+# refuses a yes whose timestamp is earlier than the question (D-110).
+display:
+  busy_input_mode: interrupt

@@ -1,0 +1,25 @@
+name: tess-support
+version: 1.0.0
+description: "Tess Support on a person's own Mac. They open the chat, describe what broke, and the agent gathers a doctor report and a picture of Spotify, then posts it to the inbox."
+hermes_requires: ">=0.22.0"
+author: "Tess Music"
+license: "MIT"
+
+distribution_owned:
+  - SOUL.md
+  - config.yaml
+  - distribution.yaml
+  - skills
+  - plugins
+
+# The installer writes these into the profile .env at mode 600. The token is the person's support token.
+# The Go key never lands in this file.
+env_requires:
+  - name: TESS_SUPPORT_TOKEN
+    description: "Per-person support token. Hermes sends it as the bearer to the gate."
+    required: false
+    default: ""
+  - name: TESS_INBOX
+    description: "Inbox origin. The gate base is this origin plus /v1/support; Hermes adds /chat/completions."
+    required: false
+    default: "https://tess-music-player.janus.ing"

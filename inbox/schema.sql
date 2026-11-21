@@ -34,6 +34,10 @@ CREATE TABLE IF NOT EXISTS support_reports (
   issue TEXT,
   filed_at INTEGER,
   recording TEXT,
+  -- A still of the Spotify window. Same rules as recording: written, never read back, deleted when the
+  -- report is filed or after 14 days. A database created before this column needs:
+  -- ALTER TABLE support_reports ADD COLUMN image TEXT;
+  image TEXT,
   -- The token that created the report. A recording may only be uploaded by the same token: labels are not unique, and
   -- a sequential id alone would let any valid poster overwrite someone else's screen.
   token_id INTEGER

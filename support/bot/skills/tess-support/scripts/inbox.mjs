@@ -7,14 +7,14 @@
 // change what this script will do with it.
 //
 //   node inbox.mjs report <session dir>           POST <dir>/payload.json and print the report id
-//   node inbox.mjs recording <report id> <file>   PUT one recording against that report
+//   node inbox.mjs recording <report id> <file>   PUT one recording or still against that report
 //   node inbox.mjs issues                         GET the open issue titles
 //   node inbox.mjs … --dry-run                    say where it would go, send nothing
 // Exit 1 with one plain sentence when it refuses or the inbox answers badly. Nothing here reads a person's text; the
 // payload is whatever triage wrote.
 import { closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, dirname, extname, join, resolve } from 'node:path';
-import { inRoot } from './session.mjs';
+import { inRoot, scrub } from './session.mjs';
 import { SECRET_SHAPES, stripInvisible } from './privacy.mjs';
 
 // The one address this bot posts to. Not a variable a message can steer: a redirected host would take the token with it.
@@ -22,16 +22,18 @@ const HOST = 'tess-music-player.janus.ing';
 // A test points it at its own loopback server, and only when TESS_TEST is set on that machine.
 const TEST_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 const MAX_RECORDING = 50 * 1024 * 1024;
+const MAX_IMAGE = 5 * 1024 * 1024;
 const VIDEO = { '.mov': 'video/quicktime', '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm', '.mkv': 'video/x-matroska' };
+const IMAGE = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' };
 
-const die = (msg) => { console.error(msg); process.exit(1); };
+const die = (msg) => { console.error(scrub(msg)); process.exit(1); };
 const dry = process.argv.includes('--dry-run');
 const [cmd, one, two] = process.argv.slice(2).filter((a) => a !== '--dry-run');
 
 const inbox = () => {
   const raw = process.env.TESS_INBOX || `https://${HOST}`;
   let url;
-  try { url = new URL(raw); } catch { die(`TESS_INBOX is not an address: ${raw}`); }
+  try { url = new URL(raw); } catch { die('TESS_INBOX is not an address'); }
   const local = process.env.TESS_TEST === '1' && url.protocol === 'http:' && TEST_HOSTS.has(url.hostname);
   if (!local && !(url.protocol === 'https:' && url.hostname === HOST)) {
     die(`${url.hostname} is not the Tess inbox. This bot posts to ${HOST} and nowhere else.`);
@@ -87,7 +89,7 @@ const readSession = (dir, name, missing, max = Infinity) => {
   try { session = realpathSync(inRoot(dir)); } catch (e) { die(e.message); }
   const wanted = join(session, basename(String(name || '')));
   let lst;
-  try { lst = lstatSync(wanted); } catch { die(missing || `no such file: ${wanted}`); }
+  try { lst = lstatSync(wanted); } catch { die(missing || 'no such file in the session folder'); }
   if (!lst.isFile() || lst.nlink > 1) {
     die(`${basename(wanted)} is not a plain file of this session: a link, or a file with another name, is not something this bot wrote`);
   }
@@ -105,7 +107,7 @@ const readSession = (dir, name, missing, max = Infinity) => {
 
 if (cmd === 'report') {
   if (!one) die('usage: inbox.mjs report <session dir>');
-  const body = readSession(one, 'payload.json', `no payload in ${one}: triage writes it with --mode inbox`).bytes.toString('utf8');
+  const body = readSession(one, 'payload.json', 'no payload in the session folder: triage writes it with --mode inbox').bytes.toString('utf8');
   noSecrets(body, 'the report');
   const out = await send('POST', '/v1/support', { body, type: 'application/json', auth: true });
   if (dry) process.exit(0);
@@ -115,13 +117,16 @@ if (cmd === 'report') {
 } else if (cmd === 'recording') {
   if (!/^\d+$/.test(String(one || ''))) die('usage: inbox.mjs recording <report id> <file>');
   const name = basename(resolve(String(two || '')));
-  const type = VIDEO[extname(name).toLowerCase()];
-  if (!type) die('a recording must be .mov, .mp4, .webm or .mkv');
-  const got = readSession(dirname(resolve(String(two || ''))), name, `no such file: ${two}`, MAX_RECORDING);
-  if (got.tooBig) die(`that recording is ${Math.round(got.tooBig / 1048576)} MB; the limit is ${MAX_RECORDING / 1048576}`);
+  const ext = extname(name).toLowerCase();
+  const type = VIDEO[ext] || IMAGE[ext];
+  if (!type) die('send a .mov, .mp4, .webm or .mkv recording, or a .png or .jpg still');
+  const cap = IMAGE[ext] ? MAX_IMAGE : MAX_RECORDING;
+  const what = IMAGE[ext] ? 'picture' : 'recording';
+  const got = readSession(dirname(resolve(String(two || ''))), name, 'no such file in the session folder', cap);
+  if (got.tooBig) die(`that ${what} is ${Math.round(got.tooBig / 1048576)} MB; the limit is ${cap / 1048576}`);
   const out = await send('PUT', `/v1/support/recording/${one}`, { body: got.bytes, type, auth: true });
   if (dry) process.exit(0);
-  console.log(`recording stored (${out.status})`);
+  console.log(`${what} stored (${out.status})`);
 } else if (cmd === 'issues') {
   const out = await send('GET', '/v1/issues');
   if (dry) process.exit(0);

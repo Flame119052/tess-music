@@ -79,12 +79,13 @@ try {
   for (const mode of ['issue', 'krish', 'json', 'inbox']) {
     out(process.execPath, [TRIAGE, '--report', fix('report-blank-spotify.txt'), '--words', fix('words-blank-spotify.txt'), '--title', 'Spotify opens as a black window and nothing loads', '--mode', mode]);
   }
-  // Every file the bot can run, scanned for a GitHub write. Reading the public repo is fine; filing is not.
+  // Every file the bot or the Mac profile can run, scanned for a GitHub write. Reading the public repo is fine; filing is not.
   const botFiles = [];
   const walk = (d) => { for (const e of readdirSync(d, { withFileTypes: true })) { const p = join(d, e.name); e.isDirectory() ? walk(p) : botFiles.push(p); } };
   walk(join(root, 'support/bot'));
+  walk(join(root, 'support/mac'));
   const ghub = botFiles.filter((f) => /gh issue|gh api|gh pr|api\.github\.com\/repos\/.*\/issues/i.test(readFileSync(f, 'utf8')));
-  assert.deepEqual(ghub, [], 'nothing the bot can run can file on GitHub');
+  assert.deepEqual(ghub, [], 'nothing the bot or the Mac profile can run can file on GitHub');
   // The owner's side still has the one filing path, and it lives in the owner's tool.
   assert.match(readFileSync(join(root, 'tools/reports.mjs'), 'utf8'), /gh issue create/, 'Krish\'s tool is where an issue gets filed');
 
@@ -470,7 +471,7 @@ exit 0
     TESS_SUPPORT_NONINTERACTIVE: '1', TESS_SUPPORT_TOKEN: supSecret, OPENCODE_GO_API_KEY: goSecret,
   };
 
-  const setup = (extra = {}) => out('/bin/sh', [SETUP], { ...senv, ...extra });
+  const setup = (extra = {}) => out('/bin/sh', [SETUP], { ...senv, TESS_TEST_NO_SYSTEMCTL: '1', ...extra });
   const calls = () => (existsSync(join(state, 'calls')) ? readFileSync(join(state, 'calls'), 'utf8').match(/^.*$/gm) || [] : []);
 
   const ran = setup();
