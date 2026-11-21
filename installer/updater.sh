@@ -85,6 +85,8 @@ PATCHER="$HOME_TESS/bin/patcher/tess-patcher"
 VERIFY="$HOME_TESS/bin/patcher/tess-verify"
 STATE="$HOME_TESS/state"
 LOCK="$HOME_TESS/.installing"
+# The invite dialog has a lock of its own: it can wait 15 minutes, and the update lock above must never be held that long.
+SLOCK="$STATE/.support-invite.lock"
 LOG="$HOME_TESS/guard.log"
 REPO="Flame119052/tess-music"
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
@@ -502,6 +504,10 @@ done < "$TMP/components.txt"
 # a newer patcher may support a Spotify version the old one could not
 [ -n "$new_patcher" ] && reapply now
 
+# Every Spotify repair happens here, while the main lock is still held. The invite check below drops that lock, so
+# nothing after this point may ask the doctor to repair Spotify.
+[ -n "$trouble" ] && doctor --auto
+
 # --- 3. A private Tess Support invite (issue #137) ----------------------------------------------------------------
 # Krish invites one Mac by its 32-hex install id (`tools/reports.mjs support invite add …`, run on his Mac). Nothing about Tess
 # Support is downloaded, shown or even mentioned unless this Mac was invited, and the check answers only yes or no.
@@ -513,18 +519,25 @@ done < "$TMP/components.txt"
 # environment, never a command line, and it is gone before anything else runs. This function never reads or writes
 # Spotify, so tools/check-safety.sh's rule about Spotify's folder is untouched by it.
 #
+# For the same reason every failure below is logged with `log`, never `problem`: `problem` sets trouble, which asks the
+# doctor to repair Spotify, and nothing on this path ever touched Spotify.
+#
 # Runs inside the 20-minute parts check above (which is where TESS_FORCE=1 already lands), so it asks no more often.
 SUPPORT_INBOX="https://tess-music-player.janus.ing"
 # A sandbox may point the check at its own fake; a real Mac always uses the one inbox, so an env var cannot send a
 # person's invite elsewhere.
 [ -n "$TESS_TEST" ] && [ -n "${TESS_INBOX:-}" ] && SUPPORT_INBOX=$TESS_INBOX
-# A sandbox keeps its support profile inside its own folder (TESS_TEST only); a real Mac always uses ~/.hermes.
-SUPPORT_CONFIG="${TESS_SUPPORT_CONFIG:-$HOME/.hermes/profiles/tess-support/config.yaml}"
+# A sandbox keeps its support profile inside its own folder (TESS_TEST only); a real Mac always uses ~/.hermes, so a
+# stray environment variable can neither offer Tess Support again nor hide it.
+SUPPORT_CONFIG="$HOME/.hermes/profiles/tess-support/config.yaml"
+[ -n "$TESS_TEST" ] && [ -n "${TESS_SUPPORT_CONFIG:-}" ] && SUPPORT_CONFIG=$TESS_SUPPORT_CONFIG
 
 # What the person clicked: install, decline, or nothing at all. A timeout (or a dialog that could not be shown) is not
 # an answer, so the invite asks again the next time someone is at the Mac.
 support_ask() {
   if [ -n "$TESS_TEST" ]; then
+    # Hold the dialog open, as a person who walked away would, so a test can prove nothing else on the Mac waits on it.
+    [ -n "${TESS_TEST_INVITE_WAIT:-}" ] && sleep "$TESS_TEST_INVITE_WAIT"
     case "${TESS_TEST_INVITE_ANSWER:-}" in
       install|decline) printf '%s\n' "$TESS_TEST_INVITE_ANSWER" ;;
     esac
@@ -563,7 +576,15 @@ check_support_invite() {
   [ -x "$VERIFY" ] || return 0
   # They already have it: never mention it, never ask again.
   [ -f "$SUPPORT_CONFIG" ] && return 0
-  local iid invited invite_id body tok rc
+  # A dialog can wait 15 minutes, and the install runs after it. Nothing below touches Spotify, so the main lock —
+  # the one that holds off wake.sh, the installer and every other update — is dropped here. A lock of its own keeps
+  # two invite dialogs from ever opening at once without ever standing in the way of an update.
+  rm -f "$LOCK"
+  # A run killed mid-dialog leaves the folder behind; an hour is longer than any dialog plus install.
+  [ -d "$SLOCK" ] && [ -n "$(find "$SLOCK" -maxdepth 0 -mmin +60 2>/dev/null)" ] && rmdir "$SLOCK" 2>/dev/null
+  mkdir "$SLOCK" 2>/dev/null || return 0
+  trap 'rm -rf "$TMP"; rm -f "$LOCK"; rmdir "$SLOCK" 2>/dev/null' EXIT
+  local iid invited invite_id body tok rc code claim
   iid=$(tr -d '[:space:]' < "$HOME_TESS/install-id" 2>/dev/null) || iid=""
   # A report id is 32 lowercase hex characters; anything else is not an id this Mac can be invited by.
   case "$iid" in ''|*[!0-9a-f]*) return 0 ;; esac
@@ -584,28 +605,42 @@ check_support_invite() {
   esac
   # Signed first, claimed second: a bad download or a bad signature must not use up the invite.
   if ! get support-install.sh "$TMP/support-install.sh" || ! get support-install.sig "$TMP/support-install.sig"; then
-    problem "support invite $invite_id: installer download failed"
+    log "support invite $invite_id: installer download failed"
     return 0
   fi
   if ! "$VERIFY" "$TMP/support-install.sh" "$(tr -d '\n' < "$TMP/support-install.sig")"; then
-    problem "support invite $invite_id: installer failed its signature check; nothing was installed"
+    log "support invite $invite_id: installer failed its signature check; nothing was installed"
     return 0
   fi
   notify "Installing Tess Support… this takes about a minute."
-  if ! body=$(curl -fsS --max-time 30 -H "content-type: application/json" \
-    --data-binary "{\"install\":\"$iid\",\"invite_id\":$invite_id}" "$SUPPORT_INBOX/v1/support/invite/claim" 2>/dev/null); then
-    body=""
-    # A network miss is not an answer: the invite is still open, so the next check asks again.
-    problem "support invite $invite_id: the invite could not be claimed"
-    return 0
-  fi
+  # The status code, not -f, decides what happened: a 404 is a spent invite, while a 429/503 or a dropped connection is
+  # a temporary miss. The reply body goes to a private temp file (it may hold the token) and is never logged.
+  claim="$TMP/invite-claim.json"
+  : > "$claim"; chmod 600 "$claim" 2>/dev/null
+  code=$(curl -sS --max-time 30 -H "content-type: application/json" \
+    --data-binary "{\"install\":\"$iid\",\"invite_id\":$invite_id}" \
+    -o "$claim" -w '%{http_code}' "$SUPPORT_INBOX/v1/support/invite/claim" 2>/dev/null) || code=""
+  case "$code" in
+    200) ;;
+    404)
+      # Spent, expired, revoked, or not this Mac's: the invite is gone, so never ask about it again.
+      touch "$STATE/.support-invite-asked-$invite_id"
+      log "support invite $invite_id: the invite is no longer open (spent, expired or revoked); not asking again"
+      rm -f "$claim"; return 0 ;;
+    *)
+      # 429, a 5xx, or no answer at all: temporary. The invite is still open, so keep it and ask again next check.
+      log "support invite $invite_id: the invite could not be claimed (HTTP ${code:-none})"
+      rm -f "$claim"; return 0 ;;
+  esac
+  body=$(cat "$claim" 2>/dev/null) || body=""
+  rm -f "$claim"
   tok=$(printf '%s' "$body" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\(tess_[0-9a-f]*\)".*/\1/p')
   body=""
   case "$tok" in tess_*) ;; *) tok="" ;; esac
   if [ ${#tok} -lt 20 ]; then
-    # The inbox answered and there is no usable token, so this invite is spent or gone. Never ask again for it.
+    # A 200 with no token is a broken reply, but the invite may have been spent on the other side: never ask again.
     touch "$STATE/.support-invite-asked-$invite_id"
-    problem "support invite $invite_id: the invite could not be claimed"
+    log "support invite $invite_id: the inbox answered without a token; not asking again"
     return 0
   fi
   # The token is in this one command's environment and nowhere else: not argv (which any process can read), not the
@@ -619,12 +654,11 @@ check_support_invite() {
     support_welcome
   else
     # Not "nothing was changed": the installer runs one step at a time and may have finished some of them.
-    problem "support invite $invite_id: installer exited $rc"
+    log "support invite $invite_id: installer exited $rc"
     notify "Tess Support couldn't finish installing; some files may have been partially set up. Run the uninstall command or ask Krish."
   fi
   return 0
 }
 check_support_invite
 
-[ -n "$trouble" ] && doctor --auto
 exit 0
