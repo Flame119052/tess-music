@@ -82,8 +82,10 @@ export const retiredKeyNames = ['CODEX_API_KEY', 'OPENAI_API_KEY', 'CURSOR_API_K
 // A ChatGPT-plan login is an `auth.json`, not a key: the access token it holds is what the CLI would send, and the
 // account id rides beside it. The token is good for about 10 days, and a refresh rotates the refresh token, so the
 // rotated copy would die with the disposable runner. A review therefore never starts on a login that is at or near its
-// expiry: it refuses with a named reason and the tagging agent re-tags after `node tools/codex-ci-login.mjs` renews the
-// secret. `codexAuthMinHours` keeps a margin for a review that queues behind other jobs.
+// expiry: it refuses with a named reason. A scheduled workflow renews the secret (D-111).
+// `node tools/codex-ci-login.mjs` is only for when that refresh is broken: the Mac copy goes stale
+// at the first cloud rotation, and uploading it replaces the live secret. `codexAuthMinHours` keeps
+// a margin for a review that queues behind other jobs.
 export const codexAuthMinHours = 12;
 
 export function codexAuth(raw, now = Date.now()) {
@@ -109,12 +111,12 @@ export function codexAuth(raw, now = Date.now()) {
   // A token whose expiry cannot be read is not trusted to last a review: an opaque token would fail mid-run instead.
   if (expiresAt === null) return { problem: 'the stored Codex login has no readable expiry' };
   if (expiresAt <= now) {
-    return { problem: `the stored Codex login expired at ${new Date(expiresAt).toISOString()}; run node tools/codex-ci-login.mjs` };
+    return { problem: `the stored Codex login expired at ${new Date(expiresAt).toISOString()}; Codex renews it on a schedule, and node tools/codex-ci-login.mjs is only for when that refresh is broken` };
   }
   if (expiresAt - now < codexAuthMinHours * 60 * 60 * 1000) {
     const hours = Math.max(1, Math.round((expiresAt - now) / (60 * 60 * 1000)));
     return {
-      problem: `the stored Codex login expires in about ${hours}h; run node tools/codex-ci-login.mjs before tagging Codex`,
+      problem: `the stored Codex login expires in about ${hours}h; Codex renews it on a schedule, and node tools/codex-ci-login.mjs is only for when that refresh is broken`,
     };
   }
   if (!accountId) return { problem: 'the stored Codex login holds no account id' };
@@ -848,8 +850,8 @@ function commandExists(command) {
 }
 
 // The login a provider needs, as a reason a review cannot run, or null. Only Codex keeps one that can expire quietly:
-// its ChatGPT-plan `auth.json` carries an access token good for about 10 days, and a refresh on a disposable runner
-// would rotate the token into a file that dies with the machine.
+// its ChatGPT-plan access token is good for about 10 days. A scheduled job renews it (D-111). A review never
+// refreshes on the disposable runner, because that rotation would die with the machine.
 // A Google-plan login is the JSON file agy writes, not an API key and not Application Default Credentials.
 // The check looks at shape only. It never puts the token into the reason string.
 export function antigravityAuth(raw) {

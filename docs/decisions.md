@@ -1026,6 +1026,26 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   a 401 as the auth layer); that was not run here. *Trade-off:* none on secrecy. The three cases get the same words,
   so the answer does not say whether a code ever existed. `tools/test-support-mac-chat.mjs` proves the gate side on a
   real chat turn: the next turn after `support token revoke` gets this line and the upstream is not called.
+- **D-111 · 21 Nov 2026 · Agent** — GitHub Actions refreshes the Codex reviewer login every four days (#130).
+  `.github/workflows/codex-refresh.yml` runs on a schedule and on `workflow_dispatch` on `main` only
+  (`if: github.ref == 'refs/heads/main'`, `environment: codex-refresh` with deployment branches limited to `main`).
+  Before touching OpenAI, a pre-flight step verifies `CODEX_SECRET_ROTATOR_TOKEN` is set and can read
+  `repos/$GITHUB_REPOSITORY/actions/secrets/public-key`, so a missing or expired rotator token never burns the
+  live refresh token. It then reads `CODEX_AUTH_JSON`, exchanges the refresh token at
+  `https://auth.openai.com/oauth/token`, checks the new access token was issued by that host and still has at least
+  a day of life, and writes the login back with `CODEX_SECRET_ROTATOR_TOKEN`. That token is a fine-grained personal
+  access token scoped only to Actions read and Secrets read and write on `Flame119052/tess-music`, stored in the
+  `codex-refresh` environment (not as a repository secret). `agent-review.yml` and branch workflows never see it.
+  A review still refuses a login inside its last 12 hours. `node tools/codex-ci-login.mjs` is only for a broken
+  schedule: the copy in `~/.config/tess-codex-ci` is stale after the first cloud rotation, and uploading it
+  overwrites the live secret. This replaces the "renewed by hand" half of D-73. The one-time step left is creating
+  the `codex-refresh` environment (restricted to `main`), creating that fine-grained PAT, and saving it with
+  `gh secret set CODEX_SECRET_ROTATOR_TOKEN --env codex-refresh -R Flame119052/tess-music`.
+  *Why:* the access token dies in about ten days, and the Mac is not always on to renew it.
+  *Trade-off:* fine-grained PATs expire (at most a year) and need renewing before their expiry date; the pre-flight
+  check stops cleanly without rotating if it lapses. GitHub also pauses scheduled workflows after 60 days with no
+  repository activity. A transient secret-write failure after rotation is retried three times before deleting the
+  temp file, and `concurrency` prevents two refreshes running at once.
 - **D-112 · 21 Nov 2026 · Krish** — GitHub reviews may use OpenCode Zen free (`opencode/*`, no key), Nvidia NIM
   (`nvidia/*`, `NVIDIA_API_KEY`), Sarvam (`sarvam/*`, `SARVAM_API_KEY`), and the extra OpenCode Go and Z.ai models
   (#131). Krish confirmed Sarvam is on a free/subscription plan, so it stays inside the plans/free-only rule. Zen free

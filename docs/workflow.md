@@ -179,7 +179,7 @@ are public.
 - a usage snapshot shows that window used up, fewer than three reviews left in its 5-hour window, or inside a `reserve` (pace is the tagging agent's call, not a refusal);
 - the OpenCode model needs a connector key that is missing (`OPENCODE_API_KEY`, `ZHIPU_API_KEY`, `NVIDIA_API_KEY`, or
   `SARVAM_API_KEY`), or the model prefix is not one of those connectors; `opencode/*` free models need none;
-- the Codex plan login is missing or inside its last 12 hours;
+- the Codex plan login is missing or inside its last 12 hours (a scheduled job renews it; see below);
 - the Antigravity plan login is missing, or it is not the Google-plan file;
 - `provider=antigravity` is tagged for `mac` or `omarchy` (Krish chose the GitHub path);
 - the tag names a machine that is not `github`, `mac` or `omarchy` — including `vps`, which is refused with its reason;
@@ -371,6 +371,12 @@ agent file, that no retired API-key secret is used anywhere, and that every note
   - The reviewer reads the diff and the files. It never runs, builds or installs anything from the PR.
   - The reviewer's own comments carry a marker and never trigger another review; so do the queue notice and every refusal, so none of them can start another review.
   - A machine's watcher reads only what this repository's workflow publishes anyway (comments, the pull request, its CI), checks every tag with the same rules before starting anything, and never accepts inbound connections. It holds no credential of its own: `gh` and `t3` use that machine's own sign-ins.
+
+## Codex login refresh
+
+GitHub Actions renews `CODEX_AUTH_JSON` on a schedule (`.github/workflows/codex-refresh.yml`, D-111). The job runs every four days, and it can also be started by hand. It exchanges the stored refresh token, checks the new access token was issued by `https://auth.openai.com` and still has at least a day of life, then writes the login back as the same secret. The token that writes secrets is `CODEX_SECRET_ROTATOR_TOKEN`: a fine-grained personal access token scoped only to Actions (read) and Secrets (read and write) on `Flame119052/tess-music`. The review workflow never receives it.
+
+Do not run `node tools/codex-ci-login.mjs` while that schedule is on. The copy in `~/.config/tess-codex-ci` goes stale at the first cloud rotation. Its access token can still show days of life, and uploading it replaces the live secret with a dead refresh token. Run that script only after the `codex-refresh` schedule is turned off, and only when the scheduled refresh itself is broken.
 
 ## Where work happens: branches, worktrees and machines
 

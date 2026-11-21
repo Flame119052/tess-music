@@ -86,10 +86,6 @@ make a new one.
 
 ## 3. What the person runs
 
-> **Not merged yet.** The one-line installer is pull request
-> [#126](https://github.com/Flame119052/tess-music/pull/126). Until it lands on `main`, the line below won't work.
-> Check #126 for the final wording before you send it.
-
 They open Terminal on their Mac and paste:
 
 ```sh
