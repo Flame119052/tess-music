@@ -122,9 +122,12 @@ nothing; Krish using the Mac adds noise, so alternate with/without and repeat (t
   `git merge-base --is-ancestor origin/main HEAD` before opening a PR.
 - Work follows [`docs/workflow.md`](docs/workflow.md): issue → approach comment → PR into `main` → dev → beta (Krish
   declares a release) → stable (Krish promotes). **Opening a PR is the normal end of a build (D-63) — always push your
-  branch and open the PR into `main`; never stop at an unpushed local branch to ask permission to open a PR.** Only
-  *merging* a PR waits on Krish. Keep each PR focused on one issue or a tight slice rather than bundling a dozen
-  unrelated issues onto one branch.
+  branch and open the PR into `main`; never stop at an unpushed local branch to ask permission to open a PR.** When
+  Krish asks you to fix an issue (or issues), take it all the way onto the internal **`dev`** build: open the PR, pass
+  CI + required `@tess-review` approval, and merge into `main` so Krish can see it on `dev` right away. **`dev` →
+  `beta` (`declare`) and `beta` → `stable` (`promote`) always wait for Krish's explicit word and GitHub's `release`
+  approval gate — nothing ever reaches real users without his say.** Keep each PR focused on one issue or a tight slice
+  rather than bundling a dozen unrelated issues onto one branch.
 - **Respect sensitive-tier review gates:** before writing code for any sensitive path (`installer/`, `inbox/`,
   `patcher/`, `support/`, `.github/`, `tools/release.mjs`, `tools/promote.mjs`, `tools/rescue.mjs`,
   `tools/check-safety.sh`, signing, rescue, or release-shipped `mini/` helpers), post an approach comment and get
