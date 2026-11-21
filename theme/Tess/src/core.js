@@ -1027,7 +1027,7 @@
             <h1 id="twn-title">${richText(WHATS_NEW.title)}</h1>
             <p id="twn-sub">${richText(WHATS_NEW.subtitle)}</p>
           </header>
-          <ul class="twn-list">${WHATS_NEW.highlights.map((h) => `
+          <ul class="twn-list" tabindex="0" aria-label="What's new highlights">${WHATS_NEW.highlights.map((h) => `
             <li class="twn-row" data-tint="${escapeHtml(h.tint)}">
               <span class="twn-well"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${h.icon}</svg></span>
               <div><h2>${richText(h.title)}</h2><p>${richText(h.text)}</p></div>
@@ -1037,6 +1037,7 @@
         </div>
       </div>`));
     const card = sheet.querySelector('.twn-card');
+    const list = sheet.querySelector('.twn-list');
     const [settingsBtn, continueBtn] = sheet.querySelectorAll('footer button');
     let closing = false;
     const close = (toSettings = false) => {
@@ -1054,11 +1055,12 @@
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
       else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); close(document.activeElement === settingsBtn); }
       else if (e.key === 'Tab') {
-        // keep focus inside the sheet (two buttons, so either direction just swaps)
-        const order = [settingsBtn, continueBtn];
+        // keep focus inside the sheet (including the scrollable highlights list on short windows)
+        const order = [list, settingsBtn, continueBtn].filter(Boolean);
         const i = order.indexOf(document.activeElement);
         e.preventDefault();
-        order[i < 0 ? (e.shiftKey ? 1 : 0) : (i + 1) % 2].focus();
+        const next = i < 0 ? (e.shiftKey ? order.length - 1 : 0) : (i + (e.shiftKey ? order.length - 1 : 1)) % order.length;
+        order[next].focus();
       }
     }
     document.addEventListener('keydown', onKey, true);
@@ -1285,7 +1287,7 @@
       });
       const j = await fetch(`https://lrclib.net/api/get?${q}`, { signal: AbortSignal.timeout(6000) })
         .then((r) => (r.ok ? r.json() : null)).catch(() => null);
-      if (!j || j.instrumental || !j.syncedLyrics || Math.abs(j.duration - dur) > 2) return null;
+      if (!j || j.instrumental || !j.syncedLyrics || !Number.isFinite(j.duration) || !dur || Math.abs(j.duration - dur) > 2) return null;
       const out = [];
       for (const raw of j.syncedLyrics.split('\n')) {
         const m = raw.match(/\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)/);
