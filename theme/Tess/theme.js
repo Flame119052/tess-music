@@ -100,6 +100,25 @@
   const spotifyButton = (sel) => document.querySelector(`[data-testid="now-playing-bar"] ${sel}`);
   const route = () => Spicetify.Platform.History.location?.pathname || '';
 
+  // The release note shown once after an update (see whatNew below). A new release edits only this object: change
+  // `id` and the text and every existing user sees the sheet once. Text between `backticks` is shown as code.
+  const WHATS_NEW = {
+    id: '0.2.43',
+    eyebrow: "What\u2019s New in Tess 0.2.43",
+    title: 'Safer, smoother, all yours',
+    subtitle: 'A major under-the-hood upgrade \u2014 faster recovery, verified updates, and refined polish throughout.',
+    highlights: [
+      { tint: 'green', title: 'Safe background updates', text: 'Updates now swap atomically in the background without interrupting playback or ever leaving Spotify blank.',
+        icon: '<path d="M4 12a8 8 0 0 1 14-5l2 2M20 4v5h-5M20 12a8 8 0 0 1-14 5l-2-2M4 20v-5h5"/>' },
+      { tint: 'blue', title: 'Signed & verified', text: "Every release and cached theme is checked with Tess's signature before it runs.",
+        icon: '<path d="M12 3 20 6v5c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/><path d="m8.5 12 2.3 2.3 4.7-5"/>' },
+      { tint: 'violet', title: 'Automatic Spotify recovery', text: 'When Spotify updates itself, Tess puts your look back automatically. Run `tess status` or `tess rescue off` anytime in Terminal for full control.',
+        icon: '<path d="M20 12a8 8 0 1 1-3-6.2M20 3v5h-5"/><path d="M12 8v4l2.5 2"/>' },
+      { tint: 'pink', title: 'Liquid Glass & Tess Mini', text: 'Tighter security, smoother defaults, and quick controls for Vinyl, Video, Synced Lyrics, and more in Settings \u2192 Theme.',
+        icon: '<rect x="4" y="5" width="16" height="14" rx="4.5"/><circle cx="10" cy="12" r="2.8"/><path d="M16 10.2h.01M16 13.8h.01"/>' },
+    ],
+  };
+
   // ---------------- settings ----------------
   const DEFAULTS = { videoFullscreen: true, npStyle: 'cover', coverVideo: true, panelVideo: true, artistVideo: true, tintWindow: true, sideLyrics: true, circadian: true };
   const settings = (() => {
@@ -187,7 +206,9 @@
     };
     const again = el('<button class="tess-set-link">Show welcome</button>');
     again.onclick = () => { try { localStorage.removeItem('tess:onboarded'); } catch {} onboarding(); };
-    meta.append(ch, again);
+    const news = el('<button class="tess-set-link">What\u2019s new</button>');
+    news.onclick = () => whatsNew(true);
+    meta.append(ch, again, news);
     if (oldInstall) {
       const fix = el('<button class="tess-set-link">Finish updating Tess (copies the install line)</button>');
       fix.onclick = () => { Spicetify.Platform.ClipboardAPI?.copy?.(INSTALL_LINE); Spicetify.showNotification?.('Copied. Paste it in Terminal and press Return.'); };
@@ -946,13 +967,78 @@
     sheet.querySelectorAll('input[data-key]').forEach((i) => { i.checked = !!settings[i.dataset.key]; i.onchange = () => { settings[i.dataset.key] = i.checked; }; });
     const finish = () => {
       saveSettings(); applySettings(); syncTrack(); onRoute();
-      try { localStorage.setItem('tess:onboarded', '1'); } catch {}
+      // a brand-new user has just seen everything; don't greet them with this release's note straight after
+      try { localStorage.setItem('tess:onboarded', '1'); localStorage.setItem('tess:seen-release', WHATS_NEW.id); } catch {}
       sheet.classList.add('bye');
       setTimeout(() => sheet.remove(), 400);
     };
     sheet.querySelector('.tw-next').onclick = () => { if (step < steps.length - 1) { step++; show(); } else finish(); };
     sheet.querySelector('.tw-skip').onclick = finish;
     show();
+  }
+
+  // ---------------- what's new (once per release) ----------------
+  // Shown on launch for people who finished the welcome in an earlier release, until they close it once. Closing by
+  // any route (Continue, Open Settings, Escape, Enter, the backdrop) records the release id so it does not return.
+  const escapeHtml = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const richText = (t) => escapeHtml(t).replace(/`([^`]+)`/g, '<code>$1</code>');
+  function whatsNew(force = false) {
+    if (document.getElementById('tess-whatsnew') || document.getElementById('tess-welcome')) return;
+    if (!force) {
+      try {
+        if (localStorage.getItem('tess:onboarded') !== '1' || localStorage.getItem('tess:seen-release') === WHATS_NEW.id) return;
+      } catch { return; }
+    }
+    const previous = document.activeElement;
+    const sheet = mount(el(`
+      <div id="tess-whatsnew" role="dialog" aria-modal="true" aria-labelledby="twn-title" aria-describedby="twn-sub">
+        <div class="twn-card" tabindex="-1">
+          <header class="twn-head">
+            <i class="twn-emblem" aria-hidden="true"></i>
+            <span class="twn-pill">${richText(WHATS_NEW.eyebrow)}</span>
+            <h1 id="twn-title">${richText(WHATS_NEW.title)}</h1>
+            <p id="twn-sub">${richText(WHATS_NEW.subtitle)}</p>
+          </header>
+          <ul class="twn-list">${WHATS_NEW.highlights.map((h) => `
+            <li class="twn-row" data-tint="${escapeHtml(h.tint)}">
+              <span class="twn-well"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${h.icon}</svg></span>
+              <div><h2>${richText(h.title)}</h2><p>${richText(h.text)}</p></div>
+            </li>`).join('')}
+          </ul>
+          <footer class="twn-foot"><button class="twn-secondary" type="button">Open Settings</button><button class="twn-primary" type="button">Continue</button></footer>
+        </div>
+      </div>`));
+    const card = sheet.querySelector('.twn-card');
+    const [settingsBtn, continueBtn] = sheet.querySelectorAll('footer button');
+    let closing = false;
+    const close = (toSettings = false) => {
+      if (closing) return;
+      closing = true;
+      try { localStorage.setItem('tess:seen-release', WHATS_NEW.id); } catch {}
+      document.removeEventListener('keydown', onKey, true);
+      sheet.classList.add('bye');
+      setTimeout(() => sheet.remove(), 400);
+      if (toSettings) openSettings();
+      else if (previous?.isConnected && previous !== document.body) { try { previous.focus({ preventScroll: true }); } catch {} }
+    };
+    // captured on the document so Escape/Enter work wherever focus is, and Spotify's own shortcuts don't also fire
+    function onKey(e) {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
+      else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); close(document.activeElement === settingsBtn); }
+      else if (e.key === 'Tab') {
+        // keep focus inside the sheet (two buttons, so either direction just swaps)
+        const order = [settingsBtn, continueBtn];
+        const i = order.indexOf(document.activeElement);
+        e.preventDefault();
+        order[i < 0 ? (e.shiftKey ? 1 : 0) : (i + 1) % 2].focus();
+      }
+    }
+    document.addEventListener('keydown', onKey, true);
+    onDispose(() => document.removeEventListener('keydown', onKey, true));
+    sheet.addEventListener('click', (e) => { if (e.target === sheet) close(); });
+    settingsBtn.onclick = () => close(true);
+    continueBtn.onclick = () => close();
+    card.focus({ preventScroll: true });
   }
 
   // ---------------- liquid glass ----------------
@@ -2584,8 +2670,9 @@
   onDispose(() => typeof unlisten === 'function' && unlisten());
   listen(window, 'resize', () => { setHeroHeight(); setTimeout(onRoute, 100); });
   // for checking things from DevTools: window.__tessDebug.artistCanvas(uri), .playCanvas(video, fileId)
-  self.debug = { artistCanvas, playCanvas, trackCanvas, onRoute: () => onRoute(), place: () => runPlacers() };
+  self.debug = { artistCanvas, playCanvas, trackCanvas, onRoute: () => onRoute(), place: () => runPlacers(), whatsNew: () => whatsNew(true) };
   onboarding();
+  whatsNew();
   onDraw(applyGlass, 4000);
   applyGlass();
   startWatch();
