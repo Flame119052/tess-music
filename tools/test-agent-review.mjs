@@ -480,9 +480,12 @@ test('the Codex plan login is refused when it is missing or near its expiry', ()
   // Inside the 12-hour margin the review would be racing the expiry, so it refuses now with a reason that says what to do.
   const near = codexAuth(login(jwt(Math.floor(hours(6) / 1000))), now);
   assert.match(near.problem, /expires in about 6h/);
-  assert.match(near.problem, /codex-ci-login/);
+  assert.match(near.problem, /renews it on a schedule/);
+  assert.match(near.problem, /codex-ci-login\.mjs is only for when that refresh is broken/);
   const expired = codexAuth(login(jwt(Math.floor(hours(-1) / 1000))), now);
   assert.match(expired.problem, /expired at/);
+  assert.match(expired.problem, /renews it on a schedule/);
+  assert.match(expired.problem, /codex-ci-login\.mjs is only for when that refresh is broken/);
 
   // Missing, malformed, an API key instead of a plan login, an opaque token, and a login with no account id all refuse.
   assert.match(codexAuth('', now).problem, /CODEX_AUTH_JSON is empty/);

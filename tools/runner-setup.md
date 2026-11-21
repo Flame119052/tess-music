@@ -42,11 +42,19 @@ holding a secret exists, only an allowlisted account can tag a review, and the l
 the review process reads it and the proxy adds the access token to the one inference route (D-73). So the plan path is
 safe in this repository, and it is what keeps Codex off the OpenAI API bill.
 
-The second half of that caution is why this setup needs a recurring step. The vendor's advice is to persist the refreshed
-`auth.json` between runs; a GitHub-hosted workflow cannot write a repository secret, so nothing can persist the rotated
-file. Instead the review never starts inside the last 12 hours of the token, and Krish renews it by hand.
+The access token lasts about ten days, and a refresh rotates the refresh token. A review on the disposable runner
+does not refresh: the rotated token would die with the machine, and the job refuses to start inside the last 12 hours.
+`.github/workflows/codex-refresh.yml` does the renewal instead (D-111). It runs every four days, exchanges the refresh
+token, and writes `CODEX_AUTH_JSON` back. The write uses `CODEX_SECRET_ROTATOR_TOKEN`, a fine-grained personal access
+token scoped only to Actions (read) and Secrets (read and write) on `Flame119052/tess-music`. Create that token once
+and save it as the secret. The review workflow never receives it.
 
-A dedicated login, so his own Codex session is never touched:
+Do not run the upload below while that schedule is on. This folder's copy goes stale the first time the cloud job
+rotates the refresh token. The access token in the folder can still look fine for days, and uploading it replaces the
+live secret with a dead login. Run it only after the `codex-refresh` schedule is turned off, and only when that
+scheduled refresh is broken and a fresh sign-in is the way back.
+
+A dedicated login, so his own Codex session is never touched. This is the fallback, not the regular renewal:
 
 ```sh
 node tools/codex-ci-login.mjs          # sign in (device auth) in ~/.config/tess-codex-ci, then upload the secret
@@ -57,17 +65,12 @@ The script uses its own `CODEX_HOME` (`~/.config/tess-codex-ci`), so `~/.codex` 
 login that is not `auth_mode: chatgpt`, checks that `codex login status` reports ChatGPT, and uploads the `auth.json` to
 the secret with `gh secret set`, on stdin, without printing it.
 
-**Renew it every ~9 days.** The access token inside the login lasts about 10 days. A refresh rotates the refresh token,
-and a rotation on the disposable runner would be written to a file that is deleted minutes later, so the review does not
-refresh: it refuses to start inside the last 12 hours of the token and says so in the PR comment. Run the command again
-before then; `--check` tells you how many days are left. This is the one part of the reviewer setup that needs a
-recurring human step.
-
 Set one with the CLI if you prefer:
 
 ```sh
 gh secret set CLAUDE_CODE_OAUTH_TOKEN -R Flame119052/tess-music
-gh secret set CODEX_AUTH_JSON -R Flame119052/tess-music   # prefer node tools/codex-ci-login.mjs
+gh secret set CODEX_AUTH_JSON -R Flame119052/tess-music   # the schedule writes this; do not paste a stale Mac copy
+gh secret set CODEX_SECRET_ROTATOR_TOKEN -R Flame119052/tess-music   # fine-grained PAT, not a plan login
 gh secret set OPENCODE_API_KEY -R Flame119052/tess-music
 gh secret set ZHIPU_API_KEY -R Flame119052/tess-music
 ```

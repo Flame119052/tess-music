@@ -72,7 +72,9 @@ jobs:
       - name: Support filing line tests
         run: node tools/test-reports.mjs
       - name: Reviewer agent tests
-        run: node tools/test-agent-review.mjs
+        run: |
+          node tools/test-codex-refresh.mjs
+          node tools/test-agent-review.mjs
       - name: Review watcher tests (a tag opens a T3 thread on the machine it names)
         run: node tools/test-review-watch.mjs
       - name: Usage publisher tests

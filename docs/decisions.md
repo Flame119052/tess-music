@@ -1026,3 +1026,16 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   a 401 as the auth layer); that was not run here. *Trade-off:* none on secrecy. The three cases get the same words,
   so the answer does not say whether a code ever existed. `tools/test-support-mac-chat.mjs` proves the gate side on a
   real chat turn: the next turn after `support token revoke` gets this line and the upstream is not called.
+- **D-111 · 21 Nov 2026 · Agent** — GitHub Actions refreshes the Codex reviewer login every four days (#130).
+  `.github/workflows/codex-refresh.yml` runs on a schedule and on `workflow_dispatch` only. It reads
+  `CODEX_AUTH_JSON`, exchanges the refresh token at `https://auth.openai.com/oauth/token`, checks the new
+  access token was issued by that host and still has at least a day of life, and writes the login back with
+  `CODEX_SECRET_ROTATOR_TOKEN`. That token is a fine-grained personal access token scoped only to Actions
+  read and Secrets read and write on `Flame119052/tess-music`. `agent-review.yml` never sees it. A review
+  still refuses a login inside its last 12 hours. `node tools/codex-ci-login.mjs` is only for a broken
+  schedule: the copy in `~/.config/tess-codex-ci` is stale after the first cloud rotation, and uploading it
+  overwrites the live secret. This replaces the "renewed by hand" half of D-73. The one-time step left is
+  creating that personal access token and saving it as `CODEX_SECRET_ROTATOR_TOKEN`.
+  *Why:* the access token dies in about ten days, and the Mac is not always on to renew it.
+  *Trade-off:* a failed secret write after a rotation can lose the only refresh token. The job retries that
+  write three times before it deletes the temp file. Two refreshes cannot run at once.
