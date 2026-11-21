@@ -17,6 +17,9 @@ permissions:
 
 jobs:
   refresh:
+    if: github.ref == 'refs/heads/main'
+    # Deployment branches: main only. CODEX_SECRET_ROTATOR_TOKEN lives in this environment, not as a repo secret.
+    environment: codex-refresh
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,6 +29,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Check the rotator can write secrets before rotating anything
+        env:
+          GH_TOKEN: ${{ secrets.CODEX_SECRET_ROTATOR_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -n "$GH_TOKEN" ] || { echo "CODEX_SECRET_ROTATOR_TOKEN is not set; not refreshing"; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/secrets/public-key" --silent \
+            || { echo "CODEX_SECRET_ROTATOR_TOKEN cannot read the secrets key; not refreshing"; exit 1; }
       - name: Refresh the Codex login
         env:
           # This step can read the login and nothing else. The automatic job token is cleared so a

@@ -179,6 +179,27 @@ function runningAsScript() {
   }
 }
 
+const knownErrors = new Set([
+  'CODEX_AUTH_JSON is empty',
+  'CODEX_AUTH_JSON is not readable JSON',
+  'CODEX_AUTH_JSON is not a JSON object',
+  'CODEX_AUTH_JSON is not a ChatGPT plan login',
+  'CODEX_AUTH_JSON holds no tokens',
+  'CODEX_AUTH_JSON holds no refresh token',
+  'CODEX_AUTH_JSON holds no access token',
+  'the stored Codex access token is not a readable JWT',
+  'the stored Codex access token is not from auth.openai.com',
+  'the stored Codex access token has no readable expiry',
+  'could not refresh the Codex login',
+  'the Codex token endpoint refused the refresh',
+  'the refreshed Codex login has no access token',
+  'the refreshed Codex access token is not a readable JWT',
+  'the refreshed Codex access token is not from auth.openai.com',
+  'the refreshed Codex access token has no readable expiry',
+  'the refreshed Codex access token is already expired',
+  'the refreshed Codex access token expires in under 24 hours',
+]);
+
 if (runningAsScript()) {
   const raw = process.env.CODEX_AUTH_JSON;
   let write;
@@ -190,10 +211,8 @@ if (runningAsScript()) {
   }
   runCodexRefresh({ raw, write }).catch((error) => {
     const message = error instanceof Error ? error.message : '';
-    // A parser or a runtime error can echo a slice of the secret. The sentences this file
-    // throws do not, so anything that contains the login itself is replaced.
-    const leaked = typeof raw === 'string' && raw.length > 0 && message.includes(raw);
-    console.error(leaked || !message ? 'could not refresh the Codex login' : message);
+    // Print only fixed sentences this module throws so a runtime/parser error can never echo any slice of a secret.
+    console.error(knownErrors.has(message) ? message : 'could not refresh the Codex login');
     process.exit(1);
   });
 }

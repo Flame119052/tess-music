@@ -44,10 +44,20 @@ safe in this repository, and it is what keeps Codex off the OpenAI API bill.
 
 The access token lasts about ten days, and a refresh rotates the refresh token. A review on the disposable runner
 does not refresh: the rotated token would die with the machine, and the job refuses to start inside the last 12 hours.
-`.github/workflows/codex-refresh.yml` does the renewal instead (D-111). It runs every four days, exchanges the refresh
-token, and writes `CODEX_AUTH_JSON` back. The write uses `CODEX_SECRET_ROTATOR_TOKEN`, a fine-grained personal access
-token scoped only to Actions (read) and Secrets (read and write) on `Flame119052/tess-music`. Create that token once
-and save it as the secret. The review workflow never receives it.
+`.github/workflows/codex-refresh.yml` does the renewal instead (D-111). It runs every four days on `main` inside the
+`codex-refresh` environment, checks that `CODEX_SECRET_ROTATOR_TOKEN` can reach the repository's secrets API before
+touching OpenAI, then exchanges the refresh token and writes `CODEX_AUTH_JSON` back. Create the `codex-refresh`
+environment in GitHub Settings (deployment branches: `main` only), create a fine-grained personal access token scoped
+only to Actions (read) and Secrets (read and write) on `Flame119052/tess-music`, and save it to that environment:
+
+```sh
+gh secret set CODEX_SECRET_ROTATOR_TOKEN --env codex-refresh -R Flame119052/tess-music
+```
+
+Fine-grained tokens have an expiry date (up to a year), so renew `CODEX_SECRET_ROTATOR_TOKEN` before it lapses (the
+pre-flight check stops cleanly without rotating if it expires). GitHub also pauses scheduled workflows after 60 days
+of repository inactivity; re-enable the workflow in the Actions tab if the repo sits quiet that long. The review
+workflow never receives `CODEX_SECRET_ROTATOR_TOKEN`.
 
 Do not run the upload below while that schedule is on. This folder's copy goes stale the first time the cloud job
 rotates the refresh token. The access token in the folder can still look fine for days, and uploading it replaces the
@@ -70,7 +80,7 @@ Set one with the CLI if you prefer:
 ```sh
 gh secret set CLAUDE_CODE_OAUTH_TOKEN -R Flame119052/tess-music
 gh secret set CODEX_AUTH_JSON -R Flame119052/tess-music   # the schedule writes this; do not paste a stale Mac copy
-gh secret set CODEX_SECRET_ROTATOR_TOKEN -R Flame119052/tess-music   # fine-grained PAT, not a plan login
+gh secret set CODEX_SECRET_ROTATOR_TOKEN --env codex-refresh -R Flame119052/tess-music   # fine-grained PAT in main-only env
 gh secret set OPENCODE_API_KEY -R Flame119052/tess-music
 gh secret set ZHIPU_API_KEY -R Flame119052/tess-music
 ```
