@@ -6,6 +6,8 @@ Nobody needs a GitHub account. The VPS bot on this page is the one Krish runs.
 
 A person's own Mac uses a separate profile, [`mac/`](mac/). The unit files below stay on the VPS. On the Mac they open a chat. The model has no shell. It runs the doctor, asks before it takes a still of the Spotify window, and posts through the support gate with their own token. Only their own reply, after that question, allows the picture. The model reads the four skills shipped in the profile and cannot install anything from a skill.
 
+**Giving someone Tess Support on their Mac** (make a code, send it, watch, revoke, set the daily limits): [`RUNBOOK-mac.md`](RUNBOOK-mac.md).
+
 ## For the person
 
 Paste this line into Terminal:

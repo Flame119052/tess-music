@@ -212,10 +212,15 @@ try {
   };
   const revoked = await silent('revoked token', req('/v1/support/chat/completions', { token: REVOKED }));
   assert.equal(revoked.status, 401);
-  assert.equal(await revoked.text(), '');
+  const revokedText = await revoked.text();
+  assert.equal(JSON.parse(revokedText).error.message, 'This support code is not active. Ask Krish for a new one.');
+  assert.equal(JSON.parse(revokedText).error.type, 'authentication_error');
   const missing = await silent('missing token', req('/v1/support/chat/completions', { token: '' }));
   assert.equal(missing.status, 401);
-  assert.equal(await missing.text(), '');
+  assert.equal(await missing.text(), revokedText, 'a missing and a revoked token get the same answer');
+  const unknown = await silent('unknown token', req('/v1/support/chat/completions', { token: `tess_${'c'.repeat(48)}` }));
+  assert.equal(unknown.status, 401);
+  assert.equal(await unknown.text(), revokedText, 'an unknown and a revoked token get the same answer');
   const wrong = await silent('second model', req('/v1/support/chat/completions', { body: chatBody({ model: 'gpt-4o' }) }));
   assert.equal(wrong.status, 400);
   const get = await silent('GET', req('/v1/support/chat/completions', { method: 'GET', body: null }));

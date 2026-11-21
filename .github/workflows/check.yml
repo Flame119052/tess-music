@@ -64,7 +64,9 @@ jobs:
           py=$(bash tools/hermes-test-env.sh)
           echo "TESS_HERMES_PYTHON=$py" >> "$GITHUB_ENV"
       - name: Mac support profile tests
-        run: node tools/test-support-mac.mjs
+        run: |
+          node tools/test-support-mac.mjs
+          node tools/test-support-mac-chat.mjs --gate=node
       - name: Mac support install tests
         run: node tools/test-support-mac-install.mjs
       - name: Support filing line tests

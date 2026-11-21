@@ -1018,4 +1018,11 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   *Trade-off:* the model cannot run an ad-hoc command when the doctor output is surprising. It can save a note
   and post what it has. This does not change the VPS bot, which still has a terminal. This change does not
   deploy the Worker.
-
+- **D-108 · 19 Nov 2026 · Agent** — The support chat route answers a missing, unknown or revoked token with one JSON
+  401: `{"error":{"message":"This support code is not active. Ask Krish for a new one.","type":"authentication_error",
+  "code":"invalid_api_key"}}` (#121). The report routes keep their empty 401. *Why:* Hermes builds its error text from
+  `error.message` in a refused reply (`agent/api_error_summary.py`), so after a revoke the error carries what to do
+  instead of a bare "HTTP 401". Hermes's app may add its own sign-in wording beside it (`agent/error_surface.py` marks
+  a 401 as the auth layer); that was not run here. *Trade-off:* none on secrecy. The three cases get the same words,
+  so the answer does not say whether a code ever existed. `tools/test-support-mac-chat.mjs` proves the gate side on a
+  real chat turn: the next turn after `support token revoke` gets this line and the upstream is not called.

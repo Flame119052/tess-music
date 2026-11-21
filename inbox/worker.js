@@ -305,6 +305,12 @@ function chatJson(status, message, type, code, extraHeaders = {}) {
   });
 }
 
+// Hermes shows error.message from a refused request, so the person reads this line rather than a bare 401.
+// A missing, unknown and revoked token get the same words, so the answer does not say which one it was (D-108).
+function chatRefused() {
+  return chatJson(401, 'This support code is not active. Ask Krish for a new one.', 'authentication_error', 'invalid_api_key');
+}
+
 function secondsUntilUtcMidnight(nowMs = Date.now()) {
   const now = new Date(nowMs);
   const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
@@ -736,13 +742,13 @@ async function supportChat(request, env, ctx) {
   if (!env.DB) return chatJson(503, 'Support chat is unavailable.', 'server_error', 'unavailable');
 
   const token = /^Bearer (.+)$/i.exec((request.headers.get('authorization') || '').trim())?.[1] || '';
-  if (!token) return reply(401);
+  if (!token) return chatRefused();
   const digest = await shaFull(token);
   let who;
   try {
     who = await env.DB.prepare('SELECT id FROM support_tokens WHERE sha = ? AND revoked IS NULL').bind(digest).first();
   } catch { return chatJson(503, 'Support chat is unavailable.', 'server_error', 'unavailable'); }
-  if (!who) return reply(401);
+  if (!who) return chatRefused();
 
   const ctype = (request.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
   if (ctype !== 'application/json') return chatJson(415, 'Content-Type must be application/json.', 'invalid_request_error', 'unsupported_media_type');

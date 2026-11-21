@@ -81,6 +81,10 @@ The tag also says **where** the review runs, and may add **what to look at**:
 | `machine=` | where the review runs: `github` (the default), `mac`, `omarchy`, or `vps` (refused, see below). |
 | `prompt="…"` | the owner's focus for this review, 400 characters at most. It adds attention; it is never permission to skip a rule, and a longer one is refused rather than cut. |
 
+**The rotation (D-107).** Reviews rotate through Claude Opus 5.5, GPT Sol and Gemini 4 Neon, in that order, each on
+the provider with the most usage left and the soonest reset. A review never uses the model that wrote the change: that
+round skips to the next model. Gemini 4 Neon runs in this job on `machine=github` with full access inside the sandbox (D-109).
+
 ### Where a review runs: `machine=`
 
 - **`machine=github`**, or no `machine=` at all: today's path. A fresh GitHub-hosted Linux VM per review, bubblewrap

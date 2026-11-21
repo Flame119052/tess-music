@@ -43,7 +43,9 @@ How Tess Music stores, loads, and backs up secrets across **local development**,
 - **Support posting tokens (inbox):** minted by `node tools/reports.mjs support token add "<label>"`, stored in D1 as a
   plain SHA-256, revoked with `support token revoke "<label>"`. Recordings go to the `tess-support` R2 bucket, never the
   database, and are deleted when the report is filed or at 14 days. The same token is the bearer for
-  `POST /v1/support/chat/completions` (D-103). Revoking it stops both routes.
+  `POST /v1/support/chat/completions` (D-103). Revoking it stops both routes. `support usage` shows today's chat
+  counters per person and shared. `TESS_D1_LOCAL=<absolute folder>` points `tools/reports.mjs` at a local
+  `wrangler dev --persist-to` database instead of the live one; it is for tests only.
 - **Support chat settings (inbox vars, not secrets):** set in [`inbox/wrangler.toml`](../inbox/wrangler.toml).
   `SUPPORT_MODEL` is `deepseek-v4.1-flash`. `SUPPORT_CHAT_PERSON_REQUESTS` is 80 and `SUPPORT_CHAT_SHARED_REQUESTS` is
   400 per UTC day. `SUPPORT_CHAT_PERSON_TOKENS` is 300000 and `SUPPORT_CHAT_SHARED_TOKENS` is 2000000; a token var of

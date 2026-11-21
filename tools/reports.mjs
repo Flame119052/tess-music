@@ -10,18 +10,33 @@
 //   node tools/reports.mjs support show <n>             the person's words, the diagnosis, the finished write-up
 //   node tools/reports.mjs support filed <n> --issue <url>   record which issue it became
 //   node tools/reports.mjs support tokens               who holds a posting token
+//   node tools/reports.mjs support usage                today's support chat use, per person and shared (UTC day)
 //   node tools/reports.mjs support token add <label>    mint one (printed once; only its hash is stored)
 //   node tools/reports.mjs support token revoke <label> stop one working
 //   node tools/reports.mjs support titles               refresh the open-issue title list the bot checks first
+//
+// Tests only: TESS_D1_LOCAL=<absolute folder> sends every command to the local copy of the database that
+// `wrangler dev --persist-to <folder>` uses, instead of the live inbox.
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { basename } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { basename, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const argv = process.argv.slice(2);
 const flag = (name) => { const i = argv.indexOf(`--${name}`); return i === -1 ? '' : String(argv[i + 1] || ''); };
 const [cmd = 'latest', arg] = argv;
-const q = (sql) => JSON.parse(execFileSync('npx', ['-y', 'wrangler@4', 'd1', 'execute', 'tess-inbox', '--remote', '--json', '--command', sql],
+// The live database unless TESS_D1_LOCAL names a local one. A test checks these arguments before it runs anything,
+// so a local run can never fall through to --remote.
+export const d1Args = (sql, env = process.env) => {
+  const local = env.TESS_D1_LOCAL || '';
+  if (local && !isAbsolute(local)) throw new Error('TESS_D1_LOCAL must be an absolute folder');
+  // A local run uses the wrangler already on this machine; the live one fetches wrangler 4 as before.
+  const runner = local ? ['--no-install', 'wrangler'] : ['-y', 'wrangler@4'];
+  const where = local ? ['--local', '--persist-to', local] : ['--remote'];
+  return [...runner, 'd1', 'execute', 'tess-inbox', ...where, '--json', '--command', sql];
+};
+const q = (sql) => JSON.parse(execFileSync('npx', d1Args(sql),
   { cwd: fileURLToPath(new URL('../inbox/', import.meta.url)), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }))[0].results;
 const hex = (v) => { if (!/^[0-9a-f]{32}$/.test(v || '')) { console.error('install ids are 32 hex characters'); process.exit(1); } return v; };
 const when = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 16);
@@ -56,6 +71,43 @@ export const issueCommand = (r) => {
 // `support show 12`: the subcommand is argv[1], so the number is argv[2]. Reading the module-level `arg` here handed
 // "show" to num() and broke show, body, filed and token alike — so the split lives in one tested place.
 export const parseSupport = (args) => ({ sub: args[0], arg: args[1] });
+
+const sha = (token) => createHash('sha256').update(token).digest('hex');
+
+// Mint, revoke and usage are plain SQL so the chat test runs the same statements against its own database.
+export const mintSql = (label, token, now = Date.now()) =>
+  `INSERT INTO support_tokens (label, sha, added) VALUES ('${sq(label)}', '${sha(token)}', ${Number(now)})`;
+export const revokeSql = (label, now = Date.now()) =>
+  `UPDATE support_tokens SET revoked = ${Number(now)} WHERE label = '${sq(label)}' AND revoked IS NULL`;
+
+// The gate's counters (inbox/worker.js supportChat): chat:p and chat:tp per token hash, chat:s and chat:ts shared.
+// Each row lasts until the next 00:00 UTC; a row whose window has closed is yesterday's and counts as 0.
+export const usageSql = (nowSec = Math.floor(Date.now() / 1000)) => {
+  const t = Number(nowSec);
+  return `SELECT t.id AS ord, t.label AS who, t.revoked AS revoked, p.n AS requests, tp.n AS tokens FROM support_tokens t
+    LEFT JOIN limits p ON p.k = 'chat:p:' || t.sha AND p.until > ${t}
+    LEFT JOIN limits tp ON tp.k = 'chat:tp:' || t.sha AND tp.until > ${t}
+    UNION ALL SELECT 9007199254740991, '(everyone)', NULL,
+      (SELECT n FROM limits WHERE k = 'chat:s' AND until > ${t}), (SELECT n FROM limits WHERE k = 'chat:ts' AND until > ${t})
+    ORDER BY ord`;
+};
+
+// The caps this checkout would deploy. The live Worker has whatever was deployed last, so the line says where they came from.
+export const capsFrom = (toml) => {
+  const v = (name) => (toml.match(new RegExp(`^${name} = "(\\d+)"`, 'm')) || [])[1] || '?';
+  return {
+    personRequests: v('SUPPORT_CHAT_PERSON_REQUESTS'), sharedRequests: v('SUPPORT_CHAT_SHARED_REQUESTS'),
+    personTokens: v('SUPPORT_CHAT_PERSON_TOKENS'), sharedTokens: v('SUPPORT_CHAT_SHARED_TOKENS'),
+  };
+};
+
+export const usageLines = (rows, caps) => rows.map((r) => {
+  const everyone = r.who === '(everyone)';
+  const reqCap = everyone ? caps.sharedRequests : caps.personRequests;
+  const tokCap = everyone ? caps.sharedTokens : caps.personTokens;
+  const state = everyone ? '' : (r.revoked ? '  REVOKED' : '  active');
+  return `${String(r.who).padEnd(24)}  ${r.requests ?? 0} of ${reqCap} requests  ${r.tokens ?? 0} of ${tokCap} tokens${state}`;
+});
 
 function support() {
   const { sub, arg } = parseSupport(argv.slice(1));
@@ -132,22 +184,34 @@ function support() {
     return;
   }
 
+  if (sub === 'usage') {
+    const caps = capsFrom(readFileSync(fileURLToPath(new URL('../inbox/wrangler.toml', import.meta.url)), 'utf8'));
+    console.log('support chat today (resets 00:00 UTC; caps as in inbox/wrangler.toml, a token cap of 0 is off)');
+    for (const l of usageLines(q(usageSql()), caps)) console.log(l);
+    return;
+  }
+
   if (sub === 'token' && ['add', 'revoke'].includes(arg)) {
     const label = argv.slice(3).filter((a) => !a.startsWith('--')).join(' ').trim();
     if (!label) { console.error(`usage: support token ${arg} <label>`); process.exit(1); }
     if (arg === 'revoke') {
-      q(`UPDATE support_tokens SET revoked = ${Date.now()} WHERE label = '${sq(label)}' AND revoked IS NULL`);
+      // A label that matches nothing is still a successful UPDATE. RETURNING id is the row that actually changed.
+      const rows = q(`${revokeSql(label)} RETURNING id`);
+      if (!Array.isArray(rows) || rows.length === 0) {
+        console.error(`no active token labelled "${label}" — run support tokens to see exact names`);
+        process.exit(1);
+      }
       console.log(`revoked any active token labelled "${label}" — it stops working on the next request`);
       return;
     }
     // 32 random bytes, printed once. Only the SHA-256 goes to the database, so this output is the only copy.
     const token = 'tess_' + randomBytes(32).toString('hex');
-    q(`INSERT INTO support_tokens (label, sha, added) VALUES ('${sq(label)}', '${createHash('sha256').update(token).digest('hex')}', ${Date.now()})`);
-    console.log(`token for "${label}":\n\n${token}\n\nIt is shown once and only its hash is stored. Put it on the server that runs the bot.`);
+    q(mintSql(label, token));
+    console.log(`token for "${label}":\n\n${token}\n\nIt is shown once and only its hash is stored. Send it to that person on its own (support/RUNBOOK-mac.md), or put it on the server that runs the bot.`);
     return;
   }
 
-  console.error('usage: support list | show <n> | body <n> | filed <n> --issue <url> | tokens | token add <label> | token revoke <label> | titles');
+  console.error('usage: support list | show <n> | body <n> | filed <n> --issue <url> | tokens | usage | token add <label> | token revoke <label> | titles');
   process.exit(1);
 }
 
