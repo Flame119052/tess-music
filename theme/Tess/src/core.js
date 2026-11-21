@@ -99,6 +99,17 @@
   const spotifyButton = (sel) => document.querySelector(`[data-testid="now-playing-bar"] ${sel}`);
   const route = () => Spicetify.Platform.History.location?.pathname || '';
 
+  const CURRENT_WHATS_NEW = {
+    id: '0.2.43', badge: "What's New · 0.2.43", title: 'Safer, smoother Tess',
+    subtitle: 'Everything behind the scenes just got a major upgrade — without changing a thing about your music.',
+    highlights: [
+      ['Safe background updates', 'Updates now swap cleanly without ever interrupting your music or leaving Spotify blank.', '<path d="M4 12a8 8 0 0 1 14-5l2 2M20 4v5h-5M20 12a8 8 0 0 1-14 5l-2-2M4 20v-5h5"/>'],
+      ['Signed & verified', "Every update and cached theme is checked with Tess's signature before it runs.", '<path d="M12 3 20 6v5c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/><path d="m8.5 12 2.3 2.3 4.7-5"/>'],
+      ['Automatic Spotify recovery', 'When Spotify updates itself, Tess puts your look back automatically. Run tess status or tess rescue off anytime in Terminal for full control.', '<path d="M20 12a8 8 0 1 1-3-6.2M20 3v5h-5"/><path d="M12 8v5l3 2"/>'],
+      ['Refined Liquid Glass & Tess Mini', 'Tighter security, cleaner defaults, and quick access to Vinyl, Video, Synced Lyrics, and more in Settings → Theme.', '<rect x="4" y="5" width="16" height="14" rx="4"/><circle cx="10" cy="12" r="3"/><path d="M16 10h1M16 13h1"/>'],
+    ],
+  };
+
   // ---------------- settings ----------------
   const DEFAULTS = { videoFullscreen: true, npStyle: 'cover', coverVideo: true, panelVideo: true, artistVideo: true, tintWindow: true, sideLyrics: true, circadian: true };
   const settings = (() => {
@@ -186,7 +197,9 @@
     };
     const again = el('<button class="tess-set-link">Show welcome</button>');
     again.onclick = () => { try { localStorage.removeItem('tess:onboarded'); } catch {} onboarding(); };
-    meta.append(ch, again);
+    const news = el('<button class="tess-set-link">What’s new</button>');
+    news.onclick = () => whatsNew(true);
+    meta.append(ch, again, news);
     if (oldInstall) {
       const fix = el('<button class="tess-set-link">Finish updating Tess (copies the install line)</button>');
       fix.onclick = () => { Spicetify.Platform.ClipboardAPI?.copy?.(INSTALL_LINE); Spicetify.showNotification?.('Copied. Paste it in Terminal and press Return.'); };
@@ -945,13 +958,55 @@
     sheet.querySelectorAll('input[data-key]').forEach((i) => { i.checked = !!settings[i.dataset.key]; i.onchange = () => { settings[i.dataset.key] = i.checked; }; });
     const finish = () => {
       saveSettings(); applySettings(); syncTrack(); onRoute();
-      try { localStorage.setItem('tess:onboarded', '1'); } catch {}
+      try { localStorage.setItem('tess:onboarded', '1'); localStorage.setItem('tess:seen-release', CURRENT_WHATS_NEW.id); } catch {}
       sheet.classList.add('bye');
       setTimeout(() => sheet.remove(), 400);
     };
     sheet.querySelector('.tw-next').onclick = () => { if (step < steps.length - 1) { step++; show(); } else finish(); };
     sheet.querySelector('.tw-skip').onclick = finish;
     show();
+  }
+
+  function whatsNew(force = false) {
+    try {
+      if (localStorage.getItem('tess:onboarded') !== '1' || (!force && localStorage.getItem('tess:seen-release') === CURRENT_WHATS_NEW.id)) return;
+    } catch { return; }
+    if (document.getElementById('tess-whats-new')) return;
+    const previous = document.activeElement;
+    const release = CURRENT_WHATS_NEW;
+    const sheet = mount(el(`
+      <div id="tess-whats-new" role="dialog" aria-modal="true" aria-labelledby="twn-title" aria-describedby="twn-subtitle">
+        <div class="twn-card">
+          <header><span class="twn-badge">${release.badge}</span><h1 id="twn-title">${release.title}</h1><p id="twn-subtitle">${release.subtitle}</p></header>
+          <div class="twn-highlights">${release.highlights.map(([title, description, icon]) => `
+            <div class="twn-item"><span class="twn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icon}</svg></span><div><h2>${title}</h2><p>${description}</p></div></div>`).join('')}</div>
+          <footer><button class="twn-settings">Open Settings</button><button class="twn-continue">Continue</button></footer>
+        </div>
+      </div>`));
+    const buttons = [...sheet.querySelectorAll('button')];
+    let closing = false;
+    const close = (open = false) => {
+      if (closing) return;
+      closing = true;
+      try { localStorage.setItem('tess:seen-release', release.id); } catch {}
+      sheet.classList.add('bye');
+      sheet.removeEventListener('keydown', keydown);
+      if (open) openSettings();
+      else if (previous?.isConnected) previous.focus();
+      setTimeout(() => sheet.remove(), 400);
+    };
+    const keydown = (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); close(); }
+      else if (event.key === 'Enter') { event.preventDefault(); close(document.activeElement === buttons[0]); }
+      else if (event.key === 'Tab') {
+        if (event.shiftKey && document.activeElement === buttons[0]) { event.preventDefault(); buttons[1].focus(); }
+        else if (!event.shiftKey && document.activeElement === buttons[1]) { event.preventDefault(); buttons[0].focus(); }
+      }
+    };
+    sheet.addEventListener('keydown', keydown);
+    buttons[0].onclick = () => close(true);
+    buttons[1].onclick = () => close();
+    buttons[1].focus();
   }
 
   // ---------------- liquid glass ----------------
@@ -2583,8 +2638,9 @@
   onDispose(() => typeof unlisten === 'function' && unlisten());
   listen(window, 'resize', () => { setHeroHeight(); setTimeout(onRoute, 100); });
   // for checking things from DevTools: window.__tessDebug.artistCanvas(uri), .playCanvas(video, fileId)
-  self.debug = { artistCanvas, playCanvas, trackCanvas, onRoute: () => onRoute(), place: () => runPlacers() };
+  self.debug = { artistCanvas, playCanvas, trackCanvas, onRoute: () => onRoute(), place: () => runPlacers(), whatsNew: () => whatsNew(true) };
   onboarding();
+  whatsNew();
   onDraw(applyGlass, 4000);
   applyGlass();
   startWatch();

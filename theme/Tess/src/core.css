@@ -3031,6 +3031,28 @@ html.tess ::-webkit-scrollbar-track {
 .tess-set-link { all: unset; cursor: pointer; color: #fff; text-decoration: underline; text-underline-offset: 2px; }
 .tess-set-link + .tess-set-link { margin-left: 16px; }
 
+/* ================= release highlights ================= */
+#tess-whats-new { position: fixed; inset: 0; z-index: 10002; display: grid; place-items: center; padding: 20px; background: rgba(0, 0, 0, .42); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); font-family: var(--tess-font); animation: ts-fade .3s ease-out; transition: opacity .35s; }
+#tess-whats-new.bye { opacity: 0; }
+.twn-card { width: min(620px, 100%); max-height: calc(100vh - 40px); overflow: auto; box-sizing: border-box; padding: 36px; border-radius: 28px; color: #fff; background: radial-gradient(ellipse at 85% 0%, rgba(115, 104, 203, .23), transparent 48%), linear-gradient(160deg, rgba(255, 255, 255, .14), rgba(255, 255, 255, .035)), rgba(27, 27, 34, .88); backdrop-filter: blur(40px) saturate(1.8); -webkit-backdrop-filter: blur(40px) saturate(1.8); box-shadow: inset 0 1px .5px rgba(255, 255, 255, .6), inset 0 0 0 1px rgba(255, 255, 255, .1), 0 40px 100px rgba(0, 0, 0, .5); animation: ts-in .5s var(--tess-spring); }
+.twn-badge { display: inline-block; padding: 6px 10px; border-radius: 99px; background: rgba(194, 182, 255, .15); color: #d8ceff; font-size: 11px; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
+.twn-card h1 { margin: 14px 0 8px; font: 800 32px/1.1 var(--tess-font); letter-spacing: -.035em; }
+.twn-card header p { margin: 0; max-width: 490px; color: rgba(255, 255, 255, .7); font: 14px/1.5 var(--tess-font); }
+.twn-highlights { display: grid; gap: 17px; margin: 26px 0; }
+.twn-item { display: flex; align-items: flex-start; gap: 15px; }
+.twn-icon { flex: 0 0 42px; width: 42px; height: 42px; display: grid; place-items: center; border-radius: 14px; color: #b7dcff; background: linear-gradient(145deg, rgba(125, 188, 255, .3), rgba(109, 119, 224, .12)); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .25), inset 0 0 0 1px rgba(255, 255, 255, .09); }
+.twn-item:nth-child(2) .twn-icon { color: #cbbcff; background: linear-gradient(145deg, rgba(171, 143, 255, .3), rgba(117, 88, 213, .12)); }
+.twn-item:nth-child(3) .twn-icon { color: #a9ebd5; background: linear-gradient(145deg, rgba(113, 222, 182, .3), rgba(65, 153, 137, .12)); }
+.twn-item:nth-child(4) .twn-icon { color: #ffd0d9; background: linear-gradient(145deg, rgba(255, 158, 185, .3), rgba(200, 99, 151, .12)); }
+.twn-icon svg { width: 23px; height: 23px; }
+.twn-item h2 { margin: 1px 0 3px; font: 700 14px/1.3 var(--tess-font); }
+.twn-item p { margin: 0; color: rgba(255, 255, 255, .68); font: 13px/1.4 var(--tess-font); }
+.twn-card footer { display: flex; justify-content: flex-end; gap: 10px; }
+.twn-card footer button { border: 0; cursor: pointer; padding: 11px 18px; border-radius: 999px; color: #fff; background: rgba(255, 255, 255, .1); font: 650 14px var(--tess-font); }
+.twn-card footer .twn-continue { color: #17171b; background: #fff; }
+.twn-card footer button:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) { #tess-whats-new, .twn-card { animation: none; transition: none; } }
+
 /* ================= full-screen scrubber: one rich glass track ================= */
 #tess-np .tn-scrub {
   height: 6px !important;
