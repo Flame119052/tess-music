@@ -18,13 +18,14 @@ Only `beta` and `stable` are public. The release workflow does it:
 ## The path for one change
 
 1. **Issue.** Every change starts as an issue. It says the goal, the check, and what blocks it.
-2. **Approach.** The agent picking up the issue posts its plan as a comment: what changes, which files, how it will be checked.
-3. **Approach review.** For changes that need one (see tiers below), the agent tags the reviewer in that comment (`@tess-review approach`). By default a reviewer agent runs on a fresh GitHub-hosted Linux machine (an ordinary GitHub Actions job, free for this public repo); `machine=mac` or `machine=omarchy` runs it as a T3 thread on that machine instead. It reads the issue and the plan, and replies **approve** or **changes needed**.
-4. **PR.** The change lands as a pull request into `main`, with `(#issue)` in its title.
-5. **Checks.** CI (`check.yml`: safety gate, builds, tests) must pass. No AI reviewer runs on a PR whose checks haven't passed.
-6. **PR review.** The agent tags `@tess-review pr`, naming the reviewer and the author as below. The reviewer reads the diff against the approved plan and the issue's check, and posts a review.
-7. **Merge.** Krish merges. That builds dev, and Krish's Mac gets it.
-8. **Release.** When Krish declares a release, everything merged since the last beta becomes the next beta. When it's clean, he promotes it to stable.
+2. **Branch from fresh `origin/main`.** Run `git fetch origin main` and cut the branch from `origin/main` — never from a stale local `main` or whatever branch the checkout happens to be on. Keep one issue (or one tight slice) per PR rather than bundling a dozen unrelated issues on one branch.
+3. **Approach.** The agent picking up the issue posts its plan as a comment: what changes, which files, how it will be checked.
+4. **Approach review.** For sensitive changes (see tiers below), get `@tess-review approach` approved **before coding**. By default a reviewer agent runs on a fresh GitHub-hosted Linux machine (an ordinary GitHub Actions job, free for this public repo); `machine=mac` or `machine=omarchy` runs it as a T3 thread on that machine instead. It reads the issue and the plan, and replies **approve** or **changes needed**.
+5. **PR.** Always push the branch and open a pull request into `main` with `(#issue)` in its title (after confirming `git merge-base --is-ancestor origin/main HEAD`). Never stop at an unpushed local branch to ask permission to open a PR — opening a PR is the normal path (D-63), and only merging waits on Krish.
+6. **Checks.** CI (`check.yml`: safety gate, builds, tests) must pass. No AI reviewer runs on a PR whose checks haven't passed.
+7. **PR review.** The agent tags `@tess-review pr`, naming the reviewer and the author as below. The reviewer reads the diff against the approved plan and the issue's check, and posts a review.
+8. **Merge & close.** Krish merges. That builds dev, and Krish's Mac gets it. **Close the GitHub issue only after its PR is merged into `main`** (never on unpushed/unmerged local commits). If `support/mac/` profile files changed, follow up right after merge to re-pin `PROFILE_COMMIT` in `support/mac/install.sh` to the merged commit on `main` (D-105).
+9. **Release.** When Krish declares a release, everything merged since the last beta becomes the next beta. When it's clean, he promotes it to stable.
 
 ## How much review a change needs (tiers)
 
