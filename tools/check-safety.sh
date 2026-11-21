@@ -185,6 +185,7 @@ for f in installer/install.sh installer/tess-install.sh installer/uninstall.sh i
 for f in installer/updater.sh installer/doctor.sh installer/rescue.sh installer/wake.sh; do zsh -n "$f" || fail "$f does not parse"; done
 # The support bot's setup script runs on a server before anything else does, so it is held to the same bar.
 sh -n support/setup.sh || fail "support/setup.sh does not parse"
+sh -n support/mac/install.sh || fail "support/mac/install.sh does not parse"
 node --check theme/loader/loader.js || fail "theme/loader/loader.js does not parse"
 
 # 3. nothing a user's Mac may lack (python3 only opens an "install developer tools" prompt there)
@@ -827,7 +828,7 @@ fi
 #     and TESS_REAL_INSTALL=1 is a person deliberately letting this exact copy act. A checkout's copy is for developing.
 #     The block is byte-identical in every script, so one cannot be fixed while another is left open.
 #     installer/redact.sh is a library other scripts copy a function from, not an entry point, so it is not listed here.
-entry_points="installer/install.sh installer/tess-install.sh installer/uninstall.sh installer/tess-command.sh installer/updater.sh installer/doctor.sh installer/rescue.sh installer/wake.sh"
+entry_points="installer/install.sh installer/tess-install.sh installer/uninstall.sh installer/tess-command.sh installer/updater.sh installer/doctor.sh installer/rescue.sh installer/wake.sh support/mac/install.sh"
 for f in $entry_points; do
   # The guard must be the first code in the file: a comment, a blank line or the shebang may come before it, nothing else.
   guard_line=$(awk -v mark='# >>> tess script guard' '

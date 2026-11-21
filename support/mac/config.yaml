@@ -18,6 +18,10 @@ providers:
     api_mode: chat_completions
     default_model: deepseek-v4.1-flash
 
+# Intel Macs open this chat in the browser. `hermes webapp` stays off until this is set (D-105).
+webapp:
+  enabled: true
+
 agent:
   # A picture attached in the chat stays an image. Hermes puts those pixels on the
   # message itself (agent/image_routing.py). That does not use the vision toolset.

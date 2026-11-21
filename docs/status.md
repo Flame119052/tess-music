@@ -26,14 +26,17 @@ reads it with `tools/reports.mjs support list` and files the issue with its P0�
 never files, and has no GitHub token or `gh` at all**. Access is an allowlist only Krish can change, on the server
 over SSH (D-79).
 
-A Mac profile lives in `support/mac/` (D-104, D-106, D-110, #121). It has no Telegram and no gateway. The model base is
-`${TESS_INBOX}/v1/support` (Hermes posts to `/chat/completions` under it) and the bearer is the per-person support token. The model has no shell. A visit is a fixed set of tools: doctor, a still of the Spotify window after the person says yes, then the scrubbed text and the picture posted to the inbox. It does not record the screen. A recording the person attaches can still be posted, and the VPS bot still sends one. It is not installed on a Mac yet
-(that is the one-command installer, which allows `~/.hermes` outside the test suite). The VPS unit files are unchanged.
+A Mac profile lives in `support/mac/` (D-104, D-105, D-106, D-110, #121). It has no Telegram and no gateway. The model base is
+`${TESS_INBOX}/v1/support` (Hermes posts to `/chat/completions` under it) and the bearer is the per-person support token.
+The model has no shell. A visit is a fixed set of tools: doctor, a still of the Spotify window after the person says yes, then the scrubbed text and the picture posted to the inbox. It does not record the screen. A recording the person attaches can still be posted, and the VPS bot still sends one.
+`support/mac/install.sh` is the one command that installs that profile, a pinned Node.js for the visit, and Tess Support in the Dock (D-105).
+Uninstall removes the profile, including that Node, the icon, and the Dock tile. The checks run it in a scratch home with fake disk tools.
+They do not touch a real Mac. The VPS unit files are unchanged.
 
 **Not deployed, and not part of a release.** Before it can work: `inbox/schema.sql` applied to D1, the Worker deployed,
 and the R2 bucket created — all Krish's, none done here — plus a machine, a Telegram bot and a posting token. What can be
 run now: `node tools/test-inbox-support.mjs`, `node tools/test-session.mjs`, `node tools/test-reports.mjs`,
-`node tools/test-support.mjs`, `node tools/test-support-mac.mjs`.
+`node tools/test-support.mjs`, `node tools/test-support-mac.mjs`, `node tools/test-support-mac-install.mjs`.
 
 ## Open issues (GitHub, sorted by priority — see [`triage.md`](triage.md))
 

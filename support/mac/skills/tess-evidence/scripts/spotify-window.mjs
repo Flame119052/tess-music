@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // The Spotify window, and nothing else. The model runs this file; it does not
 // get a shell line that can grow -D (the whole display) or -G (the microphone).
-//   node spotify-window.mjs                         prints the window id
-//   node spotify-window.mjs still <session>/spotify.png
+//   $HERMES_HOME/runtime/node/bin/node spotify-window.mjs                         prints the window id
+//   $HERMES_HOME/runtime/node/bin/node spotify-window.mjs still <session>/spotify.png
 // A still uses screencapture -l, which is the window. Video is not here:
 // screencapture -V ignores -l and records the whole display. A window recording
 // needs ScreenCaptureKit, which this profile does not ship.
@@ -14,7 +14,7 @@ import { inRoot, scrub } from '../../tess-support/scripts/session.mjs';
 const die = (msg) => { console.error(scrub(msg)); process.exit(1); };
 
 // The same lookup the skill used to inline. It stays in this file so the
-// approved command is `node <this file>`, not an osascript -e line.
+// approved command is `$HERMES_HOME/runtime/node/bin/node <this file>`, not an osascript -e line.
 // CGPreflightScreenCaptureAccess does not prompt. Without it, screencapture can
 // exit 0 and write a blank or wallpaper-only picture. The window list itself
 // does not need the permission, so the check has to happen before that list.
