@@ -427,6 +427,12 @@ changed=0
 while read -r name sha url _src; do
   touch "$LOCK"
   [ -n "$name" ] && [ -n "$sha" ] && [ -n "$url" ] || continue
+  # Only download parts this updater installs (other signed release parts, such as the support recorder, are fetched by
+  # their own installer and must not be re-downloaded or trigger doctor --auto here).
+  case "$name" in
+    command|doctor|updater|installer|uninstall|wake|patcher|mini|theme) ;;
+    *) continue ;;
+  esac
   [ "$(cat "$STATE/$name" 2>/dev/null)" = "$sha" ] && continue
   [ -f "$STATE/bad-$name-$sha" ] && { log "$name: skipped known bad $sha"; continue; }
   f="$TMP/$name.dl"

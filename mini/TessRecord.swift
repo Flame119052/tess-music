@@ -12,7 +12,7 @@ import CoreGraphics
 // be owned by Spotify, on screen, at layer 0. Any other id stops here, so the
 // tool can never be pointed at a different window. The only filter it can
 // build is one window: there is no display-wide path to fall back to.
-// Seconds is capped at 15 so a mistake stays a short clip.
+// Seconds is capped at 10 so a mistake stays a short clip.
 
 func fail(_ message: String) -> Never {
   FileHandle.standardError.write(("tess-record: \(message)\n").data(using: .utf8) ?? Data())
@@ -25,7 +25,7 @@ guard let wid = UInt32(args[1]), wid != 0 else { fail("that is not the Spotify w
 let outPath = args[2]
 var seconds = 8.0
 if args.count > 3 {
-  guard let parsed = Double(args[3]), parsed >= 2, parsed <= 15 else { fail("seconds must be between 2 and 15") }
+  guard let parsed = Double(args[3]), parsed >= 2, parsed <= 10 else { fail("seconds must be between 2 and 10") }
   seconds = parsed
 }
 

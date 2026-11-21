@@ -576,6 +576,10 @@ stage_record() {
     record_file=$TESS_RECORD_TEST_FILE
     return 0
   fi
+  key_x=$RELEASE_KEY_X
+  if [ "${TESS_TEST:-}" = 1 ] && [ -n "${TESS_TEST_RELEASE_KEY_X:-}" ]; then
+    key_x=$TESS_TEST_RELEASE_KEY_X
+  fi
   fetch "$work/components.txt" "$COMPONENTS_ORIGIN/components.txt"
   fetch "$work/components.sig" "$COMPONENTS_ORIGIN/components.sig"
   node_bin=${srcfile:-}
@@ -585,7 +589,7 @@ stage_record() {
   if [ ! -x "$node_bin" ]; then
     die "The pinned Node is missing, so the components list cannot be checked."
   fi
-  "$node_bin" -e 'const{createPublicKey,verify}=require("crypto");const fs=require("fs");const key=createPublicKey({key:{kty:"OKP",crv:"Ed25519",x:process.env.TESS_RELEASE_KEY_X},format:"jwk"});const ok=verify(null,fs.readFileSync(process.argv[1]),key,Buffer.from(fs.readFileSync(process.argv[2],"utf8").trim(),"base64"));process.exit(ok?0:1)' "$work/components.txt" "$work/components.sig" || die "The release components list failed its signature."
+  "$node_bin" -e 'const{createPublicKey,verify}=require("crypto");const fs=require("fs");const key=createPublicKey({key:{kty:"OKP",crv:"Ed25519",x:process.argv[3]},format:"jwk"});const ok=verify(null,fs.readFileSync(process.argv[1]),key,Buffer.from(fs.readFileSync(process.argv[2],"utf8").trim(),"base64"));process.exit(ok?0:1)' "$work/components.txt" "$work/components.sig" "$key_x" || die "The release components list failed its signature."
   record_line=$(awk '$1 == "record" { print $2, $3; exit }' "$work/components.txt")
   if [ -z "$record_line" ]; then
     return 0
@@ -594,7 +598,8 @@ stage_record() {
   record_url=$(printf '%s\n' "$record_line" | awk '{ print $2 }')
   is_sha256 "$record_sha" || die "The record part in the components list has no SHA-256."
   case $record_url in
-    "https://github.com/Flame119052/tess-music/releases/download/"*) ;;
+    *..*) die "Refusing a record download from an unknown address." ;;
+    https://github.com/Flame119052/tess-music/releases/download/*) ;;
     *) die "Refusing a record download from an unknown address." ;;
   esac
   fetch "$work/tess-record" "$record_url"

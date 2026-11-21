@@ -1,7 +1,7 @@
 // The one-command Mac installer, against scratch folders and fake system tools.
 // Never the real Dock, the real /Applications, or the real home.
 // Usage: node tools/test-support-mac-install.mjs
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -265,6 +265,18 @@ case $url in
   *install.sh)
     cat > "$out" <<'TESS_STUB'
 ${cliStub}TESS_STUB
+    ;;
+  https://raw.githubusercontent.com/Flame119052/tess-music/stable/dist/components.txt)
+    [ -n "\${TESS_FAKE_COMPONENTS:-}" ] || exit 22
+    cp "$TESS_FAKE_COMPONENTS" "$out"
+    ;;
+  https://raw.githubusercontent.com/Flame119052/tess-music/stable/dist/components.sig)
+    [ -n "\${TESS_FAKE_COMPONENTS_SIG:-}" ] || exit 22
+    cp "$TESS_FAKE_COMPONENTS_SIG" "$out"
+    ;;
+  https://github.com/Flame119052/tess-music/releases/download/*/tess-record)
+    [ -n "\${TESS_FAKE_RECORD_BIN:-}" ] || exit 22
+    cp "$TESS_FAKE_RECORD_BIN" "$out"
     ;;
   *)
     printf 'bad url %s\\n' "$url" >> "$TESS_FAKE_LOG/curl.log"
@@ -1659,6 +1671,76 @@ exit 0
     assert.equal(existsSync(profileOf(unStale.box)), false);
   } finally {
     unStaleSleeper.kill('SIGKILL');
+  }
+
+  // stage_record real Ed25519 signature + URL + SHA-256 verification path (without TESS_RECORD_TEST_FILE).
+  {
+    const rec = layout('stage-record');
+    boxes.push(rec.box);
+    mkdirSync(join(rec.box, 'tmp'));
+    const recFixtureDir = join(rec.box, 'release');
+    mkdirSync(recFixtureDir);
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const pubX = publicKey.export({ format: 'jwk' }).x;
+    const recBinBytes = Buffer.from('#!/bin/sh\necho verified-tess-record\n');
+    const recBinPath = join(recFixtureDir, 'tess-record');
+    writeFileSync(recBinPath, recBinBytes);
+    const recSha = sha256(recBinBytes);
+    const compPath = join(recFixtureDir, 'components.txt');
+    const sigPath = join(recFixtureDir, 'components.sig');
+    const writeSignedList = (text, key = privateKey) => {
+      writeFileSync(compPath, text);
+      writeFileSync(sigPath, `${sign(null, Buffer.from(text), key).toString('base64')}\n`);
+    };
+
+    // Bootstrap once so we can place a real-Node wrapper in runtime/node/bin/node (same NODE_VERSION so stage_node reuses it).
+    const recBase = baseEnv(rec, { TESS_ARCH: 'arm64' });
+    assert.equal(run([], recBase).status, 0);
+    const recProfile = profileOf(rec.box);
+    writeFileSync(join(recProfile, 'runtime', 'node', 'bin', 'node'), `#!/bin/sh\nexec '${process.execPath}' "$@"\n`);
+    chmodSync(join(recProfile, 'runtime', 'node', 'bin', 'node'), 0o755);
+    rmSync(join(recProfile, 'runtime', 'bin', 'tess-record'), { force: true });
+
+    const recVerifyEnv = {
+      ...recBase,
+      TESS_RECORD_TEST_FILE: '',
+      TESS_TEST_RELEASE_KEY_X: pubX,
+      TESS_FAKE_COMPONENTS: compPath,
+      TESS_FAKE_COMPONENTS_SIG: sigPath,
+      TESS_FAKE_RECORD_BIN: recBinPath,
+    };
+
+    // 1. Valid signature + allowed GitHub release URL + matching SHA-256 succeeds and installs runtime/bin/tess-record.
+    writeSignedList(`record ${recSha} https://github.com/Flame119052/tess-music/releases/download/dev/tess-record test\n`);
+    const okRec = run([], recVerifyEnv);
+    assert.equal(okRec.status, 0, okRec.stderr);
+    assert.ok(readFileSync(join(recProfile, 'runtime', 'bin', 'tess-record')).equals(recBinBytes));
+
+    // 2. Bad Ed25519 signature fails cleanly before touching the profile.
+    const wrongKey = generateKeyPairSync('ed25519').privateKey;
+    writeSignedList(`record ${recSha} https://github.com/Flame119052/tess-music/releases/download/dev/tess-record test\n`, wrongKey);
+    const badSig = run([], recVerifyEnv);
+    assert.notEqual(badSig.status, 0);
+    assert.match(badSig.stderr, /failed its signature/);
+
+    // 3. Disallowed host URL (even with valid signature) is refused.
+    writeSignedList(`record ${recSha} https://evil.example/tess-record test\n`);
+    const badUrl = run([], recVerifyEnv);
+    assert.notEqual(badUrl.status, 0);
+    assert.match(badUrl.stderr, /unknown address/);
+
+    // 4. SHA-256 mismatch is refused.
+    writeSignedList(`record ${'0'.repeat(64)} https://github.com/Flame119052/tess-music/releases/download/dev/tess-record test\n`);
+    const badSha = run([], recVerifyEnv);
+    assert.notEqual(badSha.status, 0);
+    assert.match(badSha.stderr, /did not match its checksum/);
+
+    // 5. Signed components.txt without a record entry degrades cleanly (no crash, still-only).
+    rmSync(join(recProfile, 'runtime', 'bin', 'tess-record'), { force: true });
+    writeSignedList('version 0.2.42\n');
+    const noRec = run([], recVerifyEnv);
+    assert.equal(noRec.status, 0, noRec.stderr);
+    assert.equal(existsSync(join(recProfile, 'runtime', 'bin', 'tess-record')), false);
   }
 
   const pinned = readFileSync(install, 'utf8');

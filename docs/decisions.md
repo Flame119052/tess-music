@@ -1077,7 +1077,7 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   `hy4-flash-free` is live-tested with `OPENCODE_GO_API_KEY`; a `wrangler deploy --var` override is temporary and
   reverted by the next plain deploy unless also committed in `inbox/wrangler.toml`.
 
-- **D-114 · 21 Nov 2026 · Agent** — A support visit records a **short silent clip of the Spotify window only** through a
+- **D-115 · 21 Nov 2026 · Agent** — A support visit records a **short silent clip of the Spotify window only** through a
   dedicated ScreenCaptureKit helper, `mini/TessRecord.swift`, shipped as the signed `record` release part and installed
   at `runtime/bin/tess-record` (#128). `screencapture -V` is never used: it ignores `-l` and grabs the whole display.
   The helper resolves the window from `SCShareableContent` by window id — a bogus id or a non-Spotify window exits
