@@ -1349,6 +1349,8 @@ exit 0
     const decoyRun = run([], { ...liveDecoyEnv, TESS_CHECK_LIVE_HERMES: '1' });
     assert.equal(decoyRun.status, 0, decoyRun.stderr);
     assert.equal(readFileSync(join(profileOf(liveDecoy.box), 'state.db'), 'utf8'), 'open-chat\n');
+    const decoyEnvFile = readFileSync(join(profileOf(liveDecoy.box), '.env'), 'utf8');
+    assert.match(decoyEnvFile, new RegExp(`^TESS_SUPPORT_TOKEN=${token}$`, 'm'));
   } finally {
     decoyChild.kill('SIGKILL');
   }
@@ -1411,7 +1413,7 @@ exit 0
   const modeOf = (path) => statSync(path).mode & 0o777;
   const lstartOf = (pid) => execFileSync('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], {
     encoding: 'utf8',
-    env: { PATH: '/usr/bin:/bin', LANG: 'C', LC_ALL: 'C' },
+    env: { PATH: '/usr/bin:/bin', LANG: 'C', LC_ALL: 'C', TZ: 'UTC0' },
   }).replace(/^\s+|\s+$/g, '');
   const plantLock = (box, pid, lstart) => {
     const lock = join(profilesOf(box), '.tess-support.lock');

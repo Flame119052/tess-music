@@ -812,7 +812,7 @@ lock_owner_matches() {
     ''|*[!0-9]*) return 1 ;;
   esac
   [ -n "$recorded" ] || return 1
-  now=$(LC_ALL=C ps -o lstart= -p "$old" 2>/dev/null) || return 1
+  now=$(TZ=UTC0 LC_ALL=C ps -o lstart= -p "$old" 2>/dev/null) || return 1
   now=$(printf '%s' "$now" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   [ -n "$now" ] || return 1
   [ "$now" = "$recorded" ]
@@ -823,7 +823,7 @@ acquire_swap_lock() {
   if [ -L "$swap_lock" ]; then
     die "The install lock is a symlink. Refusing to follow it."
   fi
-  started=$(LC_ALL=C ps -o lstart= -p "$$") || die "Could not keep the install lock."
+  started=$(TZ=UTC0 LC_ALL=C ps -o lstart= -p "$$") || die "Could not keep the install lock."
   started=$(printf '%s' "$started" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   [ -n "$started" ] || die "Could not keep the install lock."
 
@@ -923,16 +923,16 @@ acquire_swap_lock() {
 # Quit Hermes before the folders move. The app can be on the active profile with no
 # profile name in its command, and an unrelated command can contain those words.
 # A Hermes from this home is a program path inside HERMES_HOME. The Hermes app is
-# the program inside Hermes Agent.app or Hermes.app.
-refuse_live_hermes() {
+# the program inside Hermes Agent.app or Hermes.app. Runs in a subshell so no loop
+# variable (or IFS / set -f) can overwrite the caller's globals such as $token.
+refuse_live_hermes() (
   if [ "${TESS_TEST:-}" = 1 ] && [ "${TESS_CHECK_LIVE_HERMES:-}" != 1 ]; then
-    return 0
+    exit 0
   fi
   # A program path may say /var while this home says /private/var. Compare after
   # symlinks are resolved. The words --profile and -p are not the signal.
   list=$(ps -ax -ww -o args= 2>/dev/null || true)
   set -f
-  oldifs=$IFS
   IFS='
 '
   hit=0
@@ -947,22 +947,22 @@ refuse_live_hermes() {
         ;;
     esac
     IFS=' '
-    for token in $line; do
-      case $token in
+    for arg in $line; do
+      case $arg in
         /*) ;;
         *) continue ;;
       esac
-      base=$(basename -- "$token")
+      base=$(basename -- "$arg")
       case $base in
         hermes|Hermes) ;;
         *)
-          case $token in
+          case $arg in
             */hermes-agent/*) ;;
             *) continue ;;
           esac
           ;;
       esac
-      dir=$(dirname -- "$token")
+      dir=$(dirname -- "$arg")
       [ -d "$dir" ] || continue
       real=$(physical "$dir" 2>/dev/null || true)
       [ -n "$real" ] || continue
@@ -975,13 +975,11 @@ refuse_live_hermes() {
 '
     [ "$hit" = 1 ] && break
   done
-  IFS=$oldifs
-  set +f
   if [ "$hit" = 1 ]; then
     die "Hermes is open. Quit Hermes, then run this again."
   fi
-  return 0
-}
+  exit 0
+)
 
 move_stub_aside() {
   if [ ! -e "$profile" ] && [ ! -L "$profile" ]; then
