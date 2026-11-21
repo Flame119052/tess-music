@@ -21,9 +21,13 @@ const MAX_RECORDING = 50 * 1024 * 1024;
 const MAX_IMAGE = 5 * 1024 * 1024;
 const RECORDING_DAYS = 14;
 const DAILY_CAP = 2000;
-// One model, one URL. The client does not get to choose either. Defaults match the support chat plan; wrangler
-// vars override the numbers. The Go key is a secret, never a var.
-const CHAT_UPSTREAM = 'https://opencode.ai/zen/go/v1/chat/completions';
+// One allowlisted upstream and one model. The client chooses neither: `SUPPORT_UPSTREAM` picks between the two
+// OpenCode URLs below and `SUPPORT_MODEL` names the model, both set in wrangler. Any other upstream value fails
+// closed. The OpenCode key is a secret, never a var.
+const CHAT_UPSTREAMS = {
+  zen: 'https://opencode.ai/zen/v1/chat/completions',
+  go: 'https://opencode.ai/zen/go/v1/chat/completions',
+};
 const CHAT_MODEL = 'deepseek-v4.1-flash';
 const CHAT_PERSON_REQUESTS = 80;
 const CHAT_SHARED_REQUESTS = 400;
@@ -365,6 +369,15 @@ function allowedModel(env) {
   return s;
 }
 
+// Only the two URLs in CHAT_UPSTREAMS are reachable. Unset or blank keeps the Go plan, which is the verified live
+// path; an unknown value is null and the route answers 503 before spending a slot. Case and surrounding space are
+// forgiven so a hand-typed wrangler var does not take chat down.
+function allowedUpstream(env) {
+  const raw = env.SUPPORT_UPSTREAM;
+  if (raw === undefined || raw === null || String(raw).trim() === '') return CHAT_UPSTREAMS.go;
+  return CHAT_UPSTREAMS[String(raw).trim().toLowerCase()] ?? null;
+}
+
 function rawPathAndQuery(request) {
   const url = String(request.url || '');
   const m = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*([^?#]*)(\?[^#]*)?/i.exec(url);
@@ -403,9 +416,11 @@ function tokensFromUsage(usage) {
   return Number.isSafeInteger(sum) && sum > 0 && sum <= CHAT_MAX_USAGE ? sum : 0;
 }
 
-function chatBodyOk(obj, model) {
+// The client names whichever model its shipped profile carried, so only the shape is checked. `chatPayload` always
+// puts `allowedModel(env)` upstream, so a client value can never choose the model.
+function chatBodyOk(obj) {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
-  if (obj.model !== model) return false;
+  if (typeof obj.model !== 'string' || !/^[A-Za-z0-9._:-]{1,64}$/.test(obj.model)) return false;
   if (!Array.isArray(obj.messages) || obj.messages.length === 0 || obj.messages.length > 500) return false;
   for (const message of obj.messages) {
     if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
@@ -526,14 +541,16 @@ function headerText(value, max) {
 }
 
 // Fresh headers: the client's bearer, cookie, and forwarding headers never ride along. The Go key is set here only.
-function upstreamHeaders(request, apiKey, stream) {
+// OpenCode requires x-opencode-session; a client value that survives headerText wins, and the Worker's per-day
+// fallback covers every client that does not send one (Hermes's custom provider does not).
+function upstreamHeaders(request, apiKey, stream, fallbackSession) {
   const headers = new Headers();
   headers.set('authorization', `Bearer ${apiKey}`);
   headers.set('content-type', 'application/json');
   headers.set('accept', stream ? 'text/event-stream, application/json' : 'application/json');
   const agent = headerText(request.headers.get('user-agent'), 256);
   if (agent) headers.set('user-agent', agent);
-  const session = headerText(request.headers.get('x-opencode-session'), 200);
+  const session = headerText(request.headers.get('x-opencode-session'), 200) || fallbackSession;
   if (session) headers.set('x-opencode-session', session);
   return headers;
 }
@@ -749,6 +766,11 @@ async function supportChat(request, env, ctx) {
     who = await env.DB.prepare('SELECT id FROM support_tokens WHERE sha = ? AND revoked IS NULL').bind(digest).first();
   } catch { return chatJson(503, 'Support chat is unavailable.', 'server_error', 'unavailable'); }
   if (!who) return chatRefused();
+  // OpenCode requires a session header. This fallback is stable for one person within a UTC day so the upstream can
+  // route and cache, and it changes at midnight so it does not link a person across days. `sha()` over the already
+  // stored token digest leaks no token bytes, label or sequential row id, and it is never stored here.
+  const day = new Date().toISOString().slice(0, 10);
+  const fallbackSession = `tess-support-${await sha(`${digest}:${day}`)}`;
 
   const ctype = (request.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
   if (ctype !== 'application/json') return chatJson(415, 'Content-Type must be application/json.', 'invalid_request_error', 'unsupported_media_type');
@@ -759,11 +781,12 @@ async function supportChat(request, env, ctx) {
   if (claimed > maxReq) return chatJson(413, 'The request is too large.', 'invalid_request_error', 'request_too_large');
 
   const model = allowedModel(env);
+  const upstreamUrl = allowedUpstream(env);
   const personRequests = capValue(env.SUPPORT_CHAT_PERSON_REQUESTS, CHAT_PERSON_REQUESTS);
   const sharedRequests = capValue(env.SUPPORT_CHAT_SHARED_REQUESTS, CHAT_SHARED_REQUESTS);
   const personTokens = capValue(env.SUPPORT_CHAT_PERSON_TOKENS, CHAT_PERSON_TOKENS);
   const sharedTokens = capValue(env.SUPPORT_CHAT_SHARED_TOKENS, CHAT_SHARED_TOKENS);
-  if (!model || personRequests === null || sharedRequests === null || personTokens === null || sharedTokens === null) {
+  if (!model || !upstreamUrl || personRequests === null || sharedRequests === null || personTokens === null || sharedTokens === null) {
     return chatJson(503, 'Support chat is unavailable.', 'server_error', 'unavailable');
   }
 
@@ -773,7 +796,7 @@ async function supportChat(request, env, ctx) {
   try { obj = JSON.parse(new TextDecoder().decode(bytes)); } catch {
     return chatJson(400, 'The body must be a chat completion.', 'invalid_request_error', 'invalid_json');
   }
-  if (!chatBodyOk(obj, model)) {
+  if (!chatBodyOk(obj)) {
     return chatJson(400, 'The body must be a chat completion for the allowed model.', 'invalid_request_error', 'invalid_chat');
   }
   const built = chatPayload(obj, model);
@@ -816,10 +839,10 @@ async function supportChat(request, env, ctx) {
 
   let upstream;
   try {
-    upstream = await globalThis.fetch(CHAT_UPSTREAM, {
+    upstream = await globalThis.fetch(upstreamUrl, {
       method: 'POST',
       redirect: 'manual',
-      headers: upstreamHeaders(request, apiKey, built.body.stream === true),
+      headers: upstreamHeaders(request, apiKey, built.body.stream === true, fallbackSession),
       body: payload,
     });
   } catch {

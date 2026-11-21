@@ -210,6 +210,28 @@ To change one, edit the number (keep the quotes), merge it through a pull reques
   If `git switch` or `git pull` stops with an error, or the first line says anything else, don't deploy: ask for help.
   Once it's deployed, every chat is refused straight away with the "reached today's limit" message. To turn chat back on, run a plain `npx wrangler@4 deploy`.
 
+### Switching the model or upstream (`go` ↔ `zen`)
+
+The Worker always replaces the model name with `SUPPORT_MODEL` and only talks to the two allowlisted OpenCode endpoints
+(`"go"` for OpenCode Go, `"zen"` for OpenCode Zen), so you can switch models without updating anyone's Mac.
+
+- **Temporary live test** (reverts on the next plain `npx wrangler@4 deploy`):
+
+  ```sh
+  cd ~/Developer/tess-music/inbox
+  npx wrangler@4 deploy --var SUPPORT_UPSTREAM:zen --var SUPPORT_MODEL:hy4-flash-free
+  ```
+
+- **Flip back to OpenCode Go** immediately if needed:
+
+  ```sh
+  cd ~/Developer/tess-music/inbox
+  npx wrangler@4 deploy --var SUPPORT_UPSTREAM:go --var SUPPORT_MODEL:deepseek-v4.1-flash
+  ```
+
+- **Durable switch:** edit `SUPPORT_UPSTREAM` and `SUPPORT_MODEL` in `inbox/wrangler.toml`, merge through a pull
+  request, pull `main`, and run a plain `npx wrangler@4 deploy`.
+
 ## If something looks wrong
 
 - **Someone says the chat is refused.** Run `support tokens` and check their code is `active`. Then run
