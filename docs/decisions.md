@@ -861,6 +861,32 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   *Trade-off:* an existing inbox database needs `ALTER TABLE support_reports ADD COLUMN image TEXT` before a still
   can be stored. Until then a still is answered 503 and a video still stores. A moving bug has no automatic
   recording until the ScreenCaptureKit helper exists. This change does not deploy the Worker.
+- **D-107 · 19 Nov 2026 · Krish** — Reviews rotate through Claude Opus 5.5, GPT Sol and Gemini 4 Neon, in that order,
+  each on the provider with the most usage left and the soonest reset, and a review never uses the model that wrote the
+  change. Gemini 4 Neon reviews belong in the GitHub `@tess-review` job with the reviewer in full access inside the
+  job's sandbox: the throwaway VM, bubblewrap, no GitHub token, and only the job posts. Adding Antigravity to the job is
+  separate work. Until it lands, a Gemini 4 Neon review runs as a T3 thread with full access (approval-required stalls
+  on every tool call) and its findings are posted on the pull request, naming the commit it read.
+  *Trade-off:* until then the job's checks (the allowlist, CI green on the exact head, the author check, the stripped
+  review copy) do not guard a Gemini review. It is a second opinion beside a job review.
+- **D-109 · 19 Nov 2026 · Agent** — The GitHub review job can run Antigravity (`agy` 1.5.12, `gemini-4-neon`) on the
+  Google plan (D-107). On Linux with no D-Bus session, including an SSH session on the Dell and a GitHub-hosted VM,
+  agy stores that login in `~/.gemini/antigravity-cli/antigravity-oauth-token` and does not use the OS keyring. The job
+  process redeems the refresh token at Google before bubblewrap starts, writes a file that holds only the access
+  token, its type and its expiry, and mounts that file read-only. The refresh token is never written to disk and never
+  enters the sandbox. The access-token file is deleted when the run ends. The job passes
+  `--dangerously-skip-permissions` and does not pass `--mode plan`. `GH_TOKEN` is removed before `agy` starts, and
+  only the job posts. `machine=mac` and `machine=omarchy` still refuse `provider=antigravity`: Krish chose the GitHub
+  path.
+  *Why:* D-107 already puts this reviewer in the GitHub job with full access inside the sandbox. The missing piece was
+  a plan login a fresh Linux VM can read. A headless run on the Dell with `--dangerously-skip-permissions` logged
+  that it auto-approves tool permissions, then exited at once because the throwaway home had no login. The same run
+  with `--mode plan` also exited at once, but it never reached a tool call, so plan mode is not used.
+  *Trade-off:* inside the sandbox the CLI is allowed to ask for writes and shell. Bubblewrap hides the runner's own
+  files and keeps the review copy and the access-token file read-only. It does not stop the reviewer from reading that
+  access token or sending it over the network. The token lasts about an hour, and a review that quotes it is refused.
+  A signed-in tool turn still needs the one-time login; it was not run here. `GEMINI_API_KEY` and Application Default
+  Credentials are refused.
 - **D-110 · 19 Nov 2026 · Agent** — A Mac support visit has no shell (#121). D-106 said a command that is not on
   `command_allowlist` stops and asks. That is false. In Hermes 0.22.6, `check_all_command_guards`
   (`tools/approval.py`) approves every command `detect_dangerous_command` does not flag, in manual mode and in

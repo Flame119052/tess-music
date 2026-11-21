@@ -1,10 +1,11 @@
 {
   "_note": "One place for everything likely to change about reviewers: which models the plans allow, which of them are strong enough for sensitive work, what a review costs, the hard caps on one review, quota kept back, and dated notes. How it is read, and how to change it, is docs/workflow.md -> Choosing a reviewer. THE ORDER OF A ROLE'S LIST MEANS NOTHING: the agent that writes the change, or tags the review, chooses the reviewer and names it in the tag. This job only checks that choice against the rules and runs it, refusing loudly instead of substituting another model. Every model here runs on one of Krish's subscription plans; no pay-per-use API key is on the list.",
-  "_note_plans": "Plans only. claude/* is the Claude plan (CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`). codex/* is the ChatGPT plan (CODEX_AUTH_JSON from `node tools/codex-ci-login.mjs`; never an OpenAI API key). opencode/zai-coding-plan/* is the Z.ai coding plan (ZHIPU_API_KEY, a plan key). opencode/opencode-go/* is the OpenCode Go plan (OPENCODE_API_KEY). If a model can only be reached with a key billed per token, it does not belong in this file.",
+  "_note_plans": "Plans only. claude/* is the Claude plan (CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`). codex/* is the ChatGPT plan (CODEX_AUTH_JSON from `node tools/codex-ci-login.mjs`; never an OpenAI API key). opencode/zai-coding-plan/* is the Z.ai coding plan (ZHIPU_API_KEY, a plan key). opencode/opencode-go/* is the OpenCode Go plan (OPENCODE_API_KEY). antigravity/gemini-4-neon is the Google plan (AGY_OAUTH_TOKEN from `node tools/agy-ci-login.mjs`; never GEMINI_API_KEY or Application Default Credentials). If a model can only be reached with a key billed per token, it does not belong in this file.",
   "plans": {
     "claude": "Claude plan",
     "codex": "ChatGPT plan",
-    "opencode": "OpenCode Go and the Z.ai coding plan (one allowance per connector)"
+    "opencode": "OpenCode Go and the Z.ai coding plan (one allowance per connector)",
+    "antigravity": "Google plan (Antigravity)"
   },
   "approach": [
     {
@@ -79,6 +80,9 @@
       "opencode-go/kimi-k3",
       "zai-coding-plan/glm-5.3",
       "zai-coding-plan/glm-5.3-flash"
+    ],
+    "antigravity": [
+      "gemini-4-neon"
     ]
   },
   "strong": [
@@ -104,7 +108,8 @@
     "opencode/opencode-go/glm-5.3-flash": "light",
     "opencode/opencode-go/kimi-k3": "light",
     "opencode/zai-coding-plan/glm-5.3": "medium",
-    "opencode/zai-coding-plan/glm-5.3-flash": "light"
+    "opencode/zai-coding-plan/glm-5.3-flash": "light",
+    "antigravity/gemini-4-neon": "heavy"
   },
   "caps": {
     "_note": "Hard limits on one review, so a review can never take a large share of an allowance. Read by tools/agent-review.mjs; the table in docs/workflow.md explains each one.",
@@ -170,8 +175,8 @@
       "note": "Cursor is not on the list. Its own models come out of a weekly pool, but a Claude or GPT model inside Cursor bills prepaid credit at API list price from the first request, and the review job installs no Cursor CLI. Leaving it out keeps the plans-only rule true without a footnote."
     },
     {
-      "date": "2026-11-15",
-      "note": "Antigravity (`agy`) is not a reviewer yet: it keeps its account token in the OS keyring and has no login subcommand or headless credential file, so a GitHub Linux VM cannot sign in on the plan. See docs/workflow.md -> Left out on purpose."
+      "date": "2026-11-19",
+      "note": "Antigravity gemini-4-neon is on the Google plan (D-107, D-109). Its cost weight is a cautious heavy until a review on that plan has been measured. The login is the file agy writes, not a per-token API key."
     }
   ]
 }
