@@ -135,19 +135,26 @@ to a thread, so a tag that names one is refused on those machines rather than ru
 out, or use `machine=github`). `t3 thread start` takes no token limit either, so a machine review has none and its
 comment says `Cap: none on this path`; the bound is the same `timeout_s` the GitHub job runs a reviewer under.
 
-**Plans only.** Every model on the list runs on one of Krish's subscriptions — the Claude plan, the ChatGPT plan, the
-OpenCode Go plan, the Z.ai coding plan, or the Google plan. No per-token API key is used, ever: a review must never
-bill by the token. `GEMINI_API_KEY` and Application Default Credentials are not a way in.
+**Plans only.** Every model on the list runs on one of Krish's subscriptions or a free tier he already uses — the Claude
+plan, the ChatGPT plan, the OpenCode Go plan, the Z.ai coding plan, OpenCode Zen free, Nvidia NIM, Sarvam, or the
+Google plan. No per-token API key is used, ever: a review must never bill by the token. `GEMINI_API_KEY` and
+Application Default Credentials are not a way in. Krish confirmed Sarvam is a free/subscription plan (D-112). OpenCode
+Zen's free models may keep prompts for training; that is accepted because this repository and its pull request diffs
+are public.
 
 **What the agent checks before tagging:**
 1. **Usage on its own machine.** `provider_usage` and `provider_pick` in the T3 usage tool, or `~/.local/bin/tess-usage`
    on Krish's machines. They show the **session (5-hour)** and **weekly** windows, the share left in each, the pace, and
    when each renews. Those numbers are the same ones the job later reads from the quota-only snapshots.
-2. **The plan the model bills.** `opencode/*` splits into two separate allowances: `opencode-go/*` and
-   `zai-coding-plan/*`. One can be empty while the other is full, so name the connector in the model, as the examples do.
+2. **The plan the model bills.** OpenCode splits into separate allowances, and the model id names the connector:
+   `opencode-go/*` (`OPENCODE_API_KEY`), `zai-coding-plan/*` (`ZHIPU_API_KEY`), `nvidia/*` (`NVIDIA_API_KEY`),
+   `sarvam/*` (`SARVAM_API_KEY`), and `opencode/*` (Zen free, no key — only the four named free models). One can be
+   empty while another is full, so name the connector in the model, as the examples do.
 3. **The weight.** `caps.per_review_pct` in [`agents.json`](../.github/agents.json) is the share of a 5-hour window one
    review of that model takes: 0.1 for DeepSeek V4.1 Flash, 0.2 for GLM-5.3-Flash, 1 for GLM-5.3 on Z.ai, 3 for
-   `gpt-6.1-terra`, 7 for `gpt-6.1-sol`, and a cautious 10 for Claude, which reports no numbers of its own.
+   `gpt-6.1-terra`, 7 for `gpt-6.1-sol`, and a cautious 10 for Claude, which reports no numbers of its own. The
+   Zen-free, Nvidia, Sarvam, and extra Go / Z.ai models use a cautious share in that table until a window is measured,
+   and they are not in `strong`.
 4. **Pace, not just what is left.** On the morning of 15 Nov, Claude had 59% of its session left but only 16% of its
    week, with two days to run; Codex had 93% of its session and 89% of its week. Only one was safe to spend that morning,
    and the session number alone would have picked the wrong one. Skip a provider on pace to run out before its reset.
@@ -170,6 +177,8 @@ bill by the token. `GEMINI_API_KEY` and Application Default Credentials are not 
 - the pull request's `Made by` line (in any shape: `Made by: …` or a `## Made by` heading) names a provider that
   disagrees with `author=`;
 - a usage snapshot shows that window used up, fewer than three reviews left in its 5-hour window, or inside a `reserve` (pace is the tagging agent's call, not a refusal);
+- the OpenCode model needs a connector key that is missing (`OPENCODE_API_KEY`, `ZHIPU_API_KEY`, `NVIDIA_API_KEY`, or
+  `SARVAM_API_KEY`), or the model prefix is not one of those connectors; `opencode/*` free models need none;
 - the Codex plan login is missing or inside its last 12 hours (a scheduled job renews it; see below);
 - the Antigravity plan login is missing, or it is not the Google-plan file;
 - `provider=antigravity` is tagged for `mac` or `omarchy` (Krish chose the GitHub path);
@@ -248,7 +257,11 @@ On top of that, each CLI is told to stay read-only:
 - Cursor: `--mode ask --sandbox enabled`.
 - OpenCode: the `tess-reviewer` agent (`tools/opencode-reviewer.md`), which denies everything except reading, and denies
   `external_directory` so reads stop at the review copy. The installed copy must match that file on `main` exactly, or the
-  review stops instead of running under wider rules. That file is sensitive work: a PR that changes it gets the strong
+  review stops instead of running under wider rules. The runner also copies `tools/opencode-config.json` to
+  `~/.config/opencode/opencode.json`. That file must match byte for byte, and the folder may contain only `opencode.json`
+  and `agents/tess-reviewer.md`, so a stray `opencode.jsonc` or `config.json` cannot widen the reviewer. The json holds
+  `$schema` and `providers` only (Nvidia's `headerTimeout`, and Sarvam with `{env:SARVAM_API_KEY}`), never an agent, a
+  permission, a plugin, or a literal key. Both files are sensitive work: a PR that changes either gets the strong
   reviewer, never "docs only".
 - Antigravity (D-107): `--dangerously-skip-permissions`, so the CLI does not stop and ask. The review copy and the
   access-token file are read-only, `GH_TOKEN` is not in the environment, and only this job posts the review. Those
@@ -301,7 +314,9 @@ or tokens says nothing about the change and the agent that chose the reviewer ha
 - The measured shares, as a share of a 5-hour window: `gpt-6.1-sol` 7, `gpt-6.1-terra` 3, `opencode-go/glm-5.3` 4,
   `opencode-go/glm-5.3-flash` 0.2, `opencode-go/deepseek-v4.1-flash` 0.1, and a cautious 1 for `zai-coding-plan/glm-5.3`
   and 0.2 for `zai-coding-plan/glm-5.3-flash` carried over from the OpenCode Go measurements until a Z.ai window has been
-  watched. Claude reports no numbers of its own, so it keeps the cautious 10%.
+  watched. Claude reports no numbers of its own, so it keeps the cautious 10%. The models added in D-112 (Zen free,
+  Nvidia NIM, Sarvam, and the extra Go and Z.ai ids) have cautious unmeasured shares in `agents.json`, use the default
+  600 s timeout, and stay out of `strong`.
 
 **Rules.**
 - Don't use the strongest model at both stages unless the work is sensitive.
@@ -330,7 +345,8 @@ agent file, that no retired API-key secret is used anywhere, and that every note
   wall clock), `claude.max_turns` and `claude.max_budget_usd`, `codex.auto_compact_token_limit` and `codex.max_tokens`,
   and `opencode.steps`.
   `opencode.steps` must equal `steps:` in `tools/opencode-reviewer.md`, because that file is what the runner copies and
-  the test compares the two; copy the file again on any machine that runs OpenCode reviews. Then run
+  the test compares the two. The runner also copies `tools/opencode-config.json`; copy both files again on any machine
+  that runs OpenCode reviews. Then run
   `node tools/test-agent-review.mjs` and say in the PR what MADE the old number wrong (a run that hit it, or a measured
   cost), so the change is not just a preference.
 - **Reserve quota for something else.** Add an entry under `reserve`, for example
@@ -346,7 +362,7 @@ agent file, that no retired API-key secret is used anywhere, and that every note
 - **Who can call them.** Only GitHub accounts in the allowlist (the repo variable `AGENT_ALLOWLIST`, today just `Flame119052`). A tag from anyone else is ignored. Anyone can still open issues and PRs.
 - **Where they run.** A standard GitHub Actions job on `ubuntu-latest`: one fresh virtual machine per review, deleted when the job ends. GitHub-hosted Linux machines are free and unlimited for this public repository, so there is no runner to keep online, no box to wake, and no machine of Krish's in the path (D-66). Nothing of Krish's is on the VM: no signing or rescue keys, no Paperclip, no other job's secrets. A tag with `machine=mac` or `machine=omarchy` never reaches the review job: the gate reads it, the notice job posts `Review queued for mac`, and that machine's own watcher opens the review as a T3 thread (above).
 - **What reads the tag first.** The `gate` job runs `tools/agent-gate.sh` from `main` and answers in one place: the caller, the machine, the pull request's own head, CI on that commit, and the tier. A refusal is a fixed code, and the `notice` job posts the fixed words for it — never a script's message, which could carry a path or a key. An account that is not allowlisted still gets nothing at all.
-- **What the VM holds.** Only the chosen reviewer's plan login and a `GITHUB_TOKEN` that can comment on this repository. The tag's choice is checked first (`node tools/agent-review.mjs pick ...`), then that one provider's CLI is installed at a pinned version, and only that provider's login is given to the step. A review can never hold a second provider's login. For Claude and Codex the login stays in the review process and the sandbox gets a per-review token instead (`tools/review-proxy.mjs`, D-69, D-73); that proxy forwards only the one inference route its pinned CLI was measured to call and answers everything else with a 403, so the token is not a way to reach the rest of what the login can do. OpenCode keeps its own key, which its agent file cannot read. `GH_TOKEN` is on the step so the review can be posted, and the script removes it before the reviewer process starts.
+- **What the VM holds.** Only the chosen reviewer's plan login and a `GITHUB_TOKEN` that can comment on this repository. The tag's choice is checked first (`node tools/agent-review.mjs pick ...`), then that one provider's CLI is installed at a pinned version, and only that provider's login is given to the step. A review can never hold a second provider's login. For Claude and Codex the login stays in the review process and the sandbox gets a per-review token instead (`tools/review-proxy.mjs`, D-69, D-73); that proxy forwards only the one inference route its pinned CLI was measured to call and answers everything else with a 403, so the token is not a way to reach the rest of what the login can do. OpenCode keeps only the one connector key for the model prefix (`opencode-go/` → `OPENCODE_API_KEY`, `zai-coding-plan/` → `ZHIPU_API_KEY`, `nvidia/` → `NVIDIA_API_KEY`, `sarvam/` → `SARVAM_API_KEY`), and a Zen free `opencode/*` model gets none. The script checks the same map again and refuses an unknown prefix or a missing key. The agent file cannot read that key from inside the copy. `GH_TOKEN` is on the step so the review can be posted, and the script removes it before the reviewer process starts.
 - **Which model runs.** The tag says. The pick step only checks the choice — plans-only list, the job's installed CLIs, `strong` for a sensitive change, a different provider from the author, usage and any reserve — and refuses anything that breaks a rule with a comment on the pull request. Usage comes from [#93](https://github.com/Flame119052/tess-music/issues/93)'s quota-only snapshots, one repository variable per machine (`USAGE_SNAPSHOT_MAC`, `_VPS`, `_OMARCHY`): the freshest under 30 minutes wins, and it is read beside the local hub; with none fresh, "no numbers" counts as usable, and the CLI's own refusal is reported in a comment. Those numbers are a check on the agent's choice, never a way for the job to pick for it.
 - **Safety, because the repo is public:**
   - The workflow is triggered only by `issue_comment`, which always runs the workflow file from `main`, never from a PR.

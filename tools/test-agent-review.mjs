@@ -13,10 +13,13 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
   agentConfig,
+  assertOpencodeConfig,
+  assertOpencodeConnector,
   assertReviewerAgent,
   budgetUsd,
   claudeTools,
   cliArgs,
+  cliInvocation,
   capsFor,
   containsHeldSecret,
   eligibleModels,
@@ -42,6 +45,8 @@ import {
   pinnedReviewer,
   postVerdict,
   providerHasUsage,
+  opencodeConnectorKey,
+  opencodeKeyForModel,
   providerKeys,
   proxiedProviders,
   startReviewProxy,
@@ -385,6 +390,8 @@ test('one sensitive path makes a mixed PR sensitive', () => {
 test("a PR that only loosens the reviewer's own permissions is sensitive", () => {
   assert.equal(tierForPaths(['tools/opencode-reviewer.md']), 'sensitive');
   assert.equal(tierForPaths(['tools/opencode-reviewer.md', 'docs/workflow.md']), 'sensitive');
+  assert.equal(tierForPaths(['tools/opencode-config.json']), 'sensitive');
+  assert.equal(tierForPaths(['tools/opencode-config.json', 'docs/workflow.md']), 'sensitive');
 });
 
 test('unknown usage is eligible and any exhausted window blocks a provider', () => {
@@ -847,9 +854,11 @@ test('a review that quotes a key the job holds is never posted', () => {
     CODEX_AUTH_JSON: JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'codex-access-' + 'c'.repeat(20) } }),
     OPENCODE_API_KEY: 'opencode-key-' + 'e'.repeat(20),
     ZHIPU_API_KEY: 'zhipu-key-' + 'f'.repeat(20),
+    NVIDIA_API_KEY: 'nvidia-key-' + 'g'.repeat(20),
+    SARVAM_API_KEY: 'sarvam-key-' + 'h'.repeat(20),
     HOME: '/home/r',
   };
-  for (const name of ['GH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_AUTH_JSON', 'OPENCODE_API_KEY', 'ZHIPU_API_KEY']) {
+  for (const name of ['GH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_AUTH_JSON', 'OPENCODE_API_KEY', 'ZHIPU_API_KEY', 'NVIDIA_API_KEY', 'SARVAM_API_KEY']) {
     assert.ok(containsHeldSecret(`the environment had ${env[name]} in it`, env), name);
   }
   assert.ok(!containsHeldSecret('Looks fine. The swap keeps a checked copy.', env));
@@ -864,19 +873,22 @@ test('the reviewer gets only its own provider keys, never the GitHub token', () 
   const env = {
     HOME: '/home/r', PATH: '/bin', TMPDIR: '/tmp', GH_TOKEN: 'ghs_x', GITHUB_TOKEN: 'ghs_y',
     CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-x', CODEX_AUTH_JSON: '{"tokens":{"access_token":"ck"}}',
-    OPENCODE_API_KEY: 'oc', ZHIPU_API_KEY: 'zp', OTHER: '1',
+    OPENCODE_API_KEY: 'oc', ZHIPU_API_KEY: 'zp', NVIDIA_API_KEY: 'nv', SARVAM_API_KEY: 'sv', OTHER: '1',
   };
   assert.deepEqual(Object.keys(reviewerEnv(env, 'claude')).sort(), ['CLAUDE_CODE_OAUTH_TOKEN', 'HOME', 'PATH', 'TMPDIR']);
-  assert.deepEqual(Object.keys(reviewerEnv(env, 'opencode')).sort(),
-    ['HOME', 'OPENCODE_API_KEY', 'PATH', 'TMPDIR', 'ZHIPU_API_KEY']);
+  // One OpenCode connector per model. The other three keys stay in the job and never enter this environment.
+  assert.deepEqual(Object.keys(reviewerEnv(env, 'opencode', null, 'opencode-go/deepseek-v4.1-flash')).sort(),
+    ['HOME', 'OPENCODE_API_KEY', 'PATH', 'TMPDIR']);
   for (const provider of ['claude', 'codex', 'opencode']) {
-    const keys = Object.keys(reviewerEnv(env, provider));
+    const model = provider === 'opencode' ? 'opencode-go/deepseek-v4.1-flash' : '';
+    const keys = Object.keys(reviewerEnv(env, provider, null, model));
     assert.ok(!keys.includes('GH_TOKEN') && !keys.includes('GITHUB_TOKEN'), `${provider} gets no GitHub token`);
-    // Exactly this provider's keys, and no other provider's. OpenCode has two signed-in connectors of its own. A proxied
-    // provider is checked below: its login never enters the sandbox at all.
+    // Exactly this provider's keys, and no other provider's. OpenCode forwards one connector, not all four.
+    // A proxied provider is checked below: its login never enters the sandbox at all.
     if (!proxiedProviders.includes(provider)) {
+      const expected = provider === 'opencode' ? ['OPENCODE_API_KEY'] : [...providerKeys[provider]];
       assert.deepEqual(keys.filter((key) => key.endsWith('_TOKEN') || key.endsWith('_KEY')).sort(),
-        [...providerKeys[provider]].sort(), `${provider} gets only its own keys`);
+        expected.sort(), `${provider} gets only its own keys`);
     }
     for (const [other, otherKeys] of Object.entries(providerKeys)) {
       if (other === provider) continue;
@@ -1606,6 +1618,239 @@ test('the OpenCode agent denies everything outside reading the copy', () => {
     'reads outside the copy are blocked before the read rule');
   assert.ok(rules.some((rule) => rule.action === 'read' && rule.resource === '/*' && rule.effect === 'deny'),
     'an outside path again, in case the external_directory rule is ever weakened');
+});
+
+const addedOpencodeModels = [
+  'opencode/deepseek-v4.1-flash-free',
+  'opencode/mimo-v2.6-flash-free',
+  'opencode/nemotron-3.5-super-vl-free',
+  'opencode/big-pickle',
+  'nvidia/deepseek-ai/deepseek-v4.1-flash',
+  'nvidia/nvidia/nemotron-3-ultra-550b-a55b',
+  'nvidia/z-ai/glm-5.3-flash',
+  'nvidia/minimaxai/minimax-m3.1-flash',
+  'sarvam/glm5.3',
+  'sarvam/glm5.3-flash',
+  'sarvam/gemma4',
+  'sarvam/deepseekv4.1-flash-1017',
+  'sarvam/sarvam-105b',
+  'opencode-go/deepseek-v4-pro',
+  'opencode-go/kimi-k3.1-pro',
+  'opencode-go/qwen4-max',
+  'zai-coding-plan/glm-5.3-highspeed',
+];
+
+test('new OpenCode models have a cost and a share, and none of them is strong', () => {
+  const zen = config.allowed.opencode.filter((id) => id.startsWith('opencode/'));
+  assert.deepEqual(zen, [
+    'opencode/deepseek-v4.1-flash-free',
+    'opencode/mimo-v2.6-flash-free',
+    'opencode/nemotron-3.5-super-vl-free',
+    'opencode/big-pickle',
+  ]);
+  assert.deepEqual(config.strong, ['zai-coding-plan/glm-5.3', 'gpt-6.1-sol', 'claude-opus-5-5']);
+  for (const id of addedOpencodeModels) {
+    assert.ok(config.allowed.opencode.includes(id), `${id} is allowed`);
+    assert.ok(!config.strong.includes(id), `${id} is not strong`);
+    assert.ok(['light', 'medium', 'heavy'].includes(config.cost[`opencode/${id}`]), `${id} has a cost weight`);
+    const share = config.caps.per_review_pct[`opencode/${id}`];
+    assert.equal(typeof share, 'number', `${id} has a per-review share`);
+    assert.ok(share > 0, `${id} share is positive`);
+  }
+});
+
+test('the checked-in OpenCode config is providers only and holds no literal key', () => {
+  const raw = readFileSync(new URL('./opencode-config.json', import.meta.url), 'utf8');
+  const parsed = JSON.parse(raw);
+  assert.deepEqual(Object.keys(parsed).sort(), ['$schema', 'providers']);
+  assert.equal(parsed.$schema, 'https://opencode.ai/config.json');
+  assert.equal(raw.match(/"(agent|permission|plugin|mcp|instructions)"/), null);
+  assert.equal(parsed.providers.nvidia.settings.headerTimeout, 600000);
+  assert.equal(parsed.providers.sarvam.name, 'Sarvam');
+  assert.equal(parsed.providers.sarvam.package, '@opencode/ai/providers/openai-compatible');
+  assert.equal(parsed.providers.sarvam.settings.baseURL, 'https://api.sarvam.ai/v2');
+  assert.equal(parsed.providers.sarvam.settings.apiKey, '{env:SARVAM_API_KEY}');
+  assert.deepEqual(Object.keys(parsed.providers.sarvam.models).sort(), [
+    'deepseekv4.1-flash-1017', 'gemma4', 'glm5.3', 'glm5.3-flash', 'sarvam-105b',
+  ]);
+  assert.ok(!raw.includes('sk-'), 'no literal secret prefix');
+  assert.equal((raw.match(/SARVAM_API_KEY/g) || []).length, 1, 'the key name appears only inside the env placeholder');
+});
+
+test('the review workflow gates each OpenCode secret by model prefix and copies the config', () => {
+  const review = jobBlock('review');
+  const install = stepBlock(review, 'Install OpenCode');
+  assert.match(install, /cp tools\/opencode-config\.json "\$HOME\/\.config\/opencode\/opencode\.json"/);
+  assert.match(install, /cp tools\/opencode-reviewer\.md "\$HOME\/\.config\/opencode\/agents\/tess-reviewer\.md"/);
+  const run = stepBlock(review, 'Run read-only reviewer');
+  const gates = {
+    OPENCODE_API_KEY: 'opencode-go/',
+    ZHIPU_API_KEY: 'zai-coding-plan/',
+    NVIDIA_API_KEY: 'nvidia/',
+    SARVAM_API_KEY: 'sarvam/',
+  };
+  for (const [name, prefix] of Object.entries(gates)) {
+    const line = run.split('\n').find((entry) => entry.trim().startsWith(`${name}:`));
+    assert.ok(line, `${name} is on the review step`);
+    assert.match(line, /provider == 'opencode'/);
+    assert.match(line, new RegExp(`startsWith\\(steps\\.pick\\.outputs\\.model, '${prefix}'\\)`), name);
+  }
+  assert.equal(/startsWith\(steps\.pick\.outputs\.model, 'opencode\/'\)/.test(run), false,
+    'a Zen free model is not handed a key by the opencode/ prefix');
+});
+
+function opencodeFixture() {
+  const dir = temp();
+  const configDir = join(dir, 'opencode');
+  mkdirSync(join(configDir, 'agents'), { recursive: true });
+  const source = readFileSync(new URL('./opencode-config.json', import.meta.url));
+  writeFileSync(join(configDir, 'opencode.json'), source);
+  writeFileSync(join(configDir, 'agents', 'tess-reviewer.md'), agentText);
+  return { dir, configDir, source };
+}
+
+function opencodeLaunchOptions(home, env, capture) {
+  return {
+    env,
+    home: home.dir,
+    agentInstalled: join(home.configDir, 'agents', 'tess-reviewer.md'),
+    agentSource: fileURLToPath(agentFile),
+    opencodeConfigDir: home.configDir,
+    proxy: null,
+    exists: () => true,
+    commandPath: '/usr/bin/opencode',
+    nodePath: '/usr/bin/node',
+    spawnSync(_command, _args, spawnOptions) {
+      capture.push(spawnOptions.env);
+      return { status: 0, stdout: 'Verdict: approve', stderr: '' };
+    },
+    spawnChild(_command, _args, spawnOptions) {
+      capture.push(spawnOptions.env);
+      const child = new EventEmitter();
+      child.stdin = { write() { return true; }, end() {}, on() {} };
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdout.setEncoding = () => {};
+      child.stderr.setEncoding = () => {};
+      child.kill = () => {};
+      queueMicrotask(() => {
+        child.stdout.emit('data', 'Verdict: approve\n');
+        child.emit('close', 0, null);
+      });
+      return child;
+    },
+  };
+}
+
+const opencodeSecretNames = ['OPENCODE_API_KEY', 'ZHIPU_API_KEY', 'NVIDIA_API_KEY', 'SARVAM_API_KEY'];
+
+test('both OpenCode launch paths forward one connector key and fail closed otherwise', async () => {
+  assert.equal(opencodeKeyForModel('opencode/big-pickle'), null);
+  assert.equal(opencodeKeyForModel('opencode-go/deepseek-v4-pro'), 'OPENCODE_API_KEY');
+  assert.equal(opencodeKeyForModel('zai-coding-plan/glm-5.3-highspeed'), 'ZHIPU_API_KEY');
+  assert.equal(opencodeKeyForModel('nvidia/nvidia/nemotron-3-ultra-550b-a55b'), 'NVIDIA_API_KEY');
+  assert.equal(opencodeKeyForModel('sarvam/sarvam-105b'), 'SARVAM_API_KEY');
+  assert.equal(opencodeConnectorKey['opencode/'], null);
+  assert.throws(() => opencodeKeyForModel('openai/gpt'), /no connector key mapping/);
+  assert.throws(() => opencodeKeyForModel(''), /no connector key mapping/);
+  assert.throws(() => reviewerEnv({ HOME: '/h' }, 'opencode', null, 'mystery/model'), /no connector key mapping/);
+  assert.doesNotThrow(() => assertOpencodeConnector('opencode/deepseek-v4.1-flash-free', {}));
+  assert.throws(() => assertOpencodeConnector('nvidia/z-ai/glm-5.3-flash', { NVIDIA_API_KEY: '   ' }), /NVIDIA_API_KEY is missing/);
+  assert.throws(() => assertOpencodeConnector('sarvam/glm5.3', {}), /SARVAM_API_KEY is missing/);
+
+  const home = opencodeFixture();
+  const parent = {
+    HOME: home.dir,
+    PATH: '/bin',
+    TMPDIR: '/tmp',
+    GH_TOKEN: 'ghs_should_not_pass',
+    OPENCODE_API_KEY: 'oc-key-value',
+    ZHIPU_API_KEY: 'zp-key-value',
+    NVIDIA_API_KEY: 'nv-key-value',
+    SARVAM_API_KEY: 'sv-key-value',
+  };
+  const cases = [
+    ['opencode/big-pickle', null],
+    ['opencode/deepseek-v4.1-flash-free', null],
+    ['nvidia/deepseek-ai/deepseek-v4.1-flash', 'NVIDIA_API_KEY'],
+    ['sarvam/glm5.3', 'SARVAM_API_KEY'],
+    ['opencode-go/qwen4-max', 'OPENCODE_API_KEY'],
+    ['zai-coding-plan/glm-5.3-highspeed', 'ZHIPU_API_KEY'],
+  ];
+  try {
+    for (const [model, only] of cases) {
+      const seen = [];
+      const options = opencodeLaunchOptions(home, parent, seen);
+      cliInvocation('opencode', model, 'prompt', '', '/w', options);
+      await invokeReviewerCli('opencode', model, 'prompt', '', '/w', options);
+      assert.equal(seen.length, 2, `${model} ran on both paths`);
+      for (const env of seen) {
+        const held = opencodeSecretNames.filter((name) => env[name] !== undefined);
+        assert.deepEqual(held, only ? [only] : [], `${model} keys`);
+        if (only) assert.equal(env[only], parent[only]);
+        assert.equal(env.GH_TOKEN, undefined, `${model} gets no GitHub token`);
+        assert.deepEqual(
+          Object.keys(reviewerEnv(parent, 'opencode', null, model)).filter((name) => opencodeSecretNames.includes(name)),
+          only ? [only] : [],
+        );
+      }
+    }
+
+    for (const [model, name] of [['nvidia/minimaxai/minimax-m3.1-flash', 'NVIDIA_API_KEY'], ['sarvam/gemma4', 'SARVAM_API_KEY']]) {
+      const bare = { ...parent, [name]: '' };
+      let syncCalls = 0;
+      assert.throws(() => cliInvocation('opencode', model, 'prompt', '', '/w', {
+        ...opencodeLaunchOptions(home, bare, []),
+        spawnSync() { syncCalls += 1; return { status: 0, stdout: '', stderr: '' }; },
+      }), new RegExp(`${name} is missing`));
+      await assert.rejects(invokeReviewerCli('opencode', model, 'prompt', '', '/w', {
+        ...opencodeLaunchOptions(home, bare, []),
+        spawnChild() { syncCalls += 1; throw new Error('spawned'); },
+      }), new RegExp(`${name} is missing`));
+      assert.equal(syncCalls, 0, `${name} never reaches the CLI`);
+    }
+
+    const free = { HOME: home.dir, PATH: '/bin', TMPDIR: '/tmp' };
+    const freeSeen = [];
+    const freeOptions = opencodeLaunchOptions(home, free, freeSeen);
+    cliInvocation('opencode', 'opencode/deepseek-v4.1-flash-free', 'prompt', '', '/w', freeOptions);
+    await invokeReviewerCli('opencode', 'opencode/deepseek-v4.1-flash-free', 'prompt', '', '/w', freeOptions);
+    assert.equal(freeSeen.length, 2);
+    for (const env of freeSeen) {
+      for (const name of opencodeSecretNames) assert.equal(env[name], undefined, name);
+    }
+
+    assert.throws(() => cliInvocation('opencode', 'mystery/model', 'prompt', '', '/w', opencodeLaunchOptions(home, parent, [])),
+      /no connector key mapping/);
+    await assert.rejects(invokeReviewerCli('opencode', 'mystery/model', 'prompt', '', '/w', opencodeLaunchOptions(home, parent, [])),
+      /no connector key mapping/);
+  } finally {
+    rmSync(home.dir, { recursive: true, force: true });
+  }
+});
+
+test('the OpenCode config check rejects a changed file or a stray config', () => {
+  const home = opencodeFixture();
+  try {
+    assert.doesNotThrow(() => assertOpencodeConfig(home.configDir));
+    const jsonPath = join(home.configDir, 'opencode.json');
+    writeFileSync(jsonPath, `${readFileSync(jsonPath, 'utf8').replace('600000', '1')}`);
+    assert.throws(() => assertOpencodeConfig(home.configDir), /differs from tools\/opencode-config\.json/);
+    writeFileSync(jsonPath, home.source);
+    writeFileSync(join(home.configDir, 'opencode.jsonc'), '{}\n');
+    assert.throws(() => assertOpencodeConfig(home.configDir), /opencode\.jsonc/);
+    rmSync(join(home.configDir, 'opencode.jsonc'));
+    writeFileSync(join(home.configDir, 'config.json'), '{}\n');
+    assert.throws(() => assertOpencodeConfig(home.configDir), /config\.json/);
+    let calls = 0;
+    assert.throws(() => cliInvocation('opencode', 'opencode/big-pickle', 'prompt', '', '/w', {
+      ...opencodeLaunchOptions(home, { HOME: home.dir, PATH: '/bin' }, []),
+      spawnSync() { calls += 1; return { status: 0, stdout: '', stderr: '' }; },
+    }), /config\.json/);
+    assert.equal(calls, 0, 'a stray config never reaches the CLI');
+  } finally {
+    rmSync(home.dir, { recursive: true, force: true });
+  }
 });
 
 // Every reviewer is wrapped the same way, so the boundary is a fact about the runner, not a promise in a prompt. The
