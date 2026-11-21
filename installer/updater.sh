@@ -598,6 +598,8 @@ check_support_invite() {
   invite_id=$(printf '%s' "$body" | sed -n 's/.*"invite_id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')
   case "$invite_id" in ''|*[!0-9]*) return 0 ;; esac
   [ -f "$STATE/.support-invite-asked-$invite_id" ] && return 0
+  # They said Install; a failure on our side must not re-ask every 20 minutes.
+  [ -f "$STATE/.support-invite-retry-$invite_id" ] && [ -z "$(find "$STATE/.support-invite-retry-$invite_id" -mmin +1440 2>/dev/null)" ] && return 0
   case "$(support_ask)" in
     decline) touch "$STATE/.support-invite-asked-$invite_id"; log "support invite $invite_id: not now"; return 0 ;;
     install) ;;
@@ -605,10 +607,12 @@ check_support_invite() {
   esac
   # Signed first, claimed second: a bad download or a bad signature must not use up the invite.
   if ! get support-install.sh "$TMP/support-install.sh" || ! get support-install.sig "$TMP/support-install.sig"; then
+    touch "$STATE/.support-invite-retry-$invite_id"
     log "support invite $invite_id: installer download failed"
     return 0
   fi
   if ! "$VERIFY" "$TMP/support-install.sh" "$(tr -d '\n' < "$TMP/support-install.sig")"; then
+    touch "$STATE/.support-invite-retry-$invite_id"
     log "support invite $invite_id: installer failed its signature check; nothing was installed"
     return 0
   fi
@@ -628,7 +632,8 @@ check_support_invite() {
       log "support invite $invite_id: the invite is no longer open (spent, expired or revoked); not asking again"
       rm -f "$claim"; return 0 ;;
     *)
-      # 429, a 5xx, or no answer at all: temporary. The invite is still open, so keep it and ask again next check.
+      # 429, a 5xx, or no answer at all: temporary. Keep the invite open, and wait a day before asking again.
+      touch "$STATE/.support-invite-retry-$invite_id"
       log "support invite $invite_id: the invite could not be claimed (HTTP ${code:-none})"
       rm -f "$claim"; return 0 ;;
   esac

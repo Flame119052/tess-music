@@ -61,17 +61,19 @@ try {
   assert.notEqual(r.status, 0, 'beta below stable is refused');
   assert.match(r.out, /lower than stable/, 'the guard explains why');
 
-  // a beta above stable is allowed when its dist carries the signed installer pair
+  // a beta above stable is allowed when its dist carries both signed installer pairs
   writeFileSync(join(repo, 'dist/manifest.json'), manifest(11, '0.2.11'));
   writeFileSync(join(repo, 'dist/install.sh'), '#!/bin/sh\nexit 0\n');
   writeFileSync(join(repo, 'dist/install.sig'), 'sig\n');
+  writeFileSync(join(repo, 'dist/support-install.sh'), '#!/bin/sh\nexit 0\n');
+  writeFileSync(join(repo, 'dist/support-install.sig'), 'sig\n');
   git(repo, ['add', '.']); commit(repo, 'beta 11');
   git(repo, ['push', '-q', 'origin', 'beta']);
   git(repo, ['fetch', '-q', 'origin']);
   r = promote();
   assert.equal(r.status, 0, r.out);
 
-  // a higher rev still refuses when either half of the pair is missing
+  // a higher rev still refuses when any half of either signed pair is missing
   git(repo, ['rm', '-q', 'dist/install.sig']);
   git(repo, ['add', '.']); commit(repo, 'beta missing sig');
   git(repo, ['push', '-q', 'origin', 'beta']);
@@ -89,7 +91,25 @@ try {
   assert.notEqual(r.status, 0, 'a beta without dist/install.sh is refused');
   assert.match(r.out, /dist\/install\.sh/, 'the refusal names the missing installer');
 
-  console.log('release rev guard passed (beta 5 vs stable 10 refused; beta 11 allowed; a dist without install.sh or install.sig refused; installer and uninstaller parts precede the command)');
+  writeFileSync(join(repo, 'dist/install.sh'), '#!/bin/sh\nexit 0\n');
+  git(repo, ['rm', '-q', 'dist/support-install.sig']);
+  git(repo, ['add', '.']); commit(repo, 'beta missing support sig');
+  git(repo, ['push', '-q', 'origin', 'beta']);
+  git(repo, ['fetch', '-q', 'origin']);
+  r = promote();
+  assert.notEqual(r.status, 0, 'a beta without dist/support-install.sig is refused');
+  assert.match(r.out, /dist\/support-install\.sig/, 'the refusal names the missing support signature');
+
+  writeFileSync(join(repo, 'dist/support-install.sig'), 'sig\n');
+  git(repo, ['rm', '-q', 'dist/support-install.sh']);
+  git(repo, ['add', '.']); commit(repo, 'beta missing support installer');
+  git(repo, ['push', '-q', 'origin', 'beta']);
+  git(repo, ['fetch', '-q', 'origin']);
+  r = promote();
+  assert.notEqual(r.status, 0, 'a beta without dist/support-install.sh is refused');
+  assert.match(r.out, /dist\/support-install\.sh/, 'the refusal names the missing support installer');
+
+  console.log('release rev guard passed (beta 5 vs stable 10 refused; beta 11 allowed; missing install or support-install pair refused; installer and uninstaller parts precede the command)');
 } finally {
   rmSync(box, { recursive: true, force: true });
 }

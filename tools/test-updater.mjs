@@ -719,17 +719,24 @@ esac
   }
 
   {
-    // #140: a 429/503 is temporary. The invite is still open, so it is not burned and the next check asks again.
+    // #140: a 429/503 is temporary. The invite is still open, so it is not burned, and a second run within 24 hours
+    // does not re-ask the person every 20 minutes.
     const s = sandbox();
-    s.run({
+    const retryEnv = {
       TESS_INVITE_CHECK_JSON: '{"invited":true,"invite_id":18}',
       TESS_TEST_INVITE_ANSWER: 'install',
       TESS_INVITE_CLAIM_STATUS: '503',
       TESS_INVITE_CLAIM_JSON: '{"error":"unavailable"}',
-    });
+    };
+    s.run(retryEnv);
     assert.ok(!existsSync(join(s.state, '.support-invite-asked-18')), 'a 503 keeps the invite open');
+    assert.ok(existsSync(join(s.state, '.support-invite-retry-18')), 'a 503 writes the 24-hour retry backoff stamp');
     assert.ok(!existsSync(join(s.box, 'support-token.out')), 'a 503 runs no installer');
     assert.match(readFileSync(join(s.tess, 'guard.log'), 'utf8'), /could not be claimed \(HTTP 503\)/);
+    const claimsBefore = readFileSync(join(s.box, 'curl.log'), 'utf8').split('\n').filter((l) => l.includes('invite/claim')).length;
+    s.run(retryEnv);
+    const claimsAfter = readFileSync(join(s.box, 'curl.log'), 'utf8').split('\n').filter((l) => l.includes('invite/claim')).length;
+    assert.equal(claimsAfter, claimsBefore, 'a second run within 24 h does not re-prompt or re-claim');
   }
 
   {
