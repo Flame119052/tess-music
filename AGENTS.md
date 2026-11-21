@@ -113,10 +113,29 @@ nothing; Krish using the Mac adds noise, so alternate with/without and repeat (t
 - One GitHub issue per piece of work, in this repo. The issue names the goal, the check, and what blocks it.
 - Give every issue a **clear, plain-English title** that anyone can understand without knowing internal code names.
 - Tag every issue using the 4-axis system in `docs/triage.md` (`P0`–`P3` priority, `area:*` category, type, workflow status) and assign it to the matching roadmap milestone.
-- Comment the evidence on the issue and close it when checked; leave it open (with why) when it needs a real-world
-  event (e.g. #28 needs a real blocked Mac).
+- Comment the evidence on the issue and close it **only after its PR is merged into `main`** and checked (or let
+  GitHub close it on merge via `Closes #N`). Never close a GitHub issue on unpushed or unmerged local commits: that
+  makes GitHub lie about what actually exists in `dev` and `stable`. Leave an issue open (with why) when it still needs
+  a real-world event (e.g. #28 needs a real blocked Mac).
+- **Always branch from fresh `origin/main`:** run `git fetch origin main` and create your branch from `origin/main`,
+  never from a stale local `main` or whatever branch the checkout happens to sit on. Verify
+  `git merge-base --is-ancestor origin/main HEAD` before opening a PR.
 - Work follows [`docs/workflow.md`](docs/workflow.md): issue → approach comment → PR into `main` → dev → beta (Krish
-  declares a release) → stable (Krish promotes). Opening a PR is the normal path in this repo (D-63). Tag `@tess-review
+  declares a release) → stable (Krish promotes). **Opening a PR is the normal end of a build (D-63) — always push your
+  branch and open the PR into `main`; never stop at an unpushed local branch to ask permission to open a PR.** When
+  Krish asks you to fix an issue (or issues), take it all the way onto the internal **`dev`** build: open the PR, pass
+  CI + required `@tess-review` approval, and merge into `main` so Krish can see it on `dev` right away. **`dev` →
+  `beta` (`declare`) and `beta` → `stable` (`promote`) always wait for Krish's explicit word and GitHub's `release`
+  approval gate — nothing ever reaches real users without his say.** Keep each PR focused on one issue or a tight slice
+  rather than bundling a dozen unrelated issues onto one branch.
+- **Respect sensitive-tier review gates:** before writing code for any sensitive path (`installer/`, `inbox/`,
+  `patcher/`, `support/`, `.github/`, `tools/release.mjs`, `tools/promote.mjs`, `tools/rescue.mjs`,
+  `tools/check-safety.sh`, signing, rescue, or release-shipped `mini/` helpers), post an approach comment and get
+  `@tess-review approach` approved first, then get `@tess-review pr` approved before merge.
+- **Re-pin `support/mac/install.sh` (`PROFILE_COMMIT`) to `main` after merge (D-105):** when changing files under
+  `support/mac/`, an unmerged branch SHA in `PROFILE_COMMIT` is temporary for PR checks only; follow up right after
+  merge so `PROFILE_COMMIT` points to a real commit on `main`.
+- Tag `@tess-review
   approach` or `@tess-review pr` to call a reviewer agent; the tier (docs / normal / sensitive) decides which reviews a
   change needs. Name the reviewer you chose in the tag — `provider=… model=… effort=… author=…` plus one line saying why —
   because the job runs that model or refuses with a comment; it never picks one for you. `author=` is the provider that
