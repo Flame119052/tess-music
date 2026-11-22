@@ -104,11 +104,12 @@ HERMES_ID='com.nousresearch.hermes-bundled'
 # The same minimum distribution.yaml names. A checkout whose file disagrees is refused.
 HERMES_REQUIRES='>=0.22.0'
 # >>> support profile pins >>>
-PROFILE_COMMIT=7bc60f4abd74ddbe81e75e531022a1da5170da6f
+PROFILE_COMMIT=ac439e703f1f134dd0894b347514f09060bccdfe
 PROFILE_PINS='
 support/mac/config.yaml 7f7ed106b34a83666281084295e685d6e64c90c92cbaf3700a57f29687535341
 support/mac/distribution.yaml eadfc479acbfbba4ea2a628e2786b32e5370294e7162d185de0a8d6b06f32bd4
 support/mac/SOUL.md 44df084838b8212d6b61f2dd1652e26d937b8c3f19d9470b1ac379ed550f258d
+support/mac/AppIcon.icns c48e90a4217f1596c4f732dd93de56b033e6458913f8d1c7d3c01cd09efa5985
 support/mac/skills/tess-evidence/SKILL.md be7d6435be3a2a0ce9ef1ad1f19d0e14129c2376e887d055c825c41ae4005540
 support/mac/skills/tess-evidence/scripts/spotify-window.mjs f5d5c8b9d8901d8da2290f47f1d82e5ae9a5ccfcd0b19eb7f16e4b4d33edf3f5
 support/mac/skills/tess-gather/SKILL.md d21be1c58227e2776d27685752224fb95268bc05fc34315a199a4bba3fd11722
