@@ -104,20 +104,20 @@ HERMES_ID='com.nousresearch.hermes-bundled'
 # The same minimum distribution.yaml names. A checkout whose file disagrees is refused.
 HERMES_REQUIRES='>=0.22.0'
 # >>> support profile pins >>>
-PROFILE_COMMIT=b6d067836f700944d8977dfca33e6dc14fae790f
+PROFILE_COMMIT=2bd0da325060f33c4655a2748786725314f191a8
 PROFILE_PINS='
 support/mac/config.yaml 7f7ed106b34a83666281084295e685d6e64c90c92cbaf3700a57f29687535341
 support/mac/distribution.yaml eadfc479acbfbba4ea2a628e2786b32e5370294e7162d185de0a8d6b06f32bd4
 support/mac/SOUL.md 44df084838b8212d6b61f2dd1652e26d937b8c3f19d9470b1ac379ed550f258d
-support/mac/skills/tess-evidence/SKILL.md f012655f7fbb75b5e84a4822cf2d53e0d41136154592985c32a93a8541c7f93c
-support/mac/skills/tess-evidence/scripts/spotify-window.mjs e6151e4fe1be05bfae4be9f80ce2b296478c1e6ee0e13328902d4f5cb2442881
+support/mac/skills/tess-evidence/SKILL.md be7d6435be3a2a0ce9ef1ad1f19d0e14129c2376e887d055c825c41ae4005540
+support/mac/skills/tess-evidence/scripts/spotify-window.mjs f5d5c8b9d8901d8da2290f47f1d82e5ae9a5ccfcd0b19eb7f16e4b4d33edf3f5
 support/mac/skills/tess-gather/SKILL.md d21be1c58227e2776d27685752224fb95268bc05fc34315a199a4bba3fd11722
 support/mac/skills/tess-gather/scripts/doctor.mjs 0fae204654e8e0d3e94858a241291813c1c1ef9b5c7083b1a1b246e00d93e85e
 support/mac/skills/tess-handoff/SKILL.md dae977620d82a3b2254f69280e239c89d37c0a68f0a420f57f6638f24c4d9a9e
 support/mac/skills/tess-handoff/scripts/triage-inbox.mjs 8d7ab61be0eaa4a68d6b52e9ee689ebcd0ee5195047dd614c39d5408cdc0383a
 support/mac/skills/tess-support/SKILL.md 0a6bac9ca40354738ebe3b20d6ca7615a0459164770ffda54eb1b7a6bfc65404
-support/mac/plugins/tess-visit/__init__.py 07e21c78bf6bff73b6a83dd8c764b564e2d0e091536fa1aece017083b3d6e712
-support/mac/plugins/tess-visit/plugin.yaml ee41dcb85ba71b5a97bfb23e87ad62495ce8cc52118470842eee5a9bccbc03b4
+support/mac/plugins/tess-visit/__init__.py f41506de701641d5891d14d2b6d86cfb5d101588893045d113f49d8a288a4e5b
+support/mac/plugins/tess-visit/plugin.yaml 0bac423e3497ce06d27355aa44df5b1fa562c962aedb75d7ac302cf7aedb49fc
 support/bot/skills/tess-support/scripts/privacy.mjs 180b494458c0c984f3f62f4b10dc0a75f543a28dc681b25093e99e064de95c51
 support/bot/skills/tess-support/scripts/triage.mjs 89196e4117d2bec8052ba6d0f383f8bf62aac116c6860de8fe21f23e8aeacd77
 support/bot/skills/tess-support/scripts/inbox.mjs 0914d20381b9f4655e8ffc308aaf073258e970f523691b929a3cad3ef015ed26
@@ -126,6 +126,13 @@ support/bot/skills/tess-support/scripts/session.mjs 01e0447a8ab88163ae478dc60e3a
 # <<< support profile pins <<<
 PROFILE_ORIGIN=https://raw.githubusercontent.com/Flame119052/tess-music/$PROFILE_COMMIT
 INBOX_DEFAULT=https://tess-music-player.janus.ing
+# The window recorder is a Tess release part. Its SHA-256 comes from the stable
+# channel's signed components list, verified with the release public key by the
+# pinned Node this installer already downloads — the same trust the updater gets
+# from tess-verify, with no second binary to ship first. A channel too old to
+# have the part is fine: the visit then takes a still only.
+COMPONENTS_ORIGIN=https://raw.githubusercontent.com/Flame119052/tess-music/stable/dist
+RELEASE_KEY_X='XOYW72EMGoUz6Km-BpIgzTdliV6VzywqMmALhAdr1ws'
 # Current LTS (Lithium). The darwin tarball's bin/node links only macOS system libraries.
 NODE_VERSION=v26.13.1
 NODE_ORIGIN=https://nodejs.org
@@ -346,7 +353,7 @@ ensure_places() {
 
 allow_url() {
   case $1 in
-    "$ASSET_ORIGIN"/*|"$CLI_URL"|"$PROFILE_ORIGIN"/*|"$NODE_ORIGIN"/dist/*) ;;
+    "$ASSET_ORIGIN"/*|"$CLI_URL"|"$PROFILE_ORIGIN"/*|"$NODE_ORIGIN"/dist/*|"$COMPONENTS_ORIGIN"/*|"https://github.com/Flame119052/tess-music/releases/download/"*) ;;
     *) die "Refusing a download from an unknown address." ;;
   esac
 }
@@ -558,6 +565,51 @@ stage_node() {
   fi
 }
 
+# The window recorder, checked before any folder moves. TESS_RECORD_TEST_FILE is
+# the sandbox's stand-in: a real install never sets it.
+stage_record() {
+  record_file=
+  if [ "${TESS_TEST:-}" = 1 ] && [ -n "${TESS_RECORD_TEST_FILE:-}" ]; then
+    if [ ! -f "$TESS_RECORD_TEST_FILE" ] || [ -L "$TESS_RECORD_TEST_FILE" ]; then
+      die "TESS_RECORD_TEST_FILE is not a file."
+    fi
+    record_file=$TESS_RECORD_TEST_FILE
+    return 0
+  fi
+  key_x=$RELEASE_KEY_X
+  if [ "${TESS_TEST:-}" = 1 ] && [ -n "${TESS_TEST_RELEASE_KEY_X:-}" ]; then
+    key_x=$TESS_TEST_RELEASE_KEY_X
+  fi
+  fetch "$work/components.txt" "$COMPONENTS_ORIGIN/components.txt" || die "Could not read the release parts list; the recorder was not installed."
+  fetch "$work/components.sig" "$COMPONENTS_ORIGIN/components.sig" || die "Could not read the release parts signature; the recorder was not installed."
+  node_bin=${srcfile:-}
+  if [ -z "$node_bin" ] || [ ! -f "$node_bin" ]; then
+    node_bin=$profile/runtime/node/bin/node
+  fi
+  if [ ! -x "$node_bin" ]; then
+    die "The pinned Node is missing, so the components list cannot be checked."
+  fi
+  "$node_bin" -e 'const{createPublicKey,verify}=require("crypto");const fs=require("fs");const key=createPublicKey({key:{kty:"OKP",crv:"Ed25519",x:process.argv[3]},format:"jwk"});const ok=verify(null,fs.readFileSync(process.argv[1]),key,Buffer.from(fs.readFileSync(process.argv[2],"utf8").trim(),"base64"));process.exit(ok?0:1)' "$work/components.txt" "$work/components.sig" "$key_x" || die "The release components list failed its signature."
+  record_line=$(awk '$1 == "record" { print $2, $3; exit }' "$work/components.txt")
+  if [ -z "$record_line" ]; then
+    return 0
+  fi
+  record_sha=$(printf '%s\n' "$record_line" | awk '{ print $1 }')
+  record_url=$(printf '%s\n' "$record_line" | awk '{ print $2 }')
+  is_sha256 "$record_sha" || die "The record part in the components list has no SHA-256."
+  case $record_url in
+    *..*) die "Refusing a record download from an unknown address." ;;
+    https://github.com/Flame119052/tess-music/releases/download/*) ;;
+    *) die "Refusing a record download from an unknown address." ;;
+  esac
+  fetch "$work/tess-record" "$record_url"
+  got=$(sha256_file "$work/tess-record")
+  if [ "$got" != "$record_sha" ]; then
+    die "The window recorder download did not match its checksum. Nothing was unpacked into the profile."
+  fi
+  record_file=$work/tess-record
+}
+
 # The new profile and its Node are built together, so a failed swap does not leave one without the other.
 place_node() {
   dest=$1
@@ -577,6 +629,16 @@ place_node() {
   cp "$srcfile" "$dest/runtime/node/bin/node"
   chmod 755 "$dest/runtime/node/bin/node"
   printf '%s\n' "$NODE_VERSION" > "$dest/runtime/node/VERSION"
+}
+
+# place_record runs after place_node so a reused runtime folder is already in
+# place; an older install with no recorder simply gains runtime/bin here.
+place_record() {
+  dest=$1
+  [ -z "${record_file:-}" ] && return 0
+  mkdir -p "$dest/runtime/bin"
+  cp "$record_file" "$dest/runtime/bin/tess-record"
+  chmod 755 "$dest/runtime/bin/tess-record"
 }
 
 read_token() {
@@ -1121,6 +1183,7 @@ install_profile() {
     carry_profile_items
   fi
   place_node "$profile_incoming"
+  place_record "$profile_incoming"
   if [ -L "$profile/.env" ]; then
     die "The profile .env is a symlink. Refusing to follow it."
   fi
@@ -1600,6 +1663,7 @@ install_main() {
     exit 1
   fi
   stage_node
+  stage_record
   stage_profile_files
   if [ "$arch" = "arm64" ]; then
     prepare_desktop
