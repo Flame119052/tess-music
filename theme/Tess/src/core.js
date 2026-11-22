@@ -265,7 +265,7 @@
     pruneArrowSubs();
     for (const sub of arrowSubs) sub.sync();
   });
-  cleanups.push(() => {
+  onDispose(() => {
     for (const sub of arrowSubs) sub.sc.removeEventListener('scroll', sub.sync);
     arrowSubs.clear();
   });
@@ -3357,7 +3357,7 @@
 
   let lastSupCheck = 0;
   function checkSupportOnFocus(force = false) {
-    if (document.hidden || supInviteEl || supChatEl?.classList.contains('open')) return;
+    if ((!force && document.hidden) || supInviteEl || supChatEl?.classList.contains('open')) return;
     const now = Date.now();
     if (!force && now - lastSupCheck < 15000) return;
     lastSupCheck = now;
