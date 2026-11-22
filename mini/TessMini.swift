@@ -291,6 +291,46 @@ final class App: NSObject, NSApplicationDelegate {
   }
   func saveFrame() { UserDefaults.standard.set(NSStringFromRect(panel.frame), forKey: "frame") }
 
+  func supportState() -> String {
+    let fm = FileManager.default
+    let home = fm.homeDirectoryForCurrentUser.path
+    if fm.fileExists(atPath: "\(home)/.hermes/profiles/tess-support/config.yaml") { return "installed" }
+    if fm.fileExists(atPath: "\(home)/Library/Application Support/Tess/state/.support-invited") { return "invited" }
+    return "none"
+  }
+
+  func triggerSupport() {
+    let fm = FileManager.default
+    let home = fm.homeDirectoryForCurrentUser.path
+    let state = supportState()
+    if state == "installed" {
+      let app = "\(home)/Applications/Tess Support.app"
+      if fm.fileExists(atPath: app) { NSWorkspace.shared.open(URL(fileURLWithPath: app)) }
+      return
+    }
+    guard state == "invited" else { return }
+    let stateDir = "\(home)/Library/Application Support/Tess/state"
+    if let raw = try? String(contentsOfFile: "\(stateDir)/.support-invited", encoding: .utf8) {
+      let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !id.isEmpty, id.allSatisfy(\.isNumber) {
+        try? fm.removeItem(atPath: "\(stateDir)/.support-invite-asked-\(id)")
+        try? fm.removeItem(atPath: "\(stateDir)/.support-invite-retry-\(id)")
+      }
+    }
+    let updater = "\(home)/Library/Application Support/Tess/updater.sh"
+    guard fm.fileExists(atPath: updater) else { return }
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
+    proc.arguments = [updater]
+    var env = ProcessInfo.processInfo.environment
+    env["TESS_FORCE"] = "1"
+    proc.environment = env
+    proc.standardInput = FileHandle.nullDevice
+    proc.standardOutput = FileHandle.nullDevice
+    proc.standardError = FileHandle.nullDevice
+    try? proc.run()
+  }
+
   // Tess's theme talks to the miniplayer over localhost. The gate checks the token before any of these run.
   func startServer() {
     let params = NWParameters.tcp
@@ -300,12 +340,13 @@ final class App: NSObject, NSApplicationDelegate {
       c.start(queue: .global())
       c.receive(minimumIncompleteLength: 1, maximumLength: 8192) { data, _, _, _ in
         let req = String(decoding: data ?? Data(), as: UTF8.self)
-        let reply = miniHandle(raw: req, token: self?.miniToken ?? "")
+        let reply = miniHandle(raw: req, token: self?.miniToken ?? "", supportState: { self?.supportState() ?? "none" })
         DispatchQueue.main.async {
           switch reply.effect {
           case .toggle: self?.toggle()
           case .show: self?.show()
           case .hide: self?.hide()
+          case .support: self?.triggerSupport()
           case .lyric(let text): self?.sp.lyric = text
           case .lines(let body):
             if let d = body.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],

@@ -46,6 +46,21 @@ struct MiniGateTestMain {
     let lines = miniHandle(raw: "POST /lines?k=\(token) HTTP/1.1\r\nHost: 127.0.0.1:38411\r\n\r\n{\"d\":1}", token: token)
     expect(lines.effect == .lines("{\"d\":1}"), "lyric timings are kept only with the token")
 
+    let supportWeb = miniHandle(raw: "GET /support?k=\(token) HTTP/1.1\r\nHost: 127.0.0.1:38411\r\nOrigin: https://evil.example\r\n\r\n", token: token, supportState: { "invited" })
+    expect(supportWeb.status == 404 && !supportWeb.body.contains("invited"), "a website cannot read support invite state")
+
+    let supportNoTok = miniHandle(raw: "GET /support HTTP/1.1\r\nHost: 127.0.0.1:38411\r\nOrigin: \(spotify)\r\n\r\n", token: token, supportState: { "invited" })
+    expect(supportNoTok.status == 404, "support state requires the token")
+
+    let supportOk = miniHandle(raw: "GET /support?k=\(token) HTTP/1.1\r\nHost: 127.0.0.1:38411\r\nOrigin: \(spotify)\r\n\r\n", token: token, supportState: { "invited" })
+    expect(supportOk.status == 200 && supportOk.body == "{\"state\":\"invited\"}", "Spotify can read support invite state with the token")
+
+    let supportAct = miniHandle(raw: "POST /support?k=\(token) HTTP/1.1\r\nHost: 127.0.0.1:38411\r\nOrigin: \(spotify)\r\n\r\n", token: token, supportState: { "invited" })
+    expect(supportAct.effect == .support, "POST /support triggers support action with the token")
+
+    let supportBadAct = miniHandle(raw: "POST /support?k=nope HTTP/1.1\r\nHost: 127.0.0.1:38411\r\n\r\n", token: token, supportState: { "invited" })
+    expect(supportBadAct.effect == .none, "POST /support without valid token is refused")
+
     fputs("mini gate tests passed\n", stdout)
   }
 }

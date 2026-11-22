@@ -209,6 +209,25 @@
     const news = el('<button class="tess-set-link">What\u2019s new</button>');
     news.onclick = () => whatsNew(true);
     meta.append(ch, again, news);
+    // Invited Macs (or Macs that already set up Tess Support) get a quiet link here so anyone who clicked
+    // "Not now" can still open the invite later; uninvited Macs see nothing at all.
+    (async () => {
+      miniKey = ''; // Mini rotates its token on update/restart, so handshake fresh when Settings opens
+      if (!(await miniReady()) || !meta.isConnected) return;
+      const r = await fetch(`${MINI}/support?k=${encodeURIComponent(miniKey)}`, { mode: 'cors' });
+      if (!r.ok || !meta.isConnected) return;
+      const d = await r.json();
+      if (!d || !meta.isConnected || (d.state !== 'invited' && d.state !== 'installed')) return;
+      const sup = el('<button class="tess-set-link"></button>');
+      sup.textContent = d.state === 'installed' ? 'Open Tess Support' : 'Set up Tess Support';
+      sup.onclick = async () => {
+        miniKey = '';
+        if (await miniReady()) {
+          fetch(`${MINI}/support?k=${encodeURIComponent(miniKey)}`, { method: 'POST', mode: 'no-cors' }).catch(() => {});
+        }
+      };
+      meta.append(sup);
+    })().catch(() => {});
     if (oldInstall) {
       const fix = el('<button class="tess-set-link">Finish updating Tess (copies the install line)</button>');
       fix.onclick = () => { Spicetify.Platform.ClipboardAPI?.copy?.(INSTALL_LINE); Spicetify.showNotification?.('Copied. Paste it in Terminal and press Return.'); };
