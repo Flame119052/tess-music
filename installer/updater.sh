@@ -596,6 +596,8 @@ support_ask() {
     esac
     return 0
   fi
+  # Never intrude over other apps: only ask while Spotify is the frontmost app.
+  lsappinfo info -only bundleid $(lsappinfo front 2>/dev/null) 2>/dev/null | grep -q '"com.spotify.client"' || return 0
   local res
   res=$(osascript -e 'display dialog "Krish invited you to Tess Support — a private helper in your Dock that can check Spotify and send him a bug note when something looks off. Nothing runs unless you open it.
 
@@ -720,7 +722,19 @@ check_support_invite() {
     env -u TESS_SUPPORT_TOKEN "$SUPPORT_UI" progress --status-file "$SUPPORT_STATUS" >/dev/null 2>&1 </dev/null &
     ui_pid=$!
   fi
-  TESS_SUPPORT_TOKEN="$tok" sh "$TMP/support-install.sh" >> "$LOG" 2>&1
+  # If ~/.hermes was offloaded to an external drive via a user-owned symlink outside $HOME, pass its real folder so
+  # support-install.sh installs cleanly without weakening its symlink guard.
+  local -a install_env
+  install_env=()
+  if [ -z "$TESS_TEST" ] && [ -z "${HERMES_HOME:-}" ] && [ -L "$HOME/.hermes" ] && [ -d "$HOME/.hermes" ] && [ -O "$HOME/.hermes" ]; then
+    local resolved_hermes
+    resolved_hermes=$(cd -P "$HOME/.hermes" 2>/dev/null && pwd) || resolved_hermes=""
+    case "$resolved_hermes" in
+      ""|"$HOME"|"$HOME"/*) ;;
+      /*) install_env=(HERMES_HOME="$resolved_hermes") ;;
+    esac
+  fi
+  env "${install_env[@]}" TESS_SUPPORT_TOKEN="$tok" sh "$TMP/support-install.sh" >> "$LOG" 2>&1
   rc=$?
   tok=""
   touch "$STATE/.support-invite-asked-$invite_id"

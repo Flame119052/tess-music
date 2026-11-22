@@ -23,6 +23,36 @@ import AppKit
 
 let toolName = "tess-invite"
 let toolVersion = "1"
+let spotifyBundleID = "com.spotify.client"
+
+func spotifyIsFront() -> Bool {
+  NSWorkspace.shared.frontmostApplication?.bundleIdentifier == spotifyBundleID
+}
+
+func spotifyWindowFrame() -> NSRect? {
+  guard let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
+        let primaryH = (NSScreen.screens.first(where: { $0.frame.origin == .zero }) ?? NSScreen.main)?.frame.height else {
+    return nil
+  }
+  var best: NSRect?
+  var bestArea: CGFloat = 0
+  for row in rows {
+    guard (row[kCGWindowOwnerName as String] as? String) == "Spotify",
+          (row[kCGWindowLayer as String] as? Int) == 0,
+          let bounds = row[kCGWindowBounds as String] as? [String: Any],
+          let x = (bounds["X"] as? NSNumber)?.doubleValue,
+          let y = (bounds["Y"] as? NSNumber)?.doubleValue,
+          let w = (bounds["Width"] as? NSNumber)?.doubleValue,
+          let h = (bounds["Height"] as? NSNumber)?.doubleValue,
+          w >= 200, h >= 150 else { continue }
+    let area = CGFloat(w * h)
+    if area > bestArea {
+      bestArea = area
+      best = NSRect(x: x, y: Double(primaryH) - (y + h), width: w, height: h)
+    }
+  }
+  return best
+}
 
 enum Phase: String { case ask, installing, done, failed }
 
@@ -387,16 +417,19 @@ final class Controller {
   let host: NSHostingView<AnyView>
   var timer: Timer?
   var monitor: Any?
+  var appObserver: NSObjectProtocol?
   var statusFile: String?
   var seenStatus = false
   var started = Date()
   var terminalSince: Date?
   let timeout: TimeInterval
+  let spotifyOnly: Bool
 
-  init(phase: Phase, statusFile: String?, timeout: TimeInterval) {
+  init(phase: Phase, statusFile: String?, timeout: TimeInterval, spotifyOnly: Bool) {
     model = Model(phase)
     self.statusFile = statusFile
     self.timeout = timeout
+    self.spotifyOnly = spotifyOnly
     window = GlassWindow(contentRect: NSRect(x: 0, y: 0, width: cardWidth, height: 400), styleMask: [.borderless], backing: .buffered, defer: false)
     host = NSHostingView(rootView: AnyView(EmptyView()))
     host.rootView = AnyView(
@@ -415,10 +448,10 @@ final class Controller {
     window.isOpaque = false
     window.backgroundColor = .clear
     window.hasShadow = true
-    window.level = .floating
+    window.level = .normal
     window.isMovableByWindowBackground = true
     window.isReleasedWhenClosed = false
-    window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+    window.collectionBehavior = []
     window.title = "Tess Support"
   }
 
@@ -441,10 +474,21 @@ final class Controller {
     let size = host.fittingSize
     guard size.width > 0, size.height > 0 else { return }
     var frame: NSRect
-    if !placed, let screen = NSScreen.main {
-      // first time: centred, a little above the middle, where the eye lands
-      let area = screen.visibleFrame
-      frame = NSRect(x: area.midX - size.width / 2, y: area.midY - size.height / 2 + area.height * 0.04, width: size.width, height: size.height)
+    if !placed {
+      if let sp = spotifyWindowFrame() {
+        let hostScreen = NSScreen.screens.first(where: { $0.frame.intersects(sp) }) ?? NSScreen.main
+        let area = hostScreen?.visibleFrame ?? sp
+        var x = sp.midX - size.width / 2
+        var y = sp.midY - size.height / 2
+        x = min(max(x, area.minX + 16), area.maxX - size.width - 16)
+        y = min(max(y, area.minY + 16), area.maxY - size.height - 16)
+        frame = NSRect(x: x, y: y, width: size.width, height: size.height)
+      } else if let screen = NSScreen.main {
+        let area = screen.visibleFrame
+        frame = NSRect(x: area.midX - size.width / 2, y: area.midY - size.height / 2 + area.height * 0.04, width: size.width, height: size.height)
+      } else {
+        return
+      }
       placed = true
     } else {
       // later (installing -> done): grow or shrink around the card's own middle
@@ -459,15 +503,33 @@ final class Controller {
 
   func show() {
     guard NSScreen.main != nil else { fail("there is no screen to show this on") }
+    if spotifyOnly && !spotifyIsFront() { exit(2) }
     NSApp.setActivationPolicy(.accessory)
     fit(animated: false)
     window.alphaValue = 0
     window.makeKeyAndOrderFront(nil)
-    window.orderFrontRegardless()
     NSApp.activate(ignoringOtherApps: true)
     NSAnimationContext.runAnimationGroup { ctx in
       ctx.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.01 : 0.28
       window.animator().alphaValue = 1
+    }
+    if spotifyOnly {
+      let myPID = ProcessInfo.processInfo.processIdentifier
+      appObserver = NSWorkspace.shared.notificationCenter.addObserver(
+        forName: NSWorkspace.didActivateApplicationNotification,
+        object: nil,
+        queue: .main
+      ) { [unowned self] note in
+        guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+        if app.processIdentifier == myPID { return }
+        if app.bundleIdentifier == spotifyBundleID {
+          self.placed = false
+          self.fit(animated: false)
+          self.window.orderFront(nil)
+        } else {
+          self.window.orderOut(nil)
+        }
+      }
     }
     // Return is the bright button, Escape closes without answering. A local monitor sees them whatever has focus.
     monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [unowned self] e in
@@ -588,10 +650,11 @@ case "ask", "progress", "status":
     file = value("--status-file", in: args) ?? value("--file", in: args)
     guard let f = file, !f.isEmpty else { fail("progress needs --status-file <path>") }
   }
+  let spotifyOnly = isAsk && !args.contains("--any-app")
   let controller = MainActor.assumeIsolated { () -> Controller in
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
-    return Controller(phase: isAsk ? .ask : .installing, statusFile: file, timeout: seconds(in: args))
+    return Controller(phase: isAsk ? .ask : .installing, statusFile: file, timeout: seconds(in: args), spotifyOnly: spotifyOnly)
   }
   MainActor.assumeIsolated { controller.show() }
   NSApplication.shared.run()
