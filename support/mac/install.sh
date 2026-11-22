@@ -104,7 +104,7 @@ HERMES_ID='com.nousresearch.hermes-bundled'
 # The same minimum distribution.yaml names. A checkout whose file disagrees is refused.
 HERMES_REQUIRES='>=0.22.0'
 # >>> support profile pins >>>
-PROFILE_COMMIT=ac439e703f1f134dd0894b347514f09060bccdfe
+PROFILE_COMMIT=cc98fe0f0b4514accd1c6d32b71de72c7707efc3
 PROFILE_PINS='
 support/mac/config.yaml 7f7ed106b34a83666281084295e685d6e64c90c92cbaf3700a57f29687535341
 support/mac/distribution.yaml eadfc479acbfbba4ea2a628e2786b32e5370294e7162d185de0a8d6b06f32bd4
