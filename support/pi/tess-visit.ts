@@ -58,7 +58,34 @@ const QUESTION_VIDEO =
   "It can show your Spotify name, your picture, your friends' activity, and your playlist names. " +
   "No other window and no sound are in it.";
 
-const YES_WORDS = new Set(["yes", "y", "go ahead"]);
+const YES_WORDS = new Set([
+  "yes",
+  "y",
+  "yeah",
+  "yep",
+  "yea",
+  "sure",
+  "ok",
+  "okay",
+  "go ahead",
+  "please",
+  "do it",
+  "sounds good",
+  "of course",
+  "go for it",
+  "yes please",
+  "sure thing",
+  "sure go ahead",
+  "ok go ahead",
+  "okay go ahead",
+]);
+
+function isConsentYes(norm: string): boolean {
+  if (!norm) return false;
+  if (YES_WORDS.has(norm)) return true;
+  if (/\b(?:no|nope|nah|don't|dont|not|never|skip|cancel)\b/.test(norm)) return false;
+  return /^(?:yes|yeah|yep|yea|sure|ok|okay|go ahead|please)\b/.test(norm) && norm.length <= 40;
+}
 const ALLOWED_TOOLS = new Set([
   // Standard read-only investigation tools (guarded below so secrets and writes are blocked).
   "read",
@@ -336,10 +363,10 @@ export default function (pi: ExtensionAPI) {
     const text = assistantText(event.message).trim();
     if (toolCount === 0 && text) {
       if (lanes.still.askedAt && !lanes.still.questionDelivered && !lanes.still.denied && !lanes.still.spent) {
-        if (text === QUESTION_STILL) lanes.still.questionDelivered = true;
+        if (text.includes(QUESTION_STILL)) lanes.still.questionDelivered = true;
       }
       if (lanes.video.askedAt && !lanes.video.questionDelivered && !lanes.video.denied && !lanes.video.spent) {
-        if (text === QUESTION_VIDEO) lanes.video.questionDelivered = true;
+        if (text.includes(QUESTION_VIDEO)) lanes.video.questionDelivered = true;
       }
     }
   });
@@ -351,7 +378,7 @@ export default function (pi: ExtensionAPI) {
     for (const kind of ["still", "video"] as const) {
       const lane = lanes[kind];
       if (lane.questionDelivered && !lane.denied && !lane.spent && lane.grantedAt === null) {
-        if (YES_WORDS.has(norm)) {
+        if (isConsentYes(norm)) {
           lane.grantedAt = Date.now();
         } else {
           lane.denied = true;

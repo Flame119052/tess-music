@@ -717,8 +717,8 @@ final class PiSupportBridge {
       }
       if !text.isEmpty {
         var ev: [String: Any] = ["type": "message", "text": text]
-        if text == questionStill { ev["consent"] = "still" }
-        else if text == questionVideo { ev["consent"] = "video" }
+        if text.contains(questionStill) { ev["consent"] = "still" }
+        else if text.contains(questionVideo) { ev["consent"] = "video" }
         pushEvent(ev)
       }
     case "tool_execution_start":

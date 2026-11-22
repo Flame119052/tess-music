@@ -324,7 +324,7 @@ try {
           if (ev.type === 'agent_settled') {
             settledCount++;
             if (settledCount === 1) {
-              pi.stdin.write(JSON.stringify({ id: 'p2', type: 'prompt', message: 'yes' }) + '\n');
+              pi.stdin.write(JSON.stringify({ id: 'p2', type: 'prompt', message: 'sure' }) + '\n');
             } else if (settledCount === 2) {
               clearTimeout(timer);
               resolveDone();
