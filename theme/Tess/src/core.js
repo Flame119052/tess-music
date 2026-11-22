@@ -1874,11 +1874,14 @@
       sd.style.removeProperty('transform');
     }
     const s = sd.getBoundingClientRect(), t = b.getBoundingClientRect();
+    if (!t.width || !s.width) return;
     const dx = t.left + t.width / 2 - (s.left + s.width / 2);
     const dy = t.top + t.height / 2 - (s.top + s.height / 2);
     if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
       djShift = { x: djShift.x + dx, y: djShift.y + dy };
       sd.style.transform = `translate(${djShift.x}px, ${djShift.y}px)`;
+      // Popper/floating-ui don't observe pure CSS transforms; a resize nudges any open coachmark to re-place.
+      window.dispatchEvent(new Event('resize'));
     }
   }
   onDraw(alignDj);
