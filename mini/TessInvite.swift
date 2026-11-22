@@ -426,15 +426,21 @@ final class Controller {
     exit(code)
   }
 
+  var placed = false
+
   func fit(animated: Bool) {
     let size = host.fittingSize
     guard size.width > 0, size.height > 0 else { return }
-    let old = window.frame
-    var frame = NSRect(x: old.midX - size.width / 2, y: old.midY - size.height / 2, width: size.width, height: size.height)
-    if old.width < 10 || window.screen == nil, let screen = NSScreen.main {
-      // first time: a little above the middle, where the eye lands
-      frame.origin.x = screen.visibleFrame.midX - size.width / 2
-      frame.origin.y = screen.visibleFrame.midY - size.height / 2 + screen.visibleFrame.height * 0.04
+    var frame: NSRect
+    if !placed, let screen = NSScreen.main {
+      // first time: centred, a little above the middle, where the eye lands
+      let area = screen.visibleFrame
+      frame = NSRect(x: area.midX - size.width / 2, y: area.midY - size.height / 2 + area.height * 0.04, width: size.width, height: size.height)
+      placed = true
+    } else {
+      // later (installing -> done): grow or shrink around the card's own middle
+      let old = window.frame
+      frame = NSRect(x: old.midX - size.width / 2, y: old.midY - size.height / 2, width: size.width, height: size.height)
     }
     window.setFrame(frame, display: true, animate: animated)
     window.invalidateShadow()
