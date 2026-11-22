@@ -28,7 +28,7 @@ over SSH (D-79).
 
 A Mac profile lives in `support/mac/` (D-104, D-105, D-106, D-110, #121). It has no Telegram and no gateway. The model base is
 `${TESS_INBOX}/v1/support` (Hermes posts to `/chat/completions` under it) and the bearer is the per-person support token.
-The model has no shell. A visit is a fixed set of tools: doctor, a still of the Spotify window after the person says yes, or a short silent clip of just that window after its own separate yes (D-114, #128), then the scrubbed text and the evidence posted to the inbox. It cannot record the whole screen, another window, or the microphone.
+The model has no shell. A visit is a fixed set of tools: doctor, a still of the Spotify window after the person says yes, or a short silent clip of just that window after its own separate yes (D-115, #128), then the scrubbed text and the evidence posted to the inbox. It cannot record the whole screen, another window, or the microphone.
 `support/mac/install.sh` is the one command that installs that profile, a pinned Node.js for the visit, and Tess Support in the Dock (D-105).
 Uninstall removes the profile, including that Node, the icon, and the Dock tile. The checks run it in a scratch home with fake disk tools.
 They do not touch a real Mac. The VPS unit files are unchanged.

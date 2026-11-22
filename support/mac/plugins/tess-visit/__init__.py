@@ -1454,7 +1454,7 @@ def register(ctx):
         ),
         _tool(
             "tess_post",
-            "Post this visit's report. If the still exists, post that too. Takes no arguments. "
+            "Post this visit's report. If a clip or a still exists, post that too. Takes no arguments. "
             "The token stays in this tool. You never see it.",
             {},
             [],

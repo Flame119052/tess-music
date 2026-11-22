@@ -2,6 +2,7 @@ import Foundation
 import ScreenCaptureKit
 import AVFoundation
 import CoreGraphics
+import AppKit
 
 // A short silent recording of the Spotify window, and nothing else.
 //
@@ -107,12 +108,11 @@ Task {
     let sink = Sink(writer: writer, input: input)
     let stream = SCStream(filter: filter, configuration: config, delegate: nil)
     try stream.addStreamOutput(sink, type: .screen, sampleHandlerQueue: DispatchQueue(label: "tess-record.frames"))
-    try await stream.startCapture()
     guard writer.startWriting() else {
       failure = writer.error?.localizedDescription ?? "the recording file could not start"
-      try? await stream.stopCapture()
       return
     }
+    try await stream.startCapture()
 
     try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
     try await stream.stopCapture()

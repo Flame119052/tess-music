@@ -580,8 +580,8 @@ stage_record() {
   if [ "${TESS_TEST:-}" = 1 ] && [ -n "${TESS_TEST_RELEASE_KEY_X:-}" ]; then
     key_x=$TESS_TEST_RELEASE_KEY_X
   fi
-  fetch "$work/components.txt" "$COMPONENTS_ORIGIN/components.txt"
-  fetch "$work/components.sig" "$COMPONENTS_ORIGIN/components.sig"
+  fetch "$work/components.txt" "$COMPONENTS_ORIGIN/components.txt" || die "Could not read the release parts list; the recorder was not installed."
+  fetch "$work/components.sig" "$COMPONENTS_ORIGIN/components.sig" || die "Could not read the release parts signature; the recorder was not installed."
   node_bin=${srcfile:-}
   if [ -z "$node_bin" ] || [ ! -f "$node_bin" ]; then
     node_bin=$profile/runtime/node/bin/node
