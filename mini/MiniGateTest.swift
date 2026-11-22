@@ -58,8 +58,23 @@ struct MiniGateTestMain {
     let supportAct = miniHandle(raw: "POST /support?k=\(token) HTTP/1.1\r\nHost: 127.0.0.1:38411\r\nOrigin: \(spotify)\r\n\r\n", token: token, supportState: { "invited" })
     expect(supportAct.effect == .support, "POST /support triggers support action with the token")
 
-    let supportBadAct = miniHandle(raw: "POST /support?k=nope HTTP/1.1\r\nHost: 127.0.0.1:38411\r\n\r\n", token: token, supportState: { "invited" })
+    let supportBadAct = miniHandle(raw: "POST /support?k=nope HTTP/1.1\r\nHost: 127.0.0.1:38411\r\nOrigin: \(spotify)\r\n\r\n", token: token, supportState: { "invited" })
     expect(supportBadAct.effect == .none, "POST /support without valid token is refused")
+
+    let chatWeb = miniHandle(raw: "POST /support/chat/send?k=\(token) HTTP/1.1\r\nHost: 127.0.0.1:38411\r\nOrigin: https://evil.example\r\n\r\n{\"message\":\"hi\"}", token: token)
+    expect(chatWeb.status == 404 && chatWeb.effect == .none, "a website cannot send chat messages to Pi")
+
+    let chatSend = miniHandle(raw: "POST /support/chat/send?k=\(token) HTTP/1.1\r\nHost: 127.0.0.1:38411\r\nOrigin: \(spotify)\r\n\r\n{\"message\":\"hi\"}", token: token)
+    expect(chatSend.status == 200 && chatSend.effect == .supportSend("{\"message\":\"hi\"}"), "Spotify can send chat messages with token")
+
+    let chatEvents = miniHandle(raw: "GET /support/chat/events?k=\(token)&after=3 HTTP/1.1\r\nHost: 127.0.0.1:38411\r\nOrigin: \(spotify)\r\n\r\n", token: token, supportEventsJSON: { after in "{\"after\":\(after)}" })
+    expect(chatEvents.status == 200 && chatEvents.body == "{\"after\":3}", "Spotify can poll chat events with after cursor")
+
+    let chatDecline = miniHandle(raw: "POST /support/decline?k=\(token) HTTP/1.1\r\nHost: 127.0.0.1:38411\r\nOrigin: \(spotify)\r\n\r\n", token: token)
+    expect(chatDecline.status == 200 && chatDecline.effect == .supportDecline, "Spotify can decline invite cleanly")
+
+    let chatReset = miniHandle(raw: "POST /support/chat/reset?k=\(token) HTTP/1.1\r\nHost: 127.0.0.1:38411\r\nOrigin: \(spotify)\r\n\r\n", token: token)
+    expect(chatReset.status == 200 && chatReset.effect == .supportReset, "Spotify can reset chat session")
 
     fputs("mini gate tests passed\n", stdout)
   }

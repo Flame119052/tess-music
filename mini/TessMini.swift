@@ -291,44 +291,10 @@ final class App: NSObject, NSApplicationDelegate {
   }
   func saveFrame() { UserDefaults.standard.set(NSStringFromRect(panel.frame), forKey: "frame") }
 
-  func supportState() -> String {
-    let fm = FileManager.default
-    let home = fm.homeDirectoryForCurrentUser.path
-    if fm.fileExists(atPath: "\(home)/.hermes/profiles/tess-support/config.yaml") { return "installed" }
-    if fm.fileExists(atPath: "\(home)/Library/Application Support/Tess/state/.support-invited") { return "invited" }
-    return "none"
-  }
+  let piBridge = PiSupportBridge()
 
-  func triggerSupport() {
-    let fm = FileManager.default
-    let home = fm.homeDirectoryForCurrentUser.path
-    let state = supportState()
-    if state == "installed" {
-      let app = "\(home)/Applications/Tess Support.app"
-      if fm.fileExists(atPath: app) { NSWorkspace.shared.open(URL(fileURLWithPath: app)) }
-      return
-    }
-    guard state == "invited" else { return }
-    let stateDir = "\(home)/Library/Application Support/Tess/state"
-    if let raw = try? String(contentsOfFile: "\(stateDir)/.support-invited", encoding: .utf8) {
-      let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-      if !id.isEmpty, id.allSatisfy(\.isNumber) {
-        try? fm.removeItem(atPath: "\(stateDir)/.support-invite-asked-\(id)")
-        try? fm.removeItem(atPath: "\(stateDir)/.support-invite-retry-\(id)")
-      }
-    }
-    let updater = "\(home)/Library/Application Support/Tess/updater.sh"
-    guard fm.fileExists(atPath: updater) else { return }
-    let proc = Process()
-    proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
-    proc.arguments = [updater]
-    var env = ProcessInfo.processInfo.environment
-    env["TESS_FORCE"] = "1"
-    proc.environment = env
-    proc.standardInput = FileHandle.nullDevice
-    proc.standardOutput = FileHandle.nullDevice
-    proc.standardError = FileHandle.nullDevice
-    try? proc.run()
+  func supportState() -> String {
+    piBridge.supportState()
   }
 
   // Tess's theme talks to the miniplayer over localhost. The gate checks the token before any of these run.
@@ -338,30 +304,442 @@ final class App: NSObject, NSApplicationDelegate {
     guard let l = try? NWListener(using: params) else { return }
     l.newConnectionHandler = { [weak self] c in
       c.start(queue: .global())
-      c.receive(minimumIncompleteLength: 1, maximumLength: 8192) { data, _, _, _ in
-        let req = String(decoding: data ?? Data(), as: UTF8.self)
-        let reply = miniHandle(raw: req, token: self?.miniToken ?? "", supportState: { self?.supportState() ?? "none" })
-        DispatchQueue.main.async {
-          switch reply.effect {
-          case .toggle: self?.toggle()
-          case .show: self?.show()
-          case .hide: self?.hide()
-          case .support: self?.triggerSupport()
-          case .lyric(let text): self?.sp.lyric = text
-          case .lines(let body):
-            if let d = body.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-               let lines = o["l"] as? [[Double]], let dur = o["d"] as? Double {
-              self?.sp.lines = lines.compactMap { $0.count == 2 ? ($0[0], $0[1]) : nil }
-              self?.sp.linesDuration = max(1, dur)
-            }
-          case .none: break
-          }
-        }
-        c.send(content: (reply.head + reply.body).data(using: .utf8), completion: .contentProcessed { _ in c.cancel() })
-      }
+      self?.readHTTP(c, acc: Data())
     }
     l.start(queue: .global())
     listener = l
+  }
+
+  private func readHTTP(_ c: NWConnection, acc: Data) {
+    c.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, _ in
+      guard let self else { c.cancel(); return }
+      var buf = acc
+      if let data { buf.append(data) }
+      if !isComplete && buf.count < 131072, let sep = buf.range(of: Data("\r\n\r\n".utf8)) {
+        let head = String(decoding: buf[..<sep.lowerBound], as: UTF8.self)
+        var need = 0
+        for line in head.components(separatedBy: "\r\n").dropFirst() {
+          let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+          if parts.count == 2, parts[0].trimmingCharacters(in: .whitespaces).lowercased() == "content-length",
+             let n = Int(parts[1].trimmingCharacters(in: .whitespaces)) {
+            need = min(max(n, 0), 131072)
+          }
+        }
+        if buf.count - sep.upperBound < need {
+          self.readHTTP(c, acc: buf)
+          return
+        }
+      }
+      let req = String(decoding: buf, as: UTF8.self)
+      let reply = miniHandle(
+        raw: req,
+        token: self.miniToken,
+        supportState: { self.piBridge.supportState() },
+        supportStatusJSON: { self.piBridge.statusJSON() },
+        supportEventsJSON: { after in self.piBridge.eventsJSON(after: after) }
+      )
+      DispatchQueue.main.async {
+        switch reply.effect {
+        case .toggle: self.toggle()
+        case .show: self.show()
+        case .hide: self.hide()
+        case .support: self.piBridge.triggerInstall()
+        case .supportDecline: self.piBridge.declineInvite()
+        case .supportSend(let body): self.piBridge.send(rawBody: body)
+        case .supportAbort: self.piBridge.abort()
+        case .supportReset: self.piBridge.reset()
+        case .lyric(let text): self.sp.lyric = text
+        case .lines(let body):
+          if let d = body.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+             let lines = o["l"] as? [[Double]], let dur = o["d"] as? Double {
+            self.sp.lines = lines.compactMap { $0.count == 2 ? ($0[0], $0[1]) : nil }
+            self.sp.linesDuration = max(1, dur)
+          }
+        case .none: break
+        }
+      }
+      c.send(content: (reply.head + reply.body).data(using: .utf8), completion: .contentProcessed { _ in c.cancel() })
+    }
+  }
+}
+
+// Manages the stripped Pi standalone binary (--mode rpc) for Tess Support inside Spotify.
+// TESS_SUPPORT_TOKEN is read only from chmod-600 support/token into Pi's process environment and never sent over HTTP.
+final class PiSupportBridge {
+  private let lock = NSLock()
+  private var proc: Process?
+  private var stdinPipe: Pipe?
+  private var stdoutBuf = Data()
+  private var seq = 0
+  private var busy = false
+  private var lastActive = Date()
+  private var events: [[String: Any]] = []
+  private var idleTimer: Timer?
+
+  private let questionStill = "May I take one still of the Spotify window? It can show your Spotify name, your picture, your friends' activity, and your playlist names."
+  private let questionVideo = "May I record a short clip of just the Spotify window, about ten seconds? It can show your Spotify name, your picture, your friends' activity, and your playlist names. No other window and no sound are in it."
+
+  private var tessDir: String { "\(FileManager.default.homeDirectoryForCurrentUser.path)/Library/Application Support/Tess" }
+  private var supportRoot: String { "\(tessDir)/support" }
+  private var currentDir: String { "\(supportRoot)/current" }
+  private var stateDir: String { "\(tessDir)/state" }
+
+  func supportState() -> String {
+    let fm = FileManager.default
+    if fm.isExecutableFile(atPath: "\(currentDir)/bin/pi"),
+       fm.fileExists(atPath: "\(currentDir)/extensions/tess-visit.ts"),
+       fm.fileExists(atPath: "\(supportRoot)/token") {
+      return "installed"
+    }
+    if fm.fileExists(atPath: "\(stateDir)/.support-invited") { return "invited" }
+    return "none"
+  }
+
+  func statusJSON() -> String {
+    let fm = FileManager.default
+    let state = supportState()
+    var obj: [String: Any] = ["state": state]
+    if state == "invited",
+       let raw = try? String(contentsOfFile: "\(stateDir)/.support-invited", encoding: .utf8) {
+      let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !id.isEmpty, id.allSatisfy(\.isNumber) {
+        obj["inviteId"] = id
+        obj["asked"] = fm.fileExists(atPath: "\(stateDir)/.support-invite-asked-\(id)")
+      }
+    }
+    let statusPath = "\(stateDir)/.support-invite-status"
+    if let raw = try? String(contentsOfFile: statusPath, encoding: .utf8) {
+      let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+      if let d = trimmed.data(using: .utf8),
+         let parsed = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+        obj["install"] = parsed
+      } else if trimmed == "installing" || trimmed == "done" || trimmed == "failed" {
+        obj["install"] = ["phase": trimmed, "progress": trimmed == "done" ? 1.0 : 0.0, "step": trimmed == "installing" ? "Setting up Tess Support" : "", "detail": ""]
+      }
+    }
+    if let data = try? JSONSerialization.data(withJSONObject: obj), let s = String(data: data, encoding: .utf8) {
+      return s
+    }
+    return "{\"state\":\"\(state)\"}"
+  }
+
+  func declineInvite() {
+    let fm = FileManager.default
+    if let raw = try? String(contentsOfFile: "\(stateDir)/.support-invited", encoding: .utf8) {
+      let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !id.isEmpty, id.allSatisfy(\.isNumber) {
+        fm.createFile(atPath: "\(stateDir)/.support-invite-asked-\(id)", contents: nil)
+      }
+    }
+  }
+
+  func triggerInstall() {
+    let fm = FileManager.default
+    guard supportState() == "invited" else { return }
+    if let raw = try? String(contentsOfFile: "\(stateDir)/.support-invited", encoding: .utf8) {
+      let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !id.isEmpty, id.allSatisfy(\.isNumber) {
+        try? fm.removeItem(atPath: "\(stateDir)/.support-invite-asked-\(id)")
+        try? fm.removeItem(atPath: "\(stateDir)/.support-invite-retry-\(id)")
+      }
+    }
+    let statusPath = "\(stateDir)/.support-invite-status"
+    let initStatus = "{\"phase\":\"installing\",\"progress\":0.01,\"step\":\"Starting setup\",\"detail\":\"Checking invite…\"}\n"
+    try? initStatus.write(toFile: statusPath, atomically: true, encoding: .utf8)
+    let updater = "\(tessDir)/updater.sh"
+    guard fm.fileExists(atPath: updater) else { return }
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+    p.arguments = [updater]
+    var env = ProcessInfo.processInfo.environment
+    env["TESS_FORCE"] = "1"
+    env["TESS_SUPPORT_ACTION"] = "install"
+    env["TMPDIR"] = "/tmp"
+    p.environment = env
+    p.standardInput = FileHandle.nullDevice
+    p.standardOutput = FileHandle.nullDevice
+    p.standardError = FileHandle.nullDevice
+    try? p.run()
+  }
+
+  func eventsJSON(after: Int) -> String {
+    lock.lock()
+    let slice = events.filter { ($0["seq"] as? Int ?? 0) > after }
+    let payload: [String: Any] = [
+      "busy": busy,
+      "running": proc?.isRunning ?? false,
+      "seq": seq,
+      "events": slice,
+    ]
+    lock.unlock()
+    if let data = try? JSONSerialization.data(withJSONObject: payload), let s = String(data: data, encoding: .utf8) {
+      return s
+    }
+    return "{\"busy\":false,\"running\":false,\"seq\":0,\"events\":[]}"
+  }
+
+  func send(rawBody: String) {
+    guard supportState() == "installed" else {
+      pushEvent(["type": "error", "text": "Tess Support is not installed yet."])
+      return
+    }
+    guard let data = rawBody.data(using: .utf8),
+          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let msg = (obj["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !msg.isEmpty else { return }
+
+    lock.lock()
+    lastActive = Date()
+    let isBusy = busy
+    lock.unlock()
+
+    guard ensureRunning() else {
+      pushEvent(["type": "error", "text": "Could not start Tess Support. Try resetting the chat."])
+      return
+    }
+
+    var cmd: [String: Any] = ["type": "prompt", "message": msg]
+    if isBusy { cmd["streamingBehavior"] = "followUp" }
+    if let line = try? JSONSerialization.data(withJSONObject: cmd) {
+      lock.lock()
+      busy = true
+      let handle = stdinPipe?.fileHandleForWriting
+      lock.unlock()
+      handle?.write(line + Data("\n".utf8))
+    }
+  }
+
+  func abort() {
+    lock.lock()
+    let handle = stdinPipe?.fileHandleForWriting
+    lock.unlock()
+    if let line = "{\"type\":\"abort\"}\n".data(using: .utf8) {
+      handle?.write(line)
+    }
+  }
+
+  func reset() {
+    lock.lock()
+    let old = proc
+    proc = nil
+    stdinPipe = nil
+    stdoutBuf.removeAll()
+    busy = false
+    events.removeAll()
+    seq += 1
+    let resetSeq = seq
+    events.append(["seq": resetSeq, "type": "reset"])
+    lock.unlock()
+    if let old, old.isRunning { old.terminate() }
+  }
+
+  private func pushEvent(_ ev: [String: Any]) {
+    lock.lock()
+    seq += 1
+    var item = ev
+    item["seq"] = seq
+    events.append(item)
+    if events.count > 400 { events.removeFirst(events.count - 400) }
+    lastActive = Date()
+    lock.unlock()
+  }
+
+  private func ensureRunning() -> Bool {
+    lock.lock()
+    if let p = proc, p.isRunning {
+      lock.unlock()
+      return true
+    }
+    lock.unlock()
+
+    let piBin = "\(currentDir)/bin/pi"
+    let ext = "\(currentDir)/extensions/tess-visit.ts"
+    let soul = "\(currentDir)/SOUL.md"
+    let agentDir = "\(currentDir)/agent"
+    guard FileManager.default.isExecutableFile(atPath: piBin),
+          let tok = try? String(contentsOfFile: "\(supportRoot)/token", encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+          !tok.isEmpty else { return false }
+
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: piBin)
+    p.arguments = [
+      "--mode", "rpc",
+      "--no-session",
+      "--tools", "+grep,+find,+ls,-write,-edit",
+      "--no-extensions",
+      "--extension", ext,
+      "--no-mcp",
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-themes",
+      "--no-context-files",
+      "--no-approve",
+      "--provider", "tess-gate",
+      "--model", "deepseek-v4.1-flash",
+      "--system-prompt", soul,
+    ]
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    p.environment = [
+      "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:\(home)/.local/bin",
+      "HOME": home,
+      "TMPDIR": "/tmp",
+      "LANG": "en_US.UTF-8",
+      "PI_CODING_AGENT_DIR": agentDir,
+      "PI_OFFLINE": "1",
+      "PI_TELEMETRY": "0",
+      "TESS_SUPPORT_DIR": currentDir,
+      "TESS_SESSION_ROOT": "\(supportRoot)/cache/sessions",
+      "TESS_SUPPORT_TOKEN": tok,
+    ]
+    let inPipe = Pipe()
+    let outPipe = Pipe()
+    p.standardInput = inPipe
+    p.standardOutput = outPipe
+    p.standardError = FileHandle.nullDevice
+
+    outPipe.fileHandleForReading.readabilityHandler = { [weak self] fh in
+      let chunk = fh.availableData
+      if chunk.isEmpty {
+        fh.readabilityHandler = nil
+        return
+      }
+      self?.consumeStdout(chunk)
+    }
+    p.terminationHandler = { [weak self] _ in
+      guard let self else { return }
+      self.lock.lock()
+      let wasBusy = self.busy
+      self.busy = false
+      self.proc = nil
+      self.stdinPipe = nil
+      self.lock.unlock()
+      if wasBusy { self.pushEvent(["type": "settled"]) }
+    }
+
+    do {
+      try p.run()
+    } catch {
+      return false
+    }
+
+    lock.lock()
+    proc = p
+    stdinPipe = inPipe
+    stdoutBuf.removeAll()
+    lastActive = Date()
+    lock.unlock()
+
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self.idleTimer == nil else { return }
+      self.idleTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        self?.reapIfIdle()
+      }
+    }
+    return true
+  }
+
+  private func reapIfIdle() {
+    lock.lock()
+    let shouldStop = !busy && proc != nil && Date().timeIntervalSince(lastActive) > 600
+    let old = shouldStop ? proc : nil
+    if shouldStop {
+      proc = nil
+      stdinPipe = nil
+    }
+    lock.unlock()
+    if let old, old.isRunning { old.terminate() }
+  }
+
+  private func consumeStdout(_ chunk: Data) {
+    lock.lock()
+    stdoutBuf.append(chunk)
+    var lines: [Data] = []
+    while let nl = stdoutBuf.firstIndex(of: 0x0A) {
+      var line = stdoutBuf[..<nl]
+      if line.last == 0x0D { line = line.dropLast() }
+      lines.append(Data(line))
+      stdoutBuf.removeSubrange(...nl)
+    }
+    lock.unlock()
+
+    for line in lines where !line.isEmpty {
+      guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+            let type = obj["type"] as? String else { continue }
+      handleRPCEvent(type: type, obj: obj)
+    }
+  }
+
+  private func toolLabel(_ name: String) -> String {
+    switch name {
+    case "read": return "Reading Tess file"
+    case "grep": return "Searching Tess logs"
+    case "find", "ls": return "Checking Tess files"
+    case "bash": return "Running diagnostic check"
+    case "tess_visit_start": return "Starting check-up"
+    case "tess_read_skill": return "Loading support guide"
+    case "tess_doctor": return "Checking Tess health"
+    case "tess_guard_log": return "Reading helper log"
+    case "tess_ask_consent": return "Preparing screenshot request"
+    case "tess_ask_consent_video": return "Preparing clip request"
+    case "tess_still": return "Capturing Spotify window"
+    case "tess_record": return "Recording Spotify window"
+    case "tess_save_note": return "Writing down notes"
+    case "tess_open_issues": return "Checking known issues"
+    case "tess_triage": return "Scrubbing personal info"
+    case "tess_post": return "Sending report to Krish"
+    case "tess_amend_report": return "Updating filed report"
+    case "tess_handoff": return "Cleaning up temporary files"
+    default: return "Working…"
+    }
+  }
+
+  private func handleRPCEvent(type: String, obj: [String: Any]) {
+    switch type {
+    case "message_update":
+      guard let ev = obj["assistantMessageEvent"] as? [String: Any],
+            let et = ev["type"] as? String else { return }
+      if et == "text_delta", let delta = ev["delta"] as? String, !delta.isEmpty {
+        pushEvent(["type": "delta", "text": delta])
+      } else if et == "error", let msg = ev["error"] as? String {
+        pushEvent(["type": "error", "text": msg])
+      }
+    case "message_end":
+      guard let msg = obj["message"] as? [String: Any], (msg["role"] as? String) == "assistant" else { return }
+      if let errMsg = msg["errorMessage"] as? String, !errMsg.isEmpty {
+        pushEvent(["type": "error", "text": errMsg])
+        return
+      }
+      var text = ""
+      if let content = msg["content"] as? [[String: Any]] {
+        text = content.compactMap { ($0["type"] as? String) == "text" ? ($0["text"] as? String) : nil }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+      } else if let s = msg["content"] as? String {
+        text = s.trimmingCharacters(in: .whitespacesAndNewlines)
+      }
+      if !text.isEmpty {
+        var ev: [String: Any] = ["type": "message", "text": text]
+        if text.contains(questionStill) { ev["consent"] = "still" }
+        else if text.contains(questionVideo) { ev["consent"] = "video" }
+        pushEvent(ev)
+      }
+    case "tool_execution_start":
+      let name = obj["toolName"] as? String ?? ""
+      pushEvent(["type": "tool_start", "name": name, "label": toolLabel(name)])
+    case "tool_execution_end":
+      let name = obj["toolName"] as? String ?? ""
+      let isErr = obj["isError"] as? Bool ?? false
+      pushEvent(["type": "tool_end", "name": name, "isError": isErr])
+    case "response":
+      if (obj["success"] as? Bool) == false {
+        let err = obj["error"] as? String ?? "Support request failed."
+        lock.lock(); busy = false; lock.unlock()
+        pushEvent(["type": "error", "text": err])
+      }
+    case "agent_settled":
+      lock.lock(); busy = false; lock.unlock()
+      pushEvent(["type": "settled"])
+    default:
+      break
+    }
   }
 }
 

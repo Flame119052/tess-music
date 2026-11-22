@@ -7,8 +7,7 @@ func miniNewToken() -> String {
 }
 
 // What one request to the miniplayer is allowed to do. A website on the same Mac can open 127.0.0.1; the token is
-// how Tess's page is told apart from that website. Only Spotify's own page may read the token. Later calls carry it
-// and need no CORS headers, which is how the theme already talks to Mini.
+// how Tess's page is told apart from that website. Only Spotify's own page may read the token or use Support routes.
 enum MiniEffect: Equatable {
   case none
   case toggle
@@ -17,6 +16,10 @@ enum MiniEffect: Equatable {
   case lyric(String)
   case lines(String)
   case support
+  case supportDecline
+  case supportSend(String)
+  case supportAbort
+  case supportReset
 }
 
 struct MiniReply: Equatable {
@@ -28,7 +31,13 @@ struct MiniReply: Equatable {
 
 private let miniSpotifyOrigin = "https://xpui.app.spotify.com"
 
-func miniHandle(raw: String, token: String, supportState: () -> String = { "none" }) -> MiniReply {
+func miniHandle(
+  raw: String,
+  token: String,
+  supportState: () -> String = { "none" },
+  supportStatusJSON: (() -> String)? = nil,
+  supportEventsJSON: ((Int) -> String)? = nil
+) -> MiniReply {
   let parts = raw.components(separatedBy: "\r\n\r\n")
   let headerText = parts.first ?? ""
   let body = parts.dropFirst().joined(separator: "\r\n\r\n")
@@ -46,12 +55,13 @@ func miniHandle(raw: String, token: String, supportState: () -> String = { "none
   let cut = target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
   let path = String(cut[0])
   var given = ""
+  var afterSeq = 0
   if cut.count == 2 {
     for pair in cut[1].split(separator: "&") {
       let kv = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-      if kv.first == "k" {
-        given = kv.count > 1 ? (String(kv[1]).removingPercentEncoding ?? "") : ""
-      }
+      let val = kv.count > 1 ? (String(kv[1]).removingPercentEncoding ?? "") : ""
+      if kv.first == "k" { given = val }
+      if kv.first == "after", let n = Int(val), n >= 0 { afterSeq = n }
     }
   }
   let fromSpotify = origin == miniSpotifyOrigin
@@ -71,11 +81,37 @@ func miniHandle(raw: String, token: String, supportState: () -> String = { "none
   guard miniTokenMatches(given, token) else {
     return miniReply(404, origin: nil, privateNetwork: false, body: "", effect: .none)
   }
-  if method == "GET", path == "/support" {
-    if fromSpotify {
+  // Support routes require Spotify's exact origin AND the valid per-launch token.
+  if path == "/support" || path.hasPrefix("/support/") {
+    guard fromSpotify else {
+      return miniReply(404, origin: nil, privateNetwork: false, body: "", effect: .none)
+    }
+    if method == "GET", path == "/support" {
+      if let custom = supportStatusJSON {
+        return miniReply(200, origin: origin, privateNetwork: true, body: custom(), json: true, effect: .none)
+      }
       let state = supportState()
       let safe = (state == "invited" || state == "installed") ? state : "none"
       return miniReply(200, origin: origin, privateNetwork: true, body: "{\"state\":\"\(safe)\"}", json: true, effect: .none)
+    }
+    if method == "POST", path == "/support" || path == "/support/install" {
+      return miniReply(200, origin: origin, privateNetwork: true, body: "{\"ok\":true}", json: true, effect: .support)
+    }
+    if method == "POST", path == "/support/decline" {
+      return miniReply(200, origin: origin, privateNetwork: true, body: "{\"ok\":true}", json: true, effect: .supportDecline)
+    }
+    if method == "GET", path == "/support/chat/events" {
+      let payload = supportEventsJSON?(afterSeq) ?? "{\"busy\":false,\"running\":false,\"seq\":0,\"events\":[]}"
+      return miniReply(200, origin: origin, privateNetwork: true, body: payload, json: true, effect: .none)
+    }
+    if method == "POST", path == "/support/chat/send" {
+      return miniReply(200, origin: origin, privateNetwork: true, body: "{\"ok\":true}", json: true, effect: .supportSend(body))
+    }
+    if method == "POST", path == "/support/chat/abort" {
+      return miniReply(200, origin: origin, privateNetwork: true, body: "{\"ok\":true}", json: true, effect: .supportAbort)
+    }
+    if method == "POST", path == "/support/chat/reset" {
+      return miniReply(200, origin: origin, privateNetwork: true, body: "{\"ok\":true}", json: true, effect: .supportReset)
     }
     return miniReply(404, origin: nil, privateNetwork: false, body: "", effect: .none)
   }
@@ -86,7 +122,6 @@ func miniHandle(raw: String, token: String, supportState: () -> String = { "none
   case "/hide": effect = .hide
   case "/lyric": effect = .lyric(body.trimmingCharacters(in: .whitespacesAndNewlines))
   case "/lines": effect = .lines(body)
-  case "/support": effect = method == "POST" ? .support : .none
   default: effect = .none
   }
   if effect == .none {
@@ -116,6 +151,7 @@ private func miniHead(_ status: Int, origin: String?, privateNetwork: Bool, json
   if let origin {
     lines.append("Access-Control-Allow-Origin: \(origin)")
     lines.append("Access-Control-Allow-Methods: GET, POST, OPTIONS")
+    lines.append("Access-Control-Allow-Headers: Content-Type")
     lines.append("Vary: Origin")
   }
   if privateNetwork { lines.append("Access-Control-Allow-Private-Network: true") }

@@ -222,6 +222,72 @@ async function support(request, env) {
   });
 }
 
+// Amend a support report that the same token previously filed (PATCH /v1/support/:id).
+// Strictly scoped by token_id so a Mac can only update its own unfiled/filed reports, never anyone else's.
+async function supportAmend(request, env, id) {
+  const { success } = await env.LIMIT.limit({ key: request.headers.get('cf-connecting-ip') || '' });
+  if (!success) return reply(429);
+  const auth = request.headers.get('authorization') || '';
+  const token = /^Bearer (.+)$/i.exec(auth.trim())?.[1] || '';
+  if (!token) return reply(401);
+  const sha = await shaFull(token);
+  let who;
+  try {
+    who = await env.DB.prepare('SELECT id, label FROM support_tokens WHERE sha = ? AND revoked IS NULL').bind(sha).first();
+  } catch { return reply(503); }
+  if (!who) return reply(401);
+  if (request.headers.get('content-type') !== 'application/json') return reply(415);
+  const len = Number(request.headers.get('content-length') || 0);
+  if (!len || len > MAX_SUPPORT) return reply(413);
+  try {
+    if (!(await hit(env, `tok:${sha.slice(0, 16)}`, 60, 3600))) return reply(429);
+  } catch { return reply(503); }
+  const bytes = await readCapped(request, MAX_SUPPORT);
+  if (!bytes) return reply(413);
+  let r;
+  try { r = JSON.parse(new TextDecoder().decode(bytes)); } catch { return reply(400); }
+  if (!r || typeof r !== 'object') return reply(400);
+
+  let existing;
+  try {
+    existing = await env.DB.prepare(
+      'SELECT id, title, priority, areas, kind, words, diagnosis, body FROM support_reports WHERE id = ? AND token_id = ?',
+    ).bind(Number(id), who.id).first();
+  } catch { return reply(503); }
+  if (!existing) return reply(404);
+
+  const priority = r.priority !== undefined ? (PRIORITIES.has(r.priority) ? r.priority : null) : existing.priority;
+  if (!priority) return reply(400);
+  const kind = r.kind !== undefined ? (ISSUE_KINDS.has(r.kind) ? r.kind : null) : existing.kind;
+  if (!kind) return reply(400);
+  let areasText = existing.areas;
+  if (r.areas !== undefined) {
+    const areas = (Array.isArray(r.areas) ? r.areas : String(r.areas || '').split(','))
+      .map((a) => String(a).trim().replace(/^area:\s*/, 'area: ')).filter(Boolean);
+    if (!areas.length || areas.length > 3 || areas.some((a) => !AREAS.has(a))) return reply(400);
+    areasText = areas.join(', ');
+  }
+  let title = existing.title;
+  if (r.title !== undefined) {
+    title = short(r.title, 120);
+    if (!title || /[`]|\$\(/.test(title)) return reply(400);
+  }
+  const diagnosis = r.diagnosis !== undefined ? short(r.diagnosis, 2000) : existing.diagnosis;
+  let body = r.body !== undefined ? short(r.body, 24 * 1024) : existing.body;
+  if (r.append_note !== undefined) {
+    const note = short(r.append_note, 4000);
+    if (note) body = short(`${body || ''}\n\n## Follow-up note\n\n${note}`, 24 * 1024);
+  }
+  try {
+    await env.DB.prepare(
+      'UPDATE support_reports SET priority = ?, areas = ?, kind = ?, title = ?, diagnosis = ?, body = ? WHERE id = ? AND token_id = ?',
+    ).bind(priority, areasText, kind, title, diagnosis, body, Number(id), who.id).run();
+  } catch { return reply(503); }
+  return new Response(JSON.stringify({ ok: true, id: Number(id) }), {
+    status: 200, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+  });
+}
+
 // --- private Tess Support invites: POST /v1/support/invite/check and /v1/support/invite/claim (#137).
 //
 // Krish invites one Mac by its 32-hex install id (`node tools/reports.mjs support invite add …`). The database never
@@ -988,6 +1054,7 @@ export default {
     const { pathname } = new URL(request.url);
     if (request.method === 'POST' && pathname === '/v1/report') return report(request, env);
     if (request.method === 'POST' && pathname === '/v1/support') return support(request, env);
+    if (request.method === 'PATCH' && /^\/v1\/support\/\d+$/.test(pathname)) return supportAmend(request, env, pathname.split('/').pop());
     if (request.method === 'POST' && pathname === '/v1/support/invite/check') return supportInviteCheck(request, env);
     if (request.method === 'POST' && pathname === '/v1/support/invite/claim') return supportInviteClaim(request, env);
     if (request.method === 'GET' && pathname === '/v1/issues') return issueTitles(request, env);
