@@ -60,6 +60,13 @@ const QUESTION_VIDEO =
 
 const YES_WORDS = new Set(["yes", "y", "go ahead"]);
 const ALLOWED_TOOLS = new Set([
+  // Standard read-only investigation tools (guarded below so secrets and writes are blocked).
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "bash",
+  // Tess Support visit tools.
   "tess_visit_start",
   "tess_doctor",
   "tess_guard_log",
@@ -72,8 +79,12 @@ const ALLOWED_TOOLS = new Set([
   "tess_open_issues",
   "tess_triage",
   "tess_post",
+  "tess_amend_report",
   "tess_handoff",
 ]);
+
+const SECRET_PATH_RE = /(?:\/|^)(?:support\/token|\.env(?:\.|$)|\.ssh|tess-signing|\.aws|\.gnupg|\.netrc|keychain|Cookies|Local State|Login Data)/i;
+const BLOCKED_BASH_RE = /\b(?:sudo|rm|rmdir|mv|cp|chmod|chown|chflags|kill|killall|pkill|mkfs|dd|diskutil|printenv|env|export|set|unset|security|tee|osascript\b.*(?:delete|quit)|open\b.*-a)\b|(?:>|>>|support\/token|\.env\b|tess-signing|\.ssh|Spotify\.app\/Contents\/Resources\/Apps)/i;
 
 type PrivacyMod = {
   clean: (text: string) => string;
@@ -282,11 +293,41 @@ export default function (pi: ExtensionAPI) {
     lanes.video = freshLane();
   }
 
-  // Defense-in-depth: block anything outside our exact 13 Tess visit tools.
+  // Defense-in-depth: keep standard read-only investigation tools available while blocking writes, secrets, and Spotify edits.
   pi.on("tool_call", async (event) => {
     if (!ALLOWED_TOOLS.has(event.toolName)) {
       return { block: true, reason: `Tool ${event.toolName} is not permitted in Tess Support` };
     }
+    const input = (event.input || {}) as Record<string, unknown>;
+    if (event.toolName === "read" || event.toolName === "grep" || event.toolName === "find" || event.toolName === "ls") {
+      const target = String(input.path || input.file_path || "");
+      if (SECRET_PATH_RE.test(target)) {
+        return { block: true, reason: "Reading secrets or credential files is not permitted in Tess Support" };
+      }
+    }
+    if (event.toolName === "bash") {
+      const cmd = String(input.command || "");
+      if (BLOCKED_BASH_RE.test(cmd)) {
+        return { block: true, reason: "Only read-only diagnostic commands are permitted in Tess Support" };
+      }
+    }
+  });
+
+  // Scrub every tool output (including read/grep/find/ls/bash) so personal data and tokens never reach the model.
+  pi.on("tool_result", async (event) => {
+    if (!Array.isArray(event.content) || event.toolName === "tess_read_skill") return;
+    let changed = false;
+    const next = await Promise.all(
+      event.content.map(async (item: any) => {
+        if (item && item.type === "text" && typeof item.text === "string") {
+          const cleaned = (await scrubAll(item.text)).slice(0, MAX_RETURN);
+          if (cleaned !== item.text) changed = true;
+          return { ...item, text: cleaned };
+        }
+        return item;
+      })
+    );
+    if (changed) return { content: next };
   });
 
   // Verify the assistant's turn ended cleanly on the exact consent question with no tool calls beside it.
@@ -597,7 +638,7 @@ export default function (pi: ExtensionAPI) {
       try {
         requireSession();
         const origin = inboxOrigin();
-        const res = await fetch(`${origin}/v1/support/issues`, { method: "GET" });
+        const res = await fetch(`${origin}/v1/issues`, { method: "GET" });
         const text = await res.text();
         if (!res.ok) throw new Error(`inbox answered ${res.status}`);
         return ok({ ok: true, issues: (await scrubAll(text)).slice(0, 6000) });
@@ -721,7 +762,7 @@ export default function (pi: ExtensionAPI) {
         ] as const) {
           if (!existsSync(join(real, name))) continue;
           const bytes = readPlainFile(dir, name, max);
-          const up = await fetch(`${origin}/v1/support/${id}/recording`, {
+          const up = await fetch(`${origin}/v1/support/recording/${id}`, {
             method: "PUT",
             headers: { "content-type": mime, authorization: `Bearer ${tok}` },
             body: bytes,
@@ -732,6 +773,78 @@ export default function (pi: ExtensionAPI) {
           }
         }
         return ok({ ok: true, id });
+      } catch (e) {
+        return errResult(e);
+      }
+    },
+  });
+
+  pi.registerTool({
+    name: "tess_amend_report",
+    label: "Update filed report",
+    description:
+      "Update a report this Mac already filed (by id), or attach a newly captured screenshot/clip from the current session. " +
+      "Only reports filed by this Mac's token can be amended.",
+    parameters: Type.Object({
+      id: Type.Optional(Type.Integer({ description: "Report id to amend (defaults to the report filed in this visit)." })),
+      title: Type.Optional(Type.String({ description: "Updated plain-English title (under 90 chars)." })),
+      diagnosis: Type.Optional(Type.String({ description: "Updated short summary of what broke." })),
+      append_note: Type.Optional(Type.String({ description: "Additional finding or user follow-up to append to the report." })),
+      priority: Type.Optional(Type.Union([Type.Literal("P0"), Type.Literal("P1"), Type.Literal("P2"), Type.Literal("P3")])),
+      also: Type.Optional(Type.Union(AREAS.map((a) => Type.Literal(a)))),
+      upload_media: Type.Optional(Type.Boolean({ description: "If true, also upload any spotify.png or spotify.mov captured in this session." })),
+    }),
+    async execute(_id, params) {
+      try {
+        const origin = inboxOrigin();
+        const tok = process.env.TESS_SUPPORT_TOKEN || "";
+        if (!tok) throw new Error("support token is missing");
+        const reportId = params.id ? String(params.id) : (lastReportId || "");
+        if (!/^\d+$/.test(reportId)) throw new Error("provide a valid report id (or post a report first)");
+
+        const patch: Record<string, unknown> = {};
+        if (params.title) patch.title = await scrubAll(params.title);
+        if (params.diagnosis) patch.diagnosis = await scrubAll(params.diagnosis);
+        if (params.append_note) patch.append_note = await scrubAll(params.append_note);
+        if (params.priority) patch.priority = params.priority;
+        if (params.also) patch.areas = [`area: ${params.also}`];
+
+        if (Object.keys(patch).length > 0) {
+          const body = JSON.stringify(patch);
+          const priv = await loadPrivacy();
+          const shown = priv.stripInvisible(body);
+          for (const re of priv.SECRET_SHAPES) {
+            if (re.test(shown)) throw new Error("amendment carries something token-shaped; refusing to send");
+          }
+          if (shown.includes(tok)) throw new Error("amendment carries this Mac's token; refusing to send");
+          const res = await fetch(`${origin}/v1/support/${reportId}`, {
+            method: "PATCH",
+            headers: { "content-type": "application/json", authorization: `Bearer ${tok}` },
+            body,
+          });
+          const text = await res.text();
+          if (!res.ok) throw new Error(`inbox answered ${res.status}: ${text.slice(0, 180)}`);
+        }
+
+        const uploaded: string[] = [];
+        if (params.upload_media && sessionDir && existsSync(sessionDir)) {
+          const real = realpathSync(sessionDir);
+          for (const [name, mime, max] of [
+            ["spotify.mov", "video/quicktime", MAX_VIDEO_BYTES],
+            ["spotify.png", "image/png", MAX_IMAGE_BYTES],
+          ] as const) {
+            if (!existsSync(join(real, name))) continue;
+            const bytes = readPlainFile(sessionDir, name, max);
+            const up = await fetch(`${origin}/v1/support/recording/${reportId}`, {
+              method: "PUT",
+              headers: { "content-type": mime, authorization: `Bearer ${tok}` },
+              body: bytes,
+            });
+            if (!up.ok) throw new Error(`uploading ${name} failed (${up.status})`);
+            uploaded.push(name);
+          }
+        }
+        return ok({ ok: true, id: Number(reportId), amended: Object.keys(patch), uploaded });
       } catch (e) {
         return errResult(e);
       }

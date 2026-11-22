@@ -185,7 +185,13 @@ try {
           res.end(JSON.stringify({ id: 42 }));
           return;
         }
-        if (req.method === 'PUT' && req.url === '/v1/support/42/recording') {
+        if (req.method === 'PATCH' && req.url === '/v1/support/42') {
+          postedReport.amended = JSON.parse(raw.toString('utf8'));
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, id: 42 }));
+          return;
+        }
+        if (req.method === 'PUT' && req.url === '/v1/support/recording/42') {
           postedStill = { auth: req.headers.authorization, type: req.headers['content-type'], bytes: raw.length };
           res.writeHead(200, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok: true }));
@@ -233,6 +239,10 @@ try {
             ] }, 'tool_calls');
           } else if (llmCall === 6) {
             sendChunk({ role: 'assistant', tool_calls: [
+              { index: 0, id: 't14', type: 'function', function: { name: 'tess_amend_report', arguments: JSON.stringify({ append_note: 'Also happens in full screen.' }) } },
+            ] }, 'tool_calls');
+          } else if (llmCall === 7) {
+            sendChunk({ role: 'assistant', tool_calls: [
               { index: 0, id: 't13', type: 'function', function: { name: 'tess_handoff', arguments: '{}' } },
             ] }, 'tool_calls');
           } else {
@@ -264,7 +274,7 @@ try {
     const pi = spawn(piBin, [
       '--mode', 'rpc',
       '--no-session',
-      '--no-builtin-tools',
+      '--tools', '+grep,+find,+ls,-write,-edit',
       '--no-extensions',
       '--extension', join(liveDir, 'extensions/tess-visit.ts'),
       '--no-mcp',
@@ -332,6 +342,12 @@ try {
 
     assert.equal(sawBearer, 'Bearer tess_live_tok_abcdef0123456789');
     assert.deepEqual(sawTools, [
+      'bash',
+      'find',
+      'grep',
+      'ls',
+      'read',
+      'tess_amend_report',
       'tess_ask_consent',
       'tess_ask_consent_video',
       'tess_doctor',
@@ -345,7 +361,7 @@ try {
       'tess_still',
       'tess_triage',
       'tess_visit_start',
-    ], 'ONLY the 13 Tess visit tools are exposed — zero built-in bash/read/write/edit');
+    ], 'standard read-only investigation tools + 14 Tess visit tools are exposed — zero write/edit');
 
     assert.match(toolResults.get('t3'), /"ok":false.*"ask first/i, 'tess_still refused before consent');
     assert.match(toolResults.get('t5'), /"ok":true.*"spotify\.png"/, 'tess_still succeeds after user yes');
@@ -354,6 +370,7 @@ try {
     assert.equal(postedReport.auth, 'Bearer tess_live_tok_abcdef0123456789');
     assert.ok(!JSON.stringify(postedReport.body).includes('bob@example.com'), 'email scrubbed before post');
     assert.ok(!JSON.stringify(postedReport.body).includes('/Users/bob'), 'home path scrubbed before post');
+    assert.ok(postedReport.amended && postedReport.amended.append_note === 'Also happens in full screen.', 'report amended via PATCH');
     assert.ok(postedStill && postedStill.bytes > 0 && postedStill.type === 'image/png', 'still uploaded to inbox');
     assert.match(toolResults.get('t13'), /"cleaned":true/, 'handoff deleted session folder');
     console.log('pi support live RPC + extension + consent + scrub + post tests passed');

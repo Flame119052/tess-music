@@ -565,7 +565,7 @@ final class PiSupportBridge {
     p.arguments = [
       "--mode", "rpc",
       "--no-session",
-      "--no-builtin-tools",
+      "--tools", "+grep,+find,+ls,-write,-edit",
       "--no-extensions",
       "--extension", ext,
       "--no-mcp",
@@ -671,6 +671,10 @@ final class PiSupportBridge {
 
   private func toolLabel(_ name: String) -> String {
     switch name {
+    case "read": return "Reading Tess file"
+    case "grep": return "Searching Tess logs"
+    case "find", "ls": return "Checking Tess files"
+    case "bash": return "Running diagnostic check"
     case "tess_visit_start": return "Starting check-up"
     case "tess_read_skill": return "Loading support guide"
     case "tess_doctor": return "Checking Tess health"
@@ -683,6 +687,7 @@ final class PiSupportBridge {
     case "tess_open_issues": return "Checking known issues"
     case "tess_triage": return "Scrubbing personal info"
     case "tess_post": return "Sending report to Krish"
+    case "tess_amend_report": return "Updating filed report"
     case "tess_handoff": return "Cleaning up temporary files"
     default: return "Working…"
     }
