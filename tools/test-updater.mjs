@@ -570,6 +570,24 @@ esac
   }
 
   {
+    // Parts owned by other tools (like Tess Support's `record` helper) appear in components.txt
+    // but must be skipped by the Spotify updater without downloading or calling doctor --auto.
+    const s = sandbox();
+    writeFileSync(join(s.fixtures, 'components.txt'), [
+      `installer ${s.assetSha} test://installer test-source`,
+      `record ${'a'.repeat(64)} test://record-should-not-fetch test-source`,
+      'version 9.9.9',
+      '',
+    ].join('\n'));
+    s.run();
+    const curlLog = readFileSync(join(s.box, 'curl.log'), 'utf8');
+    assert.equal(curlLog.includes('record-should-not-fetch'), false, 'unknown part was not downloaded');
+    assert.equal(existsSync(join(s.state, 'record')), false, 'unknown part was not recorded in state');
+    const doctorLog = existsSync(join(s.box, 'doctor.log')) ? readFileSync(join(s.box, 'doctor.log'), 'utf8') : '';
+    assert.equal(doctorLog.includes('--auto'), false, 'unknown part did not trigger doctor --auto');
+  }
+
+  {
     // #137: an uninvited Mac is never told Tess Support exists. One check, a plain no, and nothing else — the request
     // carries only its own install id, and no installer is downloaded or run.
     const s = sandbox();
@@ -795,6 +813,7 @@ esac
     assert.match(updater, /buttons \{"Done", "Open Tess Support"\}/);
   }
 
-  console.log('updater tests passed (success, fresh, blocked, failed swap, rollback/no-retry, playing/idle, list reports, theme swap with ditto denied, support invite consent, invite lock released while a dialog waits, claim 404 vs 503)');} finally {
+  console.log('updater tests passed (success, fresh, blocked, failed swap, rollback/no-retry, playing/idle, list reports, theme swap with ditto denied, support invite consent, invite lock released while a dialog waits, claim 404 vs 503)');
+} finally {
   for (const box of boxes) rmSync(box, { recursive: true, force: true });
 }

@@ -227,6 +227,27 @@ const main = () => {
       rmSync(previous, { recursive: true, force: true });
     };
 
+    // The window recorder ships as a Tess release part (install.sh fetches it).
+    // install.mjs never downloads binaries: TESS_RECORD supplies the file a
+    // test or a dev install wants placed, and without one the profile is
+    // still-only.
+    const placeRecorder = () => {
+      const source = process.env.TESS_RECORD;
+      if (!source) return;
+      const from = resolve(source);
+      let info;
+      try { info = lstatSync(from); } catch { die('TESS_RECORD must be a regular file'); }
+      if (info.isSymbolicLink() || !info.isFile()) die('TESS_RECORD must be a regular file');
+      const binDir = join(dest, 'runtime', 'bin');
+      for (const path of [dest, join(dest, 'runtime'), binDir]) {
+        if (isLink(path)) die('the recorder path is a symlink. Refusing to follow it.');
+      }
+      mkdirSync(binDir, { recursive: true });
+      const target = join(binDir, 'tess-record');
+      cpSync(from, target);
+      chmodSync(target, 0o755);
+    };
+
     // Replace whatever the installer wrote. Two lines, mode 600, no other key.
     // Only inside the profile folder.
     const envPath = join(dest, '.env');
@@ -243,6 +264,7 @@ const main = () => {
       closeSync(fd);
     }
     placeRuntime();
+    placeRecorder();
     console.log(`via ${via}`);
   } finally {
     rmSync(stage, { recursive: true, force: true });
