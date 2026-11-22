@@ -733,6 +733,7 @@ stage_profile_files() {
 support/mac/config.yaml
 support/mac/distribution.yaml
 support/mac/SOUL.md
+support/mac/AppIcon.icns
 support/mac/skills/tess-evidence/SKILL.md
 support/mac/skills/tess-evidence/scripts/spotify-window.mjs
 support/mac/skills/tess-gather/SKILL.md
@@ -1162,6 +1163,7 @@ install_profile() {
   set -f
   for rel in $rels; do
     case $rel in
+      support/mac/AppIcon.icns) continue ;;
       support/mac/*)
         dest=${rel#support/mac/}
         case $dest in
@@ -1441,7 +1443,7 @@ install_cli() {
 }
 
 build_launcher() {
-  mkdir -p "$HOME/Applications" "$support_app/Contents/MacOS"
+  mkdir -p "$HOME/Applications" "$support_app/Contents/MacOS" "$support_app/Contents/Resources"
   cat > "$support_app/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1455,6 +1457,8 @@ build_launcher() {
   <string>ing.janus.tess.support</string>
   <key>CFBundleExecutable</key>
   <string>launch</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleVersion</key>
@@ -1468,6 +1472,8 @@ build_launcher() {
 </dict>
 </plist>
 EOF
+  cp "$root/support/mac/AppIcon.icns" "$support_app/Contents/Resources/AppIcon.icns"
+  chmod 644 "$support_app/Contents/Resources/AppIcon.icns"
   # The launch choice is fixed here. The click does not read the support code.
   # The path is absolute because the Dock does not search Homebrew or ~/.local/bin.
   if [ "$launch" = "desktop" ]; then

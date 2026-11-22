@@ -575,6 +575,13 @@ try {
   const launcher = readFileSync(join(armEnv.HOME, 'Applications', 'Tess Support.app', 'Contents', 'MacOS', 'launch'), 'utf8');
   assert.match(launcher, /open -a /);
   assert.match(launcher, /--profile=tess-support/);
+  const plist = readFileSync(join(armEnv.HOME, 'Applications', 'Tess Support.app', 'Contents', 'Info.plist'), 'utf8');
+  assert.match(plist, /<key>CFBundleIconFile<\/key>\s*<string>AppIcon<\/string>/);
+  assert.ok(
+    readFileSync(join(armEnv.HOME, 'Applications', 'Tess Support.app', 'Contents', 'Resources', 'AppIcon.icns'))
+      .equals(readFileSync(join(root, 'support/mac/AppIcon.icns'))),
+    'Tess Support.app carries the pinned Dock icon',
+  );
   assert.equal(readFileSync(join(armEnv.HERMES_HOME, 'active_profile'), 'utf8').trim(), 'tess-support');
   const desk = readFileSync(join(armEnv.HOME, 'Library', 'Application Support', 'Hermes', 'active-profile.json'), 'utf8');
   assert.equal(JSON.parse(desk).profile, 'tess-support');
