@@ -337,7 +337,7 @@ struct InviteCard: View {
       statusBody(
         badge: AnyView(Badge(tint: .amber, size: 72, radius: 22) { symbol("exclamationmark.triangle.fill", .amber, 29) }),
         heading: "Couldn't finish setting up",
-        detail: "Some files may have been partially set up. Run the uninstall command or ask Krish.")
+        detail: "Some parts may have been left behind. Ask Krish and he can tidy them up.")
         .padding(.bottom, 30)
       foot
       HStack(spacing: 10) {
@@ -399,9 +399,18 @@ final class Controller {
     self.timeout = timeout
     window = GlassWindow(contentRect: NSRect(x: 0, y: 0, width: cardWidth, height: 400), styleMask: [.borderless], backing: .buffered, defer: false)
     host = NSHostingView(rootView: AnyView(EmptyView()))
-    host.rootView = AnyView(ZStack { Blur(); InviteCard(model: model, live: true) { [unowned self] in self.choose($0) } })
+    host.rootView = AnyView(
+      ZStack {
+        Blur().clipShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
+        InviteCard(model: model, live: true) { [unowned self] in self.choose($0) }
+      }
+      .clipShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
+    )
     host.wantsLayer = true
     host.layer?.backgroundColor = NSColor.clear.cgColor
+    host.layer?.cornerRadius = cardRadius
+    host.layer?.cornerCurve = .continuous
+    host.layer?.masksToBounds = true
     window.contentView = host
     window.isOpaque = false
     window.backgroundColor = .clear
@@ -443,6 +452,8 @@ final class Controller {
       frame = NSRect(x: old.midX - size.width / 2, y: old.midY - size.height / 2, width: size.width, height: size.height)
     }
     window.setFrame(frame, display: true, animate: animated)
+    window.invalidateShadow()
+    window.makeFirstResponder(nil)
     window.invalidateShadow()
   }
 

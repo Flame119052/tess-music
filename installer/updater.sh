@@ -414,6 +414,7 @@ restore_part() {
         cp "$good" "$file.restore" && chmod +x "$file.restore" && mv -f "$file.restore" "$file"
       else
         rm -f "$file"
+        return 1
       fi ;;
     patcher)
       [ -d "$good" ] || return 1
