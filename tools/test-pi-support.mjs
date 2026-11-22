@@ -82,9 +82,9 @@ try {
 
   const makeSandbox = (name, verifyExit = 0) => {
     const dir = join(box, name);
-    mkdirSync(join(dir, 'tess/bin'), { recursive: true });
+    mkdirSync(join(dir, 'tess/bin/patcher'), { recursive: true });
     mkdirSync(join(dir, 'tess/state'), { recursive: true });
-    const verify = join(dir, 'tess/bin/tess-verify');
+    const verify = join(dir, 'tess/bin/patcher/tess-verify');
     writeFileSync(verify, `#!/bin/sh\nexit ${verifyExit}\n`, { mode: 0o755 });
     return {
       dir,
@@ -103,7 +103,6 @@ try {
         TESS_TEST: '1',
         TESS_ARCH: 'arm64',
         TESS_HOME: sb.tessHome,
-        TESS_VERIFY: sb.verify,
         TESS_INBOX: `http://127.0.0.1:${port}`,
         TESS_COMPONENTS_BASE: `http://127.0.0.1:${port}/dist`,
         TESS_PI_URL: `http://127.0.0.1:${port}/pi.tar.gz`,
