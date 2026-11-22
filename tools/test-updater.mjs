@@ -2,11 +2,14 @@
 // Also the private Tess Support invite (#137): an uninvited Mac does nothing, Not now is remembered, a timeout retries,
 // a bad signature or download refuses before the invite is claimed, and Install verifies, claims once, and runs the
 // installer with the token in its environment only.
+// And the Liquid Glass card for that invite (#148): the signed `invite` part installs to bin/tess-invite and rolls back
+// if the doctor rejects it, the updater uses it when it is there (exit 0 install, 1 not now, 2 not answered; progress,
+// done and failed on its status file) and never hands it a token, and a Mac without it keeps the plain dialogs.
 // Usage: node tools/test-updater.mjs
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -145,6 +148,7 @@ case "$url" in
   *dist/manifest.json) send '{"version":"10.0.0"}' 200 ;;
   test://doctor) cp "$TESS_DOCTOR_ASSET" "$out" ;;
   test://installer) cp "$TESS_ASSET" "$out" ;;
+  test://invite) cp "$TESS_INVITE_ASSET" "$out" ;;
   *) exit 22 ;;
 esac
 `);
@@ -171,6 +175,7 @@ exec /usr/bin/ditto "$@"
   const supportInstall = `#!/bin/sh
 printf '%s' "\${TESS_SUPPORT_TOKEN-}" > "$TESS_INSTALL_TOKEN_OUT"
 printf '%s' "$*" > "$TESS_INSTALL_ARGV_OUT"
+[ -n "\${TESS_INSTALL_SLEEP-}" ] && sleep "$TESS_INSTALL_SLEEP"
 exit "\${TESS_INSTALL_EXIT:-0}"
 `;
   const supportInstallSha = sha(supportInstall);
@@ -813,7 +818,238 @@ esac
     assert.match(updater, /buttons \{"Done", "Open Tess Support"\}/);
   }
 
-  console.log('updater tests passed (success, fresh, blocked, failed swap, rollback/no-retry, playing/idle, list reports, theme swap with ditto denied, support invite consent, invite lock released while a dialog waits, claim 404 vs 503)');
+  // ---- #148: the Liquid Glass card ---------------------------------------------------------------------------------
+  // A stand-in for bin/tess-invite. It writes down how it was called and what it could see, and answers with the exit
+  // code the test asks for, so every branch of the updater is driven without opening a window.
+  const FAKE_INVITE = `#!/bin/sh
+case "$1" in
+  --check) [ "\$TESS_FAKE_CHECK_BAD" = 1 ] && exit 1; echo "tess-invite 1"; exit 0 ;;
+esac
+printf '%s\\n' "$*" >> "$TESS_FAKE_DIR/invite-argv.log"
+env | sort > "$TESS_FAKE_DIR/invite-$1.env"
+case "$1" in
+  ask) exit "\${TESS_FAKE_ASK_RC:-2}" ;;
+  progress)
+    f=$3
+    grep -c 'invite/claim' "$TESS_CURL_LOG" > "$TESS_FAKE_DIR/invite-claims-at-start" 2>/dev/null
+    first=$(cat "$f" 2>/dev/null); echo "$first" > "$TESS_FAKE_DIR/invite-first-word"
+    i=0
+    while [ $i -lt 100 ]; do
+      w=$(cat "$f" 2>/dev/null)
+      case "$w" in
+        done) echo done > "$TESS_FAKE_DIR/invite-last-word"; exit "\${TESS_FAKE_DONE_RC:-1}" ;;
+        failed) echo failed > "$TESS_FAKE_DIR/invite-last-word"; exit "\${TESS_FAKE_FAILED_RC:-1}" ;;
+      esac
+      i=$((i + 1)); sleep 0.1
+    done
+    exit 2 ;;
+esac
+exit 2
+`;
+  const plantInvite = (s, text = FAKE_INVITE) => {
+    mkdirSync(join(s.tess, 'bin'), { recursive: true });
+    writeFileSync(join(s.tess, 'bin', 'tess-invite'), text, { mode: 0o755 });
+    return { TESS_FAKE_DIR: s.box };
+  };
+  const inviteLog = (s, file) => existsSync(join(s.box, file)) ? readFileSync(join(s.box, file), 'utf8') : '';
+  const claimed = (id) => ({ TESS_INVITE_CHECK_JSON: `{"invited":true,"invite_id":${id}}`, TESS_INVITE_CLAIM_JSON: `{"token":"${SUPPORT_TOKEN}"}` });
+  const LEAKED = 'tess_leaked_from_the_environment';
+
+  {
+    // The signed `invite` part installs to bin/tess-invite, executable, with the doctor's check after it.
+    const s = sandbox({ fresh: true });
+    const text = '#!/bin/sh\necho "tess-invite 1"\n';
+    writeFileSync(join(s.fixtures, 'invite.bin'), text);
+    writeFileSync(join(s.fixtures, 'components.txt'), `invite ${sha(text)} test://invite src\nversion 9.9.9\n`);
+    s.run({ TESS_INVITE_ASSET: join(s.fixtures, 'invite.bin') });
+    assert.equal(readFileSync(join(s.tess, 'bin', 'tess-invite'), 'utf8'), text, 'the invite part is installed to bin/tess-invite');
+    assert.ok(statSync(join(s.tess, 'bin', 'tess-invite')).mode & 0o100, 'and it is executable');
+    assert.equal(readFileSync(join(s.state, 'invite'), 'utf8').trim(), sha(text), 'and its checksum is recorded');
+    assert.match(readFileSync(join(s.tess, 'guard.log'), 'utf8'), /invite: updated/);
+    assert.ok(doctorCalls(s).includes('--validate'), 'the doctor checked it');
+    assert.ok(!existsSync(join(s.tess, 'bin', 'tess-invite.new')), 'no half-written copy is left behind');
+  }
+
+  {
+    // A part that cannot say what it is (--check) is never put in place, and the Mac keeps what it had.
+    const s = sandbox({ fresh: true });
+    const text = '#!/bin/sh\nexit 1\n';
+    writeFileSync(join(s.fixtures, 'invite.bin'), text);
+    writeFileSync(join(s.fixtures, 'components.txt'), `invite ${sha(text)} test://invite src\nversion 9.9.9\n`);
+    s.run({ TESS_INVITE_ASSET: join(s.fixtures, 'invite.bin') });
+    assert.ok(!existsSync(join(s.tess, 'bin', 'tess-invite')), 'a file that fails --check is not installed');
+    assert.ok(!existsSync(join(s.state, 'invite')), 'and is not recorded as current');
+    assert.match(readFileSync(join(s.tess, 'guard.log'), 'utf8'), /invite: bad file/);
+  }
+
+  {
+    // The doctor rejects a new card. With an older card on the Mac it comes back; without one the file is removed, so
+    // the plain dialog (never a rejected binary) is what the next invite uses.
+    const bad = '#!/bin/sh\n# BADINVITE\necho "tess-invite 1"\n';
+    const doctor = '#!/bin/zsh\necho "$1" >> "$TESS_DOCTOR_LOG"\nif [ "$1" = --validate ] && [ -f "$TESS_HOME/bin/tess-invite" ] && grep -q BADINVITE "$TESS_HOME/bin/tess-invite"; then exit 1; fi\nexit 0\n';
+    const prepare = (s) => {
+      writeFileSync(join(s.tess, 'doctor.sh'), doctor, { mode: 0o755 });
+      writeFileSync(join(s.fixtures, 'invite.bin'), bad);
+      writeFileSync(join(s.fixtures, 'components.txt'), `invite ${sha(bad)} test://invite src\nversion 9.9.9\n`);
+    };
+    const first = sandbox({ fresh: true });
+    prepare(first);
+    first.run({ TESS_INVITE_ASSET: join(first.fixtures, 'invite.bin') });
+    assert.ok(!existsSync(join(first.tess, 'bin', 'tess-invite')), 'a rejected first install leaves no card behind');
+    assert.ok(existsSync(join(first.state, `bad-invite-${sha(bad)}`)), 'the rejected build is marked bad');
+    assert.match(readFileSync(join(first.tess, 'guard.log'), 'utf8'), /invite: doctor rejected/);
+    first.run({ TESS_INVITE_ASSET: join(first.fixtures, 'invite.bin') });
+    assert.match(readFileSync(join(first.tess, 'guard.log'), 'utf8'), /invite: skipped known bad/, 'and is not tried again');
+
+    const older = sandbox({ fresh: true });
+    prepare(older);
+    const good = '#!/bin/sh\necho "tess-invite 1"\n';
+    mkdirSync(join(older.tess, 'bin'), { recursive: true });
+    writeFileSync(join(older.tess, 'bin', 'tess-invite'), good, { mode: 0o755 });
+    older.run({ TESS_INVITE_ASSET: join(older.fixtures, 'invite.bin') });
+    assert.equal(readFileSync(join(older.tess, 'bin', 'tess-invite'), 'utf8'), good, 'a rejected update puts the previous card back');
+    assert.ok(!existsSync(join(older.tess, 'bin', 'tess-invite.restore')), 'with no half-written copy left');
+  }
+
+  {
+    // Add Tess Support (exit 0): the card is asked first, the invite is claimed once, the card shows "installing" only
+    // after the claim and moves to "done" when the installer finishes, and Open Tess Support (exit 0) opens the app.
+    const s = sandbox();
+    const extra = plantInvite(s);
+    s.run({ ...extra, ...claimed(31), TESS_FAKE_ASK_RC: '0', TESS_FAKE_DONE_RC: '0', TESS_SUPPORT_TOKEN: LEAKED, TESS_INSTALL_SLEEP: '1' });
+    const argv = inviteLog(s, 'invite-argv.log').split('\n').filter(Boolean);
+    assert.equal(argv[0], 'ask --timeout 900', 'the card asks with the 15-minute timeout');
+    assert.equal(argv[1], `progress --status-file ${join(s.state, '.support-invite-status')}`, 'and shows progress from one status file');
+    assert.equal(argv.length, 2, 'it is started exactly twice');
+    assert.equal(readFileSync(join(s.box, 'support-token.out'), 'utf8'), SUPPORT_TOKEN, 'the installer still gets the claimed token');
+    assert.equal(readFileSync(join(s.box, 'support-argv.out'), 'utf8'), '', 'on no command line');
+    assert.equal(inviteLog(s, 'invite-first-word').trim(), 'installing', 'the card starts on "installing"');
+    assert.equal(inviteLog(s, 'invite-last-word').trim(), 'done', 'and is told "done" when the installer succeeds');
+    assert.equal(inviteLog(s, 'invite-claims-at-start').trim(), '1', 'the card only appears once the invite is claimed');
+    // Nothing that identifies the person or opens the installer reaches the card: not argv, not its environment.
+    // (The fake inbox reads the token from TESS_INVITE_CLAIM_JSON in the test's own environment; that one harness line is
+    // not part of what the updater hands on.)
+    const seen = (f) => inviteLog(s, f).split('\n').filter((l) => !l.startsWith('TESS_INVITE_CLAIM_JSON=')).join('\n');
+    const everything = argv.join('\n') + seen('invite-ask.env') + seen('invite-progress.env');
+    assert.ok(seen('invite-ask.env').length > 100 && seen('invite-progress.env').length > 100, 'the environment the card saw was captured');
+    assert.ok(!everything.includes(SUPPORT_TOKEN), 'the claimed token never reaches the card');
+    assert.ok(!everything.includes(LEAKED), 'a token already in the updater environment never reaches the card either');
+    assert.doesNotMatch(everything, /TESS_SUPPORT_TOKEN/, 'neither the name nor a value of the token variable is in its environment');
+    assert.ok(!everything.includes(INSTALL_ID), 'nor the install id');
+    assert.match(readFileSync(join(s.box, 'open.log'), 'utf8'), /Tess Support\.app/, 'Open Tess Support opens the app');
+    assert.ok(existsSync(join(s.state, '.support-invite-asked-31')), 'the accepted invite is remembered');
+    assert.ok(!existsSync(join(s.state, '.support-invite-status')), 'the status file is gone afterwards');
+    assert.ok(!readFileSync(join(s.tess, 'guard.log'), 'utf8').includes(SUPPORT_TOKEN), 'the token is never logged');
+  }
+
+  {
+    // Done (exit 1), or a card closed with x, opens nothing.
+    for (const rc of ['1', '2']) {
+      const s = sandbox();
+      const extra = plantInvite(s);
+      s.run({ ...extra, ...claimed(32), TESS_FAKE_ASK_RC: '0', TESS_FAKE_DONE_RC: rc });
+      assert.equal(inviteLog(s, 'invite-last-word').trim(), 'done');
+      assert.ok(!existsSync(join(s.box, 'open.log')), `exit ${rc} from the done card does not open the app`);
+      assert.ok(existsSync(join(s.state, '.support-invite-asked-32')));
+    }
+  }
+
+  {
+    // Not now (exit 1) is remembered for good and claims nothing; the card never shows progress.
+    const s = sandbox();
+    const extra = plantInvite(s);
+    s.run({ ...extra, ...claimed(33), TESS_FAKE_ASK_RC: '1' });
+    assert.ok(existsSync(join(s.state, '.support-invite-asked-33')), 'Not now is recorded');
+    assert.doesNotMatch(readFileSync(join(s.box, 'curl.log'), 'utf8'), /invite\/claim/, 'and claims nothing');
+    assert.equal(inviteLog(s, 'invite-argv.log').trim(), 'ask --timeout 900', 'no progress card for a Not now');
+    assert.ok(!existsSync(join(s.box, 'support-token.out')), 'and no installer');
+  }
+
+  {
+    // Closing the card with x or Escape, or letting it time out (exit 2), is not an answer: the invite is not spent.
+    const s = sandbox();
+    const extra = plantInvite(s);
+    s.run({ ...extra, ...claimed(34), TESS_FAKE_ASK_RC: '2' });
+    assert.ok(!existsSync(join(s.state, '.support-invite-asked-34')), 'a dismissed card does not burn the invite');
+    assert.doesNotMatch(readFileSync(join(s.box, 'curl.log'), 'utf8'), /invite\/claim/, 'and claims nothing');
+    assert.ok(!existsSync(join(s.box, 'support-token.out')));
+  }
+
+  {
+    // A card that cannot run at all (a crash, a missing loader: 126, 127, 139) must not hide the invite: the plain
+    // dialog asks instead. In the sandbox that dialog is the TESS_TEST_INVITE_ANSWER stand-in.
+    for (const rc of ['126', '127', '139']) {
+      const s = sandbox();
+      const extra = plantInvite(s);
+      s.run({ ...extra, ...claimed(35), TESS_FAKE_ASK_RC: rc, TESS_TEST_INVITE_ANSWER: 'decline' });
+      assert.ok(existsSync(join(s.state, '.support-invite-asked-35')), `a card that exited ${rc} falls back to the plain dialog`);
+      assert.match(readFileSync(join(s.tess, 'guard.log'), 'utf8'), new RegExp(`the card exited ${rc}`));
+    }
+  }
+
+  {
+    // A spent invite (404) or a temporary miss (503) never shows a card that promises an install.
+    for (const status of ['404', '503']) {
+      const s = sandbox();
+      const extra = plantInvite(s);
+      s.run({ ...extra, TESS_INVITE_CHECK_JSON: '{"invited":true,"invite_id":36}', TESS_FAKE_ASK_RC: '0', TESS_INVITE_CLAIM_STATUS: status, TESS_INVITE_CLAIM_JSON: '{"error":"x"}' });
+      assert.equal(inviteLog(s, 'invite-argv.log').trim(), 'ask --timeout 900', `a ${status} claim shows no progress card`);
+      assert.ok(!existsSync(join(s.box, 'support-token.out')));
+    }
+    // A bad signature stops before the claim, so there is no progress card for it either.
+    const s = sandbox();
+    const extra = plantInvite(s);
+    s.run({ ...extra, ...claimed(37), TESS_FAKE_ASK_RC: '0', TESS_VERIFY_INSTALL_FAIL: '1' });
+    assert.equal(inviteLog(s, 'invite-argv.log').trim(), 'ask --timeout 900', 'a bad signature shows no progress card');
+    assert.doesNotMatch(readFileSync(join(s.box, 'curl.log'), 'utf8'), /invite\/claim/);
+  }
+
+  {
+    // The installer fails: the card is told "failed" (never "nothing was changed"), the doctor never repairs Spotify,
+    // and nothing is opened.
+    const s = sandbox();
+    const extra = plantInvite(s);
+    s.run({ ...extra, ...claimed(38), TESS_FAKE_ASK_RC: '0', TESS_FAKE_FAILED_RC: '1', TESS_INSTALL_EXIT: '1' });
+    assert.equal(inviteLog(s, 'invite-last-word').trim(), 'failed', 'the card is told the install failed');
+    assert.ok(!existsSync(join(s.box, 'open.log')), 'and nothing is opened');
+    assert.ok(existsSync(join(s.state, '.support-invite-asked-38')));
+    assert.ok(!doctorCalls(s).includes('--auto'), 'a failed support install never asks the doctor to repair Spotify');
+    assert.ok(!readFileSync(join(s.tess, 'guard.log'), 'utf8').includes(SUPPORT_TOKEN));
+  }
+
+  {
+    // A Mac without the card keeps the plain dialogs and banners, with their old words.
+    const s = sandbox();
+    assert.ok(!existsSync(join(s.tess, 'bin', 'tess-invite')));
+    s.run({ ...claimed(39), TESS_TEST_INVITE_ANSWER: 'install', TESS_TEST_WELCOME_ANSWER: 'open' });
+    assert.equal(readFileSync(join(s.box, 'support-token.out'), 'utf8'), SUPPORT_TOKEN, 'the install runs without the card');
+    assert.match(readFileSync(join(s.box, 'open.log'), 'utf8'), /Tess Support\.app/, 'and the plain welcome still opens the app');
+    assert.ok(!existsSync(join(s.state, '.support-invite-status')), 'with no status file');
+  }
+
+  {
+    // Source guards for the invariants the card must never break.
+    const updater = readFileSync(join(root, 'installer', 'updater.sh'), 'utf8');
+    const uses = updater.split('\n').filter((l) => /\$SUPPORT_UI/.test(l) && !/^\s*#/.test(l) && /(ask|progress)/.test(l));
+    assert.equal(uses.length, 2, 'the card is started in exactly two places');
+    for (const l of uses) {
+      assert.match(l, /env -u TESS_SUPPORT_TOKEN/, 'each start strips the token variable');
+      assert.doesNotMatch(l, /\$tok\b|\$\{tok|install-id|\$iid|\$invite_id/, 'and passes no token, install id or invite id');
+    }
+    const tokenLines = updater.split('\n').filter((l) => /TESS_SUPPORT_TOKEN/.test(l) && !/^\s*#/.test(l));
+    assert.equal(tokenLines.filter((l) => /TESS_SUPPORT_TOKEN="\$tok" sh "\$TMP\/support-install\.sh"/.test(l)).length, 1, 'the installer is the one place that gets the token');
+    assert.equal(tokenLines.length, 3, 'the token name appears only on the installer line and the two env -u strips');
+    const order = ['"$VERIFY" "$TMP/support-install.sh"', 'invite/claim', 'TESS_SUPPORT_TOKEN="$tok" sh'].map((m) => updater.indexOf(m));
+    assert.ok(order[0] > 0 && order[0] < order[1] && order[1] < order[2], 'download, signature check, SHA pin and claim keep their order before the installer');
+    assert.ok(updater.indexOf("awk '$1 == \"support-install\"") < updater.indexOf('invite/claim'), 'the SHA pin is checked before the claim');
+    const release = readFileSync(join(root, 'tools', 'release.mjs'), 'utf8');
+    assert.match(release, /invite: \{ file: `\$\{build\}tess-invite`/, 'the release lists the invite part');
+    assert.match(release, /codesign\(`\$\{build\}tess-invite`, 'music\.tess\.invite'\)/, 'signs it as music.tess.invite');
+    assert.match(release, /`\$\{build\}tess-record`, `\$\{build\}tess-invite`/, 'and uploads it as a release asset');
+    assert.match(readFileSync(join(root, '.github', 'workflows', 'release.yml'), 'utf8'), /'support\/mac\/install\.sh'/, 'a pin commit to support/mac/install.sh builds dev');
+  }
+
+  console.log('updater tests passed (success, fresh, blocked, failed swap, rollback/no-retry, playing/idle, list reports, theme swap with ditto denied, support invite consent, invite lock released while a dialog waits, claim 404 vs 503, Liquid Glass card part install/rollback, exit codes, progress, no token to the card, plain-dialog fallback)');
 } finally {
   for (const box of boxes) rmSync(box, { recursive: true, force: true });
 }

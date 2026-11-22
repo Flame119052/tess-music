@@ -114,6 +114,14 @@ for (const arch of ['arm64', 'x86_64']) {
 run('lipo', ['-create', `${build}tess-record-arm64`, `${build}tess-record-x86_64`, '-output', `${build}tess-record`]);
 codesign(`${build}tess-record`, 'music.tess.record');
 
+// tess-invite: the Liquid Glass card for the Tess Support invite, progress and result (#148). The updater installs it
+// to Tess/bin/tess-invite as the signed `invite` part. It takes no token and no install id; it only reports an exit code.
+for (const arch of ['arm64', 'x86_64']) {
+  run('swiftc', ['-O', '-target', `${arch}-apple-macos13.0`, `${root}mini/TessInvite.swift`, '-o', `${build}tess-invite-${arch}`, '-framework', 'AppKit', '-framework', 'SwiftUI']);
+}
+run('lipo', ['-create', `${build}tess-invite-arm64`, `${build}tess-invite-x86_64`, '-output', `${build}tess-invite`]);
+codesign(`${build}tess-invite`, 'music.tess.invite');
+
 // the installer travels with the release, so the public install line only ever runs a promoted installer. The
 // forwarder checks the verifier's pin (in installer/install.sh) and the installer's signature before running it.
 const installText = readFileSync(`${root}installer/tess-install.sh`, 'utf8');
@@ -179,6 +187,7 @@ const parts = {
   command: { file: `${build}tess-command.sh`, src: hashFiles([`${root}installer/tess-command.sh`]) },
   mini: { file: `${build}tess-mini.zip`, src: hashFiles([`${root}mini/MiniGate.swift`, `${root}mini/TessMini.swift`, `${root}mini/Info.plist`]).slice(0, 56) + 'sig1' },
   record: { file: `${build}tess-record`, src: hashFiles([`${root}mini/TessRecord.swift`]).slice(0, 56) + 'sig1' },
+  invite: { file: `${build}tess-invite`, src: hashFiles([`${root}mini/TessInvite.swift`]).slice(0, 56) + 'sig1' },
   theme: { file: `${build}tess-theme.tar.gz`, src: hashFiles([`${root}theme/loader/loader.js`]) },
 };
 const prev = {};
@@ -222,7 +231,7 @@ if (channel === 'stable') {
     console.log(`beta moved up to ${version}`);
   }
 }
-const assets = [`${build}tess-theme.tar.gz`, `${build}tess-mini.zip`, `${build}tess-record`, `${build}tess-patcher-macos-universal.tar.gz`, `${build}tess-updater.sh`, `${build}tess-doctor.sh`, `${build}tess-installer.sh`, `${build}tess-uninstall.sh`, `${build}tess-wake.sh`, `${build}tess-command.sh`];
+const assets = [`${build}tess-theme.tar.gz`, `${build}tess-mini.zip`, `${build}tess-record`, `${build}tess-invite`, `${build}tess-patcher-macos-universal.tar.gz`, `${build}tess-updater.sh`, `${build}tess-doctor.sh`, `${build}tess-installer.sh`, `${build}tess-uninstall.sh`, `${build}tess-wake.sh`, `${build}tess-command.sh`];
 try {
   run('gh', ['release', 'create', `v${version}`, ...assets, '-R', 'Flame119052/tess-music', '--target', channel, '-t', `Tess ${version}`, '-n', `Tess ${version}. Install: curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | sh`, ...(channel === 'stable' ? ['--latest'] : ['--prerelease'])]);
 } catch {
