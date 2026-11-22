@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Darwin
 
 // The Tess Support invite, drawn as a Liquid Glass card in the same look as Tess's "What's New" sheet (theme core.css,
 // .twn-*). It replaces a grey system alert and two banner notifications, and is the only thing in this file that
@@ -10,16 +11,15 @@ import AppKit
 //       not be shown. Only 0 and 1 are answers; 2 (and anything else a crash produces) never spends the invite.
 //
 //   tess-invite progress --status-file <path> [--timeout 900]
-//       Shows "Setting up Tess Support..." while <path> says `installing`, then moves the same card to `done` or
-//       `failed` when the updater writes that word there. Exit 0 = Open Tess Support, 1 = Done / Close, 2 = timed out,
-//       the file went away, or the card could not be shown.
+//       Reads `installing`, `done`, `failed` or a record with phase, progress, step and detail lines.
+//       Exit 0 = Open Tess Support, 1 = Done / Close, 2 = timed out, the file went away, or the card could not be shown.
 //
 //   tess-invite --snapshot <ask|installing|done|failed> <out.png>
 //       Renders one state to a PNG with no window at all, so every state can be checked without opening anything.
 //   tess-invite --check
 //       Prints the helper's name and version and exits 0; the updater runs it before it trusts a downloaded copy.
 //
-// No arguments, files or environment here carry a token, a name or an install id: the status file holds one word.
+// No arguments, progress records or environment here carry a token, a name or an install id.
 
 let toolName = "tess-invite"
 let toolVersion = "1"
@@ -55,6 +55,35 @@ func spotifyWindowFrame() -> NSRect? {
 }
 
 enum Phase: String { case ask, installing, done, failed }
+
+struct InstallStatus: Equatable {
+  var phase: Phase = .installing
+  var percent: Double?
+  var step = "Getting things ready"
+  var detail = "Checking this Mac…"
+
+  init() {}
+
+  init?(_ text: String) {
+    self.init()
+    if let word = Phase(rawValue: text), word != .ask {
+      phase = word
+      return
+    }
+    var fields: [String: String] = [:]
+    for line in text.split(separator: "\n") {
+      let parts = line.split(separator: "=", maxSplits: 1)
+      if parts.count == 2 { fields[String(parts[0])] = String(parts[1]) }
+    }
+    guard let raw = fields["phase"], let phase = Phase(rawValue: raw), phase != .ask else { return nil }
+    self.phase = phase
+    if let raw = fields["progress"], let value = Double(raw), (0...100).contains(value) {
+      percent = value
+    }
+    if let label = fields["step"] { step = String(label.prefix(80)) }
+    if let label = fields["detail"] { detail = String(label.prefix(120)) }
+  }
+}
 
 enum Choice { case primary, secondary, dismiss }
 
@@ -129,18 +158,42 @@ struct Emblem: View {
   }
 }
 
-/// A spinner drawn by hand: the system one does not draw outside a live window, and this one matches the badge tints.
-struct Spinner: View {
-  let tint: Tint
+struct GlassProgress: View {
+  let percent: Double?
+  let live: Bool
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  func fill(_ width: CGFloat) -> some View {
+    Capsule()
+      .fill(LinearGradient(colors: [rgb(171, 255, 209), rgb(37, 202, 115)], startPoint: .top, endPoint: .bottom))
+      .overlay(Capsule().strokeBorder(.white.opacity(0.35), lineWidth: 0.5))
+      .shadow(color: Tint.green.ink.opacity(0.35), radius: 5)
+      .frame(width: width)
+  }
+
   var body: some View {
-    // Drawn from the clock rather than from stored state: no animation state to keep, and a snapshot just shows it still.
-    TimelineView(.animation(minimumInterval: 1.0 / 30, paused: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)) { ctx in
-      Circle()
-        .trim(from: 0.06, to: 0.72)
-        .stroke(tint.ink, style: StrokeStyle(lineWidth: 3.6, lineCap: .round))
-        .frame(width: 30, height: 30)
-        .rotationEffect(.degrees(ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 0.95) / 0.95 * 360))
+    GeometryReader { geo in
+      let width = geo.size.width
+      ZStack(alignment: .leading) {
+        Capsule().fill(.black.opacity(0.32))
+        Capsule().strokeBorder(.white.opacity(0.16), lineWidth: 1)
+        if let percent {
+          fill(width * percent / 100)
+            .animation(live && !reduceMotion ? .easeOut(duration: 0.35) : nil, value: percent)
+        } else if live && !reduceMotion {
+          TimelineView(.animation(minimumInterval: 1.0 / 30)) { ctx in
+            let cycle = ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.8) / 1.8
+            fill(width * 0.28).offset(x: width * (1.28 * cycle - 0.28))
+          }
+        } else {
+          fill(width * 0.28).offset(x: width * 0.36)
+        }
+      }
+      .clipShape(Capsule())
     }
+    .frame(height: 9)
+    .accessibilityLabel("Installation progress")
+    .accessibilityValue(percent.map { "\(Int($0)) percent" } ?? "In progress")
   }
 }
 
@@ -221,6 +274,7 @@ struct CardChrome: View {
 // MARK: - The card
 
 final class Model: ObservableObject {
+  @Published var installStatus = InstallStatus()
   @Published var phase: Phase
   init(_ phase: Phase) { self.phase = phase }
 }
@@ -336,11 +390,24 @@ struct InviteCard: View {
   }
 
   var installing: some View {
-    statusBody(
-      badge: AnyView(Badge(tint: .green, size: 72, radius: 22) { Spinner(tint: .green) }),
-      heading: "Setting up Tess Support…",
-      detail: "This takes about a minute.")
-      .padding(.bottom, 50)
+    VStack(spacing: 0) {
+      Badge(tint: .green, size: 72, radius: 22) { symbol("arrow.down.to.line", .green, 29) }
+        .padding(.bottom, 22)
+      title("Setting up Tess Support", size: 26).padding(.bottom, 23)
+      GlassProgress(percent: model.installStatus.percent, live: live).padding(.bottom, 17)
+      Text(model.installStatus.step)
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(.white)
+        .lineLimit(1)
+        .padding(.bottom, 5)
+      Text(model.installStatus.detail)
+        .font(.system(size: 13).monospacedDigit())
+        .foregroundStyle(softWhite)
+        .lineLimit(1)
+    }
+    .padding(.horizontal, 54)
+    .padding(.top, 38)
+    .padding(.bottom, 38)
   }
 
   var done: some View {
@@ -411,6 +478,12 @@ final class GlassWindow: NSWindow {
   override var canBecomeMain: Bool { true }
 }
 
+struct StatusRevision: Equatable {
+  let inode: ino_t
+  let seconds: Int
+  let nanoseconds: Int
+}
+
 final class Controller {
   let model: Model
   let window: GlassWindow
@@ -420,6 +493,8 @@ final class Controller {
   var appObserver: NSObjectProtocol?
   var statusFile: String?
   var seenStatus = false
+  var lastStatusRevision: StatusRevision?
+  var lastInstallUpdate: TimeInterval?
   var started = Date()
   var terminalSince: Date?
   let timeout: TimeInterval
@@ -573,29 +648,42 @@ final class Controller {
     timer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [unowned self] _ in self.tick() }
   }
 
-  /// One word in the status file moves the card on. A word it does not know changes nothing.
-  func readStatus() -> String? {
+  func readStatus() -> (String, StatusRevision?)? {
     guard let path = statusFile, let h = FileHandle(forReadingAtPath: path) else { return nil }
     defer { try? h.close() }
-    let data = (try? h.read(upToCount: 32)) ?? Data()
-    return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let data = (try? h.read(upToCount: 1024)) ?? Data()
+    var info = stat()
+    let revision = fstat(h.fileDescriptor, &info) == 0
+      ? StatusRevision(inode: info.st_ino, seconds: info.st_mtimespec.tv_sec, nanoseconds: info.st_mtimespec.tv_nsec)
+      : nil
+    return (String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "", revision)
   }
 
   func tick() {
     if statusFile != nil, model.phase == .installing {
-      let word = readStatus()
-      if word == nil {
+      let record = readStatus()
+      if record == nil {
         // The updater writes the file before it starts this card; a file that is gone means the run is over.
         if seenStatus || Date().timeIntervalSince(started) > 5 { finish(2) }
-      } else {
+      } else if let (text, revision) = record, let status = InstallStatus(text) {
+        if !seenStatus || revision != lastStatusRevision || status != model.installStatus {
+          lastInstallUpdate = ProcessInfo.processInfo.systemUptime
+          lastStatusRevision = revision
+        }
+        if status != model.installStatus {
+          model.installStatus = status
+        }
         seenStatus = true
-        let next: Phase? = word == "done" ? .done : word == "failed" ? .failed : nil
-        if let next {
-          withAnimation(.easeInOut(duration: 0.35)) { model.phase = next }
+        if status.phase != .installing {
+          withAnimation(.easeInOut(duration: 0.35)) { model.phase = status.phase }
           terminalSince = Date()
           DispatchQueue.main.async { self.fit(animated: true) }
           return
         }
+      }
+      if let lastInstallUpdate {
+        if ProcessInfo.processInfo.systemUptime - lastInstallUpdate > timeout { finish(2) }
+        return
       }
     }
     // Every card gives up on its own: while waiting invisibly for Spotify, allow up to max(timeout, 1500s) so
@@ -635,6 +723,9 @@ struct SnapshotBackdrop: View {
 @MainActor
 func renderSnapshot(_ phase: Phase, to path: String) {
   let model = Model(phase)
+  if phase == .installing {
+    model.installStatus = InstallStatus("phase=installing\nprogress=57\nstep=Downloading runtime\ndetail=24 MB / 42 MB · 3.8 MB/s · ~5s left") ?? InstallStatus()
+  }
   let view = ZStack {
     SnapshotBackdrop(phase: phase)
     InviteCard(model: model, live: false) { _ in }

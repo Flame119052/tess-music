@@ -42,6 +42,10 @@ when it next checks. Install verifies the signed `dist/support-install.sh` befor
 `Not now` is remembered for that invite for good. Nothing about Tess Support is downloaded, shown or mentioned on a
 Mac that was not invited, and no plaintext token is ever stored in D1.
 
+The install card shows the current step and live download details (D-117). The smaller pinned Node archive saves
+27.7 MB on Apple Silicon. A Mac with no usable Hermes still needs the large disk image on Apple Silicon or the
+upstream command-line install on Intel; the five-minute fresh-install target is still open.
+
 **Not deployed, and not part of a release.** Before it can work: `inbox/schema.sql` applied to D1, the Worker deployed,
 and the R2 bucket created — all Krish's, none done here — plus a machine, a Telegram bot and a posting token. What can be
 run now: `node tools/test-inbox-support.mjs`, `node tools/test-session.mjs`, `node tools/test-reports.mjs`,

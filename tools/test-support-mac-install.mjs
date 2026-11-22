@@ -62,8 +62,8 @@ const packNode = (arch) => {
   chmodSync(join(dir, top, 'bin', 'node'), 0o755);
   writeFileSync(join(dir, top, 'lib', 'should-not-land'), 'no\n');
   writeFileSync(join(dir, top, 'lib', 'npm', 'bin', 'node-gyp'), 'not-the-runtime\n');
-  const archive = join(dir, `${top}.tar.gz`);
-  execFileSync('tar', ['-czf', archive, '-C', dir, top]);
+  const archive = join(dir, `${top}.tar.xz`);
+  execFileSync('tar', ['-cJf', archive, '-C', dir, top]);
   return readFileSync(archive);
 };
 const armTar = packNode('arm64');
@@ -75,8 +75,8 @@ const cliHash = sha256(cliStub);
 // A separate process: the installer is started with execFileSync, which would
 // stop an in-process server from answering.
 const serveDir = join(fakeNode, '..');
-const armPath = join(serveDir, 'arm.tar.gz');
-const x64Path = join(serveDir, 'x64.tar.gz');
+const armPath = join(serveDir, 'arm.tar.xz');
+const x64Path = join(serveDir, 'x64.tar.xz');
 const tamperFlag = join(serveDir, 'tamper');
 writeFileSync(armPath, armTar);
 writeFileSync(x64Path, x64Tar);
@@ -89,7 +89,7 @@ const armHash = process.env.ARM_HASH;
 const x64Hash = process.env.X64_HASH;
 const tamperFlag = process.env.TAMPER_FLAG;
 const sumsFor = (version) => ['arm64', 'x64'].map((arch) => {
-  const name = 'node-' + version + '-darwin-' + arch + '.tar.gz';
+  const name = 'node-' + version + '-darwin-' + arch + '.tar.xz';
   return (arch === 'arm64' ? armHash : x64Hash) + '  ' + name;
 }).join('\\n') + '\\n';
 const server = createServer((req, res) => {
@@ -103,13 +103,13 @@ const server = createServer((req, res) => {
     res.end(sumsFor(version));
     return;
   }
-  const darwin = name.endsWith('darwin-arm64.tar.gz') ? 'darwin-arm64' : name.endsWith('darwin-x64.tar.gz') ? 'darwin-x64' : '';
+  const darwin = name.endsWith('darwin-arm64.tar.xz') ? 'darwin-arm64' : name.endsWith('darwin-x64.tar.xz') ? 'darwin-x64' : '';
   const body = darwin === 'darwin-arm64' ? arm : darwin === 'darwin-x64' ? x64 : null;
-  if (!body || name !== 'node-' + version + '-' + darwin + '.tar.gz') {
+  if (!body || name !== 'node-' + version + '-' + darwin + '.tar.xz') {
     res.writeHead(404); res.end('no'); return;
   }
   const bytes = existsSync(tamperFlag) ? Buffer.concat([body, Buffer.from('x')]) : body;
-  res.writeHead(200, { 'content-type': 'application/gzip' });
+  res.writeHead(200, { 'content-type': 'application/x-xz' });
   res.end(bytes);
 });
 server.listen(0, '127.0.0.1', () => process.stdout.write(String(server.address().port) + '\\n'));
@@ -221,10 +221,12 @@ if [ -n "\${TESS_SUPPORT_TOKEN:-}" ]; then printf '%s\\n' leak >> "$TESS_FAKE_LO
 } >> "$TESS_FAKE_LOG/curl.log"
 ${leak}
 out=
+headers=
 prev=
 url=
 for a in "$@"; do
   if [ "$prev" = "-o" ]; then out=$a; fi
+  if [ "$prev" = "-D" ]; then headers=$a; fi
   prev=$a
   case $a in
     -*) ;;
@@ -244,12 +246,21 @@ case $url in
     ;;
   *stable-mac.yml)
     payload="$TESS_FAKE_LOG/payload"
-    printf 'dmg!!' > "$payload"
+    if [ "\${TESS_FAKE_SLOW_DMG:-}" = 1 ]; then
+      dd if=/dev/zero of="$payload" bs=1000000 count=2 2>/dev/null
+    else
+      printf 'dmg!!' > "$payload"
+    fi
     hash=$(/usr/bin/openssl dgst -sha512 -binary "$payload" | /usr/bin/openssl base64 | tr -d '\\n')
     printf '%s\\n' "version: 9.9.9" "files:" "  - url: /releases/tag/v9.9.9/HermesBundled-9.9.9-mac-arm64.dmg" "    sha512: $hash" "    size: 5" > "$out"
     ;;
   *.dmg)
-    if [ "\${TESS_FAKE_BAD_DMG:-}" = 1 ]; then
+    if [ "\${TESS_FAKE_SLOW_DMG:-}" = 1 ]; then
+      printf 'HTTP/1.1 302 Found\\r\\nContent-Length: 0\\r\\n\\r\\nHTTP/1.1 200 OK\\r\\nContent-Length: 2000000\\r\\n\\r\\n' > "$headers"
+      dd if="$TESS_FAKE_LOG/payload" of="$out" bs=1000000 count=1 2>/dev/null
+      sleep 2
+      dd if="$TESS_FAKE_LOG/payload" bs=1000000 skip=1 2>/dev/null >> "$out"
+    elif [ "\${TESS_FAKE_BAD_DMG:-}" = 1 ]; then
       printf 'dmg!!bad' > "$out"
     else
       printf 'dmg!!' > "$out"
@@ -344,6 +355,9 @@ if [ "\${TESS_FAKE_MV_EXIT:-0}" != 0 ]; then
 fi
 if [ "\${TESS_FAKE_MV_INCOMING_EXIT:-}" = 1 ]; then case $1 in */.tess-support.incoming) exit 1 ;; esac; fi
 /bin/mv "$@" || exit $?
+if [ "$1" = -f ] && [ -n "\${TESS_SUPPORT_PROGRESS_FILE:-}" ] && [ "$3" = "$TESS_SUPPORT_PROGRESS_FILE" ]; then
+  cat "$3" >> "$TESS_FAKE_LOG/progress.log"
+fi
 case "$2" in
   */.tess-support.previous)
     if [ "\${TESS_FAKE_MV_RECREATE:-}" = 1 ]; then
@@ -565,7 +579,8 @@ try {
   boxes.push(arm.box);
   mkdirSync(arm.box + '/tmp');
   const armEnv = baseEnv(arm, { TESS_ARCH: 'arm64' });
-  const first = run([], armEnv);
+  const progressFile = join(arm.box, 'install.status');
+  const first = run([], { ...armEnv, TESS_SUPPORT_PROGRESS_FILE: progressFile, TESS_FAKE_SLOW_DMG: '1' });
   assert.equal(first.status, 0, first.stderr);
   assert.match(first.stdout, /macOS will ask once to allow screen recording/);
   assert.match(first.stdout, /Turn it on for Tess Support in System Settings, under Privacy and Security/);
@@ -602,7 +617,14 @@ try {
   assert.ok(signed.includes('certificate 1[field.1.2.840.113635.100.6.2.6]'), signed);
   assert.ok(signed.includes('certificate leaf[field.1.2.840.113635.100.6.1.13]'), signed);
   assert.ok(signed.includes(`identifier "${hermesId}"`), signed);
-  assert.match(curlOnce, new RegExp(`node-${nodeVersion.replaceAll('.', '\\.')}-darwin-arm64\\.tar\\.gz`));
+  assert.match(curlOnce, new RegExp(`node-${nodeVersion.replaceAll('.', '\\.')}-darwin-arm64\\.tar\\.xz`));
+  const progressLog = readFileSync(join(arm.log, 'progress.log'), 'utf8');
+  assert.match(progressLog, /progress=53\.50\nstep=Downloading Hermes\ndetail=1\.0 MB \/ 2\.0 MB · [0-9.]+ MB\/s · ~[0-9]+s left/);
+  assert.match(progressLog, /step=Verifying files[\s\S]+step=Installing Hermes[\s\S]+step=Setting up Tess Support[\s\S]+step=Adding Dock icon/);
+  assert.ok(!progressLog.includes(token) && !progressLog.includes(arm.box));
+  assert.match(readFileSync(progressFile, 'utf8'), /^phase=installing\nprogress=100\n/);
+  assert.deepEqual(readdirSync(armEnv.TMPDIR), [], 'the installer removes its download workspace');
+  assert.ok(!readdirSync(arm.box).some((name) => name.startsWith('install.status.write.')));
   assert.equal((readFileSync(join(arm.log, 'killall.log'), 'utf8').match(/^Dock$/gm) || []).length, 1);
   assert.equal(urlsInDock(arm.plist).filter((url) => url.includes('Tess%20Support.app')).length, 1);
 
@@ -710,7 +732,7 @@ try {
   const curlLog = readFileSync(join(intel.log, 'curl.log'), 'utf8');
   assert.ok(curlLog.includes(cliUrl), curlLog);
   assert.equal(curlLog.includes('hermes-agent/v0.23.2/'), false);
-  assert.match(curlLog, new RegExp(`node-${nodeVersion.replaceAll('.', '\\.')}-darwin-x64\\.tar\\.gz`));
+  assert.match(curlLog, new RegExp(`node-${nodeVersion.replaceAll('.', '\\.')}-darwin-x64\\.tar\\.xz`));
   assert.doesNotMatch(curlLog, /\.dmg|stable-mac\.yml/);
   assert.equal(existsSync(join(intel.log, 'hdiutil.log')), false);
   assert.equal(existsSync(join(intel.log, 'cli-env')), false);
@@ -800,7 +822,7 @@ try {
   const namedRun = run([], baseEnv(named));
   assert.equal(namedRun.status, 0, namedRun.stderr);
   const namedLog = readFileSync(join(named.log, 'curl.log'), 'utf8');
-  assert.match(namedLog, new RegExp(`node-${nodeVersion.replaceAll('.', '\\.')}-${hostName}\\.tar\\.gz`));
+  assert.match(namedLog, new RegExp(`node-${nodeVersion.replaceAll('.', '\\.')}-${hostName}\\.tar\\.xz`));
   const otherArch = host === 'arm64' ? 'x86_64' : 'arm64';
   const otherName = otherArch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
   const other = layout('other-arch');
@@ -808,8 +830,8 @@ try {
   mkdirSync(join(other.box, 'tmp'));
   const otherRun = run([], baseEnv(other, { TESS_ARCH: otherArch }));
   assert.equal(otherRun.status, 0, otherRun.stderr);
-  assert.match(readFileSync(join(other.log, 'curl.log'), 'utf8'), new RegExp(`node-${nodeVersion.replaceAll('.', '\\.')}-${otherName}\\.tar\\.gz`));
-  assert.doesNotMatch(readFileSync(join(other.log, 'curl.log'), 'utf8'), new RegExp(`node-${nodeVersion.replaceAll('.', '\\.')}-${hostName}\\.tar\\.gz`));
+  assert.match(readFileSync(join(other.log, 'curl.log'), 'utf8'), new RegExp(`node-${nodeVersion.replaceAll('.', '\\.')}-${otherName}\\.tar\\.xz`));
+  assert.doesNotMatch(readFileSync(join(other.log, 'curl.log'), 'utf8'), new RegExp(`node-${nodeVersion.replaceAll('.', '\\.')}-${hostName}\\.tar\\.xz`));
 
   const shippedConfig = readFileSync(join(root, 'support/mac/config.yaml'), 'utf8');
   assert.doesNotMatch(shippedConfig, /^command_allowlist:/m);
@@ -906,15 +928,35 @@ exit 0
   const existingCli = join(existingBundle, 'Contents', 'MacOS', 'hermes');
   writeFileSync(existingCli, hermesBin('0.22.0'));
   chmodSync(existingCli, 0o755);
+  const staleCli = join(existingApp.box, 'home', '.local', 'bin', 'hermes');
+  const staleContents = '#!/bin/sh\nprintf "%s\\n" "no dependency environment is committed for this install; run hermes pm repair" >&2\nexit 1\n';
+  mkdirSync(join(staleCli, '..'), { recursive: true });
+  writeFileSync(staleCli, staleContents, { mode: 0o755 });
   const existingRun = run([], baseEnv(existingApp, { TESS_ARCH: 'arm64' }));
   assert.equal(existingRun.status, 0, existingRun.stderr);
   assert.match(existingRun.stdout, /profile you already use stays as it is/);
   assert.equal(readFileSync(join(existingBundle, 'SENTINEL'), 'utf8'), 'keep\n');
+  assert.equal(readFileSync(staleCli, 'utf8'), staleContents, 'the broken personal launcher is not changed');
   assert.equal(existsSync(join(existingApp.box, 'hermes', 'tess-support-we-installed')), false);
   assert.doesNotMatch(readFileSync(join(existingApp.log, 'curl.log'), 'utf8'), /stable-mac\.yml|\.dmg/);
   const existingLaunch = readFileSync(join(existingApp.box, 'home', 'Applications', 'Tess Support.app', 'Contents', 'MacOS', 'launch'), 'utf8');
   assert.match(existingLaunch, new RegExp(`exec '${realpathSync(existingCli).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}' -p tess-support webapp`));
   assert.doesNotMatch(existingLaunch, /exec hermes /);
+  assert.match(existingLaunch, /^export HERMES_HOME='/m, 'the Dock uses the Hermes home chosen by the installer');
+
+  const staleApp = layout('stale-app-working-cli');
+  boxes.push(staleApp.box);
+  mkdirSync(join(staleApp.box, 'tmp'));
+  const staleBundle = join(staleApp.box, 'Applications', 'Hermes.app', 'Contents');
+  mkdirSync(staleBundle, { recursive: true });
+  writeFileSync(join(staleBundle, 'Info.plist'), plist('0.0.1'));
+  const workingCli = join(staleApp.box, 'home', '.local', 'bin', 'hermes');
+  mkdirSync(join(workingCli, '..'), { recursive: true });
+  writeFileSync(workingCli, hermesBin('0.23.2'), { mode: 0o755 });
+  const staleAppRun = run([], baseEnv(staleApp, { TESS_ARCH: 'arm64' }));
+  assert.equal(staleAppRun.status, 0, staleAppRun.stderr);
+  assert.doesNotMatch(readFileSync(join(staleApp.log, 'curl.log'), 'utf8'), /stable-mac\.yml|\.dmg/);
+  assert.equal(readFileSync(join(staleBundle, 'Info.plist'), 'utf8'), plist('0.0.1'));
 
   const noCli = layout('no-cli');
   boxes.push(noCli.box);

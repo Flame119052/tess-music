@@ -137,8 +137,8 @@ RELEASE_KEY_X='XOYW72EMGoUz6Km-BpIgzTdliV6VzywqMmALhAdr1ws'
 # Current LTS (Lithium). The darwin tarball's bin/node links only macOS system libraries.
 NODE_VERSION=v26.13.1
 NODE_ORIGIN=https://nodejs.org
-NODE_SHA_ARM64=aec2514ea1ceb2ba52455e9ec65986f6749a06dd759e5db2a72e6889668c9735
-NODE_SHA_X64=82bb96078a24ca50b9c9a38f2379e6be6d87171fcd400fc14c8934b3bce96e2f
+NODE_SHA_ARM64=af6202f5370a3a5209e85dc543758dfd9f44c8726626a236730cd603a67a8559
+NODE_SHA_X64=2693310b2820f9350d29524f21344e1c623875bab773457d55b2aceb9670716f
 
 die() {
   printf '%s\n' "$1" >&2
@@ -361,7 +361,73 @@ allow_url() {
 
 fetch() {
   allow_url "$2"
-  curl -fsSL --proto '=https' --retry 2 --retry-delay 1 -o "$1" "$2"
+  if [ -z "${TESS_SUPPORT_PROGRESS_FILE:-}" ] || [ "$#" -lt 3 ]; then
+    curl -q -fsSL --proto '=https' --proto-redir '=https' --retry 2 --retry-delay 1 -o "$1" "$2"
+    return
+  fi
+  download_with_progress "$@"
+}
+
+# Only fixed labels and locally calculated byte counts reach the card, never curl or installer output.
+progress() {
+  case ${TESS_SUPPORT_PROGRESS_FILE:-} in /*) ;; *) return 0 ;; esac
+  progress_tmp=$(mktemp "${TESS_SUPPORT_PROGRESS_FILE}.write.XXXXXX" 2>/dev/null) || return 0
+  if printf 'phase=installing\nprogress=%s\nstep=%s\ndetail=%s\n' "$1" "$2" "$3" > "$progress_tmp"; then
+    mv -f "$progress_tmp" "$TESS_SUPPORT_PROGRESS_FILE" || true
+  fi
+  rm -f "$progress_tmp"
+  progress_tmp=
+}
+
+download_with_progress() {
+  progress "" "$3" "Connecting…"
+  headers=$work/download.headers
+  : > "$headers"
+  curl -q -fsSL --proto '=https' --proto-redir '=https' --retry 2 --retry-delay 1 -D "$headers" -o "$1" "$2" &
+  download_pid=$!
+  last=0
+  moving=0
+  last_at=$(date +%s)
+  while kill -0 "$download_pid" 2>/dev/null; do
+    sleep 1
+    [ -f "$1" ] || continue
+    bytes=$(stat -f %z "$1" 2>/dev/null) || bytes=$(stat -c %s "$1" 2>/dev/null) || bytes=
+    case $bytes in ""|*[!0-9]*) continue ;; esac
+    now=$(date +%s)
+    [ "$now" -gt "$last_at" ] || continue
+    if [ "$bytes" -eq "$last" ] && [ "$moving" -eq 0 ]; then
+      last_at=$now
+      continue
+    fi
+    moving=0
+    [ "$bytes" -gt "$last" ] && moving=1
+    total=$(awk '
+      /^HTTP\// { total = 0; ok = $2 == 200 }
+      ok && tolower($1) == "content-length:" {
+        sub(/\r$/, "", $2); if ($2 ~ /^[0-9]+$/) total = $2
+      }
+      END { print total + 0 }
+    ' "$headers")
+    detail=$(LC_ALL=C awk -v got="$bytes" -v total="$total" -v last="$last" -v secs="$((now - last_at))" 'BEGIN {
+      speed = (got - last) / secs
+      printf "%.1f MB", got / 1000000
+      if (total > 0) printf " / %.1f MB", total / 1000000
+      if (speed > 0) printf " · %.1f MB/s", speed / 1000000
+      if (total > got && speed > 0) printf " · ~%ds left", (total - got) / speed + 0.5
+    }')
+    percent=$(LC_ALL=C awk -v got="$bytes" -v total="$total" -v start="$4" -v end="$5" 'BEGIN {
+      if (total > 0 && got <= total) printf "%.2f", start + (end - start) * got / total
+    }')
+    progress "$percent" "$3" "$detail"
+    last=$bytes
+    last_at=$now
+  done
+  if wait "$download_pid"; then
+    download_pid=
+  else
+    download_pid=
+    return 1
+  fi
 }
 
 is_sha256() {
@@ -417,66 +483,54 @@ app_version() {
   plist_buddy -c 'Print :CFBundleShortVersionString' "$1/Contents/Info.plist" 2>/dev/null | tr -d '[:space:]' || true
 }
 
-# The Dock's PATH is only /usr/bin:/bin:/usr/sbin:/sbin, so the launcher gets a full path.
-resolve_hermes_cli() {
-  hermes_cli=
-  if [ -x "$HOME/.local/bin/hermes" ]; then
-    hermes_cli=$HOME/.local/bin/hermes
-    return 0
-  fi
+find_hermes_commands() {
+  printf '%s\n' "$HOME/.local/bin/hermes"
   found=$(command -v hermes 2>/dev/null || true)
   case $found in
-    /*)
-      if [ -x "$found" ]; then
-        hermes_cli=$found
-        return 0
-      fi
-      ;;
+    /*) [ "$found" = "$HOME/.local/bin/hermes" ] || printf '%s\n' "$found" ;;
   esac
   for bundle in "$apps/Hermes.app" "$apps/Hermes Agent.app"; do
     [ -d "$bundle" ] || continue
     for candidate in \
       "$bundle/Contents/Resources/agent-payload/bin/hermes" \
-      "$bundle/Contents/MacOS/hermes" \
+      "$bundle/Contents/MacOS/"* \
       "$bundle/Contents/Resources/hermes"
     do
-      if [ -f "$candidate" ] && [ -x "$candidate" ]; then
-        hermes_cli=$candidate
-        return 0
-      fi
+      # On a case-insensitive disk, guessing MacOS/hermes can start the GUI binary Hermes.
+      case $candidate in */hermes) printf '%s\n' "$candidate" ;; esac
     done
   done
+}
+
+# A stale command can be executable but fail before Hermes starts. Try the
+# remaining paths, rather than letting that stub hide a working installation.
+resolve_hermes_cli() {
+  hermes_cli=
+  cli_too_old=
+  need=$(hermes_need)
+  candidates=$(find_hermes_commands)
+  while IFS= read -r command_path; do
+    [ -f "$command_path" ] && [ -x "$command_path" ] || continue
+    out=$(HERMES_HOME="$HERMES_HOME" "$command_path" --version 2>/dev/null) || continue
+    ver=$(printf '%s\n' "$out" | sed -n 's/[^0-9]*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1)
+    [ -n "$ver" ] || continue
+    if version_at_least "$ver" "$need"; then
+      hermes_cli=$command_path
+      return 0
+    fi
+    cli_too_old=$ver
+  done <<EOF
+$candidates
+EOF
   return 1
 }
 
-cli_version() {
-  case $hermes_cli in
-    "$apps/Hermes.app"/*)
-      app_version "$apps/Hermes.app"
-      return 0
-      ;;
-    "$apps/Hermes Agent.app"/*)
-      app_version "$apps/Hermes Agent.app"
-      return 0
-      ;;
-  esac
-  out=$("$hermes_cli" --version 2>/dev/null || true)
-  printf '%s\n' "$out" | sed -n 's/[^0-9]*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1
-}
-
 require_hermes_cli() {
-  if ! resolve_hermes_cli; then
-    die "Hermes is already on this Mac, but Tess Support could not find its hermes command. Install the Hermes command line, then paste this command again."
+  resolve_hermes_cli && return 0
+  if [ -n "$cli_too_old" ]; then
+    die "This Hermes is $cli_too_old. Tess Support needs Hermes $need or newer."
   fi
-  case $hermes_cli in
-    /*) ;;
-    *) die "Hermes is already on this Mac, but Tess Support could not find its hermes command. Install the Hermes command line, then paste this command again." ;;
-  esac
-  ver=$(cli_version)
-  need=$(hermes_need)
-  if [ -z "$ver" ] || ! version_at_least "$ver" "$need"; then
-    die "This Hermes is ${ver:-unknown}. Tess Support needs Hermes $need or newer."
-  fi
+  die "Hermes is already on this Mac, but Tess Support could not find its hermes command. Install the Hermes command line, then paste this command again."
 }
 
 # A test may point the pins at a fake archive. A real install ignores those variables.
@@ -524,19 +578,20 @@ stage_node() {
     *) die "This Mac is not supported. Tess Support needs Apple Silicon or a 64-bit Intel Mac." ;;
   esac
   is_sha256 "$node_sha" || die "The Node checksum in this installer is not a SHA-256."
-  node_name="node-${NODE_VERSION}-darwin-${node_arch}.tar.gz"
+  node_name="node-${NODE_VERSION}-darwin-${node_arch}.tar.xz"
   base="$NODE_ORIGIN/dist/$NODE_VERSION"
   fetch "$work/SHASUMS256.txt" "$base/SHASUMS256.txt"
   published=$(awk -v name="$node_name" '$2 == name { print $1; exit }' "$work/SHASUMS256.txt")
   if [ "$published" != "$node_sha" ]; then
     die "The Node checksum in this installer does not match Node's published list. Nothing was unpacked into the profile."
   fi
-  fetch "$work/node.tar.gz" "$base/$node_name"
-  got=$(/usr/bin/openssl dgst -sha256 "$work/node.tar.gz" | awk '{ print $NF }')
+  fetch "$work/node.tar.xz" "$base/$node_name" "Downloading runtime" 2 19
+  progress 19 "Verifying files" "Checking the runtime checksum…"
+  got=$(/usr/bin/openssl dgst -sha256 "$work/node.tar.xz" | awk '{ print $NF }')
   if [ "$got" != "$node_sha" ]; then
     die "The Node download did not match the checksum. Nothing was unpacked into the profile."
   fi
-  tar -tzf "$work/node.tar.gz" > "$work/node-members"
+  tar -tf "$work/node.tar.xz" > "$work/node-members"
   member=
   count=0
   while IFS= read -r path; do
@@ -553,13 +608,13 @@ stage_node() {
   case $member in
     /*|*..*) die "The Node archive had an unsafe path. Nothing was unpacked into the profile." ;;
   esac
-  kind=$(tar -tvzf "$work/node.tar.gz" "$member" | awk 'NR==1 { print substr($1, 1, 1); exit }')
+  kind=$(tar -tvf "$work/node.tar.xz" "$member" | awk 'NR==1 { print substr($1, 1, 1); exit }')
   if [ "$kind" != "-" ]; then
     die "The Node archive's bin/node is not a plain file. Nothing was unpacked into the profile."
   fi
   rm -rf "$work/node-src"
   mkdir -p "$work/node-src"
-  tar -xzf "$work/node.tar.gz" -C "$work/node-src" "$member"
+  tar -xf "$work/node.tar.xz" -C "$work/node-src" "$member"
   srcfile=$work/node-src/$member
   if [ ! -f "$srcfile" ] || [ -L "$srcfile" ] || [ ! -s "$srcfile" ]; then
     die "The Node archive did not unpack bin/node. Nothing was unpacked into the profile."
@@ -603,7 +658,7 @@ stage_record() {
     https://github.com/Flame119052/tess-music/releases/download/*) ;;
     *) die "Refusing a record download from an unknown address." ;;
   esac
-  fetch "$work/tess-record" "$record_url"
+  fetch "$work/tess-record" "$record_url" "Downloading screen recorder" 20 24
   got=$(sha256_file "$work/tess-record")
   if [ "$got" != "$record_sha" ]; then
     die "The window recorder download did not match its checksum. Nothing was unpacked into the profile."
@@ -1335,12 +1390,13 @@ existing_hermes_usable() {
 # Download and check the disk image before any Hermes folder is created. The copy into Applications is later.
 prepare_desktop() {
   desktop_ready=0
-  if existing_hermes_usable || [ -d "$apps/Hermes Agent.app" ]; then
+  if existing_hermes_usable || [ -d "$apps/Hermes Agent.app" ] || resolve_hermes_cli; then
     return 0
   fi
   fetch "$work/stable-mac.yml" "$FEED_URL"
   parse_feed "$work/stable-mac.yml"
-  fetch "$work/Hermes.dmg" "$ASSET_ORIGIN$dmg_path"
+  fetch "$work/Hermes.dmg" "$ASSET_ORIGIN$dmg_path" "Downloading Hermes" 30 77
+  progress 77 "Verifying files" "Checking signatures…"
   got=$(/usr/bin/openssl dgst -sha512 -binary "$work/Hermes.dmg" | /usr/bin/openssl base64 | tr -d '\n')
   if [ "$got" != "$dmg_hash" ]; then
     leave_applications "The download did not match Hermes's published checksum. Nothing was copied into Applications."
@@ -1392,6 +1448,11 @@ install_desktop() {
       return 0
     fi
   fi
+  if resolve_hermes_cli; then
+    printf '%s\n' "Hermes is already on this Mac. Tess Support will open its own chat in the browser. The Hermes profile you already use stays as it is."
+    launch=web
+    return 0
+  fi
   [ "${desktop_ready:-}" = 1 ] || die "The Hermes app was not checked. Nothing was copied into Applications."
   app_name=$desktop_app_name
   # Checks passed. A failed copy removes only the temporary name, never an existing Hermes app.
@@ -1421,7 +1482,7 @@ prepare_cli() {
     return 0
   fi
   apply_cli_test_pins
-  fetch "$work/hermes-install.sh" "$CLI_URL"
+  fetch "$work/hermes-install.sh" "$CLI_URL" "Downloading Hermes installer" 30 34
   got=$(sha256_file "$work/hermes-install.sh")
   if [ "$got" != "$CLI_SHA" ]; then
     die "The Hermes installer did not match its pinned checksum. It was not run."
@@ -1504,6 +1565,7 @@ EOF
     esac
     cat > "$support_app/Contents/MacOS/launch" <<EOF
 #!/bin/sh
+export HERMES_HOME=$(shell_quote "$HERMES_HOME")
 exec $(shell_quote "$hermes_cli") -p tess-support webapp
 EOF
   fi
@@ -1672,6 +1734,7 @@ finish_words() {
 
 install_main() {
   prepare_places
+  progress 1 "Getting things ready" "Checking this Mac…"
   read_token
   read_inbox
   same_requirement
@@ -1685,6 +1748,7 @@ install_main() {
   fi
   stage_node
   stage_record
+  progress 25 "Verifying files" "Checking the Tess Support profile…"
   stage_profile_files
   if [ "$arch" = "arm64" ]; then
     prepare_desktop
@@ -1693,15 +1757,19 @@ install_main() {
   fi
   ensure_places
   launch=web
+  progress "" "Installing Hermes" "Getting the chat engine ready…"
   if [ "$arch" = "arm64" ]; then
     install_desktop
   elif [ "$arch" = "x86_64" ]; then
     install_cli
   fi
+  progress 88 "Setting up Tess Support" "Saving your support profile…"
   install_profile
   set_active_profile
+  progress 96 "Adding Dock icon" "Making Tess Support easy to open…"
   build_launcher
   pin_dock
+  progress 100 "Tess Support is ready" "Finishing up…"
   finish_words
 }
 
@@ -1723,6 +1791,13 @@ remove_profile_leftover() {
 
 cleanup() {
   restore_echo
+  if [ -n "${download_pid:-}" ]; then
+    kill "$download_pid" 2>/dev/null || true
+    wait "$download_pid" 2>/dev/null || true
+  fi
+  if [ -n "${progress_tmp:-}" ]; then
+    rm -f "$progress_tmp"
+  fi
   # Put a half-finished swap back before this process goes away. Never delete .previous here.
   if [ "${swap_started:-}" = 1 ]; then
     recover_profile_swap || true

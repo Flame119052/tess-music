@@ -175,6 +175,17 @@ exec /usr/bin/ditto "$@"
   const supportInstall = `#!/bin/sh
 printf '%s' "\${TESS_SUPPORT_TOKEN-}" > "$TESS_INSTALL_TOKEN_OUT"
 printf '%s' "$*" > "$TESS_INSTALL_ARGV_OUT"
+printf '%s' "\${TESS_SUPPORT_PROGRESS_FILE-}" > "$TESS_INSTALL_PROGRESS_OUT"
+printf '%s' "$TMPDIR" > "$TESS_INSTALL_TMP_OUT"
+if [ "\${TESS_INSTALL_WRITE_PROGRESS:-}" = 1 ]; then
+  i=0
+  until [ -f "$TESS_FAKE_DIR/invite-first-word" ] || [ "$i" -ge 50 ]; do
+    i=$((i + 1)); sleep 0.1
+  done
+  f=$TESS_SUPPORT_PROGRESS_FILE
+  printf 'phase=installing\\nprogress=37\\nstep=Downloading runtime\\ndetail=1 MB / 3 MB\\n' > "$f.fixture"
+  mv -f "$f.fixture" "$f"
+fi
 [ -n "\${TESS_INSTALL_SLEEP-}" ] && sleep "$TESS_INSTALL_SLEEP"
 exit "\${TESS_INSTALL_EXIT:-0}"
 `;
@@ -213,6 +224,8 @@ exit "\${TESS_INSTALL_EXIT:-0}"
     TESS_SUPPORT_SIG: join(fixtures, 'support-install.sig'),
     TESS_INSTALL_TOKEN_OUT: join(box, 'support-token.out'),
     TESS_INSTALL_ARGV_OUT: join(box, 'support-argv.out'),
+    TESS_INSTALL_PROGRESS_OUT: join(box, 'support-progress.out'),
+    TESS_INSTALL_TMP_OUT: join(box, 'support-tmp.out'),
     TESS_OPEN_LOG: join(box, 'open.log'),
   };
   const run = (extra = {}) => execFileSync('/bin/zsh', [join(tess, 'updater.sh')], { env: { ...env, ...extra }, encoding: 'utf8' });
@@ -837,6 +850,7 @@ case "$1" in
     while [ $i -lt 100 ]; do
       w=$(cat "$f" 2>/dev/null)
       case "$w" in
+        phase=installing*) printf '%s\\n' "$w" > "$TESS_FAKE_DIR/invite-live-progress" ;;
         done) echo done > "$TESS_FAKE_DIR/invite-last-word"; exit "\${TESS_FAKE_DONE_RC:-1}" ;;
         failed) echo failed > "$TESS_FAKE_DIR/invite-last-word"; exit "\${TESS_FAKE_FAILED_RC:-1}" ;;
       esac
@@ -916,7 +930,7 @@ exit 2
     // after the claim and moves to "done" when the installer finishes, and Open Tess Support (exit 0) opens the app.
     const s = sandbox();
     const extra = plantInvite(s);
-    s.run({ ...extra, ...claimed(31), TESS_FAKE_ASK_RC: '0', TESS_FAKE_DONE_RC: '0', TESS_SUPPORT_TOKEN: LEAKED, TESS_INSTALL_SLEEP: '1' });
+    s.run({ ...extra, ...claimed(31), TESS_FAKE_ASK_RC: '0', TESS_FAKE_DONE_RC: '0', TESS_SUPPORT_TOKEN: LEAKED, TESS_INSTALL_WRITE_PROGRESS: '1', TESS_INSTALL_SLEEP: '1' });
     const argv = inviteLog(s, 'invite-argv.log').split('\n').filter(Boolean);
     assert.equal(argv[0], 'ask --timeout 900', 'the card asks with the 15-minute timeout');
     assert.equal(argv[1], `progress --status-file ${join(s.state, '.support-invite-status')}`, 'and shows progress from one status file');
@@ -924,6 +938,10 @@ exit 2
     assert.equal(readFileSync(join(s.box, 'support-token.out'), 'utf8'), SUPPORT_TOKEN, 'the installer still gets the claimed token');
     assert.equal(readFileSync(join(s.box, 'support-argv.out'), 'utf8'), '', 'on no command line');
     assert.equal(inviteLog(s, 'invite-first-word').trim(), 'installing', 'the card starts on "installing"');
+    assert.equal(inviteLog(s, 'support-progress.out'), join(s.state, '.support-invite-status'), 'installer and card share the status file');
+    assert.equal(inviteLog(s, 'invite-live-progress'), 'phase=installing\nprogress=37\nstep=Downloading runtime\ndetail=1 MB / 3 MB\n');
+    const installTemp = inviteLog(s, 'support-tmp.out');
+    assert.ok(installTemp && !existsSync(installTemp), 'the sandbox installer gets a temporary directory that is removed');
     assert.equal(inviteLog(s, 'invite-last-word').trim(), 'done', 'and is told "done" when the installer succeeds');
     assert.equal(inviteLog(s, 'invite-claims-at-start').trim(), '1', 'the card only appears once the invite is claimed');
     // Nothing that identifies the person or opens the installer reaches the card: not argv, not its environment.

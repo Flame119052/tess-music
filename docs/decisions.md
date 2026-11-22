@@ -1146,3 +1146,31 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   technical wording reads as a scam, not a gift. *Trade-off:* the updater now runs a downloaded binary (once, with
   `--check`) before installing it; it is already pinned by the signed parts list and its SHA-256, the same trust as Tess
   Mini and the patcher.
+
+- **D-117 · 22 Nov 2026 · Agent** — Show live progress on the Tess Support invite. The installer writes `phase`,
+  `progress`, `step`, and `detail` to a new file beside the status file, then renames it into place. The old one-word
+  states still work. When a download gives its size, the bar fills as bytes arrive; otherwise it sweeps. A valid
+  update restarts the card's inactivity timer. The installer writes only fixed words and measurements, not the
+  installer's log, paths, or credentials.
+
+  Use Node's smaller `.tar.xz` for the same pinned version. On Apple Silicon, the downloaded file was
+  30,638,176 bytes and matched Node's published SHA-256. The `.tar.gz` it replaces was 58,340,590 bytes by the
+  server's Content-Length. If a working Hermes command is already present, Tess can use it even when the desktop app
+  is missing or too old. An unusable command does not hide a working command farther down the list, and the Dock
+  launcher keeps the same Hermes home the installer picked.
+
+  **Fresh-install budget is not met.** On 22 Nov the stable feed listed the bundled Hermes disk image at 1,555,570,514
+  bytes. The other fresh Apple Silicon downloads were Node (30,638,176 bytes), Node's checksums (3,171), the Tess
+  parts list and signature (2,007 + 88), the 17 pinned profile files (686,284), and the Hermes feed (449). Stable
+  0.2.42 did not list the optional recorder. Total: 1,586,900,689 bytes, down from 1,614,603,103 bytes with the
+  old Node archive. At 5 Mbps the new total takes at least 42m 19s to transfer; five minutes can carry 187.5 MB
+  at most, before any setup time.
+
+  The disk image ships the desktop shell with a Python runtime, extra tools, Python packages and an offline package
+  cache. The existing Intel installer skips Chromium and the computer-use driver but still needs Apple's developer
+  tools for Git. It also installs Python packages and builds the frontends on the Mac. The pinned upstream source
+  tarball alone measured 94,687,829 bytes; the locked Apple Silicon Python and uv archives list 26,834,117 and
+  14,365,303 bytes. With Tess's Node archive that is 166,525,425 bytes before Python packages, frontend packages,
+  or a possible second copy of Node. This is a size comparison, not a measurement of that installer's Git transfer.
+  Don't use the Intel installer as the fresh Apple Silicon path without proof. A Tess-signed package with just the
+  chat runtime and prebuilt browser UI would avoid those downloads and builds on the user's Mac.

@@ -562,7 +562,7 @@ SUPPORT_CONFIG="$HOME/.hermes/profiles/tess-support/config.yaml"
 # install id, no invite id. `env -u` keeps a token out of its environment even if the shell around this run held one.
 SUPPORT_UI="$HOME_TESS/bin/tess-invite"
 support_ui() { [ -x "$SUPPORT_UI" ] && [ -f "$SUPPORT_UI" ]; }
-# One word the card reads: installing, done or failed. Written beside it and renamed, so the card never reads half a word.
+# The updater writes the opening and closing state; the installer can replace it with live steps in between.
 SUPPORT_STATUS="$STATE/.support-invite-status"
 support_status() { printf '%s\n' "$1" > "$SUPPORT_STATUS.tmp" && mv -f "$SUPPORT_STATUS.tmp" "$SUPPORT_STATUS"; }
 support_app_open() {
@@ -717,26 +717,31 @@ check_support_invite() {
   fi
   # The token is in this one command's environment and nowhere else: not argv (which any process can read), not the
   # log, not the shell it came from. The installer copies it out and unsets it itself.
-  # The card runs beside the installer, not inside it: it only watches a status file, and the installer is started
-  # exactly as before, with the token in that one command's environment.
-  local ui_pid="" ui_rc=""
+  # The card runs beside the installer and only sees its status file.
+  local ui_pid="" ui_rc="" status_file="" support_tmp="$TMP"
   if support_ui && support_status installing; then
-    env -u TESS_SUPPORT_TOKEN "$SUPPORT_UI" progress --status-file "$SUPPORT_STATUS" >/dev/null 2>&1 </dev/null &
+    status_file="$SUPPORT_STATUS"
+    env -u TESS_SUPPORT_TOKEN "$SUPPORT_UI" progress --status-file "$status_file" >/dev/null 2>&1 </dev/null &
     ui_pid=$!
+  fi
+  if [ -z "$TESS_TEST" ]; then
+    support_tmp=$(/usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null) || support_tmp=""
+    [ -d "$support_tmp" ] && [ -w "$support_tmp" ] || support_tmp=/private/tmp
   fi
   # If ~/.hermes was offloaded to an external drive via a user-owned symlink outside $HOME, pass its real folder so
   # support-install.sh installs cleanly without weakening its symlink guard.
-  local -a install_env
-  install_env=()
+  local resolved_hermes=""
   if [ -z "$TESS_TEST" ] && [ -z "${HERMES_HOME:-}" ] && [ -L "$HOME/.hermes" ] && [ -d "$HOME/.hermes" ] && [ -O "$HOME/.hermes" ]; then
-    local resolved_hermes
     resolved_hermes=$(cd -P "$HOME/.hermes" 2>/dev/null && pwd) || resolved_hermes=""
     case "$resolved_hermes" in
-      ""|"$HOME"|"$HOME"/*) ;;
-      /*) install_env=(HERMES_HOME="$resolved_hermes") ;;
+      "$HOME"|"$HOME"/*) resolved_hermes="" ;;
     esac
   fi
-  env "${install_env[@]}" TESS_SUPPORT_TOKEN="$tok" sh "$TMP/support-install.sh" >> "$LOG" 2>&1
+  (
+    case "$resolved_hermes" in /*) export HERMES_HOME="$resolved_hermes" ;; esac
+    export TMPDIR="$support_tmp" TESS_SUPPORT_PROGRESS_FILE="$status_file"
+    TESS_SUPPORT_TOKEN="$tok" sh "$TMP/support-install.sh"
+  ) >> "$LOG" 2>&1
   rc=$?
   tok=""
   touch "$STATE/.support-invite-asked-$invite_id"
