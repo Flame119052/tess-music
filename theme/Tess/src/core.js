@@ -210,23 +210,13 @@
     meta.append(ch, again, news);
     // Invited Macs (or Macs that already set up Tess Support) get a quiet link here so anyone who clicked
     // "Not now" can still open the invite later; uninvited Macs see nothing at all.
-    (async () => {
-      miniKey = ''; // Mini rotates its token on update/restart, so handshake fresh when Settings opens
-      if (!(await miniReady()) || !meta.isConnected) return;
-      const r = await fetch(`${MINI}/support?k=${encodeURIComponent(miniKey)}`, { mode: 'cors' });
-      if (!r.ok || !meta.isConnected) return;
-      const d = await r.json();
+    supportFetchStatus().then((d) => {
       if (!d || !meta.isConnected || (d.state !== 'invited' && d.state !== 'installed')) return;
       const sup = el('<button class="tess-set-link"></button>');
       sup.textContent = d.state === 'installed' ? 'Open Tess Support' : 'Set up Tess Support';
-      sup.onclick = async () => {
-        miniKey = '';
-        if (await miniReady()) {
-          fetch(`${MINI}/support?k=${encodeURIComponent(miniKey)}`, { method: 'POST', mode: 'no-cors' }).catch(() => {});
-        }
-      };
+      sup.onclick = () => openSupportUI(true);
       meta.append(sup);
-    })().catch(() => {});
+    }).catch(() => {});
     if (oldInstall) {
       const fix = el('<button class="tess-set-link">Finish updating Tess (copies the install line)</button>');
       fix.onclick = () => { Spicetify.Platform.ClipboardAPI?.copy?.(INSTALL_LINE); Spicetify.showNotification?.('Copied. Paste it in Terminal and press Return.'); };
@@ -2955,10 +2945,435 @@
   const unlisten = Spicetify.Platform.History.listen(() => setTimeout(onRoute, 0));
   onDispose(() => typeof unlisten === 'function' && unlisten());
   listen(window, 'resize', () => { setHeroHeight(); setTimeout(onRoute, 100); });
+  // ---------------- Tess Support (in-Spotify Liquid Glass invite + Pi chat popup) ----------------
+  // Only shown on Macs with an active invite or installed Tess Support; uninvited Macs render nothing at all.
+  let supState = { state: 'none', asked: false, install: null };
+  let supBtn = null;
+  let supInviteEl = null;
+  let supChatEl = null;
+  let supInstallPoll = null;
+  let supChatPoll = null;
+  let supChatSeq = 0;
+  let supChatBusy = false;
+  let supActiveStreamEl = null;
+  let supStreamText = '';
+  let supToolPillEl = null;
+
+  async function supportAPI(path, opts = {}) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt === 1) miniKey = '';
+      if (!(await miniReady())) return null;
+      const sep = path.includes('?') ? '&' : '?';
+      const url = `${MINI}${path}${sep}k=${encodeURIComponent(miniKey)}`;
+      const res = await fetch(url, { mode: 'cors', ...opts }).catch(() => null);
+      if (res && res.ok) return res.json().catch(() => ({ ok: true }));
+      if (!res || res.status !== 404) return null;
+    }
+    return null;
+  }
+
+  async function supportFetchStatus() {
+    const d = await supportAPI('/support');
+    if (d && (d.state === 'none' || d.state === 'invited' || d.state === 'installed')) {
+      supState = d;
+      syncSupportButton();
+      return d;
+    }
+    return null;
+  }
+
+  const LIFEBUOY_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M4.93 4.93l4.24 4.24M14.83 14.83l4.24 4.24M19.07 4.93l-4.24 4.24M9.17 14.83l-4.24 4.24"/></svg>';
+
+  function syncSupportButton() {
+    if (supState.state !== 'invited' && supState.state !== 'installed') {
+      supBtn?.remove();
+      supBtn = null;
+      return;
+    }
+    if (!supBtn) {
+      supBtn = el(`<button id="tess-sup-btn" class="tess-sup-btn" type="button" aria-label="Tess Support" title="Tess Support">${LIFEBUOY_SVG}</button>`);
+      supBtn.onclick = () => openSupportUI(false);
+    }
+    supBtn.classList.toggle('has-invite', supState.state === 'invited');
+    supBtn.title = supState.state === 'installed' ? 'Tess Support' : 'Set up Tess Support';
+    const anchor = document.querySelector('[data-testid="user-widget-link"]')?.parentElement;
+    if (anchor && supBtn.parentElement !== anchor) {
+      anchor.prepend(supBtn);
+    } else if (!anchor && !supBtn.isConnected) {
+      document.body.appendChild(supBtn);
+    }
+  }
+
+  function closeSupportInvite() {
+    clearInterval(supInstallPoll);
+    supInstallPoll = null;
+    if (!supInviteEl) return;
+    const node = supInviteEl;
+    supInviteEl = null;
+    node.classList.add('bye');
+    setTimeout(() => node.remove(), 220);
+  }
+
+  function setInviteProgress(info) {
+    if (!supInviteEl) return;
+    const phase = info?.phase || 'installing';
+    const pct = typeof info?.progress === 'number' ? Math.max(0, Math.min(1, info.progress)) : 0;
+    const step = String(info?.step || 'Setting up Tess Support');
+    const detail = String(info?.detail || '');
+    supInviteEl.classList.toggle('is-installing', phase === 'installing');
+    supInviteEl.classList.toggle('is-failed', phase === 'failed');
+    const fill = q(supInviteEl, '.tsup-bar-fill');
+    const stepEl = q(supInviteEl, '.tsup-step');
+    const detailEl = q(supInviteEl, '.tsup-detail');
+    if (fill) {
+      fill.classList.toggle('indeterminate', phase === 'installing' && pct <= 0.01);
+      fill.style.width = `${Math.max(4, Math.round(pct * 100))}%`;
+    }
+    if (stepEl) stepEl.textContent = step;
+    if (detailEl) detailEl.textContent = detail;
+  }
+
+  function pollSupportInstall() {
+    clearInterval(supInstallPoll);
+    supInstallPoll = setInterval(async () => {
+      const d = await supportFetchStatus();
+      if (!d) return;
+      if (d.state === 'installed' || d.install?.phase === 'done') {
+        clearInterval(supInstallPoll);
+        supInstallPoll = null;
+        setInviteProgress({ phase: 'done', progress: 1, step: 'Tess Support is ready', detail: 'Opening chat inside Spotify…' });
+        setTimeout(() => {
+          closeSupportInvite();
+          openSupportChat();
+        }, 550);
+      } else if (d.install?.phase === 'failed') {
+        clearInterval(supInstallPoll);
+        supInstallPoll = null;
+        setInviteProgress(d.install);
+      } else if (d.install) {
+        setInviteProgress(d.install);
+      }
+    }, 450);
+  }
+
+  function openSupportInvite() {
+    if (supInviteEl) return;
+    const card = el(`
+      <div id="tess-sup-invite" role="dialog" aria-modal="true" aria-label="Tess Support">
+        <div class="tsup-inv-card">
+          <button class="tsup-inv-x" type="button" aria-label="Close">×</button>
+          <div class="tsup-inv-head">
+            <div class="tsup-emblem">${LIFEBUOY_SVG}</div>
+            <div class="tsup-pill">Invited by Krish</div>
+            <h2>Want a hand with Tess?</h2>
+            <p>A tiny built-in chat right inside Spotify. Only invited Macs see it, and nothing runs unless you open it.</p>
+          </div>
+          <ul class="tsup-rows">
+            <li><span class="tsup-dot green"></span><div><b>Checks what broke</b><small>Runs Tess’s quick check-up and writes down the details for Krish.</small></div></li>
+            <li><span class="tsup-dot blue"></span><div><b>Asks before any screenshot</b><small>Never captures other apps, audio, or anything without your yes.</small></div></li>
+            <li><span class="tsup-dot violet"></span><div><b>Fast &amp; lightweight</b><small>Powered by Pi’s ~46 MB standalone runtime with Tess’s support skills.</small></div></li>
+          </ul>
+          <div class="tsup-prog" aria-live="polite">
+            <div class="tsup-bar"><div class="tsup-bar-fill indeterminate"></div></div>
+            <div class="tsup-step">Starting setup…</div>
+            <div class="tsup-detail">Preparing download</div>
+          </div>
+          <div class="tsup-inv-foot">
+            <button class="twn-secondary tsup-decline" type="button">Not now</button>
+            <button class="twn-primary tsup-accept" type="button">Add Tess Support</button>
+            <button class="twn-secondary tsup-retry" type="button">Try again</button>
+          </div>
+        </div>
+      </div>
+    `);
+    supInviteEl = card;
+    document.body.appendChild(card);
+
+    const startInstall = async () => {
+      setInviteProgress({ phase: 'installing', progress: 0.02, step: 'Starting setup', detail: 'Verifying invite…' });
+      await supportAPI('/support/install', { method: 'POST' });
+      pollSupportInstall();
+    };
+
+    q(card, '.tsup-inv-x').onclick = () => closeSupportInvite();
+    q(card, '.tsup-decline').onclick = async () => {
+      await supportAPI('/support/decline', { method: 'POST' });
+      supState.asked = true;
+      closeSupportInvite();
+    };
+    q(card, '.tsup-accept').onclick = startInstall;
+    q(card, '.tsup-retry').onclick = startInstall;
+
+    if (supState.install?.phase === 'installing') {
+      setInviteProgress(supState.install);
+      pollSupportInstall();
+    }
+  }
+
+  function appendChatBubble(role, text, opts = {}) {
+    if (!supChatEl) return null;
+    const feed = q(supChatEl, '.tsup-feed');
+    q(supChatEl, '.tsup-empty')?.classList.add('gone');
+    const row = el(`<div class="tsup-msg ${role}"></div>`);
+    const bubble = el('<div class="tsup-bubble"></div>');
+    bubble.textContent = text;
+    row.appendChild(bubble);
+    if (opts.consent) {
+      const actions = el('<div class="tsup-consent"></div>');
+      const yes = el('<button type="button" class="tsup-chip yes">Yes, go ahead</button>');
+      const no = el('<button type="button" class="tsup-chip no">No thanks</button>');
+      const pick = (word) => {
+        yes.disabled = true;
+        no.disabled = true;
+        actions.classList.add('done');
+        sendSupportMessage(word);
+      };
+      yes.onclick = () => pick('yes');
+      no.onclick = () => pick('no');
+      actions.append(yes, no);
+      row.appendChild(actions);
+    }
+    feed.appendChild(row);
+    feed.scrollTop = feed.scrollHeight;
+    return bubble;
+  }
+
+  function showToolPill(label) {
+    if (!supChatEl) return;
+    const feed = q(supChatEl, '.tsup-feed');
+    q(supChatEl, '.tsup-empty')?.classList.add('gone');
+    if (supToolPillEl) {
+      supToolPillEl.classList.remove('active');
+      supToolPillEl.classList.add('done');
+    }
+    supToolPillEl = el('<div class="tsup-tool active"><span class="tsup-tool-dot"></span><span class="tsup-tool-txt"></span></div>');
+    q(supToolPillEl, '.tsup-tool-txt').textContent = label || 'Working…';
+    feed.appendChild(supToolPillEl);
+    feed.scrollTop = feed.scrollHeight;
+  }
+
+  function finishToolPill(isError) {
+    if (!supToolPillEl) return;
+    supToolPillEl.classList.remove('active');
+    supToolPillEl.classList.add(isError ? 'err' : 'done');
+    supToolPillEl = null;
+  }
+
+  function setChatBusy(isBusy) {
+    supChatBusy = !!isBusy;
+    if (!supChatEl) return;
+    supChatEl.classList.toggle('busy', supChatBusy);
+    const sendBtn = q(supChatEl, '.tsup-send');
+    if (sendBtn) sendBtn.setAttribute('aria-label', supChatBusy ? 'Stop' : 'Send');
+  }
+
+  function consumeSupportEvents(data) {
+    if (!data || !Array.isArray(data.events)) return;
+    for (const ev of data.events) {
+      if (typeof ev.seq === 'number' && ev.seq > supChatSeq) supChatSeq = ev.seq;
+      if (ev.type === 'delta') {
+        finishToolPill(false);
+        supStreamText += String(ev.text || '');
+        if (!supActiveStreamEl) supActiveStreamEl = appendChatBubble('assistant', supStreamText);
+        else supActiveStreamEl.textContent = supStreamText;
+        const feed = supChatEl && q(supChatEl, '.tsup-feed');
+        if (feed) feed.scrollTop = feed.scrollHeight;
+      } else if (ev.type === 'message') {
+        finishToolPill(false);
+        const text = String(ev.text || '');
+        if (supActiveStreamEl) {
+          supActiveStreamEl.textContent = text;
+          if (ev.consent) {
+            const parent = supActiveStreamEl.parentElement;
+            supActiveStreamEl = null;
+            supStreamText = '';
+            if (parent) {
+              parent.remove();
+              appendChatBubble('assistant', text, { consent: ev.consent });
+            }
+          } else {
+            supActiveStreamEl = null;
+            supStreamText = '';
+          }
+        } else if (text) {
+          appendChatBubble('assistant', text, { consent: ev.consent });
+        }
+      } else if (ev.type === 'tool_start') {
+        supActiveStreamEl = null;
+        supStreamText = '';
+        showToolPill(ev.label || 'Working…');
+      } else if (ev.type === 'tool_end') {
+        finishToolPill(!!ev.isError);
+      } else if (ev.type === 'error') {
+        finishToolPill(true);
+        supActiveStreamEl = null;
+        supStreamText = '';
+        appendChatBubble('error', String(ev.text || 'Something went wrong.'));
+      } else if (ev.type === 'settled') {
+        finishToolPill(false);
+        supActiveStreamEl = null;
+        supStreamText = '';
+      }
+    }
+    setChatBusy(!!data.busy);
+    if (!data.busy && supChatPoll) {
+      clearInterval(supChatPoll);
+      supChatPoll = null;
+    }
+  }
+
+  function startSupportChatPoll() {
+    if (supChatPoll) return;
+    supChatPoll = setInterval(async () => {
+      const data = await supportAPI(`/support/chat/events?after=${supChatSeq}`);
+      if (data) consumeSupportEvents(data);
+    }, 140);
+  }
+
+  async function sendSupportMessage(raw) {
+    const text = String(raw || '').trim();
+    if (!text) return;
+    if (!supChatEl) openSupportChat();
+    appendChatBubble('user', text);
+    setChatBusy(true);
+    const res = await supportAPI('/support/chat/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text }),
+    });
+    if (!res) {
+      setChatBusy(false);
+      appendChatBubble('error', 'Could not reach Tess Mini on this Mac. Try restarting Spotify.');
+      return;
+    }
+    startSupportChatPoll();
+  }
+
+  function closeSupportChat() {
+    if (!supChatEl) return;
+    supChatEl.classList.remove('open');
+  }
+
+  function openSupportChat() {
+    if (!supChatEl) {
+      const box = el(`
+        <div id="tess-sup-chat" role="dialog" aria-label="Tess Support chat">
+          <div class="tsup-head">
+            <div class="tsup-head-l">
+              <div class="tsup-mini-emblem">${LIFEBUOY_SVG}</div>
+              <div>
+                <div class="tsup-title">Tess Support</div>
+                <div class="tsup-sub"><span class="tsup-live-dot"></span>Ready inside Spotify</div>
+              </div>
+            </div>
+            <div class="tsup-head-r">
+              <button class="tsup-icon-btn tsup-new" type="button" title="New chat" aria-label="New chat">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+              </button>
+              <button class="tsup-icon-btn tsup-close" type="button" title="Close" aria-label="Close">×</button>
+            </div>
+          </div>
+          <div class="tsup-feed">
+            <div class="tsup-empty">
+              <div class="tsup-empty-emblem">${LIFEBUOY_SVG}</div>
+              <h3>What looks off in Spotify?</h3>
+              <p>Tell me in plain words. I’ll run Tess’s check-up, ask before any screenshot, and send Krish a clean report.</p>
+              <div class="tsup-starters">
+                <button type="button" class="tsup-starter">Lyrics aren’t showing</button>
+                <button type="button" class="tsup-starter">Something looks glitchy</button>
+                <button type="button" class="tsup-starter">Updates seem stuck</button>
+              </div>
+            </div>
+          </div>
+          <form class="tsup-compose">
+            <textarea class="tsup-input" rows="1" placeholder="Describe what happened…"></textarea>
+            <button class="tsup-send" type="submit" aria-label="Send">
+              <svg class="ic-send" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+              <svg class="ic-stop" viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="3"/></svg>
+            </button>
+          </form>
+        </div>
+      `);
+      supChatEl = box;
+      document.body.appendChild(box);
+      const input = q(box, '.tsup-input');
+      const form = q(box, '.tsup-compose');
+      const autosize = () => {
+        input.style.height = 'auto';
+        input.style.height = `${Math.min(110, Math.max(36, input.scrollHeight))}px`;
+      };
+      input.addEventListener('input', autosize);
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          if (!supChatBusy) form.requestSubmit();
+        } else if (e.key === 'Escape') {
+          closeSupportChat();
+        }
+      });
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        if (supChatBusy) {
+          supportAPI('/support/chat/abort', { method: 'POST' });
+          return;
+        }
+        const val = input.value;
+        input.value = '';
+        autosize();
+        sendSupportMessage(val);
+      });
+      box.querySelectorAll('.tsup-starter').forEach((b) => {
+        b.onclick = () => sendSupportMessage(b.textContent);
+      });
+      q(box, '.tsup-close').onclick = closeSupportChat;
+      q(box, '.tsup-new').onclick = async () => {
+        await supportAPI('/support/chat/reset', { method: 'POST' });
+        supActiveStreamEl = null;
+        supStreamText = '';
+        supToolPillEl = null;
+        setChatBusy(false);
+        const feed = q(box, '.tsup-feed');
+        feed.querySelectorAll('.tsup-msg, .tsup-tool').forEach((n) => n.remove());
+        q(box, '.tsup-empty')?.classList.remove('gone');
+      };
+    }
+    supChatEl.classList.add('open');
+    setTimeout(() => q(supChatEl, '.tsup-input')?.focus(), 80);
+  }
+
+  async function openSupportUI(forceOpen) {
+    const d = await supportFetchStatus();
+    if (!d) return;
+    if (d.state === 'installed') {
+      if (!forceOpen && supChatEl?.classList.contains('open')) closeSupportChat();
+      else openSupportChat();
+    } else if (d.state === 'invited') {
+      openSupportInvite();
+    }
+  }
+
+  function initSupport() {
+    supportFetchStatus().then((d) => {
+      if (!d) return;
+      if (d.state === 'invited' && (!d.asked || d.install?.phase === 'installing')) {
+        openSupportInvite();
+      }
+    }).catch(() => {});
+  }
+  onDraw(syncSupportButton, 3000);
+  onDispose(() => {
+    clearInterval(supInstallPoll);
+    clearInterval(supChatPoll);
+    supBtn?.remove();
+    supInviteEl?.remove();
+    supChatEl?.remove();
+  });
+
   // for checking things from DevTools: window.__tessDebug.artistCanvas(uri), .playCanvas(video, fileId)
-  self.debug = { artistCanvas, playCanvas, trackCanvas, onRoute: () => onRoute(), place: () => runPlacers(), whatsNew: () => whatsNew(true), npTick: () => syncProgress(), libState: () => ({ libMorphing, libArrived }) };
+  self.debug = { artistCanvas, playCanvas, trackCanvas, onRoute: () => onRoute(), place: () => runPlacers(), whatsNew: () => whatsNew(true), openSupport: () => openSupportUI(true), npTick: () => syncProgress(), libState: () => ({ libMorphing, libArrived }) };
   onboarding();
   whatsNew();
+  initSupport();
   onDraw(applyGlass, 4000);
   applyGlass();
   startWatch();

@@ -1146,3 +1146,27 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   technical wording reads as a scam, not a gift. *Trade-off:* the updater now runs a downloaded binary (once, with
   `--check`) before installing it; it is already pinned by the signed parts list and its SHA-256, the same trust as Tess
   Mini and the patcher.
+- **D-117 · 22 Nov 2026 · Krish & Agent** — Tess Support on invited Macs runs **inside Spotify's own UI as a Liquid Glass
+  chat popup** powered by **Pi's official standalone binary (`v1.6.0`)** stripped to the bare minimum, instead of
+  downloading Hermes's 1.55 GB desktop DMG (#153).
+  - **Download size:** `pi-darwin-arm64.tar.gz` is **45.90 MB** (`pi-darwin-x64.tar.gz` is **48.29 MB**), pinned by
+    official `SHA256SUMS`, plus Tess's signed `support-kit.tar.gz` (~15 KB: `SOUL.md`, `tess-visit.ts`, the four
+    support `SKILL.md` skills, `privacy.mjs`, `triage.mjs`) and optional `tess-record` (~0.5 MB). Total fresh download
+    is **~46.4 MB** (~74 seconds at 5 Mbps, ~4 seconds at 100 Mbps), down from 1,587 MB (~42 min at 5 Mbps). No Node.js,
+    no Python, no Electron, no Xcode tools, and never touches `~/.hermes` or `/Applications`.
+  - **Stripped bare-minimum runtime:** `Tess Mini` (`mini/TessMini.swift`) lazily spawns `pi --mode rpc --no-session
+    --no-builtin-tools --no-extensions -e tess-visit.ts --no-mcp --no-skills --no-prompt-templates --no-themes
+    --no-context-files --no-approve` with `PI_CODING_AGENT_DIR` isolated to `Tess/support/current/agent` and
+    `PI_OFFLINE=1`. Only our 13 `tess_*` visit tools exist (verified by live RPC test); `tess-visit.ts` adds a
+    `tool_call` allowlist, separate still/video user-message consent lanes via `input` + `turn_end` hooks, and
+    `privacy.mjs` scrubbing before returning results or posting to `tess-music-player.janus.ing`.
+  - **In-Spotify UI & isolation:** All `/support` and `/support/chat/*` routes on `127.0.0.1:38411` require both
+    `Origin: https://xpui.app.spotify.com` and Mini's per-launch random token (`MiniGate.swift`). `TESS_SUPPORT_TOKEN`
+    lives in `chmod 600` `Tess/support/token` and enters only Pi's process environment—never Spotify's page. Uninvited
+    Macs see zero UI, zero buttons, and download nothing. Invited Macs see the Liquid Glass invite + live MB/speed/ETA
+    progress bar right inside Spotify, which transitions directly into the floating Liquid Glass chat popup.
+  *Why:* a 1.55 GB download fails the 5-minute slow-internet bar, and a separate macOS window fights Spotify's focus and
+  Spaces. Pi's official standalone binary gives us an audited ~46 MB single-file runtime with native TypeScript
+  extensions, strict `--no-builtin-tools`, and JSONL RPC streaming straight into Spotify's Liquid Glass theme.
+  *Trade-off:* Tess Support chat requires `Tess Mini` to be running on localhost (standard on every Tess Mac). `support/mac/`
+  stays intact for reference and existing Hermes sandbox tests.

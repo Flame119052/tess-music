@@ -129,14 +129,31 @@ const uninstallText = readFileSync(`${root}installer/uninstall.sh`, 'utf8');
 writeFileSync(`${out}dist/install.sh`, installText);
 writeFileSync(`${out}dist/uninstall.sh`, uninstallText);
 writeFileSync(`${out}dist/install.sig`, sig(installText) + '\n');
-// Tess Support's installer travels as a signed copy of the already-public support/mac/install.sh, so an invited Mac can
-// check the script with tess-verify before it runs anything (#137). Its SHA-256 is also pinned as a non-part line in
-// components.txt so an invited Mac refuses a replayed older signed copy, while uninvited Macs still download nothing.
+// Tess Support's installer travels as a signed copy of support/pi/install.sh (Pi standalone binary, ~46 MB), so an
+// invited Mac verifies the script with tess-verify before running anything (#137). Its SHA-256 is pinned as a non-part
+// line in components.txt so a stale mirror cannot replay an older signed copy, while uninvited Macs download nothing.
 // No token, no invite and no identity is ever in this file or its signature.
-const supportInstallText = readFileSync(`${root}support/mac/install.sh`, 'utf8');
+const supportInstallText = readFileSync(`${root}support/pi/install.sh`, 'utf8');
 const supportInstallSha = createHash('sha256').update(supportInstallText).digest('hex');
 writeFileSync(`${out}dist/support-install.sh`, supportInstallText);
 writeFileSync(`${out}dist/support-install.sig`, sig(supportInstallText) + '\n');
+// Pack Tess Support's skills, SOUL.md, stripped Pi extension, and shared privacy/triage scripts (~15 KB) as a signed
+// release part (`support-kit`). Uninvited Macs skip it via updater.sh's part allowlist; invited Macs verify its SHA-256
+// from components.txt before unpacking.
+const kdir = `${build}support-kit/`;
+rmSync(kdir, { recursive: true, force: true });
+mkdirSync(`${kdir}extensions`, { recursive: true });
+mkdirSync(`${kdir}scripts`, { recursive: true });
+mkdirSync(`${kdir}skills`, { recursive: true });
+cpSync(`${root}support/pi/SOUL.md`, `${kdir}SOUL.md`);
+cpSync(`${root}support/pi/tess-visit.ts`, `${kdir}extensions/tess-visit.ts`);
+cpSync(`${root}support/bot/skills/tess-support/scripts/privacy.mjs`, `${kdir}scripts/privacy.mjs`);
+cpSync(`${root}support/bot/skills/tess-support/scripts/triage.mjs`, `${kdir}scripts/triage.mjs`);
+for (const sk of ['tess-support', 'tess-gather', 'tess-evidence', 'tess-handoff']) {
+  mkdirSync(`${kdir}skills/${sk}`, { recursive: true });
+  cpSync(`${root}support/mac/skills/${sk}/SKILL.md`, `${kdir}skills/${sk}/SKILL.md`);
+}
+run('tar', ['-C', kdir, '-czf', `${build}tess-support-kit.tar.gz`, '.']);
 writeFileSync(`${out}README.md`, `Release channel \`${channel}\` of Tess Music. Source and install: https://github.com/Flame119052/tess-music\n`);
 // the patcher, built from patcher/ (fork of Spicetify CLI) plus Spicetify's compiled helper scripts
 const pdir = `${build}patcher/`;
@@ -187,6 +204,19 @@ const parts = {
   command: { file: `${build}tess-command.sh`, src: hashFiles([`${root}installer/tess-command.sh`]) },
   mini: { file: `${build}tess-mini.zip`, src: hashFiles([`${root}mini/MiniGate.swift`, `${root}mini/TessMini.swift`, `${root}mini/Info.plist`]).slice(0, 56) + 'sig1' },
   record: { file: `${build}tess-record`, src: hashFiles([`${root}mini/TessRecord.swift`]).slice(0, 56) + 'sig1' },
+  'support-kit': {
+    file: `${build}tess-support-kit.tar.gz`,
+    src: hashFiles([
+      `${root}support/pi/SOUL.md`,
+      `${root}support/pi/tess-visit.ts`,
+      `${root}support/bot/skills/tess-support/scripts/privacy.mjs`,
+      `${root}support/bot/skills/tess-support/scripts/triage.mjs`,
+      `${root}support/mac/skills/tess-support/SKILL.md`,
+      `${root}support/mac/skills/tess-gather/SKILL.md`,
+      `${root}support/mac/skills/tess-evidence/SKILL.md`,
+      `${root}support/mac/skills/tess-handoff/SKILL.md`,
+    ]),
+  },
   invite: { file: `${build}tess-invite`, src: hashFiles([`${root}mini/TessInvite.swift`]).slice(0, 56) + 'sig1' },
   theme: { file: `${build}tess-theme.tar.gz`, src: hashFiles([`${root}theme/loader/loader.js`]) },
 };
