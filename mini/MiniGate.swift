@@ -16,6 +16,7 @@ enum MiniEffect: Equatable {
   case hide
   case lyric(String)
   case lines(String)
+  case support
 }
 
 struct MiniReply: Equatable {
@@ -27,7 +28,7 @@ struct MiniReply: Equatable {
 
 private let miniSpotifyOrigin = "https://xpui.app.spotify.com"
 
-func miniHandle(raw: String, token: String) -> MiniReply {
+func miniHandle(raw: String, token: String, supportState: () -> String = { "none" }) -> MiniReply {
   let parts = raw.components(separatedBy: "\r\n\r\n")
   let headerText = parts.first ?? ""
   let body = parts.dropFirst().joined(separator: "\r\n\r\n")
@@ -70,6 +71,14 @@ func miniHandle(raw: String, token: String) -> MiniReply {
   guard miniTokenMatches(given, token) else {
     return miniReply(404, origin: nil, privateNetwork: false, body: "", effect: .none)
   }
+  if method == "GET", path == "/support" {
+    if fromSpotify {
+      let state = supportState()
+      let safe = (state == "invited" || state == "installed") ? state : "none"
+      return miniReply(200, origin: origin, privateNetwork: true, body: "{\"state\":\"\(safe)\"}", json: true, effect: .none)
+    }
+    return miniReply(404, origin: nil, privateNetwork: false, body: "", effect: .none)
+  }
   let effect: MiniEffect
   switch path {
   case "/toggle": effect = .toggle
@@ -77,6 +86,7 @@ func miniHandle(raw: String, token: String) -> MiniReply {
   case "/hide": effect = .hide
   case "/lyric": effect = .lyric(body.trimmingCharacters(in: .whitespacesAndNewlines))
   case "/lines": effect = .lines(body)
+  case "/support": effect = method == "POST" ? .support : .none
   default: effect = .none
   }
   if effect == .none {

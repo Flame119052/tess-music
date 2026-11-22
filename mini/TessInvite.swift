@@ -451,7 +451,7 @@ final class Controller {
     window.level = .normal
     window.isMovableByWindowBackground = true
     window.isReleasedWhenClosed = false
-    window.collectionBehavior = []
+    window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
     window.title = "Tess Support"
   }
 
@@ -469,6 +469,30 @@ final class Controller {
   }
 
   var placed = false
+  var everShown = false
+  var shownAt: Date?
+
+  func presentOverSpotify(animated: Bool) {
+    placed = false
+    fit(animated: false)
+    if animated {
+      window.alphaValue = 0
+      window.makeKeyAndOrderFront(nil)
+      NSApp.activate(ignoringOtherApps: true)
+      NSAnimationContext.runAnimationGroup { ctx in
+        ctx.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.01 : 0.18
+        window.animator().alphaValue = 1
+      }
+    } else {
+      window.alphaValue = 1
+      window.makeKeyAndOrderFront(nil)
+      NSApp.activate(ignoringOtherApps: true)
+    }
+    if !everShown {
+      everShown = true
+      shownAt = Date()
+    }
+  }
 
   func fit(animated: Bool) {
     let size = host.fittingSize
@@ -503,16 +527,7 @@ final class Controller {
 
   func show() {
     guard NSScreen.main != nil else { fail("there is no screen to show this on") }
-    if spotifyOnly && !spotifyIsFront() { exit(2) }
     NSApp.setActivationPolicy(.accessory)
-    fit(animated: false)
-    window.alphaValue = 0
-    window.makeKeyAndOrderFront(nil)
-    NSApp.activate(ignoringOtherApps: true)
-    NSAnimationContext.runAnimationGroup { ctx in
-      ctx.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.01 : 0.28
-      window.animator().alphaValue = 1
-    }
     if spotifyOnly {
       let myPID = ProcessInfo.processInfo.processIdentifier
       appObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -523,13 +538,28 @@ final class Controller {
         guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
         if app.processIdentifier == myPID { return }
         if app.bundleIdentifier == spotifyBundleID {
-          self.placed = false
-          self.fit(animated: false)
-          self.window.orderFront(nil)
+          self.presentOverSpotify(animated: !self.everShown)
         } else {
           self.window.orderOut(nil)
         }
       }
+      if spotifyIsFront() {
+        presentOverSpotify(animated: true)
+      } else {
+        // Wait quietly without intruding on other apps; appears instantaneously the moment Spotify is focused.
+        window.orderOut(nil)
+      }
+    } else {
+      fit(animated: false)
+      window.alphaValue = 0
+      window.makeKeyAndOrderFront(nil)
+      NSApp.activate(ignoringOtherApps: true)
+      NSAnimationContext.runAnimationGroup { ctx in
+        ctx.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.01 : 0.28
+        window.animator().alphaValue = 1
+      }
+      everShown = true
+      shownAt = Date()
     }
     // Return is the bright button, Escape closes without answering. A local monitor sees them whatever has focus.
     monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [unowned self] e in
@@ -568,8 +598,13 @@ final class Controller {
         }
       }
     }
-    // Every card gives up on its own: the invite is asked again later, and a card nobody answers never lingers.
-    let since = terminalSince ?? started
+    // Every card gives up on its own: while waiting invisibly for Spotify, allow up to max(timeout, 1500s) so
+    // switching into Spotify later still shows it instantaneously; once shown, give the user `timeout` seconds.
+    if spotifyOnly && !everShown {
+      if Date().timeIntervalSince(started) > max(timeout, 1500) { finish(2) }
+      return
+    }
+    let since = terminalSince ?? shownAt ?? started
     if Date().timeIntervalSince(since) > timeout { finish(2) }
   }
 }

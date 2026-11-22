@@ -630,7 +630,7 @@ Click Tess Support anytime something in Spotify looks off — it can run a quick
 check_support_invite() {
   [ -x "$VERIFY" ] || return 0
   # They already have it: never mention it, never ask again.
-  [ -f "$SUPPORT_CONFIG" ] && return 0
+  if [ -f "$SUPPORT_CONFIG" ]; then rm -f "$STATE/.support-invited"; return 0; fi
   # A dialog can wait 15 minutes, and the install runs after it. The caller has already dropped the main update lock
   # (.installing) and removed it from the top-level EXIT trap. A lock of its own keeps two invite dialogs from ever
   # opening at once without ever standing in the way of an update or deleting another run's .installing lock on exit.
@@ -649,9 +649,10 @@ check_support_invite() {
     || { log "support invite: check failed"; return 0; }
   body=$(cat "$TMP/invite-check.json" 2>/dev/null) || body=""
   invited=$(printf '%s' "$body" | sed -n 's/.*"invited"[[:space:]]*:[[:space:]]*true.*/1/p')
-  [ "$invited" = 1 ] || return 0
+  if [ "$invited" != 1 ]; then rm -f "$STATE/.support-invited"; return 0; fi
   invite_id=$(printf '%s' "$body" | sed -n 's/.*"invite_id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')
   case "$invite_id" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s\n' "$invite_id" > "$STATE/.support-invited"
   [ -f "$STATE/.support-invite-asked-$invite_id" ] && return 0
   # They said Install; a failure on our side must not re-ask every 20 minutes.
   [ -f "$STATE/.support-invite-retry-$invite_id" ] && [ -z "$(find "$STATE/.support-invite-retry-$invite_id" -mmin +1440 2>/dev/null)" ] && return 0
@@ -693,6 +694,7 @@ check_support_invite() {
     200) ;;
     404)
       # Spent, expired, revoked, or not this Mac's: the invite is gone, so never ask about it again.
+      rm -f "$STATE/.support-invited"
       touch "$STATE/.support-invite-asked-$invite_id"
       log "support invite $invite_id: the invite is no longer open (spent, expired or revoked); not asking again"
       rm -f "$claim"; return 0 ;;
@@ -739,6 +741,7 @@ check_support_invite() {
   tok=""
   touch "$STATE/.support-invite-asked-$invite_id"
   if [ "$rc" -eq 0 ]; then
+    rm -f "$STATE/.support-invited"
     log "support installed"
     if [ -n "$ui_pid" ]; then
       support_status done
