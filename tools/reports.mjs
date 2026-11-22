@@ -15,6 +15,12 @@
 //   node tools/reports.mjs support token revoke <label> stop one working
 //   node tools/reports.mjs support titles               refresh the open-issue title list the bot checks first
 //
+// Private Tess Support invites (#137). The Mac is named only by its 32-hex Tess install id; the database stores its
+// SHA-256, never the id and never a token:
+//   node tools/reports.mjs support invite add <32-hex install id> "<label>" [--hours N]   invite one Mac (default 72h)
+//   node tools/reports.mjs support invites             who is invited, and whether the invite is still open
+//   node tools/reports.mjs support invite revoke <id>  close an invite that has not been claimed
+//
 // Tests only: TESS_D1_LOCAL=<absolute folder> sends every command to the local copy of the database that
 // `wrangler dev --persist-to <folder>` uses, instead of the live inbox.
 import { execFileSync } from 'node:child_process';
@@ -79,6 +85,30 @@ export const mintSql = (label, token, now = Date.now()) =>
   `INSERT INTO support_tokens (label, sha, added) VALUES ('${sq(label)}', '${sha(token)}', ${Number(now)})`;
 export const revokeSql = (label, now = Date.now()) =>
   `UPDATE support_tokens SET revoked = ${Number(now)} WHERE label = '${sq(label)}' AND revoked IS NULL`;
+
+// Private invites (#137). The Worker hashes the Mac's 32-hex install id with the same SHA-256 this file uses, so a
+// row here matches the Mac that asks. Only the hash is stored: a copy of the database cannot name, invite or fake a
+// Mac, and no token is ever written by this side — the Worker mints it once, at claim time.
+export const inviteHours = (raw) => {
+  const text = String(raw ?? '').trim();
+  if (text === '') return 72;
+  if (!/^\d+$/.test(text)) throw new Error('--hours must be a whole number of hours between 1 and 168');
+  const hours = Number(text);
+  if (!Number.isSafeInteger(hours) || hours < 1 || hours > 168) throw new Error('--hours must be a whole number of hours between 1 and 168');
+  return hours;
+};
+export const inviteAddSql = (install, label, hours, now = Date.now()) =>
+  `INSERT INTO support_invites (created_at, expires_at, install_hash, label) VALUES (${Number(now)}, ${Number(now) + hours * 3600 * 1000}, '${sha(install)}', '${sq(label)}')`;
+export const inviteRevokeSql = (id, now = Date.now()) =>
+  `UPDATE support_invites SET revoked_at = ${Number(now)} WHERE id = ${Number(id)} AND claimed_at IS NULL AND revoked_at IS NULL RETURNING id`;
+// One word for where an invite stands. Claimed and revoked can never both be set: revoking only touches an open invite.
+export const inviteStatus = (r, now = Date.now()) => {
+  if (r.claimed_at) return 'claimed';
+  if (r.revoked_at) return 'revoked';
+  return Number(r.expires_at) > Number(now) ? 'pending' : 'expired';
+};
+export const inviteLine = (r, now = Date.now()) =>
+  `${String(r.id).padStart(5)}  ${inviteStatus(r, now).padEnd(7)}  expires ${when(r.expires_at)}  ${clean(r.label)}`;
 
 // The gate's counters (inbox/worker.js supportChat): chat:p and chat:tp per token hash, chat:s and chat:ts shared.
 // Each row lasts until the next 00:00 UTC; a row whose window has closed is yesterday's and counts as 0.
@@ -211,7 +241,64 @@ function support() {
     return;
   }
 
-  console.error('usage: support list | show <n> | body <n> | filed <n> --issue <url> | tokens | usage | token add <label> | token revoke <label> | titles');
+  if (sub === 'invites') {
+    const rows = q('SELECT id, created_at, expires_at, label, claimed_at, revoked_at FROM support_invites ORDER BY id DESC LIMIT 60');
+    if (!rows.length) {
+      console.log('no Tess Support invites — add one with: node tools/reports.mjs support invite add <32-hex install id> "<label>"');
+      return;
+    }
+    for (const r of rows) console.log(inviteLine(r));
+    return;
+  }
+
+  if (sub === 'invite' && ['add', 'revoke'].includes(arg)) {
+    if (arg === 'revoke') {
+      // A revoke of an invite that is already claimed or revoked must not pretend it worked: RETURNING is the row
+      // that actually changed.
+      const id = num(argv[3]);
+      const rows = q(inviteRevokeSql(id));
+      if (!Array.isArray(rows) || rows.length === 0) {
+        console.error(`no pending invite ${id} — run support invites to see them`);
+        process.exit(1);
+      }
+      console.log(`invite ${id} revoked — that Mac is no longer invited`);
+      return;
+    }
+    const install = hex(argv[3]);
+    // The label is the words after the install id, without the flag or its value: `--hours` may sit anywhere.
+    const words = [];
+    for (let i = 4; i < argv.length; i++) {
+      const a = argv[i];
+      if (a === '--hours') { i++; continue; }
+      if (a.startsWith('--')) continue;
+      words.push(a);
+    }
+    const label = words.join(' ').trim();
+    if (!label) {
+      console.error('usage: support invite add <32-hex install id> "<label>" [--hours N]');
+      process.exit(1);
+    }
+    const inline = argv.find((a) => a.startsWith('--hours='));
+    let hours;
+    try {
+      hours = inviteHours(inline ? inline.slice('--hours='.length) : flag('hours'));
+    } catch (err) {
+      console.error(err.message);
+      process.exit(1);
+    }
+    const now = Date.now();
+    const rows = q(`${inviteAddSql(install, label, hours, now)} RETURNING id`);
+    const id = rows?.[0]?.id;
+    if (!Number.isInteger(id)) {
+      console.error('the database did not return the new invite');
+      process.exit(1);
+    }
+    console.log(`invite ${id} for "${label}" — expires ${when(now + hours * 3600 * 1000)} (${hours} hours)`);
+    console.log('That Mac sees one native "Install Tess Support?" dialog the next time it checks for updates. Nothing is sent to its Spotify, and nothing about Tess Support is downloaded before it says yes.');
+    return;
+  }
+
+  console.error('usage: support list | show <n> | body <n> | filed <n> --issue <url> | tokens | usage | token add <label> | token revoke <label> | titles | invite add <32-hex install id> "<label>" [--hours N] | invites | invite revoke <id>');
   process.exit(1);
 }
 

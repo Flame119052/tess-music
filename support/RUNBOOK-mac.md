@@ -62,6 +62,74 @@ Skip any step that's already done.
    past the Worker's daily limits, OpenCode would just stop answering. It wouldn't bill you. The Worker's limits are
    the first wall, and this is the second.
 
+## The one-click way: invite one Mac, and it offers to install itself
+
+Steps 1–3 have a shorter path for a Mac that already runs Tess. Instead of making a code and sending a command, you
+invite that Mac. About 20 minutes later (at most three hours, when its Mac next checks for Tess updates) it shows a
+native dialog on their screen:
+
+> **Tess Music**
+> Krish invited you to Tess Support — a private helper in your Dock that can check Spotify and send him a bug note when
+> something looks off. Nothing runs unless you open it.
+>
+> Install Tess Support?
+>
+> [ Not now ] [ Install ]
+
+Nothing is typed, nothing is pasted, and nothing about Tess Support is downloaded or mentioned on a Mac you did not
+invite. **Not now** is remembered for that invite for good. Closing the dialog or leaving it alone is not an answer,
+so it asks again next time they are at the Mac.
+
+**(Cloudflare login)** First find that Mac's 32-character install id. `node tools/reports.mjs macs` lists each Mac's
+latest report; `node tools/reports.mjs show <n>` prints its full `install id` line.
+
+Then invite it:
+
+```sh
+node tools/reports.mjs support invite add <install id> "tester-1 Mac" --hours 72
+```
+
+- The label follows the same rule as a code's label: one label per person, and a label that doesn't name them.
+- `--hours` is optional. It defaults to 72 hours and cannot be more than 168 (a week), so an unused invite closes on
+  its own.
+- The database keeps only a scrambled fingerprint (SHA-256) of the install id. It never holds the id, and it never
+  holds a code: the code is made inside the Worker at the moment the person clicks **Install**, is used once, and is
+  never shown to anyone.
+
+**What Install does on their Mac.** It downloads Tess Support's installer and its signature, checks the signature
+first, and only then claims the invite and runs the installer. A download or a bad signature costs nothing: the invite
+is still there and it tries again. When it finishes, a welcome dialog says Tess Support is in the Dock and offers
+**Open Tess Support**. If the installer fails part-way, it says some files may have been partly set up (it never claims
+nothing changed) and points at the uninstall command or at you.
+
+**Where the invite stands:**
+
+```sh
+node tools/reports.mjs support invites
+```
+
+`pending` means it is still waiting on that Mac; `claimed` means they installed; `expired` means the hours ran out;
+`revoked` means you closed it.
+
+**If it says `claimed` but Tess Support never appeared** — either the network dropped the reply after the claim, or
+someone else who had seen that install id claimed the invite before the Mac did — revoke that label at once with
+`node tools/reports.mjs support token revoke "<label>"`, then run
+`node tools/reports.mjs support invite add <install id> "<label>"` again with a short `--hours` window. A new invite
+asks their Mac once more.
+
+**Changed your mind?** Before it is claimed:
+
+```sh
+node tools/reports.mjs support invite revoke <invite id>
+```
+
+After it is claimed it is a normal Tess Support install: revoke its code by label with section 6, and remove it with
+the uninstall line in section 3. Revoking a claimed invite is refused, because the person already has it.
+
+**If nothing appears on their Mac.** The Mac must have a Tess build whose updater knows about invites (a build from
+after this was promoted), its `install-id` must still be the one you invited, and the invite must not have expired.
+An invite is only offered when Tess Support is not already installed there.
+
 ## 1. Make a code for one person
 
 **(Cloudflare login)**

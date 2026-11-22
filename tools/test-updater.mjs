@@ -1,16 +1,21 @@
 // Sandbox updater tests: signed part success, blocked/failed Spotify writes, rollback/no-retry, and playing deferral.
+// Also the private Tess Support invite (#137): an uninvited Mac does nothing, Not now is remembered, a timeout retries,
+// a bad signature or download refuses before the invite is claimed, and Install verifies, claims once, and runs the
+// installer with the token in its environment only.
 // Usage: node tools/test-updater.mjs
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const boxes = [];
 const sha = (text) => createHash('sha256').update(text).digest('hex');
+const INSTALL_ID = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+const SUPPORT_TOKEN = `tess_${'e'.repeat(64)}`;
 
 function sandbox({ stock = false, fresh = false, realDoctor = false, tessName = 'Tess', denyDitto = false } = {}) {
   const box = mkdtempSync(join(tmpdir(), 'tess-updater-test-'));
@@ -41,6 +46,8 @@ function sandbox({ stock = false, fresh = false, realDoctor = false, tessName = 
   writeFileSync(join(tess, 'wake.sh'), readFileSync(join(root, 'installer', 'wake.sh')));
   chmodSync(join(tess, 'updater.sh'), 0o755);
   chmodSync(join(tess, 'wake.sh'), 0o755);
+  // A known id, so an invite for this Mac can be made in a test (#137).
+  writeFileSync(join(tess, 'install-id'), INSTALL_ID);
   writeFileSync(join(tess, 'updater.env'), `SPOTIFY='${spotify}'\nTESS_CONFIG='${config}'\nTESS_PARTS_CHANNEL='beta'\n`);
   writeFileSync(join(tess, 'doctor.sh'), realDoctor ? readFileSync(join(root, 'installer', 'doctor.sh')) : `#!/bin/zsh
 echo "$1" >> "$TESS_DOCTOR_LOG"
@@ -54,7 +61,13 @@ exit 0
   if (!fresh) writeFileSync(join(state, 'installer'), `${sha('old installed installer\n')}\n`);
   writeFileSync(join(state, '.heartbeat'), '');
 
-  writeFileSync(join(tess, 'bin', 'patcher', 'tess-verify'), '#!/bin/sh\n[ "$TESS_VERIFY_FAIL" = 1 ] && exit 1\nexit 0\n');
+  writeFileSync(join(tess, 'bin', 'patcher', 'tess-verify'), `#!/bin/sh
+[ "$TESS_VERIFY_FAIL" = 1 ] && exit 1
+case "$1" in
+  *support-install.sh) [ "$TESS_VERIFY_INSTALL_FAIL" = 1 ] && exit 1 ;;
+esac
+exit 0
+`);
   writeFileSync(join(tess, 'bin', 'patcher', 'tess-patcher'), `#!/bin/zsh
 APPS="$TESS_TEST_SPOTIFY/Contents/Resources/Apps"
 case "$*" in
@@ -94,26 +107,48 @@ exit 0
 
   writeFileSync(join(bin, 'pmset'), '#!/bin/sh\n[ "$TESS_PLAYING" = 1 ] && echo \'pid 42(Spotify): PreventUserIdleSystemSleep named: "Spotify playing audio"\'\n');
   writeFileSync(join(bin, 'launchctl'), '#!/bin/sh\necho "$@" >> "$TESS_LAUNCH_LOG"\nexit 0\n');
+  writeFileSync(join(bin, 'open'), '#!/bin/sh\necho "$@" >> "$TESS_OPEN_LOG"\nexit 0\n');
   writeFileSync(join(bin, 'curl'), `#!/bin/sh
 echo "$@" >> "$TESS_CURL_LOG"
 [ "$TESS_LIST_FAIL" = 1 ] && exit 22
-out=""; url=""
+out=""; url=""; fmt=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) out=$2; shift 2 ;;
+    -w) fmt=$2; shift 2 ;;
     *://*) url=$1; shift ;;
     *) shift ;;
   esac
 done
+# <body> <status>: the body goes where -o points, and -w '%{http_code}' prints the status, as curl does.
+send() {
+  if [ -n "$out" ]; then printf '%s' "$1" > "$out"; else printf '%s' "$1"; fi
+  [ "$fmt" = '%{http_code}' ] && printf '%s' "$2"
+  return 0
+}
 case "$url" in
   *components.txt*) cp "$TESS_COMPONENTS" "$out" ;;
   *components.sig*) cp "$TESS_SIGNATURE" "$out" ;;
+  */v1/support/invite/check)
+    [ "$TESS_INVITE_CHECK_FAIL" = 1 ] && exit 22
+    send "\${TESS_INVITE_CHECK_JSON-{\\"invited\\":false}}" 200 ;;
+  */v1/support/invite/claim)
+    # A network miss is an exit code, not a status: it must never look like an answer.
+    [ "$TESS_INVITE_CLAIM_FAIL" = 1 ] && exit 22
+    send "\${TESS_INVITE_CLAIM_JSON-{\\"error\\":\\"not found\\"}}" "\${TESS_INVITE_CLAIM_STATUS:-200}" ;;
+  *support-install.sig)
+    [ "$TESS_SUPPORT_ASSET_FAIL" = 1 ] && exit 22
+    cp "$TESS_SUPPORT_SIG" "$out" ;;
+  *support-install.sh)
+    [ "$TESS_SUPPORT_ASSET_FAIL" = 1 ] && exit 22
+    cp "$TESS_SUPPORT_INSTALL" "$out" ;;
+  *dist/manifest.json) send '{"version":"10.0.0"}' 200 ;;
   test://doctor) cp "$TESS_DOCTOR_ASSET" "$out" ;;
   test://installer) cp "$TESS_ASSET" "$out" ;;
   *) exit 22 ;;
 esac
 `);
-  for (const name of ['pmset', 'launchctl', 'curl']) chmodSync(join(bin, name), 0o755);
+  for (const name of ['pmset', 'launchctl', 'curl', 'open']) chmodSync(join(bin, name), 0o755);
   if (denyDitto) {
     // macOS App Management, as the kernel enforces it for a script launchd started under /bin/zsh: /usr/bin/ditto
     // may not create anything inside Spotify.app. Copying *out* of Spotify is allowed, which is what the staging does.
@@ -133,9 +168,19 @@ exec /usr/bin/ditto "$@"
 
   const asset = '#!/bin/sh\necho new installer\n';
   const assetSha = sha(asset);
+  const supportInstall = `#!/bin/sh
+printf '%s' "\${TESS_SUPPORT_TOKEN-}" > "$TESS_INSTALL_TOKEN_OUT"
+printf '%s' "$*" > "$TESS_INSTALL_ARGV_OUT"
+exit "\${TESS_INSTALL_EXIT:-0}"
+`;
+  const supportInstallSha = sha(supportInstall);
   writeFileSync(join(fixtures, 'installer.sh'), asset);
-  writeFileSync(join(fixtures, 'components.txt'), `installer ${assetSha} test://installer test-source\nversion 9.9.9\n`);
+  writeFileSync(join(fixtures, 'components.txt'), `installer ${assetSha} test://installer test-source\nversion 9.9.9\nsupport-install ${supportInstallSha}\n`);
   writeFileSync(join(fixtures, 'components.sig'), 'test-signature\n');
+  // The signed Tess Support installer (real one: support/mac/install.sh). The sandbox stands in for it with a stub that
+  // records the token it was handed, so the test can prove how it arrived.
+  writeFileSync(join(fixtures, 'support-install.sh'), supportInstall);
+  writeFileSync(join(fixtures, 'support-install.sig'), 'support-signature\n');
 
   const env = {
     ...process.env,
@@ -155,12 +200,25 @@ exec /usr/bin/ditto "$@"
     TESS_DITTO_LOG: join(box, 'ditto.log'),
     TESS_REJECT: join(box, 'reject'),
     TESS_REPORTED: join(box, 'reported'),
+    // The invite check and the support installer (#137). The inbox here is the fake curl's own address, so a sandbox
+    // can never reach the real Worker.
+    TESS_INBOX: 'test://inbox',
+    TESS_SUPPORT_CONFIG: join(box, 'hermes', 'profiles', 'tess-support', 'config.yaml'),
+    TESS_SUPPORT_INSTALL: join(fixtures, 'support-install.sh'),
+    TESS_SUPPORT_SIG: join(fixtures, 'support-install.sig'),
+    TESS_INSTALL_TOKEN_OUT: join(box, 'support-token.out'),
+    TESS_INSTALL_ARGV_OUT: join(box, 'support-argv.out'),
+    TESS_OPEN_LOG: join(box, 'open.log'),
   };
   const run = (extra = {}) => execFileSync('/bin/zsh', [join(tess, 'updater.sh')], { env: { ...env, ...extra }, encoding: 'utf8' });
   return { box, tess, state, spotify, apps, config, fixtures, env, asset, assetSha, run };
 }
 
 try {
+  const doctorCalls = (s) => {
+    const file = join(s.box, 'doctor.log');
+    return existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean) : [];
+  };
   {
     const s = sandbox({ realDoctor: true });
     s.run();
@@ -284,6 +342,7 @@ esac
     assert.equal(readFileSync(join(s.apps, 'xpui.spa'), 'utf8'), 'stock Spotify interface\n', 'blocked write leaves Spotify stock');
     assert.ok(!existsSync(join(s.box, 'patcher.log')), 'blocked write never applies');
     assert.ok(existsSync(join(s.state, '.asked-1.3.9.2055')), 'blocked state recorded once');
+    assert.ok(doctorCalls(s).includes('--auto'), 'a blocked Spotify write still asks the doctor to repair Spotify');
   }
 
   {
@@ -528,7 +587,233 @@ esac
     assert.equal(doctorLog.includes('--auto'), false, 'unknown part did not trigger doctor --auto');
   }
 
-  console.log('updater tests passed (success, fresh, blocked, failed swap, rollback/no-retry, playing/idle, list reports, theme swap with ditto denied)');
+  {
+    // #137: an uninvited Mac is never told Tess Support exists. One check, a plain no, and nothing else — the request
+    // carries only its own install id, and no installer is downloaded or run.
+    const s = sandbox();
+    s.run();
+    const log = readFileSync(join(s.box, 'curl.log'), 'utf8');
+    assert.match(log, /\/v1\/support\/invite\/check/, 'an uninvited Mac asks the invite check');
+    assert.match(log, new RegExp(`--data-binary \\{"install":"${INSTALL_ID}"\\}`), 'the check names only this Mac\'s install id');
+    assert.doesNotMatch(log, /invite\/claim/, 'an uninvited Mac never claims an invite');
+    assert.doesNotMatch(log, /support-install/, 'and never downloads the support installer');
+    assert.ok(!existsSync(join(s.box, 'support-token.out')), 'the installer never ran');
+  }
+
+  {
+    // A Mac that already has Tess Support is never mentioned it again, and does not even ask.
+    const s = sandbox();
+    mkdirSync(dirname(s.env.TESS_SUPPORT_CONFIG), { recursive: true });
+    writeFileSync(s.env.TESS_SUPPORT_CONFIG, 'profile: tess-support\n');
+    s.run();
+    assert.doesNotMatch(readFileSync(join(s.box, 'curl.log'), 'utf8'), /invite\/check/, 'a Mac that has Tess Support does not check for an invite');
+  }
+
+  {
+    // Not now is remembered for that invite, forever: it never claims, and a later run with a different answer does not
+    // ask again for the same one.
+    const s = sandbox();
+    const invited = { TESS_INVITE_CHECK_JSON: '{"invited":true,"invite_id":7}', TESS_TEST_INVITE_ANSWER: 'decline' };
+    s.run(invited);
+    assert.ok(existsSync(join(s.state, '.support-invite-asked-7')), 'Not now is recorded for that invite');
+    assert.doesNotMatch(readFileSync(join(s.box, 'curl.log'), 'utf8'), /invite\/claim/, 'declining claims nothing');
+    assert.ok(!existsSync(join(s.box, 'support-token.out')), 'and runs no installer');
+    s.run({ ...invited, TESS_TEST_INVITE_ANSWER: 'install' });
+    assert.doesNotMatch(readFileSync(join(s.box, 'curl.log'), 'utf8'), /invite\/claim/, 'a declined invite is never asked about a second time');
+  }
+
+  {
+    // A dialog nobody answered is not a decision: the invite is not burned, and the next check asks again.
+    const s = sandbox();
+    const invited = { TESS_INVITE_CHECK_JSON: '{"invited":true,"invite_id":9}' };
+    s.run({ ...invited, TESS_TEST_INVITE_ANSWER: 'timeout' });
+    assert.ok(!existsSync(join(s.state, '.support-invite-asked-9')), 'a timeout does not burn the invite');
+    assert.doesNotMatch(readFileSync(join(s.box, 'curl.log'), 'utf8'), /invite\/claim/, 'and claims nothing');
+    assert.ok(!existsSync(join(s.box, 'support-token.out')));
+  }
+
+  {
+    // #140: a dialog can wait 15 minutes, and nothing else on the Mac may wait with it. While the invite dialog is
+    // open, the update lock is not held, so wake.sh still wakes an update; a second run cannot open a second dialog.
+    const s = sandbox();
+    const child = spawn('/bin/zsh', [join(s.tess, 'updater.sh')], {
+      env: {
+        ...s.env,
+        TESS_INVITE_CHECK_JSON: '{"invited":true,"invite_id":21}',
+        TESS_TEST_INVITE_ANSWER: 'decline',
+        TESS_TEST_INVITE_WAIT: '6',
+      },
+      stdio: 'ignore',
+    });
+    const exited = new Promise((resolve) => child.on('exit', resolve));
+    const slock = join(s.state, '.support-invite.lock');
+    const deadline = Date.now() + 5000;
+    while (!existsSync(slock) && Date.now() < deadline) execFileSync('/bin/sleep', ['0.05']);
+    assert.ok(existsSync(slock), 'the invite dialog is open');
+    assert.ok(!existsSync(join(s.tess, '.installing')), 'an open invite dialog does not hold the update lock');
+    execFileSync('/bin/zsh', [join(s.tess, 'wake.sh')], { env: s.env, encoding: 'utf8' });
+    assert.match(readFileSync(join(s.box, 'launchctl.log'), 'utf8'), /kickstart .*music\.tess\.guard/,
+      'wake.sh still wakes an update while the invite dialog waits');
+    execFileSync('/bin/zsh', [join(s.tess, 'updater.sh')], {
+      env: { ...s.env, TESS_INVITE_CHECK_JSON: '{"invited":true,"invite_id":22}', TESS_TEST_INVITE_ANSWER: 'install' },
+      encoding: 'utf8',
+    });
+    assert.ok(!existsSync(join(s.state, '.support-invite-asked-22')), 'a second run cannot open a second dialog');
+    writeFileSync(join(s.tess, '.installing'), ''); // tess-install.sh / another run takes the lock mid-dialog
+    await exited;
+    assert.ok(!existsSync(slock), 'the invite lock is removed when the run ends');
+    assert.ok(existsSync(join(s.tess, '.installing')), 'finishing the invite does not delete a lock it no longer owns');
+  }
+
+  {
+    // #140: the sandbox-only profile override. A real Mac ignores TESS_SUPPORT_CONFIG, so a stray variable can neither
+    // offer Tess Support again nor hide an existing install.
+    const updater = readFileSync(join(root, 'installer', 'updater.sh'), 'utf8');
+    const block = updater.match(/^SUPPORT_CONFIG="\$HOME[^\n]*\n\[ -n "\$TESS_TEST" \][^\n]*$/m);
+    assert.ok(block, 'the support config path and its sandbox-only override are both there');
+    const value = (extra) => execFileSync('/bin/zsh', ['-c', `${block[0]}\nprintf '%s' "$SUPPORT_CONFIG"`],
+      { env: { PATH: process.env.PATH, HOME: '/home/example', ...extra }, encoding: 'utf8' });
+    assert.equal(value({ TESS_TEST: '1', TESS_SUPPORT_CONFIG: '/tmp/sandbox.yaml' }), '/tmp/sandbox.yaml',
+      'a sandbox may point at its own profile');
+    assert.equal(value({ TESS_SUPPORT_CONFIG: '/tmp/sandbox.yaml' }),
+      '/home/example/.hermes/profiles/tess-support/config.yaml', 'a real Mac ignores the override');
+  }
+
+  {
+    // Accept: the signed installer is checked first, the invite is claimed exactly once, and the token reaches the
+    // installer in its environment only — not its arguments, not the log.
+    const s = sandbox();
+    s.run({
+      TESS_INVITE_CHECK_JSON: '{"invited":true,"invite_id":11}',
+      TESS_INVITE_CLAIM_JSON: `{"token":"${SUPPORT_TOKEN}"}`,
+      TESS_TEST_INVITE_ANSWER: 'install',
+      TESS_TEST_WELCOME_ANSWER: 'open',
+    });
+    assert.equal(readFileSync(join(s.box, 'support-token.out'), 'utf8'), SUPPORT_TOKEN, 'the token reaches the installer in its environment');
+    assert.equal(readFileSync(join(s.box, 'support-argv.out'), 'utf8'), '', 'and never on its command line');
+    const log = readFileSync(join(s.box, 'curl.log'), 'utf8');
+    const lines = log.trim().split('\n');
+    const at = (needle) => lines.findIndex((l) => l.includes(needle));
+    assert.equal(lines.filter((l) => l.includes('invite/claim')).length, 1, 'the invite is claimed exactly once');
+    assert.ok(at('support-install.sig') !== -1 && at('support-install.sig') < at('invite/claim'), 'the signed installer is downloaded and checked before the invite is claimed');
+    assert.ok(!log.includes(SUPPORT_TOKEN), 'the token never reaches the curl log');
+    assert.doesNotMatch(readFileSync(join(s.tess, 'guard.log'), 'utf8'), new RegExp(SUPPORT_TOKEN), 'and never reaches the guard log');
+    assert.ok(existsSync(join(s.state, '.support-invite-asked-11')), 'the accepted invite is remembered');
+    assert.match(readFileSync(join(s.box, 'open.log'), 'utf8'), /Tess Support\.app/, 'Open Tess Support opens the app');
+  }
+
+  {
+    // A signature that fails is refused before the claim, so the invite is still there for a later, good download.
+    const s = sandbox();
+    s.run({ TESS_INVITE_CHECK_JSON: '{"invited":true,"invite_id":12}', TESS_TEST_INVITE_ANSWER: 'install', TESS_VERIFY_INSTALL_FAIL: '1' });
+    assert.doesNotMatch(readFileSync(join(s.box, 'curl.log'), 'utf8'), /invite\/claim/, 'a bad signature never claims the invite');
+    assert.ok(!existsSync(join(s.box, 'support-token.out')), 'and never runs the installer');
+    assert.ok(!existsSync(join(s.state, '.support-invite-asked-12')), 'the invite is not burned by a bad download');
+    assert.match(readFileSync(join(s.tess, 'guard.log'), 'utf8'), /installer failed its signature check; nothing was installed/);
+    assert.ok(!doctorCalls(s).includes('--auto'), 'a bad signature never asks the doctor to repair Spotify');
+  }
+
+  {
+    // #140: a valid signature on an older (replayed) support-install.sh still fails because its SHA-256 is not the
+    // one pinned inside the rev-checked components.txt.
+    const s = sandbox();
+    const stale = join(s.fixtures, 'stale-support-install.sh');
+    writeFileSync(stale, '#!/bin/sh\necho older signed copy\n');
+    s.run({ TESS_INVITE_CHECK_JSON: '{"invited":true,"invite_id":19}', TESS_TEST_INVITE_ANSWER: 'install', TESS_SUPPORT_INSTALL: stale });
+    assert.doesNotMatch(readFileSync(join(s.box, 'curl.log'), 'utf8'), /invite\/claim/, 'a stale signed installer never claims the invite');
+    assert.ok(!existsSync(join(s.box, 'support-token.out')), 'and never runs the installer');
+    assert.ok(!existsSync(join(s.state, '.support-invite-asked-19')), 'the invite is not burned by a stale mirror');
+    assert.ok(existsSync(join(s.state, '.support-invite-retry-19')), 'and backs off for 24 hours');
+    assert.match(readFileSync(join(s.tess, 'guard.log'), 'utf8'), /installer does not match this release; nothing was installed/);
+  }
+
+  {
+    // A download that fails costs nothing either.
+    const s = sandbox();
+    s.run({ TESS_INVITE_CHECK_JSON: '{"invited":true,"invite_id":13}', TESS_TEST_INVITE_ANSWER: 'install', TESS_SUPPORT_ASSET_FAIL: '1' });
+    assert.doesNotMatch(readFileSync(join(s.box, 'curl.log'), 'utf8'), /invite\/claim/, 'a failed download never claims the invite');
+    assert.ok(!existsSync(join(s.box, 'support-token.out')));
+    assert.ok(!existsSync(join(s.state, '.support-invite-asked-13')));
+    assert.match(readFileSync(join(s.tess, 'guard.log'), 'utf8'), /installer download failed/);
+    assert.ok(!doctorCalls(s).includes('--auto'), 'a failed download never asks the doctor to repair Spotify');
+  }
+
+  {
+    // #140: a 404 means spent, expired, revoked or not this Mac's. Stop asking, and run no installer.
+    const s = sandbox();
+    s.run({
+      TESS_INVITE_CHECK_JSON: '{"invited":true,"invite_id":17}',
+      TESS_TEST_INVITE_ANSWER: 'install',
+      TESS_INVITE_CLAIM_STATUS: '404',
+      TESS_INVITE_CLAIM_JSON: '{"error":"not found"}',
+    });
+    assert.ok(existsSync(join(s.state, '.support-invite-asked-17')), 'a 404 burns the invite so it is not asked about again');
+    assert.ok(!existsSync(join(s.box, 'support-token.out')), 'a 404 runs no installer');
+    assert.match(readFileSync(join(s.tess, 'guard.log'), 'utf8'), /no longer open \(spent, expired or revoked\)/);
+  }
+
+  {
+    // #140: a 429/503 is temporary. The invite is still open, so it is not burned, and a second run within 24 hours
+    // does not re-ask the person every 20 minutes.
+    const s = sandbox();
+    const retryEnv = {
+      TESS_INVITE_CHECK_JSON: '{"invited":true,"invite_id":18}',
+      TESS_TEST_INVITE_ANSWER: 'install',
+      TESS_INVITE_CLAIM_STATUS: '503',
+      TESS_INVITE_CLAIM_JSON: '{"error":"unavailable"}',
+    };
+    s.run(retryEnv);
+    assert.ok(!existsSync(join(s.state, '.support-invite-asked-18')), 'a 503 keeps the invite open');
+    assert.ok(existsSync(join(s.state, '.support-invite-retry-18')), 'a 503 writes the 24-hour retry backoff stamp');
+    assert.ok(!existsSync(join(s.box, 'support-token.out')), 'a 503 runs no installer');
+    assert.match(readFileSync(join(s.tess, 'guard.log'), 'utf8'), /could not be claimed \(HTTP 503\)/);
+    const claimsBefore = readFileSync(join(s.box, 'curl.log'), 'utf8').split('\n').filter((l) => l.includes('invite/claim')).length;
+    s.run(retryEnv);
+    const claimsAfter = readFileSync(join(s.box, 'curl.log'), 'utf8').split('\n').filter((l) => l.includes('invite/claim')).length;
+    assert.equal(claimsAfter, claimsBefore, 'a second run within 24 h does not re-prompt or re-claim');
+  }
+
+  {
+    // The inbox answers with no token: the invite is spent or gone, so say so, never run an installer, and stop asking.
+    const s = sandbox();
+    s.run({ TESS_INVITE_CHECK_JSON: '{"invited":true,"invite_id":14}', TESS_TEST_INVITE_ANSWER: 'install' });
+    assert.ok(existsSync(join(s.state, '.support-invite-asked-14')), 'an unclaimable invite is not asked about forever');
+    assert.ok(!existsSync(join(s.box, 'support-token.out')));
+    assert.match(readFileSync(join(s.tess, 'guard.log'), 'utf8'), /the inbox answered without a token/);
+  }
+
+  {
+    // A network miss on the claim is not an answer: the invite is still open, so it is not burned, and nothing runs.
+    const s = sandbox();
+    s.run({ TESS_INVITE_CHECK_JSON: '{"invited":true,"invite_id":15}', TESS_TEST_INVITE_ANSWER: 'install', TESS_INVITE_CLAIM_FAIL: '1' });
+    assert.ok(!existsSync(join(s.state, '.support-invite-asked-15')), 'a claim that never reached the inbox keeps the invite');
+    assert.ok(!existsSync(join(s.box, 'support-token.out')));
+    assert.match(readFileSync(join(s.tess, 'guard.log'), 'utf8'), /the invite could not be claimed \(HTTP none\)/);
+    assert.ok(!doctorCalls(s).includes('--auto'), 'a claim that never reached the inbox never asks the doctor to repair Spotify');
+  }
+
+  {
+    // The installer itself fails: the copy must not promise nothing changed, because it runs one step at a time.
+    const s = sandbox();
+    s.run({ TESS_INVITE_CHECK_JSON: '{"invited":true,"invite_id":16}', TESS_INVITE_CLAIM_JSON: `{"token":"${SUPPORT_TOKEN}"}`, TESS_TEST_INVITE_ANSWER: 'install', TESS_INSTALL_EXIT: '1' });
+    assert.equal(readFileSync(join(s.box, 'support-token.out'), 'utf8'), SUPPORT_TOKEN, 'the installer ran with the token');
+    assert.ok(existsSync(join(s.state, '.support-invite-asked-16')));
+    const guardLog = readFileSync(join(s.tess, 'guard.log'), 'utf8');
+    assert.match(guardLog, /installer exited 1/);
+    assert.ok(!guardLog.includes(SUPPORT_TOKEN), 'a failure never logs the token');
+    assert.ok(!doctorCalls(s).includes('--auto'), 'a failed support install never asks the doctor to repair Spotify');
+    const updater = readFileSync(join(root, 'installer', 'updater.sh'), 'utf8');
+    assert.match(updater, /some files may have been partially set up\. Run the uninstall command or ask Krish\./,
+      'a failed install says some files may have been set up, not that nothing changed');
+    assert.doesNotMatch(updater, /Tess Support[^\n]*Nothing was changed/, 'the failed-install copy never claims nothing was changed');
+    // The exact words the person sees, and the one dialog that gives up rather than nag.
+    assert.match(updater, /display dialog "Krish invited you to Tess Support — a private helper in your Dock/);
+    assert.match(updater, /buttons \{"Not now", "Install"\} default button 2 giving up after 900/);
+    assert.match(updater, /display dialog "Tess Support is now in your Dock\./);
+    assert.match(updater, /buttons \{"Done", "Open Tess Support"\}/);
+  }
+
+  console.log('updater tests passed (success, fresh, blocked, failed swap, rollback/no-retry, playing/idle, list reports, theme swap with ditto denied, support invite consent, invite lock released while a dialog waits, claim 404 vs 503)');
 } finally {
   for (const box of boxes) rmSync(box, { recursive: true, force: true });
 }
