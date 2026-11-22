@@ -1294,18 +1294,22 @@
   // when its duration matches the track within two seconds, so a wrong-song hit can't slip in
   async function lrcLibLines() {
     try {
-      const t = item();
-      if (!t?.name) return null;
-      const dur = Math.round((P.getDuration() || t.duration?.milliseconds || 0) / 1000);
-      const q = new URLSearchParams({
-        artist_name: (t.artists || []).map((a) => a.name).join(', ') || '',
-        track_name: t.name,
-        album_name: t.album?.name || '',
-        duration: String(dur),
-      });
-      const j = await fetch(`https://lrclib.net/api/get?${q}`, { signal: AbortSignal.timeout(6000) })
-        .then((r) => (r.ok ? r.json() : null)).catch(() => null);
-      if (!j || j.instrumental || !j.syncedLyrics || !Number.isFinite(j.duration) || !dur || Math.abs(j.duration - dur) > 2) return null;
+      const t = item(), m = meta();
+      const track = m.title || t?.name || '';
+      const artist = m.artist_name || (t?.artists || []).map((a) => a.name).join(', ') || '';
+      const album = m.album_title || t?.album?.name || '';
+      const dur = Math.round((P.getDuration() || Number(m.duration) || t?.duration?.milliseconds || 0) / 1000);
+      if (!track || !artist || !dur) return null;
+      const ask = (withAlbum) => {
+        const q = new URLSearchParams({ artist_name: artist, track_name: track, duration: String(dur) });
+        if (withAlbum && album) q.set('album_name', album);
+        return fetch(`https://lrclib.net/api/get?${q}`, { signal: AbortSignal.timeout(6000) })
+          .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      };
+      const valid = (j) => j && !j.instrumental && j.syncedLyrics && Number.isFinite(j.duration) && Math.abs(j.duration - dur) <= 2;
+      let j = await ask(true);
+      if (!valid(j) && album) j = await ask(false);
+      if (!valid(j)) return null;
       const out = [];
       for (const raw of j.syncedLyrics.split('\n')) {
         const m = raw.match(/\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)/);
