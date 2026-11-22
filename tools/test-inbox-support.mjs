@@ -4,7 +4,9 @@
 // Usage: node tools/test-inbox.mjs
 // Proves: a report with no token, a wrong token or a revoked token is refused; an approved token stores the report with
 // its label; a bad priority, a bad area or a missing title is refused; an oversized body is refused; and there is no way
-// to read a support report back over the web.
+// to read a support report back over the web. For private invites (#137) it proves the check never names a label or a
+// token, a claim mints exactly one working token, and every miss (replay, expiry, revoke, wrong install id) is one
+// identical 404.
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -34,8 +36,11 @@ const query = (sql) => {
   return text ? JSON.parse(text) : [];
 };
 const DB = {
-  prepare: (sql) => ({
-    bind: (...args) => ({
+  prepare: (sql) => {
+    // A bound statement remembers its own SQL and values so batch() below can run it, the way D1's PreparedStatement
+    // does. D1's batch is one transaction; the claim depends on that, so this shim must offer it too.
+    const bound = (args) => ({
+      sql, args,
       first: async () => query(subs(sql, args))[0] ?? null,
       all: async () => ({ results: query(subs(sql, args)) }),
       run: async () => {
@@ -46,14 +51,25 @@ const DB = {
         const [changes, last] = out.split('\n').pop().split('|');
         return { meta: { changes: Number(changes) || 0, last_row_id: Number(last) || 0 } };
       },
-    }),
-    first: async () => query(sql)[0] ?? null,
-    all: async () => ({ results: query(sql) }),
-    run: async () => {
-      const out = execFileSync('sqlite3', [dbFile, `${sql};\nSELECT changes();`], { encoding: 'utf8' }).trim();
-      return { meta: { changes: Number(out.split('\n').pop()) || 0 } };
-    },
-  }),
+    });
+    return {
+      bind: (...args) => bound(args),
+      first: async () => query(sql)[0] ?? null,
+      all: async () => ({ results: query(sql) }),
+      run: async () => {
+        const out = execFileSync('sqlite3', [dbFile, `${sql};\nSELECT changes();`], { encoding: 'utf8' }).trim();
+        return { meta: { changes: Number(out.split('\n').pop()) || 0 } };
+      },
+    };
+  },
+  // One sqlite3 invocation, one transaction: a failed statement rolls the other back, as D1 does. Each statement's
+  // changes() is reported in order, because a claim only counts when both statements changed exactly one row.
+  batch: async (stmts) => {
+    const text = ['BEGIN;', ...stmts.flatMap((s) => [`${subs(s.sql, s.args || [])};`, 'SELECT changes();']), 'COMMIT;'].join('\n');
+    const out = execFileSync('sqlite3', ['-bail', dbFile, text], { encoding: 'utf8' }).trim();
+    const numbers = out.split('\n').map((l) => l.trim()).filter((l) => /^\d+$/.test(l)).map(Number);
+    return stmts.map((_, i) => ({ meta: { changes: numbers[i] ?? 0 } }));
+  },
 };
 // An in-memory stand-in for the R2 bucket: enough to prove what is written and what the sweep deletes.
 const bucket = new Map();
@@ -463,6 +479,123 @@ try {
   assert.equal(await status(post('/v1/support', good(), { authorization: `Bearer ${raceToken}` })), 201, 'an expired hour allows the next report');
   assert.equal(query(`SELECT n FROM limits WHERE k = '${raceKey}'`)[0].n, 1, 'and the window starts again at one');
 
+  // 10. A private Tess Support invite (#137). The Mac is named only by its 32-hex install id, the database holds only
+  // its SHA-256, the check never names a label or a token, and the claim mints one token and then refuses every
+  // replay, expiry, revoke and wrong install id with the same answer.
+  const invitedInstall = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+  const invitation = (over = {}) => ({ install: invitedInstall, label: 'Krish Mac', expires: Date.now() + 3600 * 1000, claimed: null, revoked: null, ...over });
+  const inviteResponse = (path, body, e = env()) => worker.fetch(post(`/v1/support/invite/${path}`, body), e);
+  const tokens = () => count('SELECT COUNT(*) AS n FROM support_tokens');
+  const newInvite = (over = {}) => {
+    const row = invitation(over);
+    execFileSync('sqlite3', [dbFile, `INSERT INTO support_invites (created_at, expires_at, install_hash, label, claimed_at, revoked_at) VALUES (${Date.now()}, ${row.expires}, '${shaOf(row.install)}', '${row.label}', ${row.claimed}, ${row.revoked})`]);
+    return query('SELECT MAX(id) AS id FROM support_invites')[0].id;
+  };
+  const inviteRow = (id) => query(`SELECT * FROM support_invites WHERE id = ${id}`)[0];
+
+  // 10a. No invite: a plain no, and nothing else. A Mac that was never invited cannot tell Tess Support exists.
+  const uninvited = await inviteResponse('check', { install: invitedInstall });
+  assert.equal(uninvited.status, 200, 'the invite check answers a Mac that was not invited');
+  assert.equal(uninvited.headers.get('cache-control'), 'no-store', 'and the answer is never cached');
+  assert.deepEqual(await uninvited.json(), { invited: false }, 'with a plain no and no other field');
+
+  // 10b. Only a real install id is worth a database read: an uppercase one, a short one, an empty one or a number is
+  // refused before it can be hashed.
+  for (const install of ['A'.repeat(32), 'z'.repeat(32), invitedInstall.slice(1), `${invitedInstall}0`, '', 123, null]) {
+    assert.equal((await inviteResponse('check', { install })).status, 400, `a check with ${JSON.stringify(install)} is refused`);
+    assert.equal((await inviteResponse('claim', { install, invite_id: 1 })).status, 400, `a claim with ${JSON.stringify(install)} is refused`);
+  }
+
+  // 10c. Both routes sit behind Cloudflare's limiter, and a refused connection cannot learn anything or mint a token.
+  const deniedInvite = env({ LIMIT: { limit: async () => ({ success: false }) } });
+  assert.equal((await inviteResponse('check', { install: invitedInstall }, deniedInvite)).status, 429, 'a rate-limited check is refused');
+  assert.equal((await inviteResponse('claim', { install: invitedInstall, invite_id: 1 }, deniedInvite)).status, 429, 'a rate-limited claim is refused');
+
+  // 10d. Same shape rules as every other write route.
+  assert.equal((await worker.fetch(post('/v1/support/invite/check', { install: invitedInstall }, { 'content-type': 'text/plain' }), env())).status, 415, 'a check that is not JSON is refused');
+  assert.equal((await inviteResponse('check', 'not json')).status, 400, 'a check body that does not parse is refused');
+  const oversizedInvite = new Request('https://inbox.test/v1/support/invite/check', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'content-length': '40' },
+    body: JSON.stringify({ install: invitedInstall, pad: 'x'.repeat(4096) }),
+  });
+  assert.equal((await worker.fetch(oversizedInvite, env())).status, 413, 'a body that lies about its length is cut off and refused');
+
+  // 10e. Invited: a yes and the invite id, and nothing that names the person or holds a token.
+  const firstInvite = newInvite();
+  const yesRes = await inviteResponse('check', { install: invitedInstall });
+  assert.equal(yesRes.status, 200);
+  const yes = await yesRes.json();
+  assert.deepEqual(yes, { invited: true, invite_id: firstInvite }, 'an invited Mac is told yes and which invite');
+  assert.ok(!JSON.stringify(yes).includes('Krish Mac'), 'the invite check never returns the label');
+  assert.ok(!JSON.stringify(yes).includes('tess_'), 'and it never returns a token');
+
+  // 10f. A claim from any other Mac is refused, and the invite stays open for the Mac it was made for.
+  const wrongInstall = await inviteResponse('claim', { install: 'f'.repeat(32), invite_id: firstInvite });
+  assert.equal(wrongInstall.status, 404, 'a claim with the wrong install id is refused');
+  assert.equal((await wrongInstall.json()).error, 'not found', 'and says nothing about why');
+  assert.equal(inviteRow(firstInvite).claimed_at, null, 'the invite is still open');
+
+  // 10g. The invite id is a positive integer, not a string, a float or a zero.
+  for (const invite_id of [0, -1, '2', 1.5, null]) {
+    assert.equal((await inviteResponse('claim', { install: invitedInstall, invite_id })).status, 400, `a claim with invite_id ${JSON.stringify(invite_id)} is refused`);
+  }
+
+  // 10h. The claim mints one token, stores only its SHA-256, and marks the invite claimed.
+  const tokensBefore = tokens();
+  const claimed = await inviteResponse('claim', { install: invitedInstall, invite_id: firstInvite });
+  assert.equal(claimed.status, 200, 'the invited Mac claims its invite');
+  assert.equal(claimed.headers.get('cache-control'), 'no-store', 'the token is never cached');
+  const claimedBody = await claimed.json();
+  const minted = claimedBody.token;
+  assert.match(minted, /^tess_[0-9a-f]{64}$/, 'the claim answers with a tess_ token');
+  assert.deepEqual(Object.keys(claimedBody), ['token'], 'and with nothing else');
+  assert.equal(tokens(), tokensBefore + 1, 'exactly one token row was written');
+  const [tokenRow] = query(`SELECT * FROM support_tokens WHERE sha = '${shaOf(minted)}'`);
+  assert.equal(tokenRow.label, 'Krish Mac', 'the token carries the invite label');
+  assert.equal(tokenRow.revoked, null, 'and starts active');
+  const claimedInvite = inviteRow(firstInvite);
+  assert.ok(Number.isInteger(claimedInvite.claimed_at), 'the invite records when it was claimed');
+  assert.equal(claimedInvite.token_id, tokenRow.id, 'and which token it minted');
+
+  // 10i. That token is a real one: it posts a support report and is refused nowhere along the way.
+  const withToken = await worker.fetch(post('/v1/support', good({ title: 'Invited Mac posts a report' }), { authorization: `Bearer ${minted}` }), env());
+  assert.equal(withToken.status, 201, 'the claimed token can post a support report');
+
+  // 10j. Replay is refused with the same answer as every other miss, and mints no second token.
+  const replay = await inviteResponse('claim', { install: invitedInstall, invite_id: firstInvite });
+  assert.equal(replay.status, 404, 'claiming the same invite twice is refused');
+  const replayBody = await replay.text();
+  assert.equal(tokens(), tokensBefore + 1, 'a replay mints no token');
+  assert.deepEqual(await (await inviteResponse('check', { install: invitedInstall })).json(), { invited: false }, 'and the check stops inviting that Mac');
+
+  // 10k. Expired, revoked, wrong install and replay all answer byte for byte the same, so the route is no oracle.
+  const expiredId = newInvite({ expires: Date.now() - 1000 });
+  const revokedId = newInvite({ revoked: Date.now() });
+  const answers = await Promise.all([
+    inviteResponse('claim', { install: invitedInstall, invite_id: expiredId }),
+    inviteResponse('claim', { install: invitedInstall, invite_id: revokedId }),
+    inviteResponse('claim', { install: 'f'.repeat(32), invite_id: firstInvite + 0 }),
+  ]);
+  const expiredRes = answers[0];
+  assert.equal(expiredRes.status, 404, 'an expired invite is refused');
+  assert.equal(answers[1].status, 404, 'a revoked invite is refused');
+  assert.equal(answers[2].status, 404, 'a wrong install id is refused');
+  assert.deepEqual(await Promise.all(answers.map((r) => r.text())), [replayBody, replayBody, replayBody], 'every miss looks exactly like a replay');
+  assert.equal(tokens(), tokensBefore + 1, 'none of them minted a token');
+  assert.equal(inviteRow(expiredId).claimed_at, null, 'the expired invite was not marked claimed');
+  assert.equal(inviteRow(revokedId).claimed_at, null, 'and the revoked one was not either');
+
+  // 10l. There is no way to read an invite or a token back over the web, and the routes are POST only.
+  for (const p of ['/v1/support/invite/check', '/v1/support/invite/claim', '/v1/support/invites']) {
+    assert.equal((await worker.fetch(new Request(`https://inbox.test${p}`, { method: 'GET' }), env())).status, 404, `GET ${p} does not exist`);
+  }
+
+  // 10m. A Worker deployed before the table exists fails closed (503), and the health inbox is unaffected.
+  assert.equal((await worker.fetch(post('/v1/support/invite/check', { install: invitedInstall }), { ...env(), DB: oldDBs })).status, 503, 'the check fails closed on a database without the invite table');
+  assert.equal((await worker.fetch(post('/v1/support/invite/claim', { install: invitedInstall, invite_id: 1 }), { ...env(), DB: oldDBs })).status, 503, 'and so does the claim');
+  assert.equal((await worker.fetch(post('/v1/support/invite/check', { install: invitedInstall }), { ...env(), DB: undefined })).status, 503, 'and with no database at all');
+
   console.log('support endpoint: all checks passed\n');
   console.log([
     'checked, against the real Worker and a real SQLite database built from inbox/schema.sql:',
@@ -485,6 +618,11 @@ try {
     '  · nothing is stored when Cloudflare\'s own limiter refuses the request',
     '  · two posts that overlap at the per-token cap store one report, not two, and the counter stops at the cap',
     '  · an hour that has run out starts the counter again at one',
+    '  · an uninvited Mac gets a plain {"invited":false}, and a malformed install id is refused',
+    '  · an invited Mac gets {"invited":true,"invite_id":N} and never the label or a token',
+    '  · a claim stores only the SHA-256 of one minted token, and that token posts a real report',
+    '  · a replay, an expired invite, a revoked invite and a wrong install id answer byte for byte the same 404',
+    '  · no invite or token can be read back over the web, and a missing table fails closed',
     '',
   ].join('\n'));
 } finally {

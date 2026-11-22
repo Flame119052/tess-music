@@ -36,11 +36,18 @@ A real chat turn from that profile has been run against the real Worker under `w
 the reply streams, the key stays on the Worker, the turn is counted, and a revoked code is refused with "This support
 code is not active" before the model is called (`node tools/test-support-mac-chat.mjs`, D-108). Krish's steps (make a
 code, send it, watch use, revoke, daily limits, Extra Usage off) are in [`support/RUNBOOK-mac.md`](../support/RUNBOOK-mac.md).
+A Mac can also be invited instead (#137, D-114): `node tools/reports.mjs support invite add <install id> "<label>"`
+stores only the SHA-256 of that Mac's install id, and the Mac's updater shows one native `Not now` / `Install` dialog
+when it next checks. Install verifies the signed `dist/support-install.sh` before it claims a one-time token, and
+`Not now` is remembered for that invite for good. Nothing about Tess Support is downloaded, shown or mentioned on a
+Mac that was not invited, and no plaintext token is ever stored in D1.
 
 **Not deployed, and not part of a release.** Before it can work: `inbox/schema.sql` applied to D1, the Worker deployed,
 and the R2 bucket created — all Krish's, none done here — plus a machine, a Telegram bot and a posting token. What can be
 run now: `node tools/test-inbox-support.mjs`, `node tools/test-session.mjs`, `node tools/test-reports.mjs`,
 `node tools/test-support.mjs`, `node tools/test-support-mac.mjs`, `node tools/test-support-mac-install.mjs`, `node tools/test-support-mac-chat.mjs`.
+The private invite (#137, D-114) also needs the new `support_invites` table applied and the Worker deployed before a Mac
+can see one; `node tools/test-updater.mjs` runs the consent, signature-before-claim and claim path in a sandbox.
 
 ## Open issues (GitHub, sorted by priority — see [`triage.md`](triage.md))
 
@@ -52,6 +59,7 @@ run now: `node tools/test-inbox-support.mjs`, `node tools/test-session.mjs`, `no
 | #54 | `P1` | `docs`, `release-ci` | Purge old issue revisions and commit messages with personal details | Waiting on Krish (Phase 1). |
 | #71 | `P1` | `installer`, `release-ci` | Issue → approach → PR → dev → beta → stable, with reviewer agents | Parts B–C implemented. Reviews run on a fresh GitHub-hosted `ubuntu-latest` VM per review (D-66): only the tagged reviewer's CLI is installed, only its own plan login reaches the step, and bubblewrap still refuses to run bare. Plans only, with the tagging agent choosing the model and the job refusing anything that breaks a rule (D-71, D-72). The tag also attests the author (`author=`, D-75), and a review that fails for an unexpected reason still leaves a marker comment before the job stops. One tag now also chooses where the review runs: `machine=github` (the default) or `machine=mac`/`machine=omarchy`, where a watcher on that machine opens the review as a T3 thread; `machine=vps` is refused, an `effort=` is refused on that path, and the tag may add a 400-character `prompt=` focus (D-76). That path is bound to T3's strictest runtime mode before any pull-request text is sent, and the thread posts nothing — the watcher does; it starts the thread in the same stripped copy the GitHub job reads, reads T3's own end-of-run as the finish, and posts with the same context and footer as a GitHub review (D-77, D-78). The watcher is written, tested and **not installed**: installing it is Krish's step (`tools/review-watch/README.md`). Waiting on Krish: add `CODEX_AUTH_JSON` (`node tools/codex-ci-login.mjs`), retire the old runners, and install the watcher where he wants reviews he can watch. |
 | #62 | `P1` | `docs`, `release-ci` | Update docs & release flow for PRs → `dev` → `beta` → `stable` (approvers TBD) | Waiting on Krish (Phase 1). |
+| #137 | `P1` | `installer`, `release-ci` | Private Tess Support invite: one native Install dialog, nothing to paste | Built and tested in a sandbox (#137, D-114): `node tools/test-inbox-support.mjs`, `node tools/test-reports.mjs`, `node tools/test-updater.mjs`, `tools/check-safety.sh`. Waiting on Krish to merge, apply `inbox/schema.sql`, deploy the Worker, then promote a release whose updater knows about invites. |
 | #28 | `P1` | `installer`, `patcher` | macOS App Management: ask once, never loop, approval survives updates | Shipped; `status: verify` on a real blocked Mac at next Spotify update. |
 | #7 | `P1` | `patcher`, `installer` | Survive Spotify updates | Done; waiting on Krish to confirm and close. |
 | #9 | `P1` | `installer`, `release-ci` | Ship Tess to any Premium Mac user | Done in practice; waiting on Krish to confirm and close. |

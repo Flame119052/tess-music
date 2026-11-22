@@ -1076,3 +1076,33 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   from Cloudflare alone. *Trade-off:* `go` stays the committed default in `inbox/wrangler.toml` until `zen` +
   `hy4-flash-free` is live-tested with `OPENCODE_GO_API_KEY`; a `wrangler deploy --var` override is temporary and
   reverted by the next plain deploy unless also committed in `inbox/wrangler.toml`.
+- **D-114 · 21 Nov 2026 · Agent** — Tess Support can be offered to one Mac without a code to type (#137). Krish invites a
+  Mac by its 32-hex Tess install id (`node tools/reports.mjs support invite add <id> "<label>" [--hours N]`, 72 hours by
+  default and 168 at most). D1's new `support_invites` table holds only `SHA-256(install id)`, the label, the expiry and
+  the claim/revoke times — never the install id and never a token. `POST /v1/support/invite/check` answers exactly
+  `{"invited":false}` or `{"invited":true,"invite_id":N}`, with no label and no token; `POST /v1/support/invite/claim`
+  mints `tess_` + 32 random bytes in the Worker, stores only its SHA-256 in `support_tokens`, and returns it once with
+  `Cache-Control: no-store`. Both statements run in one D1 `batch()`, an insert of the token conditional on the open
+  invite and an update of the invite conditional on that insert, and the token is returned only when both report one
+  changed row. Every miss — wrong install id, expired, revoked, already claimed — is the same 404. Both routes share
+  `env.LIMIT`, keyed by a salted hash of the caller when `SALT` is present (and the raw IP only if `SALT` is missing;
+  the limiter binding does not persist keys), and a 2 KB body cap. `tools/release.mjs` publishes a signed copy of
+  the already-public `support/mac/install.sh` as `dist/support-install.sh` + `.sig`, and pins its SHA-256 as a
+  URL-less `support-install <sha>` line in the signed `components.txt` (the parts loop skips it, so no Mac downloads
+  it as a part), so an invited Mac refuses an older signed copy replayed by a stale mirror. `installer/updater.sh` drops
+  the main `.installing` lock before checking for an invite (so a
+  waiting dialog never blocks `wake.sh` or updates, and finishing never deletes another run's lock) and uses its own
+  `.support-invite.lock`, checking after the 20-minute parts check only when the Mac has no
+  `~/.hermes/profiles/tess-support/config.yaml`. The dialog is `{"Not now", "Install"}`, default Install, `giving up
+  after 900`. Not now writes `state/.support-invite-asked-<id>` and claims nothing; a timeout or a dialog that could not
+  be shown writes nothing and asks again; Install downloads and verifies the signature before claiming, passes the
+  token only in the installer's environment, unsets it immediately, and never logs it. A failed install says files may
+  have been partly set up. Nothing here reads or writes `Spotify.app`.
+  *Why:* the code-in-a-message path needs a private channel and a Terminal paste, and every extra step is a way for a
+  person to leak a token or give up. An invite is authorised by a value only that Mac holds, is invisible to everyone
+  else, and cannot survive the person's own refusal.
+  *Trade-off:* the install id is a report identifier, not a secret, and the claim is authorised by that id alone: anyone
+  who has seen it (a report, `reports.mjs show`, a pasted doctor report) can claim an open invite before the Mac does.
+  Keep invites short (`--hours`), and if `support invites` shows `claimed` but the person never saw the dialog, revoke
+  the label's token at once. `support invites` + `support invite revoke` close one that is still open. The updater's
+  invite check rides the parts check, so a Mac whose parts download is failing sees the invite only once that recovers.

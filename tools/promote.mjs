@@ -30,11 +30,11 @@ if (betaManifest.version !== version) {
   console.error(`beta has ${betaManifest.version}, not ${version}; nothing promoted`);
   process.exit(1);
 }
-for (const file of ['dist/install.sh', 'dist/install.sig']) {
+for (const file of ['dist/install.sh', 'dist/install.sig', 'dist/support-install.sh', 'dist/support-install.sig']) {
   try {
     git('cat-file', '-e', `origin/beta:${file}`);
   } catch {
-    console.error(`beta has no ${file}; promoting it would leave new installs refused`);
+    console.error(`beta has no ${file}; promoting it would leave installs refused`);
     process.exit(1);
   }
 }

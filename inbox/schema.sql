@@ -52,6 +52,21 @@ CREATE TABLE IF NOT EXISTS support_tokens (
   added INTEGER NOT NULL,
   revoked INTEGER
 );
+-- A private invitation to Tess Support for one Mac (#137). The Mac's 32-hex install id is never stored, only its
+-- SHA-256, so this table cannot be used to invite or identify a Mac from a copy of the database. There is no token
+-- here: the one-time `tess_...` token is minted inside the Worker at claim time, stored hashed in support_tokens, and
+-- shown once. `claimed_at`, `revoked_at` and `expires_at` are what make a claim work exactly once.
+CREATE TABLE IF NOT EXISTS support_invites (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  install_hash TEXT NOT NULL,
+  label TEXT NOT NULL,
+  claimed_at INTEGER,
+  revoked_at INTEGER,
+  token_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_support_invites_install ON support_invites(install_hash);
 
 -- Titles of open issues, so the bot can check "is this already known" without a GitHub login. Public data, refreshed by
 -- the owner's tooling (`node tools/reports.mjs support titles`), never written by the Worker.
