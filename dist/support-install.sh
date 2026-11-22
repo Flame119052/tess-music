@@ -156,10 +156,11 @@ case "$inbox" in
   *) die "Refusing unknown inbox address." ;;
 esac
 
-# Determine channel (dev/beta/stable) from updater.env, defaulting to stable.
+# Determine channel (dev/beta/stable) from updater.env (TESS_PARTS_CHANNEL or CHANNEL), defaulting to stable.
 channel=stable
 if [ -f "$TESS_DIR/updater.env" ]; then
-  _ch=$(sed -n 's/^CHANNEL=\([a-z]*\).*/\1/p' "$TESS_DIR/updater.env" 2>/dev/null | head -n 1)
+  _ch=$(sed -n "s/^[[:space:]]*TESS_PARTS_CHANNEL=['\"]*\([a-z]*\)['\"]*.*/\1/p" "$TESS_DIR/updater.env" 2>/dev/null | head -n 1)
+  [ -z "$_ch" ] && _ch=$(sed -n "s/^[[:space:]]*CHANNEL=['\"]*\([a-z]*\)['\"]*.*/\1/p" "$TESS_DIR/updater.env" 2>/dev/null | head -n 1)
   case "$_ch" in dev|beta|stable) channel=$_ch ;; esac
 fi
 [ "${TESS_TEST:-}" = 1 ] && [ -n "${TESS_CHANNEL:-}" ] && channel=$TESS_CHANNEL
