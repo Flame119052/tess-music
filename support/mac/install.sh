@@ -104,7 +104,7 @@ HERMES_ID='com.nousresearch.hermes-bundled'
 # The same minimum distribution.yaml names. A checkout whose file disagrees is refused.
 HERMES_REQUIRES='>=0.22.0'
 # >>> support profile pins >>>
-PROFILE_COMMIT=f98cfc17b7d2fea7fc3946af2dc6aa135f1a3353
+PROFILE_COMMIT=2bd0da325060f33c4655a2748786725314f191a8
 PROFILE_PINS='
 support/mac/config.yaml 7f7ed106b34a83666281084295e685d6e64c90c92cbaf3700a57f29687535341
 support/mac/distribution.yaml eadfc479acbfbba4ea2a628e2786b32e5370294e7162d185de0a8d6b06f32bd4
@@ -116,7 +116,7 @@ support/mac/skills/tess-gather/scripts/doctor.mjs 0fae204654e8e0d3e94858a2412918
 support/mac/skills/tess-handoff/SKILL.md dae977620d82a3b2254f69280e239c89d37c0a68f0a420f57f6638f24c4d9a9e
 support/mac/skills/tess-handoff/scripts/triage-inbox.mjs 8d7ab61be0eaa4a68d6b52e9ee689ebcd0ee5195047dd614c39d5408cdc0383a
 support/mac/skills/tess-support/SKILL.md 0a6bac9ca40354738ebe3b20d6ca7615a0459164770ffda54eb1b7a6bfc65404
-support/mac/plugins/tess-visit/__init__.py b55102c772535f620513348f67e62e4dcfc442a2509092c73b7cbc6539bf8ba2
+support/mac/plugins/tess-visit/__init__.py f41506de701641d5891d14d2b6d86cfb5d101588893045d113f49d8a288a4e5b
 support/mac/plugins/tess-visit/plugin.yaml 0bac423e3497ce06d27355aa44df5b1fa562c962aedb75d7ac302cf7aedb49fc
 support/bot/skills/tess-support/scripts/privacy.mjs 180b494458c0c984f3f62f4b10dc0a75f543a28dc681b25093e99e064de95c51
 support/bot/skills/tess-support/scripts/triage.mjs 89196e4117d2bec8052ba6d0f383f8bf62aac116c6860de8fe21f23e8aeacd77
