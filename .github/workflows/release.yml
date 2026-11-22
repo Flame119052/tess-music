@@ -8,7 +8,7 @@ name: release
 on:
   push:
     branches: [main]
-    paths: ['theme/**', 'mini/**', 'patcher/**', 'installer/**', 'tools/release.mjs', 'tools/build.mjs', 'tools/check-safety.sh']
+    paths: ['theme/**', 'mini/**', 'patcher/**', 'installer/**', 'support/mac/install.sh', 'tools/release.mjs', 'tools/build.mjs', 'tools/check-safety.sh']
   workflow_dispatch:
     inputs:
       action:

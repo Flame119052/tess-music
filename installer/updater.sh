@@ -381,13 +381,14 @@ part_file() {
   case "$1" in
     command) echo "$HOME_TESS/tess" ;;
     doctor|updater|installer|uninstall|wake) echo "$HOME_TESS/$1.sh" ;;
+    invite) echo "$HOME_TESS/bin/tess-invite" ;;
   esac
 }
 backup_part() {
   local name=$1 good="$HOME_TESS/$1.last-good" file
   rm -rf "$good"
   case "$name" in
-    doctor|updater|installer|uninstall|wake|command)
+    doctor|updater|installer|uninstall|wake|command|invite)
       file=$(part_file "$name"); [ -f "$file" ] && cp "$file" "$good" ;;
     patcher) [ -d "$HOME_TESS/bin/patcher" ] && ditto "$HOME_TESS/bin/patcher" "$good" ;;
     mini) [ -z "$TESS_TEST" ] && [ -d "$HOME/Applications/Tess Mini.app" ] && ditto "$HOME/Applications/Tess Mini.app" "$good" ;;
@@ -405,6 +406,15 @@ restore_part() {
       # Write beside it and rename: zsh reads a running script as it goes, so overwriting it in place could run a mix.
       cp "$good" "$file.restore" && chmod +x "$file.restore" && mv -f "$file.restore" "$file"
       if [ "$name" = wake ]; then install_wake; fi ;;
+    invite)
+      # A first install that was rejected has no last good copy. The card is only a nicer face for the invite, so no
+      # copy at all is the safe state: support_ask falls back to the plain dialog when the file is missing.
+      file=$(part_file invite)
+      if [ -f "$good" ]; then
+        cp "$good" "$file.restore" && chmod +x "$file.restore" && mv -f "$file.restore" "$file"
+      else
+        rm -f "$file"
+      fi ;;
     patcher)
       [ -d "$good" ] || return 1
       rm -rf "$HOME_TESS/bin/patcher"; ditto "$good" "$HOME_TESS/bin/patcher"
@@ -432,7 +442,7 @@ while read -r name sha url _src; do
   # Only download parts this updater installs (other signed release parts, such as the support recorder, are fetched by
   # their own installer and must not be re-downloaded or trigger doctor --auto here).
   case "$name" in
-    command|doctor|updater|installer|uninstall|wake|patcher|mini|theme) ;;
+    command|doctor|updater|installer|uninstall|wake|patcher|mini|invite|theme) ;;
     *) continue ;;
   esac
   [ "$(cat "$STATE/$name" 2>/dev/null)" = "$sha" ] && continue
@@ -473,6 +483,13 @@ while read -r name sha url _src; do
       launchctl bootout "gui/$(id -u)/music.tess.mini" >/dev/null 2>&1
       rm -rf "$HOME/Applications/Tess Mini.app"; ditto "$TMP/mini/Tess Mini.app" "$HOME/Applications/Tess Mini.app"
       launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/music.tess.mini.plist" >/dev/null 2>&1 ;;
+    invite)
+      # The Liquid Glass card for the Tess Support invite (mini/TessInvite.swift). It runs once, so it is checked once
+      # before it is put in place: it must start and say what it is, with no window and no arguments but --check.
+      chmod +x "$f" 2>/dev/null
+      "$f" --check 2>/dev/null | grep -q '^tess-invite ' || { problem "invite: bad file"; continue; }
+      mkdir -p "$HOME_TESS/bin"
+      cp "$f" "$HOME_TESS/bin/tess-invite.new" && chmod +x "$HOME_TESS/bin/tess-invite.new" && mv -f "$HOME_TESS/bin/tess-invite.new" "$HOME_TESS/bin/tess-invite" || continue ;;
     theme)
       # Stage a complete Apps folder and switch it in one checked rename, like every other Spotify change.
       [ -d "$APPS/xpui" ] || continue
@@ -538,9 +555,38 @@ SUPPORT_INBOX="https://tess-music-player.janus.ing"
 SUPPORT_CONFIG="$HOME/.hermes/profiles/tess-support/config.yaml"
 [ -n "$TESS_TEST" ] && [ -n "${TESS_SUPPORT_CONFIG:-}" ] && SUPPORT_CONFIG=$TESS_SUPPORT_CONFIG
 
+# The Liquid Glass card (mini/TessInvite.swift, the signed `invite` part) shows the invite, the progress and the result
+# in Tess's own look. It is optional: a Mac that does not have it yet gets the plain dialogs and banners below, with the
+# same words as before. Nothing is ever handed to it that identifies the person or opens the installer: no token, no
+# install id, no invite id. `env -u` keeps a token out of its environment even if the shell around this run held one.
+SUPPORT_UI="$HOME_TESS/bin/tess-invite"
+support_ui() { [ -x "$SUPPORT_UI" ] && [ -f "$SUPPORT_UI" ]; }
+# One word the card reads: installing, done or failed. Written beside it and renamed, so the card never reads half a word.
+SUPPORT_STATUS="$STATE/.support-invite-status"
+support_status() { printf '%s\n' "$1" > "$SUPPORT_STATUS.tmp" && mv -f "$SUPPORT_STATUS.tmp" "$SUPPORT_STATUS"; }
+support_app_open() {
+  local app="$HOME/Applications/Tess Support.app"
+  { [ -n "$TESS_TEST" ] || [ -d "$app" ]; } && open "$app" >/dev/null 2>&1
+  return 0
+}
+
 # What the person clicked: install, decline, or nothing at all. A timeout (or a dialog that could not be shown) is not
 # an answer, so the invite asks again the next time someone is at the Mac.
 support_ask() {
+  if support_ui; then
+    # Exactly 0 (Add Tess Support) and 1 (Not now) are answers. Closing the card, a timeout or no screen to show it on
+    # (2) means nobody decided, so the invite is not spent.
+    local ui_rc
+    env -u TESS_SUPPORT_TOKEN "$SUPPORT_UI" ask --timeout 900 >/dev/null 2>&1 </dev/null; ui_rc=$?
+    case $ui_rc in
+      0) printf '%s\n' install; return 0 ;;
+      1) printf '%s\n' decline; return 0 ;;
+      2) return 0 ;;
+    esac
+    # A card that would not start at all (a file that cannot run here, or one that crashed) must not hide the invite:
+    # the plain dialog below asks instead.
+    log "support invite: the card exited $ui_rc; asking with the plain dialog"
+  fi
   if [ -n "$TESS_TEST" ]; then
     # Hold the dialog open, as a person who walked away would, so a test can prove nothing else on the Mac waits on it.
     [ -n "${TESS_TEST_INVITE_WAIT:-}" ] && sleep "$TESS_TEST_INVITE_WAIT"
@@ -630,7 +676,9 @@ check_support_invite() {
     log "support invite $invite_id: installer does not match this release; nothing was installed"
     return 0
   fi
-  notify "Installing Tess Support… this takes about a minute."
+  # With the card, "setting up" is shown on the card once there is a token to install with, so a download or a claim that
+  # fails never leaves a card spinning or a banner that promised an install. Without it, the banner is as it was.
+  support_ui || notify "Installing Tess Support… this takes about a minute."
   # The status code, not -f, decides what happened: a 404 is a spent invite, while a 429/503 or a dropped connection is
   # a temporary miss. The reply body goes to a private temp file (it may hold the token) and is never logged.
   claim="$TMP/invite-claim.json"
@@ -664,18 +712,40 @@ check_support_invite() {
   fi
   # The token is in this one command's environment and nowhere else: not argv (which any process can read), not the
   # log, not the shell it came from. The installer copies it out and unsets it itself.
+  # The card runs beside the installer, not inside it: it only watches a status file, and the installer is started
+  # exactly as before, with the token in that one command's environment.
+  local ui_pid="" ui_rc=""
+  if support_ui && support_status installing; then
+    env -u TESS_SUPPORT_TOKEN "$SUPPORT_UI" progress --status-file "$SUPPORT_STATUS" >/dev/null 2>&1 </dev/null &
+    ui_pid=$!
+  fi
   TESS_SUPPORT_TOKEN="$tok" sh "$TMP/support-install.sh" >> "$LOG" 2>&1
   rc=$?
   tok=""
   touch "$STATE/.support-invite-asked-$invite_id"
   if [ "$rc" -eq 0 ]; then
     log "support installed"
-    support_welcome
+    if [ -n "$ui_pid" ]; then
+      support_status done
+      wait "$ui_pid"; ui_rc=$?
+      # 0 is Open Tess Support; Done, closing the card and a card that could not be shown all leave it closed.
+      [ "$ui_rc" -eq 0 ] && support_app_open
+    else
+      support_welcome
+    fi
   else
     # Not "nothing was changed": the installer runs one step at a time and may have finished some of them.
     log "support invite $invite_id: installer exited $rc"
-    notify "Tess Support couldn't finish installing; some files may have been partially set up. Run the uninstall command or ask Krish."
+    if [ -n "$ui_pid" ]; then
+      support_status failed
+      wait "$ui_pid"; ui_rc=$?
+      # Close is 1. Anything else means the card never reached a person, so the same words go out as a banner.
+      [ "$ui_rc" -eq 1 ] || notify "Tess Support couldn't finish installing; some files may have been partially set up. Run the uninstall command or ask Krish."
+    else
+      notify "Tess Support couldn't finish installing; some files may have been partially set up. Run the uninstall command or ask Krish."
+    fi
   fi
+  rm -f "$SUPPORT_STATUS" "$SUPPORT_STATUS.tmp"
   return 0
 }
 # From here on this run no longer owns .installing, so leaving must never delete a lock someone else took meanwhile.

@@ -1121,3 +1121,28 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   show, and the privacy cost of video demands a second, explicit opt-in rather than widening the still consent.
   *Trade-off:* ScreenCaptureKit needs macOS 12.3+ for window capture and 13+ preferred; the helper targets 13.0 like
   Tess Mini. Intel and Apple Silicon share one universal binary signed in `tools/release.mjs` beside the Mini.
+- **D-116 · 22 Nov 2026 · Agent** — The Tess Support invite is shown as a **native Liquid Glass card**, not an AppleScript
+  dialog and banners (#148). `mini/TessInvite.swift` is a small universal SwiftUI/AppKit helper (macOS 13+, no
+  dependencies, signed as `music.tess.invite`) that ships as the signed `invite` release part and is installed by the
+  updater to `Tess/bin/tess-invite`, with the same checksum, doctor-validate and rollback as the other parts (a first
+  install the doctor rejects is removed, so a rejected binary is never used). The card matches the What's New sheet, and
+  its words have no technical terms: "Personal invite from Krish / Want a hand with Tess? / Add a private helper you can
+  click anytime Spotify looks off", three rows (fixes things with you, always asks first, stays out of your way),
+  buttons **Not now** and **Add Tess Support**. `ask` reports by exit code only: 0 install, 1 not now, **2 closed with ×
+  or Escape, timed out, or could not be shown, which never spends the invite**; any other code (a crash, a file that
+  cannot run) is also not an answer and the updater asks with the old plain dialog instead, so a broken card cannot hide
+  an invite. `progress --status-file` shows "Setting up Tess Support…" and moves the same card to "You're all set!"
+  (Done 1, Open Tess Support 0) or "Couldn't finish setting up" (Close 1, and it never claims nothing was changed) when
+  the updater writes `done` or `failed` into a one-word file written beside-and-renamed. The card starts only after the
+  invite is claimed and a token exists, immediately before the installer, so a failed download, a bad signature, a 404
+  or a 503 never leaves it spinning or promising an install. **The card never sees the token, the install id or the
+  invite id**: none goes in argv, and every start runs `env -u TESS_SUPPORT_TOKEN`; the order (download, `tess-verify`,
+  `components.txt` SHA pin, claim, `TESS_SUPPORT_TOKEN="$tok" sh support-install.sh`), the separate `.support-invite.lock`
+  (the update lock is still never held during any UI), the `TESS_TEST` overrides and "never touch `Spotify.app`" are
+  unchanged. A Mac that does not have the card yet keeps the old dialogs and banners word for word. `--snapshot` renders
+  every state to a PNG with no window, and `--check` lets the updater test a download before it is put in place. The
+  release workflow also builds `dev` when `support/mac/install.sh` changes, so a D-105 pin commit is no longer skipped.
+  *Why:* the invite is the first thing an invited person sees from Tess; a grey system alert with a few lines of
+  technical wording reads as a scam, not a gift. *Trade-off:* the updater now runs a downloaded binary (once, with
+  `--check`) before installing it; it is already pinned by the signed parts list and its SHA-256, the same trust as Tess
+  Mini and the patcher.
