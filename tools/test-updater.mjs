@@ -1046,6 +1046,7 @@ exit 2
     assert.match(release, /invite: \{ file: `\$\{build\}tess-invite`/, 'the release lists the invite part');
     assert.match(release, /codesign\(`\$\{build\}tess-invite`, 'music\.tess\.invite'\)/, 'signs it as music.tess.invite');
     assert.match(release, /`\$\{build\}tess-record`, `\$\{build\}tess-invite`/, 'and uploads it as a release asset');
+    assert.match(release, /`\$\{build\}tess-support-kit\.tar\.gz`/, 'and uploads tess-support-kit.tar.gz as a release asset');
     assert.match(readFileSync(join(root, '.github', 'workflows', 'release.yml'), 'utf8'), /'support\/mac\/install\.sh'/, 'a pin commit to support/mac/install.sh builds dev');
   }
 

@@ -261,7 +261,7 @@ if (channel === 'stable') {
     console.log(`beta moved up to ${version}`);
   }
 }
-const assets = [...new Set(Object.values(parts).map((p) => p.file))];
+const assets = [`${build}tess-theme.tar.gz`, `${build}tess-mini.zip`, `${build}tess-record`, `${build}tess-invite`, `${build}tess-support-kit.tar.gz`, `${build}tess-patcher-macos-universal.tar.gz`, `${build}tess-updater.sh`, `${build}tess-doctor.sh`, `${build}tess-installer.sh`, `${build}tess-uninstall.sh`, `${build}tess-wake.sh`, `${build}tess-command.sh`];
 try {
   run('gh', ['release', 'create', `v${version}`, ...assets, '-R', 'Flame119052/tess-music', '--target', channel, '-t', `Tess ${version}`, '-n', `Tess ${version}. Install: curl -fsSL https://raw.githubusercontent.com/Flame119052/tess-music/main/installer/install.sh | sh`, ...(channel === 'stable' ? ['--latest'] : ['--prerelease'])]);
 } catch {
