@@ -242,10 +242,28 @@
   // work while music plays). Tess finds those elements here instead, when Spotify draws, and marks them with a data
   // attribute (Spotify's code never touches unknown data attributes), so the CSS stays a cheap, direct match.
   const mark = (node, attr, value = '') => { if (node && node.getAttribute(attr) !== value) node.setAttribute(attr, value); };
-  // one passive listener per shelf: arrows show whenever it can scroll, and the arrow pointing at a dead end fades.
-  // sync is also stashed on the element so markLayout's slow pass can re-check as cards stream in.
+  // one shared resize listener + per-shelf passive scroll listener pruned when a shelf leaves the DOM,
+  // so route changes never accumulate detached shelves or closures.
+  const arrowSubs = new Set();
+  const pruneArrowSubs = () => {
+    for (const sub of arrowSubs) {
+      if (!sub.car.isConnected) {
+        sub.sc.removeEventListener('scroll', sub.sync);
+        arrowSubs.delete(sub);
+      }
+    }
+  };
+  listen(window, 'resize', () => {
+    pruneArrowSubs();
+    for (const sub of arrowSubs) sub.sync();
+  });
+  cleanups.push(() => {
+    for (const sub of arrowSubs) sub.sc.removeEventListener('scroll', sub.sync);
+    arrowSubs.clear();
+  });
   function wireCarouselArrows(car, sc) {
     if (car.hasAttribute('data-tess-arrows')) return;
+    pruneArrowSubs();
     car.setAttribute('data-tess-arrows', '');
     const sync = () => {
       car.toggleAttribute('data-tess-overflow', sc.scrollWidth > sc.clientWidth + 4);
@@ -253,8 +271,8 @@
       car.toggleAttribute('data-at-end', sc.scrollLeft + sc.clientWidth >= sc.scrollWidth - 4);
     };
     car.__tessArrowSync = sync;
-    listen(sc, 'scroll', sync, { passive: true });
-    listen(window, 'resize', sync);
+    sc.addEventListener('scroll', sync, { passive: true });
+    arrowSubs.add({ car, sc, sync });
     sync();
   }
   // the arrows sit in their own little box beside the scroll area, so ancestors are no help — the smallest
@@ -1830,19 +1848,32 @@
   function syncDj() {
     const b = q(bar, '.tb-dj'), sd = stockDj();
     b.hidden = !sd;
-    if (!sd) return;
+    if (!sd) { alignDj(); return; }
     const svg = sd.querySelector('svg')?.outerHTML || '';
     if (b.dataset.icon !== svg) { b.dataset.icon = svg; b.innerHTML = svg; }
     b.style.setProperty('--dj', sd.style.backgroundColor || '');
+    alignDj();
   }
 
   // Spotify anchors its popovers to its own hidden DJ button, so nudges like the "Want different
   // music?" hint pop up pointing at thin air. Slide the invisible stock button onto Tess's copy —
-  // anything anchored to it then lands where the button is actually seen.
+  // anything anchored to it then lands where the button is actually seen. Reset the accumulated
+  // offset whenever React swaps in a fresh button node so transforms never double-count.
   let djShift = { x: 0, y: 0 };
+  let djAnchor = null;
   function alignDj() {
     const sd = stockDj(), b = q(bar, '.tb-dj');
-    if (!sd || b.hidden) { djShift = { x: 0, y: 0 }; return; }
+    if (!sd || b.hidden) {
+      if (djAnchor) { djAnchor.style.removeProperty('transform'); djAnchor = null; }
+      djShift = { x: 0, y: 0 };
+      return;
+    }
+    if (sd !== djAnchor) {
+      if (djAnchor) djAnchor.style.removeProperty('transform');
+      djAnchor = sd;
+      djShift = { x: 0, y: 0 };
+      sd.style.removeProperty('transform');
+    }
     const s = sd.getBoundingClientRect(), t = b.getBoundingClientRect();
     const dx = t.left + t.width / 2 - (s.left + s.width / 2);
     const dy = t.top + t.height / 2 - (s.top + s.height / 2);

@@ -236,9 +236,8 @@ html.tess .main-view-container__scroll-node-child {
   overflow: hidden;
   -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent);
 }
-/* subtitles scroll only when they don't fit (the script adds .scrolling). One pass at a time, like Apple Music:
-   rest, glide to the end, rest, glide back; then it stays still until the next pass (every ~20 s, on a new song, or
-   on hover). Looping forever made the window redraw 60 times a second for as long as anything played. */
+/* subtitles scroll smoothly whenever they overflow while Spotify is visible (#57/#58: keep visible
+   animations alive for premium feel; html.tess-hidden pauses them only when completely hidden). */
 .tess-marquee {
   -webkit-mask-image: none !important;
 }
