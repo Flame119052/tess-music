@@ -1320,10 +1320,22 @@ find_hermes_app() {
   return 1
 }
 
+existing_hermes_usable() {
+  need=$(hermes_need)
+  for cand in "$apps/Hermes Agent.app" "$apps/Hermes.app"; do
+    [ -d "$cand" ] || continue
+    ver=$(app_version "$cand")
+    if [ -n "$ver" ] && version_at_least "$ver" "$need"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Download and check the disk image before any Hermes folder is created. The copy into Applications is later.
 prepare_desktop() {
   desktop_ready=0
-  if [ -d "$apps/Hermes.app" ] || [ -d "$apps/Hermes Agent.app" ]; then
+  if existing_hermes_usable || [ -d "$apps/Hermes Agent.app" ]; then
     return 0
   fi
   fetch "$work/stable-mac.yml" "$FEED_URL"
@@ -1358,10 +1370,10 @@ prepare_desktop() {
 
 install_desktop() {
   hermes_app=
-  if [ -d "$apps/Hermes.app" ]; then
-    hermes_app=$apps/Hermes.app
-  elif [ -d "$apps/Hermes Agent.app" ]; then
+  if [ -d "$apps/Hermes Agent.app" ]; then
     hermes_app="$apps/Hermes Agent.app"
+  elif [ -d "$apps/Hermes.app" ]; then
+    hermes_app=$apps/Hermes.app
   fi
   if [ -n "$hermes_app" ]; then
     if we_installed && [ "$(tr -d '[:space:]' < "$marker")" = "app" ]; then
@@ -1373,10 +1385,12 @@ install_desktop() {
       fi
       return 0
     fi
-    printf '%s\n' "Hermes is already on this Mac. Tess Support will open its own chat in the browser. The Hermes profile you already use stays as it is."
-    launch=web
-    require_hermes_cli
-    return 0
+    if existing_hermes_usable || [ -d "$apps/Hermes Agent.app" ]; then
+      printf '%s\n' "Hermes is already on this Mac. Tess Support will open its own chat in the browser. The Hermes profile you already use stays as it is."
+      launch=web
+      require_hermes_cli
+      return 0
+    fi
   fi
   [ "${desktop_ready:-}" = 1 ] || die "The Hermes app was not checked. Nothing was copied into Applications."
   app_name=$desktop_app_name
