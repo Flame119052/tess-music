@@ -575,8 +575,8 @@ try {
   const launcher = readFileSync(join(armEnv.HOME, 'Applications', 'Tess Support.app', 'Contents', 'MacOS', 'launch'), 'utf8');
   assert.match(launcher, /open -a /);
   assert.match(launcher, /--profile=tess-support/);
-  const plist = readFileSync(join(armEnv.HOME, 'Applications', 'Tess Support.app', 'Contents', 'Info.plist'), 'utf8');
-  assert.match(plist, /<key>CFBundleIconFile<\/key>\s*<string>AppIcon<\/string>/);
+  const launcherPlist = readFileSync(join(armEnv.HOME, 'Applications', 'Tess Support.app', 'Contents', 'Info.plist'), 'utf8');
+  assert.match(launcherPlist, /<key>CFBundleIconFile<\/key>\s*<string>AppIcon<\/string>/);
   assert.ok(
     readFileSync(join(armEnv.HOME, 'Applications', 'Tess Support.app', 'Contents', 'Resources', 'AppIcon.icns'))
       .equals(readFileSync(join(root, 'support/mac/AppIcon.icns'))),
