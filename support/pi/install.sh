@@ -91,7 +91,14 @@ MODEL_DEFAULT='deepseek-v4.1-flash'
 
 TESS_DIR=${TESS_HOME:-"$HOME/Library/Application Support/Tess"}
 SUPPORT_ROOT="$TESS_DIR/support"
-VERIFY=${TESS_VERIFY:-"$TESS_DIR/bin/tess-verify"}
+VERIFY=${TESS_VERIFY:-}
+if [ -z "$VERIFY" ]; then
+  if [ -x "$TESS_DIR/bin/patcher/tess-verify" ]; then
+    VERIFY="$TESS_DIR/bin/patcher/tess-verify"
+  else
+    VERIFY="$TESS_DIR/bin/tess-verify"
+  fi
+fi
 PROGRESS_FILE=${TESS_SUPPORT_PROGRESS_FILE-}
 
 die() {

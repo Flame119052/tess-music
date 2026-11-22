@@ -745,7 +745,7 @@ check_support_invite() {
   # If ~/.hermes was offloaded to an external drive via a user-owned symlink outside $HOME, pass its real folder so
   # support-install.sh installs cleanly without weakening its symlink guard.
   local -a install_env
-  install_env=(TESS_SUPPORT_PROGRESS_FILE="$SUPPORT_STATUS")
+  install_env=(TESS_SUPPORT_PROGRESS_FILE="$SUPPORT_STATUS" TESS_VERIFY="$VERIFY")
   if [ -z "$TESS_TEST" ] && [ -z "${HERMES_HOME:-}" ] && [ -L "$HOME/.hermes" ] && [ -d "$HOME/.hermes" ] && [ -O "$HOME/.hermes" ]; then
     local resolved_hermes
     resolved_hermes=$(cd -P "$HOME/.hermes" 2>/dev/null && pwd) || resolved_hermes=""
