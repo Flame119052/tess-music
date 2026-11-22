@@ -223,11 +223,9 @@ html.tess [data-testid="home-ads-container"] {
   animation: td-spin 5.5s steps(165) infinite;
   animation-play-state: paused;
 }
-/* While music plays the record spins for a while after a song starts or you press play, and whenever you point at
-   it, then comes to rest. Any motion that never stops makes the whole window redraw continuously (about a third of a
-   CPU core on a Retina screen), so nothing on Home moves for ever. */
-html.tess-playing.tess-spin-burst .td-record,
-html.tess-playing #tess-dial:hover .td-record {
+/* While music plays the record spins. A fully hidden window draws no frames, so a covered or hidden Spotify
+   costs nothing anyway. */
+html.tess-playing .td-record {
   animation-play-state: running;
 }
 .td-record i {
