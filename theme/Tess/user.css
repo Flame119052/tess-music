@@ -753,6 +753,21 @@ html.tess :is([data-testid="album-page"], [data-testid="playlist-page"]) .main-t
   border-bottom-color: rgba(255, 255, 255, 0.07);
 }
 
+html.tess svg[data-tess-orig-ico="1"] {
+  display: none !important;
+}
+
+/* Discography list releases use their own flat backgrounds inside the main glass panel. */
+html.tess.tess-discography [data-testid="artist-page"] .contentSpacing [role="presentation"] > div > div:has(> div > [data-encore-id="text"][draggable="true"] > a[href^="/album/"]) {
+  background-color: var(--tess-hairline) !important;
+  border-radius: var(--tess-radius);
+  padding: 12px;
+}
+
+html.tess.tess-discography [data-testid="artist-page"] > div:first-child {
+  --background-base: var(--tess-panel-solid);
+}
+
 /* ================= artist pages =================
    The header fills the whole view until you scroll, like Apple Music.
    Text is white over dark video and dark over light video (the script adds .tess-hero-light). */
@@ -1132,16 +1147,16 @@ html.tess.tess-artist .tess-hero-bg::before {
 html.tess:not(.tess-artist) .main-topBar-background {
   transition: opacity 0.25s;
 }
-html.tess:not(.tess-artist):not(.tess-titled) .main-topBar-background,
-html.tess:not(.tess-artist):not(.tess-titled) .main-topBar-topbarContentContainer {
+html.tess:not(:is(.tess-artist, .tess-discography)):not(.tess-titled) .main-topBar-background,
+html.tess:not(:is(.tess-artist, .tess-discography)):not(.tess-titled) .main-topBar-topbarContentContainer {
   opacity: 0 !important;
   pointer-events: none;
 }
 html.tess:not(.tess-artist) .main-topBar-topbarContentContainer {
   transition: opacity 0.25s;
 }
-html.tess.tess-titled:not(.tess-artist) .main-topBar-topbarContent,
-html.tess.tess-titled:not(.tess-artist) .main-topBar-topbarContent * {
+html.tess.tess-titled:not(:is(.tess-artist, .tess-discography)) .main-topBar-topbarContent,
+html.tess.tess-titled:not(:is(.tess-artist, .tess-discography)) .main-topBar-topbarContent * {
   opacity: 1 !important;
   visibility: visible !important;
 }

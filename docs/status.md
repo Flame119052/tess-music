@@ -1,7 +1,7 @@
 # Status
 
 What's true right now, what's open, and what's waiting on whom. Update this when something user-visible changes.
-Last updated: 22 Nov 2026.
+Last updated: 23 Nov 2026.
 
 ## Releases
 
@@ -15,6 +15,9 @@ Declare: Actions → release → Run workflow → action `declare` (or `node too
 beta with action `promote` (or `node tools/promote.mjs`).
 Installs on record (health inbox): the owner's Mac (dev) and one user's Mac (stable, repaired 13 Nov after the 0.1.0
 helper blanked its Spotify).
+
+The Spotify navigation crash, Support page-check timeout, and Discography layout fixes passed a local Spotify run on
+the owner's Mac. They await merge into `main` (#161, #162, #163, D-118).
 
 ## Support bot
 

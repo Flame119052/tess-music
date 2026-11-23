@@ -1172,3 +1172,8 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   extensions, strict `--no-builtin-tools`, and JSONL RPC streaming straight into Spotify's Liquid Glass theme.
   *Trade-off:* Tess Support chat requires `Tess Mini` to be running on localhost (standard on every Tess Mac). `support/mac/`
   stays intact for reference and existing Hermes sandbox tests.
+- **D-118 · 23 Nov 2026 · Agent** — Keep Spotify's SVGs attached and hide them with a Tess mark. Draw Tess's icons
+  beside them so React can still update and remove its own nodes (#161). Cap Support command replies below 4 KiB and
+  report the loader's version so a cached bundle cannot fill Mini's request buffer (#162). Reserve the artist hero
+  for the overview. Discography uses Spotify's sticky title and filters, with Tess styling on list release headers
+  (#163).

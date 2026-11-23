@@ -14,9 +14,61 @@ import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rm
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const INSTALL_SH = join(ROOT, 'support/pi/install.sh');
+
+const themeSrc = join(ROOT, 'theme/Tess/src');
+const core = readFileSync(join(themeSrc, 'core.js'), 'utf8');
+for (const file of ['core.js', 'home.js', 'playlist.js']) {
+  assert.doesNotMatch(readFileSync(join(themeSrc, file), 'utf8'), /\bsvg\.outerHTML\s*=/, `${file} must preserve Spotify's SVG nodes`);
+}
+
+const artistMatch = core.match(/async function onRoute\(\) \{[\s\S]*?const isArtist = ([^\n]+);/)[1];
+const isArtistOverview = runInNewContext(`(path) => ${artistMatch}`);
+for (const path of ['/artist/abc', '/artist/abc/']) assert.equal(isArtistOverview(path), true, path);
+for (const path of ['/artist/', '/artist/abc/discography/all', '/artist/abc/related', '/artist/abc/featuring', '/artist/abc/appears-on', '/artist/abc/concerts', '/album/abc']) {
+  assert.equal(isArtistOverview(path), false, path);
+}
+
+const stateSource = core.slice(core.indexOf('  const supHandledCmds ='), core.indexOf('  function consumeSupportEvents'));
+const window = { __tessVersion: '0.2.56', innerWidth: 1280, innerHeight: 800 };
+const posts = [];
+let cache = JSON.stringify({ version: '0.2.55', js: 'x'.repeat(410_000) });
+let currentRoute = '/artist/abc';
+const { collectSpotifyState, runSupportSpotifyCmd } = runInNewContext(`${stateSource}\n({ collectSpotifyState, runSupportSpotifyCmd })`, {
+  window, TextEncoder, setTimeout: (fn) => fn(),
+  localStorage: { getItem: () => cache },
+  route: () => currentRoute,
+  document: {
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    documentElement: { classList: { contains: () => false } },
+  },
+  Spicetify: { Platform: { History: { push: (path) => { currentRoute = path; } } } },
+  supChatEl: null, closeNP: () => {}, onRoute: () => {},
+  supportAPI: async (path, init) => {
+    assert.equal(path, '/support/chat/cmd-result');
+    assert.equal(init.method, 'POST');
+    assert.ok(Buffer.byteLength(init.body) < 4096);
+    posts.push(JSON.parse(init.body));
+  },
+});
+assert.equal(collectSpotifyState().tessVersion, '0.2.56');
+delete window.__tessVersion;
+assert.equal(collectSpotifyState().tessVersion, '0.2.55');
+await runSupportSpotifyCmd({ id: 'cmd_1', action: 'state' });
+assert.equal(posts[0].result.tessVersion, '0.2.55');
+await runSupportSpotifyCmd({ id: 'cmd_2', action: 'navigate', target: 'artist-discography' });
+assert.equal(posts[1].result.state.route, '/artist/abc/discography/all');
+cache = JSON.stringify({ version: 'v'.repeat(100) });
+assert.equal(collectSpotifyState().tessVersion, 'v'.repeat(32));
+for (cache of ['not JSON', '{"version":42}', null]) assert.equal(collectSpotifyState().tessVersion, 'dev');
+currentRoute = '/' + '🎵'.repeat(4096);
+await runSupportSpotifyCmd({ id: 'cmd_3', action: 'state' });
+assert.equal(posts[2].result.ok, false);
+console.log('PASS theme preserves stock SVGs, limits artist hero to the overview, and posts compact Support results');
 
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 

@@ -143,7 +143,7 @@
     document.body.appendChild(anchors);
   }
   html.classList.add('tess');
-  onDispose(() => html.classList.remove('tess', 'tess-artist', 'tess-tint', 'tess-hero-light'));
+  onDispose(() => html.classList.remove('tess', 'tess-artist', 'tess-discography', 'tess-tint', 'tess-hero-light'));
   const applySettings = () => {
     html.classList.toggle('tess-tint', settings.tintWindow);
     html.classList.toggle('tess-side-lyrics-off', !settings.sideLyrics);
@@ -1899,9 +1899,7 @@
   }
   onDraw(alignDj);
 
-  // The chrome, library header, playbar extras and card/row play buttons still carry Spotify's own glyphs, which
-  // read as a different family next to Tess's set. Restyle them to the same 24-unit grid and 1.75 strokes, stamped
-  // on the svg itself so a React re-render just gets swapped back on the next draw.
+  // React must keep its original SVG so it can reconcile and remove it on the next render.
   const PLAY_BODY = '<path d="M7.6 4.3a1.3 1.3 0 0 0-2 1.1v13.2a1.3 1.3 0 0 0 2 1.1l10.4-6.6a1.3 1.3 0 0 0 0-2.2z"/>';
   const PAUSE_BODY = '<rect x="5.5" y="4" width="4.6" height="16" rx="1.6"/><rect x="13.9" y="4" width="4.6" height="16" rx="1.6"/>';
   const STOCK_ICONS = new Map([
@@ -1928,21 +1926,53 @@
   const TESS_OWNED = '#tess-bar, #tess-np, #tess-timeline, #tess-menu, #tess-spot, #tess-welcome, #tess-settings, #tess-ambient';
   const stockSel = [...STOCK_ICONS.keys()].map((l) => `button[aria-label="${l}"]`).join(',')
     + ', button[aria-label^="Play"], button[aria-label^="Pause"], button[aria-label*="lyrics" i]';
+  const stockIcons = new Map();
   function restyleStockIcons() {
+    const active = new Set();
     for (const b of document.querySelectorAll(stockSel)) {
-      const svg = b.querySelector('svg');
-      if (!svg || b.closest(TESS_OWNED)) continue;
+      const orig = b.querySelector('svg:not([data-tess-ico])');
+      if (!orig || b.closest(TESS_OWNED)) continue;
+      active.add(b);
       const label = b.getAttribute('aria-label');
       const [body, key, fill] = STOCK_ICONS.has(label) ? [STOCK_ICONS.get(label), label, FILLED_ICONS.has(label)]
         : /^Play($| )/.test(label) ? [PLAY_BODY, 'play', true]
         : /^Pause($| )/.test(label) ? [PAUSE_BODY, 'pause', true]
         : [I.lyrics.match(/<svg[^>]*>(.*)<\/svg>/)[1], 'lyrics', false];
-      if (svg.dataset.tessIco === key) continue;
-      const w = Math.min(Math.max(parseFloat(svg.getAttribute('width')) || 16, 15), 26);
-      svg.outerHTML = ico(w, w, body, fill).replace('<svg', `<svg data-tess-ico="${key}"`);
+      const previous = stockIcons.get(b);
+      if (previous && previous.orig !== orig) previous.orig.removeAttribute('data-tess-orig-ico');
+      const w = Math.min(Math.max(parseFloat(orig.getAttribute('width')) || 16, 15), 26);
+      let icon = previous?.icon;
+      if (!icon || icon.dataset.tessIco !== key || icon.getAttribute('width') !== String(w)) {
+        const next = el(ico(w, w, body, fill));
+        if (icon) {
+          for (const attr of icon.getAttributeNames()) icon.removeAttribute(attr);
+          for (const { name, value } of next.attributes) icon.setAttribute(name, value);
+          icon.replaceChildren(...next.childNodes);
+        } else {
+          icon = next;
+        }
+        icon.dataset.tessIco = key;
+        icon.setAttribute('aria-hidden', 'true');
+      }
+      if (orig.getAttribute('data-tess-orig-ico') !== '1') orig.setAttribute('data-tess-orig-ico', '1');
+      if (orig.nextElementSibling !== icon) orig.after(icon);
+      if (previous?.orig !== orig) stockIcons.set(b, { orig, icon });
+    }
+    for (const [button, { orig, icon }] of stockIcons) {
+      if (active.has(button)) continue;
+      orig.removeAttribute('data-tess-orig-ico');
+      icon.remove();
+      stockIcons.delete(button);
     }
   }
   onDraw(restyleStockIcons);
+  onDispose(() => {
+    for (const { orig, icon } of stockIcons.values()) {
+      orig.removeAttribute('data-tess-orig-ico');
+      icon.remove();
+    }
+    stockIcons.clear();
+  });
 
   // The bar's progress line moves about a pixel a second, so it is updated only when it would move a whole pixel
   // (checked twice a second, a GPU-only transform change). A smooth 60 fps animation of it, or a width change four
@@ -2771,8 +2801,9 @@
     // a newer run (another page, or the Photo/Video switch re-running this one) retires every earlier run:
     // without this, a run still waiting on the video fetch could finish last and put the wrong header back
     const fresh = () => run === routeRun && route() === path;
-    const isArtist = path.startsWith('/artist/');
+    const isArtist = /^\/artist\/[^/]+\/?$/.test(path);
     html.classList.toggle('tess-artist', isArtist);
+    html.classList.toggle('tess-discography', /^\/artist\/[^/]+\/discography(?:\/|$)/.test(path));
     html.classList.toggle('tess-on-settings', path.startsWith('/preferences'));
     html.classList.remove('tess-hero-light', 'tess-hero-past', 'tess-artist-portrait', 'tess-titled');
     document.querySelectorAll('.tess-hero-made').forEach((n) => n.remove());
@@ -2926,6 +2957,7 @@
   // scrolled up under it (Apple Music's way). Spotify showed its strip early and the name only later, so for a long
   // stretch it was a blank band; on some pages the name never appeared.
   function bandTitle(scroller) {
+    if (html.classList.contains('tess-discography')) return;
     if (!scroller.closest?.('.main-view-container, #main-view') && !scroller.querySelector?.('.main-view-container')) return;
     const band = document.querySelector('.main-topBar-container');
     if (!band) return;
@@ -3180,12 +3212,14 @@
     const marks = [...new Set([...document.querySelectorAll('[data-tess]')].map((n) => n.getAttribute('data-tess')).filter(Boolean))].slice(0, 20);
     const sections = [...new Set([...document.querySelectorAll('main [data-testid]')].map((n) => n.getAttribute('data-testid')).filter(Boolean))].slice(0, 25);
     const headings = [...document.querySelectorAll('main h1, main h2')].map((h) => (h.textContent || '').trim().slice(0, 48)).filter(Boolean).slice(0, 8);
-    let version = '';
-    try { version = window.__tess?.version || localStorage.getItem('tess:good') || ''; } catch {}
+    let version = window.__tessVersion;
+    if (typeof version !== 'string' || !version) {
+      try { version = JSON.parse(localStorage.getItem('tess:good') || 'null')?.version; } catch {}
+    }
     return {
       ok: true,
       route: curRoute,
-      tessVersion: version,
+      tessVersion: typeof version === 'string' && version ? version.slice(0, 32) : 'dev',
       appearance: document.documentElement.classList.contains('tess-light') ? 'light' : 'dark',
       ui: {
         nowPlayingOpen: !!document.querySelector('#tess-np.open'),
@@ -3206,10 +3240,10 @@
   }
 
   async function runSupportSpotifyCmd(ev) {
-    const id = String(ev?.id || '');
-    if (!id || supHandledCmds.has(id)) return;
-    supHandledCmds.add(id);
+    const id = ev?.id;
+    if (typeof id !== 'string' || !id || id.length > 128 || supHandledCmds.has(id)) return;
     if (supHandledCmds.size > 100) supHandledCmds.clear();
+    supHandledCmds.add(id);
     let result = { ok: false, error: 'unknown command' };
     try {
       if (ev.action === 'state') {
@@ -3229,7 +3263,7 @@
         else if (target === 'back') { History.goBack(); navigated = true; }
         else if (target === 'artist-discography') {
           const st = collectSpotifyState();
-          if (!st.activeArtistId) throw new Error('No active artist found; open an artist or play a track first.');
+          if (!st.activeArtistId) throw new Error('No active artist found. Open an artist or play a track first.');
           closeNP();
           History.push(`/artist/${st.activeArtistId}/discography/all`);
           navigated = true;
@@ -3247,12 +3281,16 @@
         }
       }
     } catch (err) {
-      result = { ok: false, error: String(err?.message || err || 'command failed') };
+      result = { ok: false, error: String(err?.message || err || 'command failed').slice(0, 200) };
+    }
+    let body = JSON.stringify({ id, result });
+    if (new TextEncoder().encode(body).byteLength >= 4096) {
+      body = JSON.stringify({ id, result: { ok: false, error: 'Spotify state is too large' } });
     }
     await supportAPI('/support/chat/cmd-result', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, result }),
+      body,
     });
   }
 
