@@ -61,10 +61,18 @@ Owner: Krish (GitHub `Flame119052`). Real users run it on their own Macs; treat 
 
 ## Daily development loop (on Krish's Mac)
 
+Iterate **locally first** using `tools/dev.mjs` until a change works end-to-end on Krish's Mac, then run `node tools/dev.mjs check` and push **once** to GitHub `dev` as the final packaging/updater rehearsal before `beta`.
+
 ```sh
-# Spotify with the DevTools port (needed for every live tool)
-osascript -e 'tell application "Spotify" to quit'; open -a Spotify --args --remote-debugging-port=9222
-node tools/hot.mjs                      # build and load the current theme into the running Spotify, no restart
+node tools/dev.mjs                      # show branch, Spotify DevTools, Mini, and Support state
+node tools/dev.mjs theme --launch       # restart Spotify with DevTools :9222 and hot-load the theme
+node tools/dev.mjs theme --watch        # auto-build & hot-load theme/Tess/src/* on save (~1s)
+node tools/dev.mjs support              # instantly sync local SOUL.md, tess-visit.ts & skills into Tess/support/current
+node tools/dev.mjs mini                 # compile local Tess Mini (.build/dev-mini/) and restart it (~3s)
+node tools/dev.mjs restore              # switch back to the signed ~/Applications/Tess Mini.app
+node tools/dev.mjs worker               # run Worker chat & inbox tests locally (~2s; --dev for wrangler dev)
+node tools/dev.mjs all                  # hot-load theme + sync support + restart local Mini in one pass
+node tools/dev.mjs check                # full local pre-push gate (build, tests, check-safety.sh)
 node tools/cdp.mjs eval '<js>'          # run JS in Spotify's page
 node tools/cdp.mjs shot out.png         # screenshot (works with the window hidden)
 ```
@@ -72,7 +80,7 @@ node tools/cdp.mjs shot out.png         # screenshot (works with the window hidd
 - Edit `theme/Tess/src/*`, never `theme/Tess/theme.js` or `user.css` (generated).
 - Tess pauses its work while the window is hidden (by design); for tests that need placers to run,
   `window.__tess.debug.place()`. Timing and frame measurements need the window visible and in front.
-- `node tools/build.mjs && node --check theme/Tess/theme.js` before committing theme changes.
+- `node tools/dev.mjs check` (or `node tools/build.mjs && node --check theme/Tess/theme.js`) before pushing.
 
 ## How to check work (a claim needs proof)
 
