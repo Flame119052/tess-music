@@ -37,7 +37,7 @@ clip of Spotify's window only, with no sound. You do not name a file.
 
 If a capture fails because Screen Recording is not allowed, macOS opens the standard permission popup for **Tess Mini**. Stop trying to capture right now and say this, in these words:
 
-> macOS just popped up a Screen Recording prompt for Tess Mini. Click Open System Settings, turn on Tess Mini under Screen Recording, and tell me when it is on. If you would rather not, I will send this without a picture.
+> macOS just popped up a Screen Recording prompt for Tess Mini. Click Open System Settings (Privacy & Security → Screen Recording), turn on Tess Mini, and tell me when it is on. If you would rather not, I will send this without a picture.
 
 If they say they turned it on, retry `tess_still` (or `tess_record`) once. If they decline, carry on with the doctor report and their words. Do not keep asking.
 
