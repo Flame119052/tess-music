@@ -1,5 +1,8 @@
 # How work moves: issue → approach → PR → dev → beta → stable
 
+
+> **Shared review hub (D-120, #169):** As of 23 Nov 2026, the hosted review engine, all 7 provider logins, the 4-day Codex refresher, and the multi-repo watchers live in [`Flame119052/agent-review`](https://github.com/Flame119052/agent-review). This repo keeps only the caller workflow (`.github/workflows/agent-review.yml`) and its repo-specific rules (`.github/review.json`). Both `@review` and `@tess-review` tags work.
+
 This is the owner's process for every change to Tess (D-63, #71). Agents and people both follow it.
 
 ## The three channels

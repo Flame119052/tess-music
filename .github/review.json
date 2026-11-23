@@ -1,0 +1,20 @@
+{
+  "requireCi": true,
+  "sensitivePaths": [
+    "installer/",
+    "inbox/",
+    "patcher/",
+    "support/",
+    "mini/",
+    ".github/",
+    "tools/release.mjs",
+    "tools/promote.mjs",
+    "tools/rescue.mjs",
+    "tools/check-safety.sh"
+  ],
+  "omitDiffPaths": [
+    "patcher/prebuilt/",
+    "theme/Tess/theme.js",
+    "theme/Tess/user.css"
+  ]
+}
