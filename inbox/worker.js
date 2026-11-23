@@ -719,15 +719,61 @@ function safeContentType(upstream, fallback) {
   return raw;
 }
 
+// Converts a complete non-streaming chat completion JSON object into standard OpenAI SSE `chat.completion.chunk`
+// frames so a client expecting a stream receives the same reasoning, content, tool_calls, finish_reason and usage
+// when upstream drops streaming connections with zero bytes.
+function completionToSse(obj) {
+  const choice = Array.isArray(obj?.choices) ? obj.choices[0] : null;
+  if (!choice || typeof choice !== 'object') return null;
+  const id = typeof obj?.id === 'string' && obj.id ? obj.id : `chatcmpl-${Date.now()}`;
+  const created = Number.isSafeInteger(obj?.created) ? obj.created : Math.floor(Date.now() / 1000);
+  const model = typeof obj?.model === 'string' && obj.model ? obj.model : CHAT_MODEL;
+  const msg = choice.message && typeof choice.message === 'object' ? choice.message : {};
+  const finish = typeof choice.finish_reason === 'string' && choice.finish_reason ? choice.finish_reason : 'stop';
+  const frames = [];
+  const base = { id, object: 'chat.completion.chunk', created, model };
+  const push = (delta, finishReason = null, usage = undefined) => {
+    const chunk = { ...base, choices: [{ index: 0, finish_reason: finishReason, delta }] };
+    if (usage !== undefined) chunk.usage = usage;
+    frames.push(`data: ${JSON.stringify(chunk)}\n\n`);
+  };
+  push({ role: 'assistant', content: '' });
+  if (typeof msg.reasoning_content === 'string' && msg.reasoning_content) {
+    push({ reasoning_content: msg.reasoning_content });
+  }
+  if (typeof msg.content === 'string' && msg.content) {
+    push({ content: msg.content });
+  }
+  if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
+    push({
+      tool_calls: msg.tool_calls.map((tc, index) => ({
+        index,
+        id: typeof tc?.id === 'string' ? tc.id : `call_${index}`,
+        type: typeof tc?.type === 'string' ? tc.type : 'function',
+        function: {
+          name: typeof tc?.function?.name === 'string' ? tc.function.name : '',
+          arguments: typeof tc?.function?.arguments === 'string' ? tc.function.arguments : '',
+        },
+      })),
+    });
+  }
+  push({}, finish, obj?.usage);
+  frames.push('data: [DONE]\n\n');
+  return frames.join('');
+}
+
 // Stream the upstream body through with a byte cap. Usage is read off SSE `data:` lines. A body that does not parse
 // leaves the token counters alone. A reply that contains a secret is not forwarded, but its usage is still recorded.
 // A client that disconnects is charged the same way: keep reading for the usage frame, then cancel the upstream.
 // `fallbackTokens` is the request's clamped max_tokens, used only when no usage frame can be read.
+// When upstream closes an SSE stream with zero bytes before emitting anything, `retryEmpty` lets supportChat retry
+// upstream transparently (and fall back to a non-streaming completion rendered as SSE) without burning another cap slot.
 function streamUpstream(body, maxBytes, secrets, onTokens, options = {}) {
   const fallbackTokens = Number.isSafeInteger(options.fallbackTokens) && options.fallbackTokens > 0 ? options.fallbackTokens : 0;
   const ctx = options.ctx;
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
+  const retryEmpty = typeof options.retryEmpty === 'function' ? options.retryEmpty : null;
+  let reader = body.getReader();
+  let decoder = new TextDecoder();
   const encoder = new TextEncoder();
   const hold = secrets.reduce((n, secret) => Math.max(n, secret ? secret.length - 1 : 0), 0);
   let pending = '';
@@ -737,6 +783,8 @@ function streamUpstream(body, maxBytes, secrets, onTokens, options = {}) {
   let done = false;
   let withheld = false;
   let clientGone = false;
+  let emittedAny = false;
+  let retriesLeft = retryEmpty ? 2 : 0;
   let chain = Promise.resolve();
 
   const exclusive = (fn) => {
@@ -792,6 +840,24 @@ function streamUpstream(body, maxBytes, secrets, onTokens, options = {}) {
     pending = '';
   };
 
+  const tryRecoverEmpty = async () => {
+    while (retriesLeft > 0 && !clientGone && !withheld && !emittedAny) {
+      retriesLeft -= 1;
+      const useNonStream = retriesLeft === 0;
+      let replacement = null;
+      try { replacement = await retryEmpty(useNonStream); } catch { replacement = null; }
+      if (replacement) {
+        try { await reader.cancel(); } catch { /* ignore */ }
+        reader = replacement.getReader();
+        decoder = new TextDecoder();
+        pending = '';
+        lineBuf = '';
+        return true;
+      }
+    }
+    return false;
+  };
+
   // Read what the client will not see. Stop once a usage total is in hand, or the upstream ends, then bill.
   async function absorb(controller) {
     while (!done && seen < maxBytes) {
@@ -819,70 +885,80 @@ function streamUpstream(body, maxBytes, secrets, onTokens, options = {}) {
   return new ReadableStream({
     pull(controller) {
       return exclusive(async () => {
-        if (done || clientGone) return;
-        let next;
-        try { next = await reader.read(); } catch {
-          await finish(controller, maxTokens);
-          return;
-        }
-        if (clientGone) {
-          if (!next.done) {
-            const part = take(next.value);
-            if (part) fold(part.text);
-          } else {
+        while (!done && !clientGone) {
+          let next;
+          try { next = await reader.read(); } catch {
+            if (!emittedAny && !withheld && !clientGone && !pending && await tryRecoverEmpty()) continue;
+            await finish(controller, maxTokens);
+            return;
+          }
+          if (clientGone) {
+            if (!next.done) {
+              const part = take(next.value);
+              if (part) fold(part.text);
+            } else {
+              const rest = pending + decoder.decode();
+              pending = '';
+              if (rest) {
+                if (containsSecret(rest, secrets)) withheld = true;
+                note(rest);
+              }
+            }
+            await absorb(null);
+            return;
+          }
+          if (next.done) {
             const rest = pending + decoder.decode();
             pending = '';
-            if (rest) {
-              if (containsSecret(rest, secrets)) withheld = true;
+            if (!rest && !emittedAny && !withheld && await tryRecoverEmpty()) continue;
+            if (rest && containsSecret(rest, secrets)) {
+              withheld = true;
               note(rest);
+              if (lineBuf.trim()) note('\n');
+              await finish(controller, bill());
+              return;
             }
-          }
-          await absorb(null);
-          return;
-        }
-        if (next.done) {
-          const rest = pending + decoder.decode();
-          pending = '';
-          if (rest && containsSecret(rest, secrets)) {
-            withheld = true;
-            note(rest);
-            if (lineBuf.trim()) note('\n');
+            if (rest) {
+              emittedAny = true;
+              note(rest);
+              if (lineBuf.trim()) note('\n');
+              try { controller.enqueue(encoder.encode(rest)); } catch { /* the client may already be gone */ }
+            }
             await finish(controller, bill());
             return;
           }
-          if (rest) {
-            note(rest);
-            if (lineBuf.trim()) note('\n');
-            try { controller.enqueue(encoder.encode(rest)); } catch { /* the client may already be gone */ }
+          const part = take(next.value);
+          if (!part) {
+            await finish(controller, bill());
+            return;
           }
-          await finish(controller, bill());
-          return;
-        }
-        const part = take(next.value);
-        if (!part) {
-          await finish(controller, bill());
-          return;
-        }
-        const inspect = pending + part.text;
-        if (containsSecret(inspect, secrets)) {
-          withheld = true;
-          note(inspect);
-          pending = '';
-          await absorb(controller);
-          return;
-        }
-        const emit = hold > 0 && inspect.length > hold ? inspect.slice(0, inspect.length - hold) : (hold > 0 ? '' : inspect);
-        pending = hold > 0 ? inspect.slice(emit.length) : '';
-        if (emit) {
-          note(emit);
-          try { controller.enqueue(encoder.encode(emit)); }
-          catch {
-            clientGone = true;
+          const inspect = pending + part.text;
+          if (containsSecret(inspect, secrets)) {
+            withheld = true;
+            note(inspect);
+            pending = '';
             await absorb(controller);
             return;
           }
+          const emit = hold > 0 && inspect.length > hold ? inspect.slice(0, inspect.length - hold) : (hold > 0 ? '' : inspect);
+          pending = hold > 0 ? inspect.slice(emit.length) : '';
+          if (emit) {
+            emittedAny = true;
+            note(emit);
+            try { controller.enqueue(encoder.encode(emit)); }
+            catch {
+              clientGone = true;
+              await absorb(controller);
+              return;
+            }
+            if (part.capped) await finish(controller, bill());
+            return;
+          }
+          if (part.capped) {
+            await finish(controller, bill());
+            return;
+          }
         }
-        if (part.capped) await finish(controller, bill());
       });
     },
     cancel() {
@@ -1019,9 +1095,59 @@ async function supportChat(request, env, ctx) {
     'cache-control': 'no-store',
   };
   if (built.body.stream === true) {
+    const retryEmpty = async (useNonStream) => {
+      if (!useNonStream) {
+        let again;
+        try {
+          again = await globalThis.fetch(upstreamUrl, {
+            method: 'POST',
+            redirect: 'manual',
+            headers: upstreamHeaders(request, apiKey, true, fallbackSession),
+            body: payload,
+          });
+        } catch { return null; }
+        if (!again || again.status < 200 || again.status >= 300 || !again.body) {
+          try { await again?.body?.cancel(); } catch { /* ignore */ }
+          return null;
+        }
+        return again.body;
+      }
+      const nonStreamBody = { ...built.body, stream: false };
+      delete nonStreamBody.stream_options;
+      let fallback;
+      try {
+        fallback = await globalThis.fetch(upstreamUrl, {
+          method: 'POST',
+          redirect: 'manual',
+          headers: upstreamHeaders(request, apiKey, false, fallbackSession),
+          body: JSON.stringify(nonStreamBody),
+        });
+      } catch { return null; }
+      if (!fallback || fallback.status < 200 || fallback.status >= 300) {
+        try { await fallback?.body?.cancel(); } catch { /* ignore */ }
+        return null;
+      }
+      const raw = await readCapped(fallback, maxRes);
+      if (!raw) {
+        try { await fallback.body?.cancel(); } catch { /* ignore */ }
+        return null;
+      }
+      let parsed;
+      try { parsed = JSON.parse(new TextDecoder().decode(raw)); } catch { return null; }
+      const sse = completionToSse(parsed);
+      if (!sse) return null;
+      const bytes = new TextEncoder().encode(sse);
+      return new ReadableStream({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      });
+    };
     const readable = streamUpstream(upstream.body || new ReadableStream(), maxRes, secrets, record, {
       fallbackTokens: built.billTokens,
       ctx,
+      retryEmpty,
     });
     return new Response(readable, { status: 200, headers });
   }
