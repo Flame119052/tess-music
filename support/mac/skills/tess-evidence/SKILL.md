@@ -35,11 +35,11 @@ Call `tess_ask_consent` for the still or `tess_ask_consent_video` for the clip. 
 `tess_still` takes the picture of Spotify's window only. `tess_record` takes the
 clip of Spotify's window only, with no sound. You do not name a file.
 
-If a capture fails because Screen Recording is not allowed, macOS opens the standard permission popup for **Tess Mini**. Stop trying to capture right now and say this, in these words:
+If a capture fails because Screen Recording is not allowed, stop and tell the person how to finish enabling it:
 
-> macOS just popped up a Screen Recording prompt for Tess Mini. Click Open System Settings (Privacy & Security → Screen Recording), turn on Tess Mini, and tell me when it is on. If you would rather not, I will send this without a picture.
+> Turn on Tess Mini in Privacy & Security → Screen Recording. Click Quit & Reopen if macOS asks. If Tess Mini was already on and still can’t capture, quit and reopen Tess Mini. Then tell me “done” and I’ll reconnect. If you’d rather skip it, I can send the report without a capture.
 
-If they say they turned it on, retry `tess_still` (or `tess_record`) once. If they decline, carry on with the doctor report and their words. Do not keep asking.
+When they say “done,” reconnect and retry once. If Tess Mini restarted and the visit was cleared, start a new visit and ask for capture consent again. If they decline, carry on with the doctor report and their words. Do not keep asking.
 
 ## If there is no Spotify window
 

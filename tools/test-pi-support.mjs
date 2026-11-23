@@ -76,7 +76,7 @@ const { consumeSupportEvents, sendSupportMessage } = runInNewContext(
   `${chatSource}\n({ consumeSupportEvents, sendSupportMessage })`,
   {
     supChatEl: {}, supChatSeq: 0, supStreamText: '', supActiveStreamEl: null,
-    supChatPoll: null, supLastError: null,
+    supChatPoll: null, supLastError: null, supChatSynced: true, supChatResetting: false,
     finishToolPill: () => {}, setChatBusy: () => {},
     appendChatBubble: (role, text) => bubbles.push([role, text]),
     supportAPI: async () => ({}), setInterval: () => 1, clearInterval: () => {},
@@ -119,6 +119,78 @@ receiveSupportEvents({ type: 'settled' });
 assert.deepEqual(receiveSupportEvents(...completedTurn), [quotaBubble]);
 assert.deepEqual(receiveSupportEvents(...completedTurn), [], 'an overlapping poll cannot replay a finished turn');
 console.log('PASS theme shows one plain-English error per consecutive retry and clears it for the next turn');
+
+const miniSource = core.slice(core.indexOf('  let miniKey ='), core.indexOf('  function miniURL'));
+const supportSource = core.slice(core.indexOf('  let supState ='), core.indexOf('  async function supportFetchStatus'));
+const popupSource = core.slice(core.indexOf('  function closeSupportChat'), core.indexOf('  async function openSupportUI'));
+const popup = { classList: { add() {} }, querySelectorAll: () => [] };
+const newChat = {};
+let miniToken = 'mini-1';
+let miniSeq = 70;
+let miniEvents = [{ ...quotaError, seq: 70 }];
+let poll;
+const requested = [];
+const { openSupportChat, sendSupportMessage: send, synced, cursor } = runInNewContext(
+  `let nativeMini = false; const MINI = 'http://localhost'; ${miniSource}\n${supportSource}\n${chatSource}\n${popupSource}
+  ({ openSupportChat, sendSupportMessage, synced: () => supChatSync, cursor: () => supChatSeq })`,
+  {
+    LIFEBUOY_SVG: '', el: () => popup, document: { body: { appendChild() {} } },
+    q: (_, selector) => selector === '.tsup-new' ? newChat : {
+      addEventListener() {}, querySelectorAll: () => [], classList: { remove() {} },
+    },
+    finishToolPill: () => {}, setChatBusy: () => {},
+    appendChatBubble: (role, text) => bubbles.push([role, text]),
+    setTimeout: (fn, ms) => { if (ms === 350) fn(); },
+    setInterval: (fn) => { poll = fn; return fn; },
+    clearInterval: () => {},
+    fetch: async (raw) => {
+      const url = new URL(raw);
+      const ok = (body) => ({ ok: true, json: async () => body });
+      if (url.pathname === '/token') return ok({ k: miniToken });
+      if (url.searchParams.get('k') !== miniToken) return { ok: false, status: 404 };
+      if (url.pathname === '/support/chat/send') {
+        miniEvents.push({ type: 'message', text: 'New reply.', seq: ++miniSeq });
+        return ok({ ok: true });
+      }
+      if (url.pathname === '/support/chat/reset') {
+        miniEvents = [{ type: 'reset', seq: ++miniSeq }];
+        return ok({ ok: true });
+      }
+      const after = Number(url.searchParams.get('after'));
+      requested.push(after);
+      return ok({ seq: miniSeq, busy: false, events: miniEvents.filter((ev) => ev.seq > after) });
+    },
+  },
+);
+bubbles.length = 0;
+openSupportChat();
+await synced();
+assert.equal(cursor(), 70, 'opening the chat skips settled history');
+assert.deepEqual(bubbles, []);
+await send('Hello');
+await poll();
+assert.deepEqual(bubbles.splice(0), [['user', 'Hello'], ['assistant', 'New reply.']]);
+
+miniToken = 'mini-2';
+miniEvents = [];
+miniSeq = 4;
+await send('After restart');
+await poll();
+assert.equal(requested.at(-1), 0, 'a new Mini token starts reading its stream at zero');
+assert.deepEqual(bubbles.splice(0), [['user', 'After restart'], ['assistant', 'New reply.']]);
+
+await send('After sequence reset');
+miniSeq = 1;
+miniEvents = [{ type: 'message', text: 'Recovered reply.', seq: 1 }];
+requested.length = 0;
+await poll();
+assert.deepEqual(requested, [5, 0], 'a lower sequence triggers an immediate re-poll');
+assert.deepEqual(bubbles.splice(0), [['user', 'After sequence reset'], ['assistant', 'Recovered reply.']]);
+
+await newChat.onclick();
+assert.equal(cursor(), 2, 'reset starts from the new sequence');
+assert.deepEqual(bubbles, []);
+console.log('PASS fresh chat skips settled history and polling recovers on either Mini restart signal');
 
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 

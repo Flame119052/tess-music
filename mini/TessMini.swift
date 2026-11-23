@@ -340,6 +340,9 @@ final class App: NSObject, NSApplicationDelegate {
         bridgeSecret: self.piBridge.bridgeSecret,
         bridgeHandler: { body in self.piBridge.handleBridgeCommand(rawBody: body) }
       )
+      let sendReply = {
+        c.send(content: (reply.head + reply.body).data(using: .utf8), completion: .contentProcessed { _ in c.cancel() })
+      }
       DispatchQueue.main.async {
         switch reply.effect {
         case .toggle: self.toggle()
@@ -347,9 +350,13 @@ final class App: NSObject, NSApplicationDelegate {
         case .hide: self.hide()
         case .support: self.piBridge.triggerInstall()
         case .supportDecline: self.piBridge.declineInvite()
-        case .supportSend(let body): self.piBridge.send(rawBody: body)
+        case .supportSend(let body):
+          self.piBridge.send(rawBody: body)
+          sendReply()
         case .supportAbort: self.piBridge.abort()
-        case .supportReset: self.piBridge.reset()
+        case .supportReset:
+          self.piBridge.reset()
+          sendReply()
         case .supportCmdResult(let body): self.piBridge.resolveSpotifyCommand(rawBody: body)
         case .lyric(let text): self.sp.lyric = text
         case .lines(let body):
@@ -361,7 +368,10 @@ final class App: NSObject, NSApplicationDelegate {
         case .none: break
         }
       }
-      c.send(content: (reply.head + reply.body).data(using: .utf8), completion: .contentProcessed { _ in c.cancel() })
+      switch reply.effect {
+      case .supportSend, .supportReset: break
+      default: sendReply()
+      }
     }
   }
 }
@@ -688,17 +698,19 @@ final class PiSupportBridge {
     p.standardOutput = outPipe
     p.standardError = FileHandle.nullDevice
 
-    outPipe.fileHandleForReading.readabilityHandler = { [weak self] fh in
+    outPipe.fileHandleForReading.readabilityHandler = { [weak self, weak p] fh in
       let chunk = fh.availableData
       if chunk.isEmpty {
         fh.readabilityHandler = nil
         return
       }
-      self?.consumeStdout(chunk)
+      if let p { self?.consumeStdout(chunk, from: p) }
     }
-    p.terminationHandler = { [weak self] _ in
+    p.terminationHandler = { [weak self] ended in
       guard let self else { return }
       self.lock.lock()
+      defer { self.lock.unlock() }
+      guard self.proc === ended else { return }
       if self.busy {
         self.appendEventLocked(["type": "settled"])
       } else {
@@ -706,16 +718,16 @@ final class PiSupportBridge {
       }
       self.proc = nil
       self.stdinPipe = nil
-      self.lock.unlock()
-    }
-
-    do {
-      try p.run()
-    } catch {
-      return false
     }
 
     lock.lock()
+    do {
+      try p.run()
+    } catch {
+      lock.unlock()
+      return false
+    }
+
     proc = p
     stdinPipe = inPipe
     stdoutBuf.removeAll()
@@ -743,22 +755,18 @@ final class PiSupportBridge {
     if let old, old.isRunning { old.terminate() }
   }
 
-  private func consumeStdout(_ chunk: Data) {
+  private func consumeStdout(_ chunk: Data, from source: Process) {
     lock.lock()
+    defer { lock.unlock() }
+    guard proc === source else { return }
     stdoutBuf.append(chunk)
-    var lines: [Data] = []
     while let nl = stdoutBuf.firstIndex(of: 0x0A) {
       var line = stdoutBuf[..<nl]
       if line.last == 0x0D { line = line.dropLast() }
-      lines.append(Data(line))
       stdoutBuf.removeSubrange(...nl)
-    }
-    lock.unlock()
-
-    for line in lines where !line.isEmpty {
-      guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+      guard !line.isEmpty, let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
             let type = obj["type"] as? String else { continue }
-      handleRPCEvent(type: type, obj: obj)
+      handleRPCEventLocked(type: type, obj: obj)
     }
   }
 
@@ -788,20 +796,20 @@ final class PiSupportBridge {
     }
   }
 
-  private func handleRPCEvent(type: String, obj: [String: Any]) {
+  private func handleRPCEventLocked(type: String, obj: [String: Any]) {
     switch type {
     case "message_update":
       guard let ev = obj["assistantMessageEvent"] as? [String: Any],
             let et = ev["type"] as? String else { return }
       if et == "text_delta", let delta = ev["delta"] as? String, !delta.isEmpty {
-        pushEvent(["type": "delta", "text": delta])
+        appendEventLocked(["type": "delta", "text": delta])
       } else if et == "error", let msg = ev["error"] as? String {
-        pushEvent(["type": "error", "text": msg])
+        appendEventLocked(["type": "error", "text": msg])
       }
     case "message_end":
       guard let msg = obj["message"] as? [String: Any], (msg["role"] as? String) == "assistant" else { return }
       if let errMsg = msg["errorMessage"] as? String, !errMsg.isEmpty {
-        pushEvent(["type": "error", "text": errMsg])
+        appendEventLocked(["type": "error", "text": errMsg])
         return
       }
       var text = ""
@@ -814,23 +822,23 @@ final class PiSupportBridge {
         var ev: [String: Any] = ["type": "message", "text": text]
         if text.contains(questionStill) { ev["consent"] = "still" }
         else if text.contains(questionVideo) { ev["consent"] = "video" }
-        pushEvent(ev)
+        appendEventLocked(ev)
       }
     case "tool_execution_start":
       let name = obj["toolName"] as? String ?? ""
-      pushEvent(["type": "tool_start", "name": name, "label": toolLabel(name)])
+      appendEventLocked(["type": "tool_start", "name": name, "label": toolLabel(name)])
     case "tool_execution_end":
       let name = obj["toolName"] as? String ?? ""
       let isErr = obj["isError"] as? Bool ?? false
-      pushEvent(["type": "tool_end", "name": name, "isError": isErr])
+      appendEventLocked(["type": "tool_end", "name": name, "isError": isErr])
     case "response":
       if (obj["success"] as? Bool) == false {
         let err = obj["error"] as? String ?? "Support request failed."
-        lock.lock(); busy = false; lock.unlock()
-        pushEvent(["type": "error", "text": err])
+        busy = false
+        appendEventLocked(["type": "error", "text": err])
       }
     case "agent_settled":
-      pushEvent(["type": "settled"])
+      appendEventLocked(["type": "settled"])
     default:
       break
     }

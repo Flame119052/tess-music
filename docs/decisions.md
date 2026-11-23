@@ -1177,3 +1177,9 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   report the loader's version so a cached bundle cannot fill Mini's request buffer (#162). Reserve the artist hero
   for the overview. Discography uses Spotify's sticky title and filters, with Tess styling on list release headers
   (#163).
+- **D-119 · 23 Nov 2026 · Krish & Agent** — Budget about 5,000 tokens per Support model call. The daily caps
+  are 200 calls and 1,000,000 tokens per person, and 600 calls and 3,000,000 tokens across all testers (#165).
+  A newly opened Spotify chat skips settled events. A running chat resets its event cursor when Mini's
+  launch token changes or its sequence drops. Reset waits for Mini to discard the old conversation before
+  syncing the cursor (#166, #168). Support guides the person through macOS's Quit & Reopen prompt and asks
+  for capture consent again if restarting Mini cleared the visit (#168).

@@ -21,7 +21,13 @@ const die = (msg) => { console.error(scrub(msg)); process.exit(1); };
 // CGPreflightScreenCaptureAccess does not prompt. Without it, screencapture can
 // exit 0 and write a blank or wallpaper-only picture. The window list itself
 // does not need the permission, so the check has to happen before that list.
-const LOOKUP = 'ObjC.import("CoreGraphics"); if (!$.CGPreflightScreenCaptureAccess()) throw new Error("Screen Recording is not allowed"); const rows = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(1, 0)); const hit = rows.find((w) => w.kCGWindowOwnerName === "Spotify" && w.kCGWindowLayer === 0); if (!hit) throw new Error("no Spotify window"); hit.kCGWindowNumber;';
+const LOOKUP = 'ObjC.import("CoreGraphics"); ' +
+  'ObjC.bindFunction("CGPreflightScreenCaptureAccess", ["bool", []]); ' +
+  'ObjC.bindFunction("CGWindowListCopyWindowInfo", ["id", ["unsigned int", "unsigned int"]]); ' +
+  'if (!$.CGPreflightScreenCaptureAccess()) throw new Error("Screen Recording is not allowed"); ' +
+  'const rows = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(1, 0)) || []; ' +
+  'const hit = rows.find((w) => w.kCGWindowOwnerName === "Spotify" && w.kCGWindowLayer === 0); ' +
+  'if (!hit) throw new Error("no Spotify window"); hit.kCGWindowNumber;';
 
 const recordingDenied = () => process.env.TESS_TEST === '1' && process.env.TESS_SCREEN_RECORDING === 'denied';
 
@@ -35,7 +41,8 @@ const windowId = () => {
   } catch (err) {
     const detail = scrub(String(err.stderr || err.message || ''));
     if (detail.includes('no Spotify window')) die('no Spotify window');
-    die('Screen Recording is not allowed');
+    if (detail.includes('Screen Recording is not allowed')) die('Screen Recording is not allowed');
+    die('Could not check for the Spotify window');
   }
   const id = String(out).trim();
   if (!/^\d+$/.test(id)) die('no Spotify window');

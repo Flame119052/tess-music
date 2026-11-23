@@ -201,8 +201,8 @@ This shows today's use for each person, and for everyone together, against the l
 
 ```
 support chat today (resets 00:00 UTC; caps as in inbox/wrangler.toml, a token cap of 0 is off)
-tester-1 Mac              12 of 200 requests  41000 of 300000 tokens  active
-(everyone)                12 of 400 requests  41000 of 2000000 tokens
+tester-1 Mac              12 of 200 requests  41000 of 1000000 tokens  active
+(everyone)                12 of 600 requests  41000 of 3000000 tokens
 ```
 
 - A **request** is one call to the model, not one message. The doctor and a look at the still can each be their own
@@ -254,10 +254,10 @@ The limits live in `inbox/wrangler.toml`, under `[vars]`:
 
 | Setting | Today | What it limits, per UTC day |
 | --- | --- | --- |
-| `SUPPORT_CHAT_SHARED_REQUESTS` | `"400"` | model calls for everyone together (the shared daily budget) |
-| `SUPPORT_CHAT_SHARED_TOKENS` | `"2000000"` | tokens for everyone together |
+| `SUPPORT_CHAT_SHARED_REQUESTS` | `"600"` | model calls for everyone together (the shared daily budget) |
+| `SUPPORT_CHAT_SHARED_TOKENS` | `"3000000"` | tokens for everyone together |
 | `SUPPORT_CHAT_PERSON_REQUESTS` | `"200"` | model calls for one person |
-| `SUPPORT_CHAT_PERSON_TOKENS` | `"300000"` | tokens for one person |
+| `SUPPORT_CHAT_PERSON_TOKENS` | `"1000000"` | tokens for one person |
 
 To change one, edit the number (keep the quotes), merge it through a pull request as usual, then deploy from
 `inbox/` on an up-to-date `main` **(Cloudflare login)**: `npx wrangler@4 deploy`.

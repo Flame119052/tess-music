@@ -32,9 +32,9 @@ const CHAT_UPSTREAMS = {
 };
 const CHAT_MODEL = 'deepseek-v4.1-flash';
 const CHAT_PERSON_REQUESTS = 200;
-const CHAT_SHARED_REQUESTS = 400;
-const CHAT_PERSON_TOKENS = 300000;
-const CHAT_SHARED_TOKENS = 2000000;
+const CHAT_SHARED_REQUESTS = 600;
+const CHAT_PERSON_TOKENS = 1000000;
+const CHAT_SHARED_TOKENS = 3000000;
 const CHAT_MAX_REQUEST = 8 * 1024 * 1024;
 const CHAT_MAX_RESPONSE = 8 * 1024 * 1024;
 // A single reply cannot move the token counters by more than this. A larger `usage` is ignored, not written as zero.
