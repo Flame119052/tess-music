@@ -1,5 +1,40 @@
 import Foundation
 
+func miniSanitizeSupportError(_ raw: String) -> String {
+  let fallback = "Something went wrong. Please try again."
+  func plainMessage(_ value: Any?) -> String? {
+    guard let value = value as? String else { return nil }
+    let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty, !text.contains("{"), !text.contains("}") else { return nil }
+    let payload = text.replacingOccurrences(of: #"^[0-9]{3}:\s*"#, with: "", options: .regularExpression)
+    if payload.hasPrefix("[") || (try? JSONSerialization.jsonObject(with: Data(payload.utf8), options: .fragmentsAllowed)) != nil {
+      return nil
+    }
+    return String(text.prefix(240))
+  }
+  let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+  if let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start < end {
+    let data = Data(text[start...end].utf8)
+    guard let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return fallback }
+    let error = body["error"] as? [String: Any]
+    return plainMessage(error?["message"]) ?? plainMessage(body["message"]) ?? fallback
+  }
+  return plainMessage(text) ?? fallback
+}
+
+struct MiniSupportErrors {
+  private var last: String?
+
+  mutating func next(_ raw: String) -> String? {
+    let text = miniSanitizeSupportError(raw)
+    guard text != last else { return nil }
+    last = text
+    return text
+  }
+
+  mutating func reset() { last = nil }
+}
+
 func miniNewToken() -> String {
   var bytes = [UInt8](repeating: 0, count: 32)
   for i in bytes.indices { bytes[i] = UInt8.random(in: 0...255) }

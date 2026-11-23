@@ -70,6 +70,56 @@ await runSupportSpotifyCmd({ id: 'cmd_3', action: 'state' });
 assert.equal(posts[2].result.ok, false);
 console.log('PASS theme preserves stock SVGs, limits artist hero to the overview, and posts compact Support results');
 
+const chatSource = core.slice(core.indexOf('  const supHandledCmds ='), core.indexOf('  function closeSupportChat'));
+const bubbles = [];
+const { consumeSupportEvents, sendSupportMessage } = runInNewContext(
+  `${chatSource}\n({ consumeSupportEvents, sendSupportMessage })`,
+  {
+    supChatEl: {}, supChatSeq: 0, supStreamText: '', supActiveStreamEl: null,
+    supChatPoll: null, supLastError: null,
+    finishToolPill: () => {}, setChatBusy: () => {},
+    appendChatBubble: (role, text) => bubbles.push([role, text]),
+    supportAPI: async () => ({}), setInterval: () => 1, clearInterval: () => {},
+  },
+);
+function receiveSupportEvents(...events) {
+  consumeSupportEvents({ events, busy: false });
+  return bubbles.splice(0);
+}
+const nestedQuotaError = { type: 'error', text: '429: {"error":{"message":"  Daily limit reached.  "}}' };
+const quotaError = { type: 'error', text: '429: {"message":"Daily limit reached."}' };
+const quotaBubble = ['error', 'Daily limit reached.'];
+assert.deepEqual(receiveSupportEvents(nestedQuotaError, quotaError), [quotaBubble]);
+assert.deepEqual(receiveSupportEvents(quotaError), [], 'duplicate in the next poll of the same turn');
+assert.deepEqual(receiveSupportEvents({ type: 'settled' }, quotaError), [quotaBubble]);
+await sendSupportMessage('Try again');
+assert.deepEqual(bubbles.splice(0), [['user', 'Try again']]);
+assert.deepEqual(receiveSupportEvents(quotaError), [quotaBubble]);
+
+const fallback = 'Something went wrong. Please try again.';
+for (const [text, expected] of [
+  ['429: {"error":{"message":" "},"message":" Try again at midnight. "}', 'Try again at midnight.'],
+  ['429: {"error":{"message":123},"message":{}}', fallback],
+  ['429: {"error":}', fallback],
+  ['429: {"message":"truncated', fallback],
+  ['429: {}', fallback],
+  ['429: {"message":"{\\"code\\":429}"}', fallback],
+  ['429: ["details"]', fallback],
+  ['  Connection lost.  ', 'Connection lost.'],
+  [`429: {"message":"${'x'.repeat(250)}"}`, 'x'.repeat(240)],
+  ['y'.repeat(250), 'y'.repeat(240)],
+]) {
+  assert.deepEqual(receiveSupportEvents({ type: 'settled' }, { type: 'error', text }), [['error', expected]]);
+}
+assert.deepEqual(receiveSupportEvents(quotaError, { type: 'message', text: 'Checking again.' }, quotaError), [
+  quotaBubble, ['assistant', 'Checking again.'], quotaBubble,
+]);
+const completedTurn = [{ ...quotaError, seq: 1 }, { type: 'settled', seq: 2 }];
+receiveSupportEvents({ type: 'settled' });
+assert.deepEqual(receiveSupportEvents(...completedTurn), [quotaBubble]);
+assert.deepEqual(receiveSupportEvents(...completedTurn), [], 'an overlapping poll cannot replay a finished turn');
+console.log('PASS theme shows one plain-English error per consecutive retry and clears it for the next turn');
+
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 
 // --- Part 1: support/pi/install.sh sandbox tests ---

@@ -75,7 +75,7 @@ const env = (extra = {}) => ({
   RESCUE: { get: async () => { rescueReads += 1; return null; } },
   OPENCODE_GO_API_KEY: KEY,
   SUPPORT_MODEL: MODEL,
-  SUPPORT_CHAT_PERSON_REQUESTS: '80',
+  SUPPORT_CHAT_PERSON_REQUESTS: '200',
   SUPPORT_CHAT_SHARED_REQUESTS: '400',
   SUPPORT_CHAT_PERSON_TOKENS: '300000',
   SUPPORT_CHAT_SHARED_TOKENS: '2000000',
@@ -339,6 +339,7 @@ try {
   calls.length = 0;
   const capped = await worker.fetch(req('/v1/support/chat/completions'), env({ SUPPORT_CHAT_PERSON_REQUESTS: '1' }));
   assert.equal(capped.status, 429);
+  assert.equal(capped.headers.get('x-should-retry'), 'false');
   assert.equal(calls.length, 0, 'an over-cap request opened an upstream socket');
   const cappedBody = await capped.json();
   assert.equal(cappedBody.error.type, 'usage_limit_reached');
@@ -353,9 +354,33 @@ try {
   calls.length = 0;
   const sharedCap = await worker.fetch(req('/v1/support/chat/completions'), env({ SUPPORT_CHAT_SHARED_REQUESTS: '2' }));
   assert.equal(sharedCap.status, 429);
+  assert.equal(sharedCap.headers.get('x-should-retry'), 'false');
   assert.equal(calls.length, 0, 'a shared-cap request opened an upstream socket');
   assert.equal(limitOf(`chat:p:${shaOf(TOKEN)}`)?.n ?? 0, 0, 'a shared-cap refusal does not spend the person slot');
   assert.equal(limitOf('chat:s').n, 2, 'a shared-cap refusal does not move the shared counter');
+
+  clearCaps();
+  execFileSync('sqlite3', [dbFile, `INSERT INTO limits (k, n, until) VALUES ('chat:p:${shaOf(TOKEN)}', 199, ${until})`]);
+  const fallbackEnv = env({ SUPPORT_CHAT_PERSON_REQUESTS: undefined });
+  const lastDailyRequest = await worker.fetch(req('/v1/support/chat/completions'), fallbackEnv);
+  assert.equal(lastDailyRequest.status, 200, 'the fallback allows request 200');
+  await lastDailyRequest.text();
+  const overDefaultCap = await worker.fetch(req('/v1/support/chat/completions'), fallbackEnv);
+  assert.equal(overDefaultCap.status, 429, 'the fallback refuses request 201');
+
+  for (const [key, caps, kind] of [
+    [`chat:tp:${shaOf(TOKEN)}`, { SUPPORT_CHAT_PERSON_TOKENS: '40' }, 'person_tokens'],
+    ['chat:ts', { SUPPORT_CHAT_SHARED_TOKENS: '40' }, 'shared_tokens'],
+  ]) {
+    clearCaps();
+    execFileSync('sqlite3', [dbFile, `INSERT INTO limits (k, n, until) VALUES ('${key}', 40, ${until})`]);
+    calls.length = 0;
+    const tokenCap = await worker.fetch(req('/v1/support/chat/completions'), env(caps));
+    assert.equal(tokenCap.status, 429);
+    assert.equal(tokenCap.headers.get('x-should-retry'), 'false');
+    assert.equal((await tokenCap.json()).error.limit_type, kind);
+    assert.equal(calls.length, 0, 'a token-cap request opened an upstream socket');
+  }
 
   // A malformed upstream body does not reset the token counter.
   clearCaps();
@@ -525,6 +550,8 @@ try {
     CHAT_LIMIT: { limit: async () => { hits.chat += 1; return { success: false }; } },
   }));
   assert.equal(paced.status, 429);
+  assert.equal(paced.headers.get('x-should-retry'), null);
+  assert.equal(paced.headers.get('retry-after'), '60');
   assert.equal(calls.length, 0, 'a rate-limited chat opened an upstream socket');
   const pacedBody = await paced.json();
   assert.equal(pacedBody.error.type, 'rate_limit_error');

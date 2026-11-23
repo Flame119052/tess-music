@@ -377,6 +377,7 @@ final class PiSupportBridge {
   private var seq = 0
   private var cmdSeq = 0
   private var busy = false
+  private var supportErrors = MiniSupportErrors()
   private var lastActive = Date()
   private var events: [[String: Any]] = []
   private var idleTimer: Timer?
@@ -497,6 +498,7 @@ final class PiSupportBridge {
     lock.lock()
     lastActive = Date()
     let isBusy = busy
+    if !isBusy { supportErrors.reset() }
     lock.unlock()
 
     guard ensureRunning() else {
@@ -595,6 +597,7 @@ final class PiSupportBridge {
     stdinPipe = nil
     stdoutBuf.removeAll()
     busy = false
+    supportErrors.reset()
     events.removeAll()
     seq += 1
     let resetSeq = seq
@@ -605,13 +608,29 @@ final class PiSupportBridge {
 
   private func pushEvent(_ ev: [String: Any]) {
     lock.lock()
-    seq += 1
+    appendEventLocked(ev)
+    lock.unlock()
+  }
+
+  private func appendEventLocked(_ ev: [String: Any]) {
     var item = ev
+    switch ev["type"] as? String {
+    case "error":
+      guard let text = supportErrors.next(ev["text"] as? String ?? "") else { return }
+      item["text"] = text
+    case "settled":
+      busy = false
+      supportErrors.reset()
+    case "delta", "message", "tool_start":
+      supportErrors.reset()
+    default:
+      break
+    }
+    seq += 1
     item["seq"] = seq
     events.append(item)
     if events.count > 400 { events.removeFirst(events.count - 400) }
     lastActive = Date()
-    lock.unlock()
   }
 
   private func ensureRunning() -> Bool {
@@ -680,12 +699,14 @@ final class PiSupportBridge {
     p.terminationHandler = { [weak self] _ in
       guard let self else { return }
       self.lock.lock()
-      let wasBusy = self.busy
-      self.busy = false
+      if self.busy {
+        self.appendEventLocked(["type": "settled"])
+      } else {
+        self.supportErrors.reset()
+      }
       self.proc = nil
       self.stdinPipe = nil
       self.lock.unlock()
-      if wasBusy { self.pushEvent(["type": "settled"]) }
     }
 
     do {
@@ -809,7 +830,6 @@ final class PiSupportBridge {
         pushEvent(["type": "error", "text": err])
       }
     case "agent_settled":
-      lock.lock(); busy = false; lock.unlock()
       pushEvent(["type": "settled"])
     default:
       break

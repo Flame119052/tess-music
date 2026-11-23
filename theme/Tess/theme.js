@@ -2991,6 +2991,7 @@
   let supActiveStreamEl = null;
   let supStreamText = '';
   let supToolPillEl = null;
+  let supLastError = null;
 
   async function supportAPI(path, opts = {}) {
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -3295,10 +3296,39 @@
     });
   }
 
+  function supportErrorText(raw) {
+    const fallback = 'Something went wrong. Please try again.';
+    const plainMessage = (value) => {
+      if (typeof value !== 'string') return '';
+      const text = value.trim();
+      const payload = text.replace(/^\d{3}:\s*/, '');
+      if (/[{}]/.test(text) || payload.startsWith('[')) return '';
+      try { JSON.parse(payload); return ''; } catch {}
+      return text.slice(0, 240);
+    };
+    if (typeof raw !== 'string') return fallback;
+    const text = raw.trim();
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      try {
+        const body = JSON.parse(text.slice(start, end + 1));
+        return plainMessage(body?.error?.message) || plainMessage(body?.message) || fallback;
+      } catch {
+        return fallback;
+      }
+    }
+    return plainMessage(text) || fallback;
+  }
+
   function consumeSupportEvents(data) {
     if (!data || !Array.isArray(data.events)) return;
     for (const ev of data.events) {
-      if (typeof ev.seq === 'number' && ev.seq > supChatSeq) supChatSeq = ev.seq;
+      if (typeof ev.seq === 'number') {
+        if (ev.seq <= supChatSeq) continue;
+        supChatSeq = ev.seq;
+      }
+      if (ev.type === 'delta' || ev.type === 'message' || ev.type === 'tool_start') supLastError = null;
       if (ev.type === 'spotify_cmd') {
         runSupportSpotifyCmd(ev);
       } else if (ev.type === 'delta') {
@@ -3338,8 +3368,11 @@
         finishToolPill(true);
         supActiveStreamEl = null;
         supStreamText = '';
-        appendChatBubble('error', String(ev.text || 'Something went wrong.'));
+        const text = supportErrorText(ev.text);
+        if (text !== supLastError) appendChatBubble('error', text);
+        supLastError = text;
       } else if (ev.type === 'settled') {
+        supLastError = null;
         finishToolPill(false);
         supActiveStreamEl = null;
         supStreamText = '';
@@ -3364,6 +3397,7 @@
     const text = String(raw || '').trim();
     if (!text) return;
     if (!supChatEl) openSupportChat();
+    supLastError = null;
     appendChatBubble('user', text);
     setChatBusy(true);
     const res = await supportAPI('/support/chat/send', {
@@ -3458,6 +3492,7 @@
       q(box, '.tsup-close').onclick = closeSupportChat;
       q(box, '.tsup-new').onclick = async () => {
         await supportAPI('/support/chat/reset', { method: 'POST' });
+        supLastError = null;
         supActiveStreamEl = null;
         supStreamText = '';
         supToolPillEl = null;

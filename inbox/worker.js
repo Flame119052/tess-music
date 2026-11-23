@@ -31,7 +31,7 @@ const CHAT_UPSTREAMS = {
   go: 'https://opencode.ai/zen/go/v1/chat/completions',
 };
 const CHAT_MODEL = 'deepseek-v4.1-flash';
-const CHAT_PERSON_REQUESTS = 80;
+const CHAT_PERSON_REQUESTS = 200;
 const CHAT_SHARED_REQUESTS = 400;
 const CHAT_PERSON_TOKENS = 300000;
 const CHAT_SHARED_TOKENS = 2000000;
@@ -499,6 +499,7 @@ function quotaReached(kind) {
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
       'retry-after': String(resets),
+      'x-should-retry': 'false',
     },
   });
 }
