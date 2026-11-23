@@ -610,6 +610,100 @@ try {
   assert.equal(rescueReads, 0, 'chat handling read the rescue binding');
   assert.equal(logs.some((line) => line.includes(KEY) || line.includes(TOKEN)), false, 'a log line contained a secret');
 
+  // An empty 200 SSE stream from upstream (zero bytes before EOF) retries streaming once, then falls back to
+  // non-streaming rendered as OpenAI SSE chunks, spending only one request slot and keeping the secret gate active.
+  clearCaps();
+  calls.length = 0;
+  let emptyAttempt = 0;
+  upstreamImpl = async (_url, init) => {
+    emptyAttempt += 1;
+    const sentBody = JSON.parse(init.body);
+    if (emptyAttempt === 1) {
+      assert.equal(sentBody.stream, true);
+      return new Response(new ReadableStream({ start(c) { c.close(); } }), {
+        status: 200, headers: { 'content-type': 'text/event-stream' },
+      });
+    }
+    return new Response(new ReadableStream({
+      start(c) {
+        c.enqueue(enc.encode('data: {"choices":[{"index":0,"finish_reason":null,"delta":{"content":"Recovered"}}]}\n\n'));
+        c.enqueue(enc.encode('data: {"choices":[{"index":0,"finish_reason":"stop","delta":{}}],"usage":{"total_tokens":19}}\n\ndata: [DONE]\n\n'));
+        c.close();
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const recovered = await worker.fetch(req('/v1/support/chat/completions', { body: chatBody({ stream: true }) }), env());
+  const recoveredText = await recovered.text();
+  assert.equal(recovered.status, 200);
+  assert.match(recoveredText, /Recovered/);
+  assert.match(recoveredText, /\[DONE\]/);
+  assert.equal(calls.length, 2, 'empty SSE did not retry once');
+  assert.equal(limitOf(`chat:p:${shaOf(TOKEN)}`).n, 1, 'retry spent a second request slot');
+  assert.equal(tokenCount(), 19, 'recovered stream did not count usage');
+
+  clearCaps();
+  calls.length = 0;
+  let fallbackAttempt = 0;
+  upstreamImpl = async (_url, init) => {
+    fallbackAttempt += 1;
+    const sentBody = JSON.parse(init.body);
+    if (fallbackAttempt <= 2) {
+      assert.equal(sentBody.stream, true);
+      return new Response(new ReadableStream({ start(c) { c.close(); } }), {
+        status: 200, headers: { 'content-type': 'text/event-stream' },
+      });
+    }
+    assert.equal(sentBody.stream, false, 'final fallback did not switch to stream: false');
+    assert.equal(sentBody.stream_options, undefined, 'final fallback kept stream_options');
+    return jsonReply({
+      id: 'gw-fallback-1',
+      object: 'chat.completion',
+      created: 1795405223,
+      model: MODEL,
+      choices: [{
+        index: 0,
+        finish_reason: 'tool_calls',
+        message: {
+          role: 'assistant',
+          content: null,
+          reasoning_content: 'Checking tool.',
+          tool_calls: [{ id: 'call_fb', type: 'function', function: { name: 'ping', arguments: '{"x":"ok"}' } }],
+        },
+      }],
+      usage: { total_tokens: 27 },
+    });
+  };
+  const fbRes = await worker.fetch(req('/v1/support/chat/completions', { body: chatBody({ stream: true }) }), env());
+  const fbText = await fbRes.text();
+  assert.equal(fbRes.status, 200);
+  assert.match(fbText, /"reasoning_content":"Checking tool\."/);
+  assert.match(fbText, /"tool_calls":\[\{"index":0,"id":"call_fb"/);
+  assert.match(fbText, /"finish_reason":"tool_calls"/);
+  assert.match(fbText, /data: \[DONE\]/);
+  assert.equal(calls.length, 3);
+  assert.equal(limitOf(`chat:p:${shaOf(TOKEN)}`).n, 1, 'non-stream fallback spent extra request slots');
+  assert.equal(tokenCount(), 27, 'non-stream fallback did not count usage');
+
+  // Secret withholding still applies when the non-streaming fallback echoes a secret.
+  clearCaps();
+  let leakFallbackAttempt = 0;
+  upstreamImpl = async () => {
+    leakFallbackAttempt += 1;
+    if (leakFallbackAttempt <= 2) {
+      return new Response(new ReadableStream({ start(c) { c.close(); } }), {
+        status: 200, headers: { 'content-type': 'text/event-stream' },
+      });
+    }
+    return jsonReply({
+      choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: `oops ${KEY}` } }],
+      usage: { total_tokens: 31 },
+    });
+  };
+  const leakedFb = await worker.fetch(req('/v1/support/chat/completions', { body: chatBody({ stream: true }) }), env());
+  const leakedFbText = await leakedFb.text();
+  assert.equal(leakedFbText.includes(KEY), false, 'secret leaked via non-stream SSE fallback');
+  assert.equal(tokenCount(), 31, 'withheld fallback did not count usage');
+
   // The existing support post route is still the report endpoint.
   const limitBeforeReport = hits.limit;
   const chatBeforeReport = hits.chat;
