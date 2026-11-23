@@ -104,19 +104,19 @@ HERMES_ID='com.nousresearch.hermes-bundled'
 # The same minimum distribution.yaml names. A checkout whose file disagrees is refused.
 HERMES_REQUIRES='>=0.22.0'
 # >>> support profile pins >>>
-PROFILE_COMMIT=cc98fe0f0b4514accd1c6d32b71de72c7707efc3
+PROFILE_COMMIT=c9f1d86c5dd96eaa1a12160524d15019b6e42284
 PROFILE_PINS='
 support/mac/config.yaml 7f7ed106b34a83666281084295e685d6e64c90c92cbaf3700a57f29687535341
 support/mac/distribution.yaml eadfc479acbfbba4ea2a628e2786b32e5370294e7162d185de0a8d6b06f32bd4
 support/mac/SOUL.md 44df084838b8212d6b61f2dd1652e26d937b8c3f19d9470b1ac379ed550f258d
 support/mac/AppIcon.icns c48e90a4217f1596c4f732dd93de56b033e6458913f8d1c7d3c01cd09efa5985
-support/mac/skills/tess-evidence/SKILL.md be7d6435be3a2a0ce9ef1ad1f19d0e14129c2376e887d055c825c41ae4005540
+support/mac/skills/tess-evidence/SKILL.md ab0302406d2b7155cf447001e1779edb10c06fdeb68c2b7cc4d9a235105abc1a
 support/mac/skills/tess-evidence/scripts/spotify-window.mjs f5d5c8b9d8901d8da2290f47f1d82e5ae9a5ccfcd0b19eb7f16e4b4d33edf3f5
 support/mac/skills/tess-gather/SKILL.md d21be1c58227e2776d27685752224fb95268bc05fc34315a199a4bba3fd11722
 support/mac/skills/tess-gather/scripts/doctor.mjs 0fae204654e8e0d3e94858a241291813c1c1ef9b5c7083b1a1b246e00d93e85e
 support/mac/skills/tess-handoff/SKILL.md dae977620d82a3b2254f69280e239c89d37c0a68f0a420f57f6638f24c4d9a9e
 support/mac/skills/tess-handoff/scripts/triage-inbox.mjs 8d7ab61be0eaa4a68d6b52e9ee689ebcd0ee5195047dd614c39d5408cdc0383a
-support/mac/skills/tess-support/SKILL.md 0a6bac9ca40354738ebe3b20d6ca7615a0459164770ffda54eb1b7a6bfc65404
+support/mac/skills/tess-support/SKILL.md 9f2909458989a4fb2c43ebf135b1529d8c6c6108b299683e51d894895b404f97
 support/mac/plugins/tess-visit/__init__.py f41506de701641d5891d14d2b6d86cfb5d101588893045d113f49d8a288a4e5b
 support/mac/plugins/tess-visit/plugin.yaml 0bac423e3497ce06d27355aa44df5b1fa562c962aedb75d7ac302cf7aedb49fc
 support/bot/skills/tess-support/scripts/privacy.mjs 180b494458c0c984f3f62f4b10dc0a75f543a28dc681b25093e99e064de95c51
