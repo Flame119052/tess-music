@@ -1,0 +1,245 @@
+{
+  "_note": "One place for everything likely to change about reviewers: which models the plans allow, which of them are strong enough for sensitive work, what a review costs, the hard caps on one review, quota kept back, and dated notes. How it is read, and how to change it, is docs/workflow.md -> Choosing a reviewer. THE ORDER OF A ROLE'S LIST MEANS NOTHING: the agent that writes the change, or tags the review, chooses the reviewer and names it in the tag. This job only checks that choice against the rules and runs it, refusing loudly instead of substituting another model. Every model here runs on one of Krish's subscription plans; no pay-per-use API key is on the list.",
+  "_note_plans": "Plans only. claude/* is the Claude plan (CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`). codex/* is the ChatGPT plan (CODEX_AUTH_JSON from `node tools/codex-ci-login.mjs`; never an OpenAI API key). opencode/zai-coding-plan/* is the Z.ai coding plan (ZHIPU_API_KEY, a plan key). opencode/opencode-go/* is the OpenCode Go plan (OPENCODE_API_KEY). opencode/opencode/* is OpenCode Zen's free tier and takes no key: only deepseek-v4.1-flash-free, mimo-v2.6-flash-free, nemotron-3.5-super-vl-free and big-pickle are listed, and OpenCode may keep those prompts for training, which this public repo accepts (D-112). opencode/nvidia/* is Nvidia NIM (NVIDIA_API_KEY). opencode/sarvam/* is Sarvam (SARVAM_API_KEY); Krish confirmed it is a free/subscription plan (D-112). antigravity/gemini-4-neon is the Google plan (AGY_OAUTH_TOKEN from `node tools/agy-ci-login.mjs`; never GEMINI_API_KEY or Application Default Credentials). If a model can only be reached with a key billed per token, it does not belong in this file.",
+  "plans": {
+    "claude": "Claude plan",
+    "codex": "ChatGPT plan",
+    "opencode": "OpenCode Zen free (no key), OpenCode Go, the Z.ai coding plan, Nvidia NIM, and Sarvam (one allowance per connector)",
+    "antigravity": "Google plan (Antigravity)"
+  },
+  "approach": [
+    {
+      "provider": "opencode",
+      "model": "zai-coding-plan/glm-5.3",
+      "effort": "high"
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    },
+    {
+      "provider": "claude",
+      "model": "claude-opus-5-5",
+      "effort": "high"
+    }
+  ],
+  "pr_normal": [
+    {
+      "provider": "opencode",
+      "model": "opencode-go/deepseek-v4.1-flash",
+      "effort": "high"
+    },
+    {
+      "provider": "opencode",
+      "model": "zai-coding-plan/glm-5.3-flash",
+      "effort": "high"
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-6.1-terra",
+      "effort": "medium"
+    },
+    {
+      "provider": "claude",
+      "model": "claude-sonnet-5-5",
+      "effort": "medium"
+    }
+  ],
+  "pr_sensitive": [
+    {
+      "provider": "opencode",
+      "model": "zai-coding-plan/glm-5.3",
+      "effort": "high"
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    },
+    {
+      "provider": "claude",
+      "model": "claude-opus-5-5",
+      "effort": "high"
+    }
+  ],
+  "allowed": {
+    "claude": [
+      "claude-opus-5-5",
+      "claude-sonnet-5-5",
+      "claude-fable-5-2",
+      "claude-haiku-5-5"
+    ],
+    "codex": [
+      "gpt-6.1-sol",
+      "gpt-6.1-terra"
+    ],
+    "opencode": [
+      "opencode-go/deepseek-v4.1-flash",
+      "opencode-go/glm-5.3-flash",
+      "opencode-go/kimi-k3",
+      "opencode-go/deepseek-v4-pro",
+      "opencode-go/kimi-k3.1-pro",
+      "opencode-go/qwen4-max",
+      "zai-coding-plan/glm-5.3",
+      "zai-coding-plan/glm-5.3-flash",
+      "zai-coding-plan/glm-5.3-highspeed",
+      "opencode/deepseek-v4.1-flash-free",
+      "opencode/mimo-v2.6-flash-free",
+      "opencode/nemotron-3.5-super-vl-free",
+      "opencode/big-pickle",
+      "nvidia/deepseek-ai/deepseek-v4.1-flash",
+      "nvidia/nvidia/nemotron-3-ultra-550b-a55b",
+      "nvidia/z-ai/glm-5.3-flash",
+      "nvidia/minimaxai/minimax-m3.1-flash",
+      "sarvam/glm5.3",
+      "sarvam/glm5.3-flash",
+      "sarvam/gemma4",
+      "sarvam/deepseekv4.1-flash-1017",
+      "sarvam/sarvam-105b"
+    ],
+    "antigravity": [
+      "gemini-4-neon"
+    ]
+  },
+  "strong": [
+    "zai-coding-plan/glm-5.3",
+    "gpt-6.1-sol",
+    "claude-opus-5-5"
+  ],
+  "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+  ],
+  "cost": {
+    "claude/claude-opus-5-5": "heavy",
+    "claude/claude-sonnet-5-5": "medium",
+    "claude/claude-fable-5-2": "medium",
+    "claude/claude-haiku-5-5": "light",
+    "codex/gpt-6.1-sol": "heavy",
+    "codex/gpt-6.1-terra": "medium",
+    "opencode/opencode-go/deepseek-v4.1-flash": "light",
+    "opencode/opencode-go/glm-5.3-flash": "light",
+    "opencode/opencode-go/kimi-k3": "light",
+    "opencode/zai-coding-plan/glm-5.3": "medium",
+    "opencode/zai-coding-plan/glm-5.3-flash": "light",
+    "opencode/opencode-go/deepseek-v4-pro": "medium",
+    "opencode/opencode-go/kimi-k3.1-pro": "medium",
+    "opencode/opencode-go/qwen4-max": "medium",
+    "opencode/zai-coding-plan/glm-5.3-highspeed": "medium",
+    "opencode/opencode/deepseek-v4.1-flash-free": "light",
+    "opencode/opencode/mimo-v2.6-flash-free": "light",
+    "opencode/opencode/nemotron-3.5-super-vl-free": "light",
+    "opencode/opencode/big-pickle": "light",
+    "opencode/nvidia/deepseek-ai/deepseek-v4.1-flash": "light",
+    "opencode/nvidia/nvidia/nemotron-3-ultra-550b-a55b": "medium",
+    "opencode/nvidia/z-ai/glm-5.3-flash": "light",
+    "opencode/nvidia/minimaxai/minimax-m3.1-flash": "light",
+    "opencode/sarvam/glm5.3": "medium",
+    "opencode/sarvam/glm5.3-flash": "light",
+    "opencode/sarvam/gemma4": "light",
+    "opencode/sarvam/deepseekv4.1-flash-1017": "light",
+    "opencode/sarvam/sarvam-105b": "medium",
+    "antigravity/gemini-4-neon": "heavy"
+  },
+  "caps": {
+    "_note": "Hard limits on one review, so a review can never take a large share of an allowance. Read by tools/agent-review.mjs; the table in docs/workflow.md explains each one.",
+    "timeout_s": 600,
+    "timeout_s_by_model": {
+      "codex/gpt-6.1-terra": 480,
+      "opencode/zai-coding-plan/glm-5.3-flash": 480
+    },
+    "per_review_pct": {
+      "codex/gpt-6.1-sol": 7,
+      "codex/gpt-6.1-terra": 3,
+      "opencode/opencode-go/glm-5.3": 4,
+      "opencode/opencode-go/glm-5.3-flash": 0.2,
+      "opencode/opencode-go/deepseek-v4.1-flash": 0.1,
+      "opencode/zai-coding-plan/glm-5.3": 1,
+      "opencode/zai-coding-plan/glm-5.3-flash": 0.2,
+      "opencode/opencode-go/deepseek-v4-pro": 1,
+      "opencode/opencode-go/kimi-k3.1-pro": 1,
+      "opencode/opencode-go/qwen4-max": 1,
+      "opencode/zai-coding-plan/glm-5.3-highspeed": 1,
+      "opencode/opencode/deepseek-v4.1-flash-free": 0.1,
+      "opencode/opencode/mimo-v2.6-flash-free": 0.1,
+      "opencode/opencode/nemotron-3.5-super-vl-free": 0.2,
+      "opencode/opencode/big-pickle": 0.2,
+      "opencode/nvidia/deepseek-ai/deepseek-v4.1-flash": 0.1,
+      "opencode/nvidia/nvidia/nemotron-3-ultra-550b-a55b": 1,
+      "opencode/nvidia/z-ai/glm-5.3-flash": 0.2,
+      "opencode/nvidia/minimaxai/minimax-m3.1-flash": 0.2,
+      "opencode/sarvam/glm5.3": 1,
+      "opencode/sarvam/glm5.3-flash": 0.2,
+      "opencode/sarvam/gemma4": 0.2,
+      "opencode/sarvam/deepseekv4.1-flash-1017": 0.1,
+      "opencode/sarvam/sarvam-105b": 1
+    },
+    "claude": {
+      "max_turns": 12,
+      "max_budget_usd": {
+        "claude-opus-5-5": 0.6,
+        "claude-sonnet-5-5": 0.3,
+        "claude-fable-5-2": 0.3,
+        "claude-haiku-5-5": 0.15
+      }
+    },
+    "codex": {
+      "auto_compact_token_limit": 64000,
+      "max_tokens": 200000
+    },
+    "opencode": {
+      "steps": 12
+    }
+  },
+  "reserve": {},
+  "notes": [
+    {
+      "date": "2026-11-15",
+      "note": "Plans only. Claude, Codex, OpenCode Go and the Z.ai coding plan all bill a subscription. Nothing here is reached with a per-token API key, and a tag naming a model that is not on `allowed` is refused rather than quietly rerouted."
+    },
+    {
+      "date": "2026-11-15",
+      "note": "Pool sizes differ inside one provider: Opus and Sonnet share Claude's weekly pool, Fable 5.2 has its own. On OpenCode, `opencode-go/*` and `zai-coding-plan/*` are separate allowances, so one running out leaves the other usable. Recheck when a plan changes."
+    },
+    {
+      "date": "2026-11-15",
+      "note": "On OpenCode Go, GLM-5.3 empties that allowance several times faster per review than DeepSeek V4.1 Flash, so a GLM review there is not offered; the worked number is kept as the measured record of why. GLM-5.3 is reviewed on the Z.ai coding plan instead, where its own allowance pays for it."
+    },
+    {
+      "date": "2026-11-15",
+      "note": "The per-review share for `zai-coding-plan/glm-5.3` (1%) and `zai-coding-plan/glm-5.3-flash` (0.2%) are carried over from the OpenCode Go measurements as a cautious estimate, not a Z.ai measurement. Replace them once a Z.ai window has been watched across a review."
+    },
+    {
+      "date": "2026-11-15",
+      "note": "Claude's --max-budget-usd is a client-side estimate of API list prices, not the plan's own meter, so it is a guardrail beside the turn cap, not a promise about the subscription. --max-turns is real but hidden from --help in 2.1.x."
+    },
+    {
+      "date": "2026-11-15",
+      "note": "Codex has no turn or dollar cap in exec mode; we bound it with model_auto_compact_token_limit=64000, features.rollout_budget (enabled + enforce_limit + limit_tokens=200000), and a hard abort on the --json usage stream if cumulative tokens exceed max_tokens (200,000). On PR #76 an uncapped gpt-6.1-sol run used 779,470 tokens (777,093 in, 2,377 out) because 578 KB of vendored/sourcemap diffs pushed Turn 1 near 195k tokens across 4 turns. With vendored/generated diffs omitted, diff + changed files bounded, and the 200k cap enforced, expected per-review usage is ~25k-100k tokens (~1-4% of a 5-hour session window, 7% max for sol / 3% for terra at the 200k cap). A ChatGPT-plan access token lasts about 10 days; `node tools/codex-ci-login.mjs` renews the CI login."
+    },
+    {
+      "date": "2026-11-15",
+      "note": "Cursor is not on the list. Its own models come out of a weekly pool, but a Claude or GPT model inside Cursor bills prepaid credit at API list price from the first request, and the review job installs no Cursor CLI. Leaving it out keeps the plans-only rule true without a footnote."
+    },
+    {
+      "date": "2026-11-19",
+      "note": "Antigravity gemini-4-neon is on the Google plan (D-107, D-109). Its cost weight is a cautious heavy until a review on that plan has been measured. The login is the file agy writes, not a per-token API key."
+    },
+    {
+      "date": "2026-11-21",
+      "note": "OpenCode Zen free is only the named models opencode/deepseek-v4.1-flash-free, opencode/mimo-v2.6-flash-free, opencode/nemotron-3.5-super-vl-free and opencode/big-pickle. They take no API key. OpenCode may keep prompts from those free models for training. That is acceptable here because this repository and its pull request diffs are public (D-112)."
+    },
+    {
+      "date": "2026-11-21",
+      "note": "Nvidia NIM (nvidia/*, NVIDIA_API_KEY) and Sarvam (sarvam/*, SARVAM_API_KEY) are connectors Krish already uses in OpenCode. Krish confirmed Sarvam is on a free/subscription plan, not a pay-per-token key (D-112). A review receives only the connector key its model prefix names. opencode/* receives none."
+    },
+    {
+      "date": "2026-11-21",
+      "note": "The Zen-free, Nvidia NIM, Sarvam, and expanded OpenCode Go / Z.ai models added for D-112 each have a cost weight and a cautious per_review_pct carried over from a similar measured model. None of them is in strong. They use the default 600 s timeout until a run shows a shorter one. Promote one to strong only in its own change, with a measurement."
+    }
+  ]
+}

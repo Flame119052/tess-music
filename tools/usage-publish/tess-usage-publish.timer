@@ -1,0 +1,15 @@
+# User timer: run the snapshot publish every 5 minutes, and 2 minutes after the login starts.
+# Install under ~/.config/systemd/user/ ; see README.md in this folder.
+[Unit]
+Description=Publish a Tess usage snapshot every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnStartupSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+RandomizedDelaySec=20
+Persistent=false
+
+[Install]
+WantedBy=timers.target
