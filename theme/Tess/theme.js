@@ -3171,11 +3171,99 @@
     if (sendBtn) sendBtn.setAttribute('aria-label', supChatBusy ? 'Stop' : 'Send');
   }
 
+  const supHandledCmds = new Set();
+  function collectSpotifyState() {
+    const curRoute = route();
+    const main = document.querySelector('main, [data-testid="main-view-container"], .main-view-container__scroll-node');
+    const artistFromRoute = curRoute.match(/^\/artist\/([A-Za-z0-9]+)/)?.[1] || '';
+    const artistFromTrack = Spicetify?.Player?.data?.item?.artists?.[0]?.uri?.split(':')?.[2] || '';
+    const artistLink = document.querySelector('main a[href^="/artist/"]')?.getAttribute('href')?.match(/^\/artist\/([A-Za-z0-9]+)/)?.[1] || '';
+    const marks = [...new Set([...document.querySelectorAll('[data-tess]')].map((n) => n.getAttribute('data-tess')).filter(Boolean))].slice(0, 20);
+    const sections = [...new Set([...document.querySelectorAll('main [data-testid]')].map((n) => n.getAttribute('data-testid')).filter(Boolean))].slice(0, 25);
+    const headings = [...document.querySelectorAll('main h1, main h2')].map((h) => (h.textContent || '').trim().slice(0, 48)).filter(Boolean).slice(0, 8);
+    let version = '';
+    try { version = window.__tess?.version || localStorage.getItem('tess:good') || ''; } catch {}
+    return {
+      ok: true,
+      route: curRoute,
+      tessVersion: version,
+      appearance: document.documentElement.classList.contains('tess-light') ? 'light' : 'dark',
+      ui: {
+        nowPlayingOpen: !!document.querySelector('#tess-np.open'),
+        lyricsOpen: !!document.querySelector('#tess-np .tn-lyr.open, .lyrics-lyricsContainer-LyricsContainer'),
+        settingsOpen: curRoute.startsWith('/preferences'),
+        dialVisible: !!document.querySelector('#tess-dial'),
+        supportOpen: !!supChatEl?.classList.contains('open'),
+      },
+      activeArtistId: artistFromRoute || artistFromTrack || artistLink || null,
+      layout: {
+        viewport: { w: window.innerWidth, h: window.innerHeight },
+        mainOverflowX: main ? (main.scrollWidth > main.clientWidth + 4) : false,
+        tessMarks: marks,
+        sections,
+        headings,
+      },
+    };
+  }
+
+  async function runSupportSpotifyCmd(ev) {
+    const id = String(ev?.id || '');
+    if (!id || supHandledCmds.has(id)) return;
+    supHandledCmds.add(id);
+    if (supHandledCmds.size > 100) supHandledCmds.clear();
+    let result = { ok: false, error: 'unknown command' };
+    try {
+      if (ev.action === 'state') {
+        result = collectSpotifyState();
+      } else if (ev.action === 'navigate') {
+        const target = String(ev.target || '').trim();
+        const History = Spicetify?.Platform?.History;
+        if (!History) throw new Error('Spotify router unavailable');
+        let navigated = false;
+        if (target === 'home') { closeNP(); History.push('/'); navigated = true; }
+        else if (target === 'search') { closeNP(); History.push('/search'); navigated = true; }
+        else if (target === 'liked') { closeNP(); History.push('/collection/tracks'); navigated = true; }
+        else if (target === 'library') { closeNP(); History.push('/collection/playlists'); navigated = true; }
+        else if (target === 'settings' || target === 'tess-settings') { closeNP(); openSettings(); navigated = true; }
+        else if (target === 'now-playing') { openNP(); navigated = true; }
+        else if (target === 'close-now-playing') { closeNP(); navigated = true; }
+        else if (target === 'back') { History.goBack(); navigated = true; }
+        else if (target === 'artist-discography') {
+          const st = collectSpotifyState();
+          if (!st.activeArtistId) throw new Error('No active artist found; open an artist or play a track first.');
+          closeNP();
+          History.push(`/artist/${st.activeArtistId}/discography/all`);
+          navigated = true;
+        } else if (/^\/[A-Za-z0-9/_:?=&%-]{0,200}$/.test(target)) {
+          closeNP();
+          History.push(target);
+          navigated = true;
+        } else {
+          throw new Error('Disallowed navigation target');
+        }
+        if (navigated) {
+          await new Promise((r) => setTimeout(r, 500));
+          try { onRoute(); } catch {}
+          result = { ok: true, navigatedTo: target, state: collectSpotifyState() };
+        }
+      }
+    } catch (err) {
+      result = { ok: false, error: String(err?.message || err || 'command failed') };
+    }
+    await supportAPI('/support/chat/cmd-result', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, result }),
+    });
+  }
+
   function consumeSupportEvents(data) {
     if (!data || !Array.isArray(data.events)) return;
     for (const ev of data.events) {
       if (typeof ev.seq === 'number' && ev.seq > supChatSeq) supChatSeq = ev.seq;
-      if (ev.type === 'delta') {
+      if (ev.type === 'spotify_cmd') {
+        runSupportSpotifyCmd(ev);
+      } else if (ev.type === 'delta') {
         finishToolPill(false);
         supStreamText += String(ev.text || '');
         if (!supActiveStreamEl) supActiveStreamEl = appendChatBubble('assistant', supStreamText);

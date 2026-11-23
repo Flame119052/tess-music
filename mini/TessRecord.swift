@@ -75,7 +75,7 @@ Task {
     // the content list comes back empty or the capture refuses.
     let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
     guard let window = content.windows.first(where: { $0.windowID == wid }) else {
-      failure = "the Spotify window is not shareable; turn on Screen Recording for Tess Support"
+      failure = "the Spotify window is not shareable; turn on Screen Recording for Tess Mini"
       return
     }
     let filter = SCContentFilter(desktopIndependentWindow: window)
