@@ -108,6 +108,8 @@ const ALLOWED_TOOLS = new Set([
   "tess_post",
   "tess_amend_report",
   "tess_handoff",
+  "tess_spotify_state",
+  "tess_spotify_navigate",
 ]);
 
 const SECRET_PATH_RE = /(?:\/|^)(?:support\/token|\.env(?:\.|$)|\.ssh|tess-signing|\.aws|\.gnupg|\.netrc|keychain|Cookies|Local State|Login Data)/i;
@@ -248,16 +250,42 @@ function readPlainFile(sessionDir: string, name: string, maxBytes: number): Buff
   }
 }
 
+async function callMiniBridge(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const url = process.env.TESS_BRIDGE_URL;
+  const secret = process.env.TESS_BRIDGE_SECRET;
+  if (!url || !secret) return { ok: false, error: "Spotify bridge is not active" };
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-tess-bridge": secret },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return { ok: false, error: `Spotify bridge answered HTTP ${res.status}` };
+    return (await res.json()) as Record<string, unknown>;
+  } catch (err: any) {
+    return { ok: false, error: String(err?.message || "Spotify bridge unreachable") };
+  }
+}
+
 const LOOKUP_JXA =
   'ObjC.import("CoreGraphics"); ' +
-  'if (!$.CGPreflightScreenCaptureAccess()) throw new Error("Screen Recording is not allowed"); ' +
+  'if (!$.CGPreflightScreenCaptureAccess()) { $.CGRequestScreenCaptureAccess(); throw new Error("Screen Recording is not allowed"); } ' +
   'const rows = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(1, 0)); ' +
   'const hit = rows.find((w) => w.kCGWindowOwnerName === "Spotify" && w.kCGWindowLayer === 0); ' +
   'if (!hit) throw new Error("no Spotify window"); hit.kCGWindowNumber;';
 
-function spotifyWindowId(): string {
+async function spotifyWindowId(): Promise<string> {
   if (process.env.TESS_TEST === "1" && process.env.TESS_SCREEN_RECORDING === "denied") {
     throw new Error("Screen Recording is not allowed");
+  }
+  // Ask Tess Mini.app (the responsible macOS bundle) to check/trigger the native macOS Screen Recording dialog
+  // so macOS shows the standard popup and adds "Tess Mini" to System Settings -> Privacy & Security -> Screen Recording.
+  if (process.env.TESS_BRIDGE_URL && process.env.TESS_BRIDGE_SECRET) {
+    const perm = await callMiniBridge({ action: "request_screen_permission" });
+    if (perm.ok === true && perm.granted === false) {
+      throw new Error("Screen Recording is not allowed");
+    }
   }
   let out = "";
   try {
@@ -586,11 +614,16 @@ export default function (pi: ExtensionAPI) {
           );
           writeFileSync(dest, png, { mode: 0o600 });
         } else {
-          const wid = spotifyWindowId();
+          const wid = await spotifyWindowId();
           execFileSync("/usr/sbin/screencapture", ["-x", "-l", wid, dest], { timeout: 20000 });
         }
         return ok({ ok: true, captured: "spotify.png" });
-      } catch (e) {
+      } catch (e: any) {
+        if (String(e?.message || e).includes("Screen Recording is not allowed")) {
+          // Permission dialog was just triggered; keep consent open so the person can return after enabling Tess Mini.
+          lanes.still.spent = false;
+          lanes.still.grantedAt = Date.now();
+        }
         return errResult(e);
       }
     },
@@ -615,10 +648,63 @@ export default function (pi: ExtensionAPI) {
           if (!existsSync(RECORD_BIN) || lstatSync(RECORD_BIN).isSymbolicLink()) {
             throw new Error("the window recorder is not installed on this Mac");
           }
-          const wid = spotifyWindowId();
+          const wid = await spotifyWindowId();
           execFileSync(RECORD_BIN, [wid, dest], { timeout: 30000 });
         }
         return ok({ ok: true, captured: "spotify.mov" });
+      } catch (e: any) {
+        if (String(e?.message || e).includes("Screen Recording is not allowed")) {
+          lanes.video.spent = false;
+          lanes.video.grantedAt = Date.now();
+        }
+        return errResult(e);
+      }
+    },
+  });
+
+  pi.registerTool({
+    name: "tess_spotify_state",
+    label: "Check Spotify page",
+    description:
+      "Read the live state of Spotify right now: current route (e.g. /artist/.../discography/all), Tess version, " +
+      "light/dark appearance, whether Now Playing / Lyrics / Dial / Tess Settings are open, active artist id, " +
+      "and a scrubbed summary of visible layout sections and Tess marks. Takes no arguments.",
+    parameters: Type.Object({}),
+    async execute() {
+      try {
+        const res = await callMiniBridge({ action: "state" });
+        const scrubbed = await scrubAll(JSON.stringify(res));
+        return { content: [{ type: "text" as const, text: scrubbed.slice(0, MAX_RETURN) }], details: {} };
+      } catch (e) {
+        return errResult(e);
+      }
+    },
+  });
+
+  pi.registerTool({
+    name: "tess_spotify_navigate",
+    label: "Navigate Spotify",
+    description:
+      "Navigate inside Spotify to inspect a page the person mentioned. Allowed shortcuts: " +
+      "home, search, liked, library, settings, tess-settings, now-playing, close-now-playing, artist-discography, back — " +
+      "or any in-app Spotify route starting with '/' (such as '/artist/<id>/discography/all', '/album/<id>', '/playlist/<id>'). " +
+      "Returns the updated live page state after navigation.",
+    parameters: Type.Object({
+      target: Type.String({ description: "Shortcut name or Spotify route starting with '/'." }),
+    }),
+    async execute(_id, params) {
+      try {
+        const target = String(params.target || "").trim();
+        const allowedShort = new Set([
+          "home", "search", "liked", "library", "settings", "tess-settings",
+          "now-playing", "close-now-playing", "artist-discography", "back",
+        ]);
+        if (!allowedShort.has(target) && !/^\/[A-Za-z0-9/_:?=&%-]{0,200}$/.test(target)) {
+          throw new Error("target must be a known shortcut or a Spotify path starting with '/'");
+        }
+        const res = await callMiniBridge({ action: "navigate", target });
+        const scrubbed = await scrubAll(JSON.stringify(res));
+        return { content: [{ type: "text" as const, text: scrubbed.slice(0, MAX_RETURN) }], details: {} };
       } catch (e) {
         return errResult(e);
       }

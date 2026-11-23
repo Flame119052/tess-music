@@ -336,7 +336,9 @@ final class App: NSObject, NSApplicationDelegate {
         token: self.miniToken,
         supportState: { self.piBridge.supportState() },
         supportStatusJSON: { self.piBridge.statusJSON() },
-        supportEventsJSON: { after in self.piBridge.eventsJSON(after: after) }
+        supportEventsJSON: { after in self.piBridge.eventsJSON(after: after) },
+        bridgeSecret: self.piBridge.bridgeSecret,
+        bridgeHandler: { body in self.piBridge.handleBridgeCommand(rawBody: body) }
       )
       DispatchQueue.main.async {
         switch reply.effect {
@@ -348,6 +350,7 @@ final class App: NSObject, NSApplicationDelegate {
         case .supportSend(let body): self.piBridge.send(rawBody: body)
         case .supportAbort: self.piBridge.abort()
         case .supportReset: self.piBridge.reset()
+        case .supportCmdResult(let body): self.piBridge.resolveSpotifyCommand(rawBody: body)
         case .lyric(let text): self.sp.lyric = text
         case .lines(let body):
           if let d = body.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
@@ -366,15 +369,18 @@ final class App: NSObject, NSApplicationDelegate {
 // Manages the stripped Pi standalone binary (--mode rpc) for Tess Support inside Spotify.
 // TESS_SUPPORT_TOKEN is read only from chmod-600 support/token into Pi's process environment and never sent over HTTP.
 final class PiSupportBridge {
+  let bridgeSecret = miniNewToken()
   private let lock = NSLock()
   private var proc: Process?
   private var stdinPipe: Pipe?
   private var stdoutBuf = Data()
   private var seq = 0
+  private var cmdSeq = 0
   private var busy = false
   private var lastActive = Date()
   private var events: [[String: Any]] = []
   private var idleTimer: Timer?
+  private var pendingCmds: [String: (sem: DispatchSemaphore, result: String?)] = [:]
 
   private let questionStill = "May I take one still of the Spotify window? It can show your Spotify name, your picture, your friends' activity, and your playlist names."
   private let questionVideo = "May I record a short clip of just the Spotify window, about ten seconds? It can show your Spotify name, your picture, your friends' activity, and your playlist names. No other window and no sound are in it."
@@ -509,6 +515,70 @@ final class PiSupportBridge {
     }
   }
 
+  func handleBridgeCommand(rawBody: String) -> String {
+    guard let data = rawBody.data(using: .utf8),
+          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let action = obj["action"] as? String else {
+      return "{\"ok\":false,\"error\":\"invalid bridge command\"}"
+    }
+    if action == "request_screen_permission" {
+      var granted = false
+      if Thread.isMainThread {
+        granted = CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess()
+      } else {
+        DispatchQueue.main.sync {
+          granted = CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess()
+        }
+      }
+      return "{\"ok\":true,\"granted\":\(granted ? "true" : "false")}"
+    }
+    guard action == "state" || action == "navigate" else {
+      return "{\"ok\":false,\"error\":\"unknown bridge action\"}"
+    }
+    let sem = DispatchSemaphore(value: 0)
+    lock.lock()
+    cmdSeq += 1
+    let id = "cmd_\(cmdSeq)"
+    pendingCmds[id] = (sem: sem, result: nil)
+    lock.unlock()
+
+    var ev: [String: Any] = ["type": "spotify_cmd", "id": id, "action": action]
+    if let target = obj["target"] as? String { ev["target"] = target }
+    pushEvent(ev)
+
+    let waited = sem.wait(timeout: .now() + 6.0)
+    lock.lock()
+    let entry = pendingCmds.removeValue(forKey: id)
+    lock.unlock()
+    if waited == .success, let res = entry?.result {
+      return res
+    }
+    return "{\"ok\":false,\"error\":\"Spotify did not answer in time\"}"
+  }
+
+  func resolveSpotifyCommand(rawBody: String) {
+    guard let data = rawBody.data(using: .utf8),
+          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let id = obj["id"] as? String else { return }
+    let resObj = obj["result"] ?? ["ok": true]
+    let encoded: String
+    if let d = try? JSONSerialization.data(withJSONObject: resObj), let s = String(data: d, encoding: .utf8) {
+      encoded = s
+    } else {
+      encoded = "{\"ok\":true}"
+    }
+    lock.lock()
+    if var entry = pendingCmds[id] {
+      entry.result = encoded
+      pendingCmds[id] = entry
+      let sem = entry.sem
+      lock.unlock()
+      sem.signal()
+      return
+    }
+    lock.unlock()
+  }
+
   func abort() {
     lock.lock()
     let handle = stdinPipe?.fileHandleForWriting
@@ -590,6 +660,8 @@ final class PiSupportBridge {
       "TESS_SUPPORT_DIR": currentDir,
       "TESS_SESSION_ROOT": "\(supportRoot)/cache/sessions",
       "TESS_SUPPORT_TOKEN": tok,
+      "TESS_BRIDGE_URL": "http://127.0.0.1:38411/internal/spotify-cmd",
+      "TESS_BRIDGE_SECRET": bridgeSecret,
     ]
     let inPipe = Pipe()
     let outPipe = Pipe()
@@ -689,6 +761,8 @@ final class PiSupportBridge {
     case "tess_post": return "Sending report to Krish"
     case "tess_amend_report": return "Updating filed report"
     case "tess_handoff": return "Cleaning up temporary files"
+    case "tess_spotify_state": return "Checking Spotify page"
+    case "tess_spotify_navigate": return "Navigating Spotify"
     default: return "Working…"
     }
   }

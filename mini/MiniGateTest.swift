@@ -76,6 +76,22 @@ struct MiniGateTestMain {
     let chatReset = miniHandle(raw: "POST /support/chat/reset?k=\(token) HTTP/1.1\r\nHost: 127.0.0.1:38411\r\nOrigin: \(spotify)\r\n\r\n", token: token)
     expect(chatReset.status == 200 && chatReset.effect == .supportReset, "Spotify can reset chat session")
 
+    let cmdResWeb = miniHandle(raw: "POST /support/chat/cmd-result?k=\(token) HTTP/1.1\r\nHost: 127.0.0.1:38411\r\nOrigin: https://evil.example\r\n\r\n{\"id\":\"1\"}", token: token)
+    expect(cmdResWeb.status == 404 && cmdResWeb.effect == .none, "a website cannot post command results")
+
+    let cmdResOk = miniHandle(raw: "POST /support/chat/cmd-result?k=\(token) HTTP/1.1\r\nHost: 127.0.0.1:38411\r\nOrigin: \(spotify)\r\n\r\n{\"id\":\"1\"}", token: token)
+    expect(cmdResOk.status == 200 && cmdResOk.effect == .supportCmdResult("{\"id\":\"1\"}"), "Spotify can post command results with token")
+
+    let bSecret = String(repeating: "cd", count: 32)
+    let bridgeOrigin = miniHandle(raw: "POST /internal/spotify-cmd HTTP/1.1\r\nHost: 127.0.0.1:38411\r\nOrigin: \(spotify)\r\nX-Tess-Bridge: \(bSecret)\r\n\r\n{\"action\":\"state\"}", token: token, bridgeSecret: bSecret, bridgeHandler: { _ in "{\"ok\":true}" })
+    expect(bridgeOrigin.status == 404, "internal bridge refuses requests with any Origin header")
+
+    let bridgeBad = miniHandle(raw: "POST /internal/spotify-cmd HTTP/1.1\r\nHost: 127.0.0.1:38411\r\nX-Tess-Bridge: wrong\r\n\r\n{\"action\":\"state\"}", token: token, bridgeSecret: bSecret, bridgeHandler: { _ in "{\"ok\":true}" })
+    expect(bridgeBad.status == 404, "internal bridge refuses wrong secret")
+
+    let bridgeOk = miniHandle(raw: "POST /internal/spotify-cmd HTTP/1.1\r\nHost: 127.0.0.1:38411\r\nX-Tess-Bridge: \(bSecret)\r\n\r\n{\"action\":\"state\"}", token: token, bridgeSecret: bSecret, bridgeHandler: { _ in "{\"ok\":true}" })
+    expect(bridgeOk.status == 200 && bridgeOk.body == "{\"ok\":true}", "internal bridge accepts local Pi with matching secret")
+
     fputs("mini gate tests passed\n", stdout)
   }
 }

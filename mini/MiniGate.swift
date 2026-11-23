@@ -20,6 +20,7 @@ enum MiniEffect: Equatable {
   case supportSend(String)
   case supportAbort
   case supportReset
+  case supportCmdResult(String)
 }
 
 struct MiniReply: Equatable {
@@ -36,7 +37,9 @@ func miniHandle(
   token: String,
   supportState: () -> String = { "none" },
   supportStatusJSON: (() -> String)? = nil,
-  supportEventsJSON: ((Int) -> String)? = nil
+  supportEventsJSON: ((Int) -> String)? = nil,
+  bridgeSecret: String = "",
+  bridgeHandler: ((String) -> String)? = nil
 ) -> MiniReply {
   let parts = raw.components(separatedBy: "\r\n\r\n")
   let headerText = parts.first ?? ""
@@ -46,14 +49,26 @@ func miniHandle(
   let method = request.count > 0 ? String(request[0]) : ""
   let target = request.count > 1 ? String(request[1]) : "/"
   var origin = ""
+  var bridgeHeader = ""
   for line in lines.dropFirst() {
     let pair = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
-    if pair.count == 2, pair[0].trimmingCharacters(in: .whitespaces).lowercased() == "origin" {
-      origin = pair[1].trimmingCharacters(in: .whitespaces)
+    if pair.count == 2 {
+      let name = pair[0].trimmingCharacters(in: .whitespaces).lowercased()
+      let val = pair[1].trimmingCharacters(in: .whitespaces)
+      if name == "origin" { origin = val }
+      else if name == "x-tess-bridge" { bridgeHeader = val }
     }
   }
   let cut = target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
   let path = String(cut[0])
+  // Internal Pi-to-Mini bridge: never accepts a browser Origin header and requires the per-launch bridge secret.
+  if method == "POST", path == "/internal/spotify-cmd" {
+    if origin.isEmpty, !bridgeSecret.isEmpty, miniTokenMatches(bridgeHeader, bridgeSecret), let handler = bridgeHandler {
+      let resp = handler(body)
+      return miniReply(200, origin: nil, privateNetwork: false, body: resp, json: true, effect: .none)
+    }
+    return miniReply(404, origin: nil, privateNetwork: false, body: "", effect: .none)
+  }
   var given = ""
   var afterSeq = 0
   if cut.count == 2 {
@@ -112,6 +127,9 @@ func miniHandle(
     }
     if method == "POST", path == "/support/chat/reset" {
       return miniReply(200, origin: origin, privateNetwork: true, body: "{\"ok\":true}", json: true, effect: .supportReset)
+    }
+    if method == "POST", path == "/support/chat/cmd-result" {
+      return miniReply(200, origin: origin, privateNetwork: true, body: "{\"ok\":true}", json: true, effect: .supportCmdResult(body))
     }
     return miniReply(404, origin: nil, privateNetwork: false, body: "", effect: .none)
   }

@@ -357,10 +357,12 @@ try {
       'tess_read_skill',
       'tess_record',
       'tess_save_note',
+      'tess_spotify_navigate',
+      'tess_spotify_state',
       'tess_still',
       'tess_triage',
       'tess_visit_start',
-    ], 'standard read-only investigation tools + 14 Tess visit tools are exposed — zero write/edit');
+    ], 'standard read-only investigation tools + 16 Tess visit tools are exposed — zero write/edit');
 
     assert.match(toolResults.get('t3'), /"ok":false.*"ask first/i, 'tess_still refused before consent');
     assert.match(toolResults.get('t5'), /"ok":true.*"spotify\.png"/, 'tess_still succeeds after user yes');
