@@ -2989,6 +2989,7 @@
   let supChatSynced = false;
   let supChatSync = null;
   let supChatResetting = false;
+  let supChatResetGen = 0;
   let supChatBusy = false;
   let supActiveStreamEl = null;
   let supStreamText = '';
@@ -3450,17 +3451,21 @@
   async function sendSupportMessage(raw) {
     const text = String(raw || '').trim();
     if (!text || supChatResetting) return;
+    const resetGen = supChatResetGen;
     if (!supChatEl) openSupportChat();
     supLastError = null;
     appendChatBubble('user', text);
     setChatBusy(true);
     const synced = await syncSupportChat();
     if (supChatResetting) { setChatBusy(false); return; }
+    if (resetGen !== supChatResetGen) return;
     const res = synced && await supportAPI('/support/chat/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: text }),
     });
+    if (supChatResetting) { setChatBusy(false); return; }
+    if (resetGen !== supChatResetGen) return;
     if (!res) {
       setChatBusy(false);
       appendChatBubble('error', 'Could not reach Tess Mini on this Mac. Try restarting Spotify.');
@@ -3560,6 +3565,7 @@
             appendChatBubble('error', 'Could not start a new chat. Try again.');
             return;
           }
+          supChatResetGen += 1;
           resetSupportCursor();
           supChatSynced = false;
           setChatBusy(false);

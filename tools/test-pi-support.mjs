@@ -76,7 +76,7 @@ const { consumeSupportEvents, sendSupportMessage } = runInNewContext(
   `${chatSource}\n({ consumeSupportEvents, sendSupportMessage })`,
   {
     supChatEl: {}, supChatSeq: 0, supStreamText: '', supActiveStreamEl: null,
-    supChatPoll: null, supLastError: null, supChatSynced: true, supChatResetting: false,
+    supChatPoll: null, supLastError: null, supChatSynced: true, supChatResetting: false, supChatResetGen: 0,
     finishToolPill: () => {}, setChatBusy: () => {},
     appendChatBubble: (role, text) => bubbles.push([role, text]),
     supportAPI: async () => ({}), setInterval: () => 1, clearInterval: () => {},
@@ -124,7 +124,7 @@ assert.deepEqual(receiveSupportEvents(...completedTurn), [], 'an overlapping pol
   const busyStates = [];
   const ctx = {
     supChatEl: { classList: { contains: () => true } },
-    supChatPoll: null, supLastError: null, supChatSynced: false, supChatResetting: false,
+    supChatPoll: null, supLastError: null, supChatSynced: false, supChatResetting: false, supChatResetGen: 0,
     supChatSeq: 0, supActiveStreamEl: null, supStreamText: "",
     supChatSync: null,
     appendChatBubble: () => {},
@@ -138,6 +138,28 @@ assert.deepEqual(receiveSupportEvents(...completedTurn), [], 'an overlapping pol
   const { sendSupportMessage: sendDuringReset } = runInNewContext(`${chatSource}\n({ sendSupportMessage })`, ctx);
   await sendDuringReset("Hello");
   assert.deepEqual(busyStates, [true, false], "send overlapping a reset clears busy");
+}
+{
+  const bubbles2 = [];
+  const busy2 = [];
+  let polled = 0;
+  const ctx2 = {
+    supChatEl: { classList: { contains: () => true } },
+    supChatPoll: null, supLastError: null, supChatSynced: true, supChatResetting: false, supChatResetGen: 0,
+    supChatSeq: 0, supActiveStreamEl: null, supStreamText: "", supChatSync: null,
+    appendChatBubble: (role, text) => bubbles2.push([role, text]),
+    setChatBusy: (v) => busy2.push(v),
+    openSupportChat: () => {},
+    startSupportChatPoll: () => { polled += 1; },
+    supportAPI: async () => { ctx2.supChatResetGen += 1; return null; },
+    q: () => null, clearInterval: () => {},
+    finishToolPill: () => {}, showToolPill: () => {}, runSupportSpotifyCmd: () => {},
+  };
+  const { sendSupportMessage: sendAcrossReset } = runInNewContext(`${chatSource}\n({ sendSupportMessage })`, ctx2);
+  await sendAcrossReset("Hello");
+  assert.deepEqual(bubbles2, [["user", "Hello"]], "completed reset drops stale send error");
+  assert.deepEqual(busy2, [true], "completed reset does not clobber newer busy state");
+  assert.equal(polled, 0, "completed reset does not start a rogue poll");
 }
 console.log('PASS theme shows one plain-English error per consecutive retry and clears it for the next turn');
 
