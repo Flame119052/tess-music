@@ -118,6 +118,27 @@ const completedTurn = [{ ...quotaError, seq: 1 }, { type: 'settled', seq: 2 }];
 receiveSupportEvents({ type: 'settled' });
 assert.deepEqual(receiveSupportEvents(...completedTurn), [quotaBubble]);
 assert.deepEqual(receiveSupportEvents(...completedTurn), [], 'an overlapping poll cannot replay a finished turn');
+
+// Finding 3 (PR #167 review): if reset begins while sendSupportMessage awaits sync, clear busy so the composer never sticks on Stop.
+{
+  const busyStates = [];
+  const ctx = {
+    supChatEl: { classList: { contains: () => true } },
+    supChatPoll: null, supLastError: null, supChatSynced: false, supChatResetting: false,
+    supChatSeq: 0, supActiveStreamEl: null, supStreamText: "",
+    supChatSync: null,
+    appendChatBubble: () => {},
+    setChatBusy: (v) => busyStates.push(v),
+    openSupportChat: () => {},
+    startSupportChatPoll: () => {},
+    supportAPI: async () => { ctx.supChatResetting = true; return { busy: false, seq: 1, events: [] }; },
+    q: () => null, clearInterval: () => {},
+    finishToolPill: () => {}, showToolPill: () => {}, runSupportSpotifyCmd: () => {},
+  };
+  const { sendSupportMessage: sendDuringReset } = runInNewContext(`${chatSource}\n({ sendSupportMessage })`, ctx);
+  await sendDuringReset("Hello");
+  assert.deepEqual(busyStates, [true, false], "send overlapping a reset clears busy");
+}
 console.log('PASS theme shows one plain-English error per consecutive retry and clears it for the next turn');
 
 const miniSource = core.slice(core.indexOf('  let miniKey ='), core.indexOf('  function miniURL'));

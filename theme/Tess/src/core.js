@@ -3455,7 +3455,7 @@
     appendChatBubble('user', text);
     setChatBusy(true);
     const synced = await syncSupportChat();
-    if (supChatResetting) return;
+    if (supChatResetting) { setChatBusy(false); return; }
     const res = synced && await supportAPI('/support/chat/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
