@@ -98,7 +98,7 @@ round skips to the next model. Gemini 4 Neon runs in this job on `machine=github
   watcher on the machine polls for tags that name it, checks them with the same rules, and starts the thread with
   `t3 thread start`. The thread answers with the review as its last message and **the watcher posts it**, with the
   marker, the commit it read and a verdict, after confirming the pull request still points at that commit. Setup, the
-  timer and its one-time check are in [`tools/review-watch/README.md`](../tools/review-watch/README.md); installing it is
+  timer and its one-time check are in [`agent-review/tools/review-watch/README.md`](https://github.com/Flame119052/agent-review/blob/main/tools/review-watch/README.md); installing it is
   Krish's step, not a merge.
 - **`machine=vps`** is refused, in fixed words: T3 on `paperclip-vps` runs as root beside Paperclip, so Tess agents do
   not run there through T3 (see "Which machine does what").
@@ -200,7 +200,7 @@ proxy that will not start, a GitHub read that fails — because a job that stops
 waiting: the script posts one marker comment naming what broke (never a secret) and exits non-zero, and the review job
 has a last step that does the same for failures outside the script, such as installing the CLI.
 
-**One file holds the rules.** [`.github/agents.json`](../.github/agents.json) is the only place with model names, the
+**One file holds the rules.** [`agent-review/.github/agents.json`](https://github.com/Flame119052/agent-review/blob/main/.github/agents.json) is the only place with model names, the
 plans-only list, what one review costs, the hard caps, and any quota kept back. Its role lists (`approach`, `pr_normal`,
 `pr_sensitive`) are **pools, not a priority**: they say which models a role may use, and the order means nothing. This
 page explains how to read it and when to change it; it does not repeat the values.

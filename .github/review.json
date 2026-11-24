@@ -8,8 +8,12 @@
     "mini/",
     ".github/",
     "tools/release.mjs",
+    "tools/declare.mjs",
     "tools/promote.mjs",
     "tools/rescue.mjs",
+    "tools/test-rescue.mjs",
+    "tools/test-rescue-control.mjs",
+    "**/*rescue*",
     "tools/check-safety.sh"
   ],
   "omitDiffPaths": [

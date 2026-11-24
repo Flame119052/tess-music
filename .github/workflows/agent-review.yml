@@ -7,13 +7,22 @@ permissions: {}
 
 jobs:
   dispatch:
-    if: contains(github.event.comment.body, '@review ') || contains(github.event.comment.body, '@tess-review ')
+    if: >-
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR') &&
+      !contains(github.event.comment.body, '<!-- tess-review-bot -->') &&
+      !contains(github.event.comment.body, '<!-- agent-review-bot -->') &&
+      (contains(github.event.comment.body, '@review ') ||
+       contains(github.event.comment.body, '@tess-review '))
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Send repository and comment IDs to the review hub
         env:
           GH_TOKEN: ${{ secrets.AGENT_REVIEW_DISPATCH_TOKEN }}
         run: |
+          set -euo pipefail
           jq -c '{
             event_type: "agent-review",
             client_payload: {
