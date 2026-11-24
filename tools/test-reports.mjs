@@ -70,12 +70,12 @@ try {
   assert.throws(() => d1Args('SELECT 1', { TESS_D1_LOCAL: 'relative' }), /absolute/);
 
   // 7. `support usage` prints a person's use against the caps in wrangler.toml, and an unused day as 0.
-  const caps = capsFrom('SUPPORT_CHAT_PERSON_REQUESTS = "80"\nSUPPORT_CHAT_SHARED_REQUESTS = "400"\nSUPPORT_CHAT_PERSON_TOKENS = "0"\nSUPPORT_CHAT_SHARED_TOKENS = "2000000"\n');
+  const caps = capsFrom('SUPPORT_CHAT_PERSON_REQUESTS = "200"\nSUPPORT_CHAT_SHARED_REQUESTS = "600"\nSUPPORT_CHAT_PERSON_TOKENS = "0"\nSUPPORT_CHAT_SHARED_TOKENS = "3000000"\n');
   assert.deepEqual(usageLines([{ who: 'Ada', revoked: null, requests: 3, tokens: 900 }, { who: 'Old', revoked: 1, requests: null, tokens: null },
     { who: '(everyone)', revoked: null, requests: 3, tokens: 900 }], caps).map((l) => l.replace(/\s+/g, ' ')), [
-    'Ada 3 of 80 requests 900 of 0 tokens active',
-    'Old 0 of 80 requests 0 of 0 tokens REVOKED',
-    '(everyone) 3 of 400 requests 900 of 2000000 tokens',
+    'Ada 3 of 200 requests 900 of 0 tokens active',
+    'Old 0 of 200 requests 0 of 0 tokens REVOKED',
+    '(everyone) 3 of 600 requests 900 of 3000000 tokens',
   ]);
 
   // 8. `support token revoke` of a name that is not active exits non-zero and names the command that lists real names.

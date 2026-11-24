@@ -270,8 +270,10 @@ async function callMiniBridge(payload: Record<string, unknown>): Promise<Record<
 
 const LOOKUP_JXA =
   'ObjC.import("CoreGraphics"); ' +
-  'if (!$.CGPreflightScreenCaptureAccess()) { $.CGRequestScreenCaptureAccess(); throw new Error("Screen Recording is not allowed"); } ' +
-  'const rows = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(1, 0)); ' +
+  'ObjC.bindFunction("CGPreflightScreenCaptureAccess", ["bool", []]); ' +
+  'ObjC.bindFunction("CGWindowListCopyWindowInfo", ["id", ["unsigned int", "unsigned int"]]); ' +
+  'if (!$.CGPreflightScreenCaptureAccess()) throw new Error("Screen Recording is not allowed"); ' +
+  'const rows = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(1, 0)) || []; ' +
   'const hit = rows.find((w) => w.kCGWindowOwnerName === "Spotify" && w.kCGWindowLayer === 0); ' +
   'if (!hit) throw new Error("no Spotify window"); hit.kCGWindowNumber;';
 
@@ -284,7 +286,7 @@ async function spotifyWindowId(): Promise<string> {
   if (process.env.TESS_BRIDGE_URL && process.env.TESS_BRIDGE_SECRET) {
     const perm = await callMiniBridge({ action: "request_screen_permission" });
     if (perm.ok === true && perm.granted === false) {
-      throw new Error("Screen Recording is not allowed");
+      throw new Error("Screen Recording is not allowed. Turn on Tess Mini in Privacy & Security → Screen Recording. Click Quit & Reopen if macOS asks, then say “done” in Tess Support.");
     }
   }
   let out = "";
@@ -296,7 +298,8 @@ async function spotifyWindowId(): Promise<string> {
   } catch (err: any) {
     const detail = String(err?.stderr || err?.message || "");
     if (detail.includes("no Spotify window")) throw new Error("no Spotify window");
-    throw new Error("Screen Recording is not allowed");
+    if (detail.includes("Screen Recording is not allowed")) throw new Error("Screen Recording is not allowed");
+    throw new Error("Could not check for the Spotify window");
   }
   const id = out.trim();
   if (!/^\d+$/.test(id)) throw new Error("no Spotify window");

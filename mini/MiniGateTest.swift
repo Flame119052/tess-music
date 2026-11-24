@@ -6,6 +6,29 @@ struct MiniGateTestMain {
     let token = String(repeating: "ab", count: 32)
     let spotify = "https://xpui.app.spotify.com"
 
+    let nestedError = #"429: {"error":{"message":"  Daily limit reached.  "}}"#
+    let flatError = #"429: {"message":"Daily limit reached."}"#
+    let fallback = "Something went wrong. Please try again."
+    expect(miniSanitizeSupportError(nestedError) == "Daily limit reached.", "extract and trim the nested error message")
+    expect(miniSanitizeSupportError(flatError) == "Daily limit reached.", "extract the top-level error message")
+    expect(miniSanitizeSupportError(#"429: {"error":{"message":" "},"message":"Try at midnight."}"#) == "Try at midnight.", "skip an empty nested message")
+    for raw in [#"429: {"error":}"#, #"429: {}"#, #"429: {"message":"truncated"#, #"429: {"message":"{\"code\":429}"}"#, #"429: ["details"]"#] {
+      expect(miniSanitizeSupportError(raw) == fallback, "replace raw JSON with a generic message")
+    }
+    expect(miniSanitizeSupportError("  Connection lost.  ") == "Connection lost.", "keep plain error text")
+    let longError = String(repeating: "x", count: 250)
+    let longJSON = "429: {\"message\":\"\(longError)\"}"
+    expect(miniSanitizeSupportError(longError).count == 240, "cap plain error text")
+    expect(miniSanitizeSupportError(longJSON).count == 240, "cap extracted error text")
+
+    var errors = MiniSupportErrors()
+    expect(errors.next(nestedError) == "Daily limit reached.", "show the first error")
+    expect(errors.next(flatError) == nil, "skip an identical sanitized error")
+    expect(errors.next("Connection lost.") == "Connection lost.", "show a different error")
+    expect(errors.next(flatError) == "Daily limit reached.", "show an error after a different error")
+    errors.reset()
+    expect(errors.next(flatError) == "Daily limit reached.", "show the same error after a turn reset")
+
     let web = miniHandle(raw: "POST /toggle HTTP/1.1\r\nHost: 127.0.0.1:38411\r\nOrigin: https://evil.example\r\n\r\n", token: token)
     expect(web.effect == .none, "a website toggle is ignored")
     expect(!web.head.contains("Access-Control-Allow-Origin"), "a website gets no CORS header")

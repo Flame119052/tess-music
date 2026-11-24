@@ -1194,13 +1194,14 @@
   let nativeMini = false;
   let miniKey = '';
   // Mini mints a token at launch. Only Spotify's page can read it; every later call sends it back.
-  async function miniReady() {
-    if (miniKey) return true;
+  async function miniReady(refresh = false) {
+    if (miniKey && !refresh) return true;
     try {
       const res = await fetch(MINI + '/token', { mode: 'cors' });
       if (!res.ok) return false;
       const body = await res.json();
       if (typeof body.k !== 'string' || !body.k) return false;
+      if (miniKey && miniKey !== body.k) resetSupportCursor();
       miniKey = body.k;
       nativeMini = true;
       return true;
@@ -1209,8 +1210,7 @@
   function miniURL(path) { return `${MINI}${path}?k=${encodeURIComponent(miniKey)}`; }
   async function openMini() {
     try {
-      miniKey = ''; // an update restarts Mini with a new token, so the handshake is redone on each click
-      if (!await miniReady()) throw new Error('no mini');
+      if (!await miniReady(true)) throw new Error('no mini');
       await fetch(miniURL('/toggle'), { mode: 'no-cors' });
       nativeMini = true; pushedLinesFor = ''; pushedLine = null; renderRibbon(); return;
     } catch { nativeMini = false; }
@@ -2987,22 +2987,32 @@
   let supInstallPoll = null;
   let supChatPoll = null;
   let supChatSeq = 0;
+  let supChatSynced = false;
+  let supChatSync = null;
+  let supChatResetting = false;
+  let supChatResetGen = 0;
   let supChatBusy = false;
   let supActiveStreamEl = null;
   let supStreamText = '';
   let supToolPillEl = null;
+  let supLastError = null;
 
   async function supportAPI(path, opts = {}) {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (attempt === 1) {
-        miniKey = '';
         await new Promise((r) => setTimeout(r, 350));
       }
-      if (!(await miniReady())) continue;
-      const sep = path.includes('?') ? '&' : '?';
-      const url = `${MINI}${path}${sep}k=${encodeURIComponent(miniKey)}`;
+      if (!(await miniReady(attempt === 1))) continue;
+      const key = miniKey;
+      const endpoint = typeof path === 'function' ? path() : path;
+      const sep = endpoint.includes('?') ? '&' : '?';
+      const url = `${MINI}${endpoint}${sep}k=${encodeURIComponent(key)}`;
       const res = await fetch(url, { mode: 'cors', ...opts }).catch(() => null);
-      if (res && res.ok) return res.json().catch(() => ({ ok: true }));
+      if (res && res.ok) {
+        const data = await res.json().catch(() => ({ ok: true }));
+        if (typeof path !== 'function' || key === miniKey) return data;
+        continue;
+      }
       if (res && res.status !== 404) return null;
     }
     return null;
@@ -3295,10 +3305,52 @@
     });
   }
 
+  function supportErrorText(raw) {
+    const fallback = 'Something went wrong. Please try again.';
+    const plainMessage = (value) => {
+      if (typeof value !== 'string') return '';
+      const text = value.trim();
+      const payload = text.replace(/^\d{3}:\s*/, '');
+      if (/[{}]/.test(text) || payload.startsWith('[')) return '';
+      try { JSON.parse(payload); return ''; } catch {}
+      return text.slice(0, 240);
+    };
+    if (typeof raw !== 'string') return fallback;
+    const text = raw.trim();
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      try {
+        const body = JSON.parse(text.slice(start, end + 1));
+        return plainMessage(body?.error?.message) || plainMessage(body?.message) || fallback;
+      } catch {
+        return fallback;
+      }
+    }
+    return plainMessage(text) || fallback;
+  }
+
+  function resetSupportCursor() {
+    supChatSeq = 0;
+    supHandledCmds.clear();
+    supLastError = null;
+    supActiveStreamEl = null;
+    supStreamText = '';
+    finishToolPill(false);
+  }
+
   function consumeSupportEvents(data) {
     if (!data || !Array.isArray(data.events)) return;
+    if (typeof data.seq === 'number' && data.seq < supChatSeq) {
+      resetSupportCursor();
+      return false;
+    }
     for (const ev of data.events) {
-      if (typeof ev.seq === 'number' && ev.seq > supChatSeq) supChatSeq = ev.seq;
+      if (typeof ev.seq === 'number') {
+        if (ev.seq <= supChatSeq) continue;
+        supChatSeq = ev.seq;
+      }
+      if (ev.type === 'delta' || ev.type === 'message' || ev.type === 'tool_start') supLastError = null;
       if (ev.type === 'spotify_cmd') {
         runSupportSpotifyCmd(ev);
       } else if (ev.type === 'delta') {
@@ -3338,8 +3390,11 @@
         finishToolPill(true);
         supActiveStreamEl = null;
         supStreamText = '';
-        appendChatBubble('error', String(ev.text || 'Something went wrong.'));
+        const text = supportErrorText(ev.text);
+        if (text !== supLastError) appendChatBubble('error', text);
+        supLastError = text;
       } else if (ev.type === 'settled') {
+        supLastError = null;
         finishToolPill(false);
         supActiveStreamEl = null;
         supStreamText = '';
@@ -3354,23 +3409,64 @@
 
   function startSupportChatPoll() {
     if (supChatPoll) return;
-    supChatPoll = setInterval(async () => {
-      const data = await supportAPI(`/support/chat/events?after=${supChatSeq}`);
-      if (data) consumeSupportEvents(data);
+    let pending = false;
+    const poll = setInterval(async () => {
+      if (pending || supChatPoll !== poll) return;
+      pending = true;
+      try {
+        const read = () => supportAPI(() => `/support/chat/events?after=${supChatSeq}`);
+        const data = await read();
+        if (supChatPoll !== poll || !data) return;
+        if (consumeSupportEvents(data) === false) {
+          const restarted = await read();
+          if (supChatPoll === poll && restarted) consumeSupportEvents(restarted);
+        }
+      } finally {
+        pending = false;
+      }
     }, 140);
+    supChatPoll = poll;
+  }
+
+  function syncSupportChat() {
+    if (supChatSynced) return true;
+    if (!supChatSync) {
+      supChatSync = (async () => {
+        const data = await supportAPI(() => '/support/chat/events?after=0');
+        if (!data || !Array.isArray(data.events) || typeof data.seq !== 'number') return false;
+        supChatSynced = true;
+        if (data.busy) {
+          const settled = data.events.findLastIndex((event) => event.type === 'settled' || event.type === 'reset');
+          supChatSeq = data.events[settled]?.seq || 0;
+          consumeSupportEvents({ ...data, events: data.events.slice(settled + 1) });
+          startSupportChatPoll();
+        } else {
+          supChatSeq = data.seq;
+        }
+        return true;
+      })().finally(() => { supChatSync = null; });
+    }
+    return supChatSync;
   }
 
   async function sendSupportMessage(raw) {
     const text = String(raw || '').trim();
-    if (!text) return;
+    if (!text || supChatResetting) return;
+    const resetGen = supChatResetGen;
     if (!supChatEl) openSupportChat();
+    supLastError = null;
     appendChatBubble('user', text);
     setChatBusy(true);
-    const res = await supportAPI('/support/chat/send', {
+    const synced = await syncSupportChat();
+    if (supChatResetting) { setChatBusy(false); return; }
+    if (resetGen !== supChatResetGen) return;
+    const res = synced && await supportAPI('/support/chat/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: text }),
     });
+    if (supChatResetting) { setChatBusy(false); return; }
+    if (resetGen !== supChatResetGen) return;
     if (!res) {
       setChatBusy(false);
       appendChatBubble('error', 'Could not reach Tess Mini on this Mac. Try restarting Spotify.');
@@ -3457,17 +3553,34 @@
       });
       q(box, '.tsup-close').onclick = closeSupportChat;
       q(box, '.tsup-new').onclick = async () => {
-        await supportAPI('/support/chat/reset', { method: 'POST' });
-        supActiveStreamEl = null;
-        supStreamText = '';
-        supToolPillEl = null;
-        setChatBusy(false);
-        const feed = q(box, '.tsup-feed');
-        feed.querySelectorAll('.tsup-msg, .tsup-tool').forEach((n) => n.remove());
-        q(box, '.tsup-empty')?.classList.remove('gone');
+        if (supChatResetting) return;
+        supChatResetting = true;
+        try {
+          if (supChatSync) await supChatSync;
+          const wasPolling = !!supChatPoll;
+          clearInterval(supChatPoll);
+          supChatPoll = null;
+          const res = await supportAPI('/support/chat/reset', { method: 'POST' });
+          if (!res) {
+            if (wasPolling) startSupportChatPoll();
+            appendChatBubble('error', 'Could not start a new chat. Try again.');
+            return;
+          }
+          supChatResetGen += 1;
+          resetSupportCursor();
+          supChatSynced = false;
+          setChatBusy(false);
+          const feed = q(box, '.tsup-feed');
+          feed.querySelectorAll('.tsup-msg, .tsup-tool').forEach((n) => n.remove());
+          q(box, '.tsup-empty')?.classList.remove('gone');
+          await syncSupportChat();
+        } finally {
+          supChatResetting = false;
+        }
       };
     }
     supChatEl.classList.add('open');
+    if (!supChatResetting) syncSupportChat();
     setTimeout(() => q(supChatEl, '.tsup-input')?.focus(), 80);
   }
 

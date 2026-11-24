@@ -21,6 +21,10 @@ the owner's Mac. They await merge into `main` (#161, #162, #163, D-118).
 
 ## Support bot
 
+PR #167 updates the daily chat caps and fixes stale replies on open, reset, and Mini restart (#165, #166, #168).
+The Screen Recording instructions now explain how to reopen Tess Mini and reconnect. The macOS window lookup
+was checked locally. Capture after a live permission change still needs verification.
+
 Built and tested in `support/` (#70, D-76, D-77, D-95, D-102): **one isolated Hermes bot (`tess-support`) on Krish's VPS**,
 on OpenCode Go (`opencode-go/deepseek-v4.1-flash`) with a hard daily cap (40 shared replies/day, 20/person/day), that
 Krish and a trusted tester message. It works out what broke from Tess's own doctor report and their screenshots and

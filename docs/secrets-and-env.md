@@ -51,8 +51,8 @@ How Tess Music stores, loads, and backs up secrets across **local development**,
   `SUPPORT_UPSTREAM` picks strictly between `"go"` (`https://opencode.ai/zen/go/v1/chat/completions`, default when
   unset) and `"zen"` (`https://opencode.ai/zen/v1/chat/completions`); any other value answers 503 before spending a
   cap slot. `SUPPORT_MODEL` names the model sent upstream (currently `deepseek-v4.1-flash`; clients may send any
-  syntactically valid model name and the Worker always substitutes `SUPPORT_MODEL`, D-113). `SUPPORT_CHAT_PERSON_REQUESTS` is 80 and `SUPPORT_CHAT_SHARED_REQUESTS` is
-  400 per UTC day. `SUPPORT_CHAT_PERSON_TOKENS` is 300000 and `SUPPORT_CHAT_SHARED_TOKENS` is 2000000; a token var of
+  syntactically valid model name and the Worker always substitutes `SUPPORT_MODEL`, D-113). `SUPPORT_CHAT_PERSON_REQUESTS` is 200 and `SUPPORT_CHAT_SHARED_REQUESTS` is
+  600 per UTC day. `SUPPORT_CHAT_PERSON_TOKENS` is 1000000 and `SUPPORT_CHAT_SHARED_TOKENS` is 3000000; a token var of
   `0` turns that budget off. Counters live in the existing `limits` table. A normal reply moves token totals only
   when the upstream body includes a usable `usage` object, and a malformed body does not write them back to zero.
   A withheld reply or a client disconnect still counts the parsed usage, or that request's max_tokens when none can

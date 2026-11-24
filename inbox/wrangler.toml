@@ -41,10 +41,10 @@ enabled = false
 [vars]
 SUPPORT_UPSTREAM = "go"
 SUPPORT_MODEL = "deepseek-v4.1-flash"
-SUPPORT_CHAT_PERSON_REQUESTS = "80"
-SUPPORT_CHAT_SHARED_REQUESTS = "400"
-SUPPORT_CHAT_PERSON_TOKENS = "300000"
-SUPPORT_CHAT_SHARED_TOKENS = "2000000"
+SUPPORT_CHAT_PERSON_REQUESTS = "200"
+SUPPORT_CHAT_SHARED_REQUESTS = "600"
+SUPPORT_CHAT_PERSON_TOKENS = "1000000"
+SUPPORT_CHAT_SHARED_TOKENS = "3000000"
 
 # Cloudflare's own per-IP limiter (no database work): 6 reports a minute per IP. Health reports and support
 # posts use this binding. Support chat does not.
