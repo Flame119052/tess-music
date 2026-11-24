@@ -10,6 +10,6 @@ record 0789c558bf17e3ffa2cc28f8c6bfaf93f44483723df4fff230a41ad9352f0283 https://
 support-kit a712e9fe9090038c48597fc75a552eea69a14d697b289a21a45c88dd6d2c4e04 https://github.com/Flame119052/tess-music/releases/download/v0.2.58/tess-support-kit.tar.gz 62af400e5f8d33cfae05c50e945a27384b46e9ceee4959f9a04518aakit1
 invite c6b7fae7e143d9b3ffae226b19daff1417fd3e9cfbd98ca2387efa476fe82f93 https://github.com/Flame119052/tess-music/releases/download/v0.2.51/tess-invite cc0a2a56b234e4b83fb7a085fc86ade957bf96e7fe9aab998720943dsig1
 theme 21864e4c30b324b13075e8df923ff6021e248c15397f4dfa74caa21094fdb9b1 https://github.com/Flame119052/tess-music/releases/download/v0.2.40/tess-theme.tar.gz 74b132cd36a771c8260949f1381a67e06f0736c260033a5fed1bbefe7bd82e49
-version 0.2.58
-rev 27
+version 0.2.59
+rev 28
 support-install ab9b55831ce57b86e892acd5780c186df78e65dcd0f6556839211a395531d8d9
