@@ -1,4 +1,4 @@
-name: agent review
+name: send review request
 on:
   issue_comment:
     types: [created]
@@ -6,227 +6,29 @@ on:
 permissions: {}
 
 jobs:
-  gate:
+  dispatch:
+    if: >-
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR') &&
+      !contains(github.event.comment.body, '<!-- tess-review-bot -->') &&
+      !contains(github.event.comment.body, '<!-- agent-review-bot -->') &&
+      (contains(github.event.comment.body, '@review ') ||
+       contains(github.event.comment.body, '@tess-review '))
     runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      issues: read
-      pull-requests: read
-    outputs:
-      allowed: ${{ steps.gate.outputs.allowed }}
-      role: ${{ steps.gate.outputs.role }}
-      number: ${{ steps.gate.outputs.number }}
-      head_sha: ${{ steps.gate.outputs.head_sha }}
-      tier: ${{ steps.gate.outputs.tier }}
-      # Where this tag runs: `github` (the job below) or a machine whose own watcher opens a T3 thread.
-      machine: ${{ steps.gate.outputs.machine }}
-      # A fixed refusal code, or empty. Only the notice job reads it, and it posts the fixed text for that code.
-      refusal: ${{ steps.gate.outputs.refusal }}
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-          persist-credentials: false
-      - name: Check caller, request, head repository, and CI
-        id: gate
+      - name: Send repository and comment IDs to the review hub
         env:
-          AGENT_ALLOWLIST: ${{ vars.AGENT_ALLOWLIST }}
-          COMMENT_BODY: ${{ github.event.comment.body }}
-          COMMENTER: ${{ github.event.comment.user.login }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          REPOSITORY: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-        # The rules live in a script so they can be tested with a fake `gh` (tools/test-agent-review.mjs). It refuses a
-        # fork's head, so no fork content reaches the job below that holds a provider key.
-        run: bash tools/agent-gate.sh
-
-  review:
-    needs: gate
-    # Only a tag that names no machine, or names `machine=github`, runs here. A tag for the Mac or omarchy is read and
-    # checked by the gate and then runs on that machine's own watcher, which opens a T3 thread there.
-    if: needs.gate.outputs.allowed == 'true' && needs.gate.outputs.machine == 'github'
-    # A fresh GitHub-hosted Ubuntu machine for every review, deleted when the job ends. Public repositories get these
-    # free and without a limit, and none of Krish's machines, keys or Paperclip is on it. The gate above has already
-    # checked the caller, the head's repository and the exact commit, so a fork PR never reaches this job.
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      issues: write
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Let bubblewrap start its sandbox
-        # Ubuntu 24.04 (ubuntu-latest) restricts unprivileged user namespaces through AppArmor, which is what bubblewrap
-        # needs for --unshare-all. Turning that restriction off is safe here: this VM exists for one review, holds only
-        # that review's key, and is deleted afterwards. The bwrap line is the real check: if it cannot start a sandbox
-        # the job stops, and no reviewer is ever run unsandboxed.
+          GH_TOKEN: ${{ secrets.AGENT_REVIEW_DISPATCH_TOKEN }}
         run: |
           set -euo pipefail
-          # Older images do not have the key; the bwrap probe below is the real check either way.
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends bubblewrap
-          bwrap --unshare-all --share-net --die-with-parent --ro-bind / / -- true
-
-      - name: Pick the reviewer
-        id: pick
-        env:
-          REVIEW_ROLE: ${{ needs.gate.outputs.role }}
-          REVIEW_TIER: ${{ needs.gate.outputs.tier }}
-          REVIEW_NUMBER: ${{ needs.gate.outputs.number }}
-          COMMENT_BODY: ${{ github.event.comment.body }}
-          # Used only to post the refusal comment when a tag names a reviewer the rules do not allow; no provider
-          # secret is given to this step.
-          GH_TOKEN: ${{ github.token }}
-          # Quota-only snapshots from Krish's machines (#93, tools/usage-publish): % left per window, reset times,
-          # pace, a timestamp and the machine's name. No keys and no account names. Empty until a machine first
-          # publishes, and the review ignores any snapshot 30 minutes old or more.
-          USAGE_SNAPSHOT_MAC: ${{ vars.USAGE_SNAPSHOT_MAC }}
-          USAGE_SNAPSHOT_VPS: ${{ vars.USAGE_SNAPSHOT_VPS }}
-          USAGE_SNAPSHOT_OMARCHY: ${{ vars.USAGE_SNAPSHOT_OMARCHY }}
-        # The tag names the reviewer; this only checks that choice and installs that one CLI. A tag that breaks a rule is
-        # refused with a comment on the pull request and the job stops, so the tagging agent chooses again. It never
-        # substitutes a model of its own.
-        run: printf '%s' "$COMMENT_BODY" | node tools/agent-review.mjs pick "$REVIEW_ROLE" "$REVIEW_TIER"
-
-      # Only the chosen reviewer's CLI is installed, and only that provider's secret is given to the step that runs it.
-      # Versions are pinned so a review is the same tool today and in a month.
-      - name: Install Claude Code
-        id: install_claude
-        if: steps.pick.outputs.provider == 'claude'
-        run: npm install -g --no-audit --no-fund @anthropic-ai/claude-code@2.1.325
-      - name: Install Codex
-        id: install_codex
-        if: steps.pick.outputs.provider == 'codex'
-        run: npm install -g --no-audit --no-fund @openai/codex@0.169.0
-      - name: Install OpenCode
-        id: install_opencode
-        if: steps.pick.outputs.provider == 'opencode'
-        run: |
-          # `@opencode/cli` is OpenCode 2's official package, published by the OpenCode maintainer and installing the
-          # `opencode` binary this repo calls. `opencode-ai` is the 1.x package (same publisher, `opencode` binary), which
-          # does not take the v2 flags; checked with `npm view <pkg> version bin repository.url`, not from memory.
-          npm install -g --no-audit --no-fund @opencode/cli@2.3.0
-          # The agent file and provider config on main are what limit OpenCode; the review stops if either copy differs,
-          # or if this folder holds anything besides those two files.
-          mkdir -p "$HOME/.config/opencode/agents"
-          cp tools/opencode-reviewer.md "$HOME/.config/opencode/agents/tess-reviewer.md"
-          cp tools/opencode-config.json "$HOME/.config/opencode/opencode.json"
-      - name: Install Antigravity
-        id: install_antigravity
-        if: steps.pick.outputs.provider == 'antigravity'
-        run: |
-          # agy@1.5.12, the Linux x64 build. The archive's binary is named antigravity; the job calls it agy.
-          # The sha256 was checked against a download of that release. A changed archive fails here, before tar.
-          version=1.5.12
-          mkdir -p "$HOME/.local/bin"
-          curl -fsSL -o /tmp/agy.tgz "https://github.com/google-antigravity/antigravity-cli/releases/download/${version}/agy_cli_linux_x64.tar.gz"
-          echo "0f0cb851cdc9fbedd50432570aa6ae9c4c398b9ea3f1e23e7776f707643c5b3e  /tmp/agy.tgz" | sha256sum -c -
-          tar -xzf /tmp/agy.tgz -C /tmp
-          install -m 755 /tmp/antigravity "$HOME/.local/bin/agy"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Run read-only reviewer
-        id: review
-        env:
-          REVIEW_ROLE: ${{ needs.gate.outputs.role }}
-          REVIEW_NUMBER: ${{ needs.gate.outputs.number }}
-          REVIEW_TIER: ${{ needs.gate.outputs.tier }}
-          REVIEW_HEAD_SHA: ${{ needs.gate.outputs.head_sha }}
-          # The reviewer the tag named, checked by the pick step above, so the CLI installed here is the one that runs.
-          REVIEW_PROVIDER: ${{ steps.pick.outputs.provider }}
-          REVIEW_MODEL: ${{ steps.pick.outputs.model }}
-          REVIEW_EFFORT: ${{ steps.pick.outputs.effort }}
-          # Quota-only snapshots from Krish's machines (#93, tools/usage-publish): % left per window, reset times,
-          # pace, a timestamp and the machine's name. No keys and no account names. Empty until a machine first
-          # publishes, and the review ignores any snapshot 30 minutes old or more.
-          USAGE_SNAPSHOT_MAC: ${{ vars.USAGE_SNAPSHOT_MAC }}
-          USAGE_SNAPSHOT_VPS: ${{ vars.USAGE_SNAPSHOT_VPS }}
-          USAGE_SNAPSHOT_OMARCHY: ${{ vars.USAGE_SNAPSHOT_OMARCHY }}
-          # Plans only: every entry is a subscription login, and each is empty unless that provider is the one chosen, so
-          # a review can only ever hold its own. Claude's plan token and Codex's ChatGPT-plan login stop in the review
-          # process: the CLI is pointed at tools/review-proxy.mjs with a per-review token, and the proxy writes its config
-          # (holding the real credential) to RUNNER_TEMP at 0600, outside the sandbox bubblewrap gives the CLI (D-69,
-          # D-73). OpenCode gets only the connector key for the model prefix, and a Zen free opencode/* model gets none.
-          # The script checks the same map again and refuses an unknown prefix or a missing key (D-112).
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ steps.pick.outputs.provider == 'claude' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
-          CODEX_AUTH_JSON: ${{ steps.pick.outputs.provider == 'codex' && secrets.CODEX_AUTH_JSON || '' }}
-          OPENCODE_API_KEY: ${{ steps.pick.outputs.provider == 'opencode' && startsWith(steps.pick.outputs.model, 'opencode-go/') && secrets.OPENCODE_API_KEY || '' }}
-          ZHIPU_API_KEY: ${{ steps.pick.outputs.provider == 'opencode' && startsWith(steps.pick.outputs.model, 'zai-coding-plan/') && secrets.ZHIPU_API_KEY || '' }}
-          NVIDIA_API_KEY: ${{ steps.pick.outputs.provider == 'opencode' && startsWith(steps.pick.outputs.model, 'nvidia/') && secrets.NVIDIA_API_KEY || '' }}
-          SARVAM_API_KEY: ${{ steps.pick.outputs.provider == 'opencode' && startsWith(steps.pick.outputs.model, 'sarvam/') && secrets.SARVAM_API_KEY || '' }}
-          # The Google-plan file agy writes (tools/agy-ci-login.mjs). Not an API key. The job redeems the
-          # refresh token before bubblewrap and mounts only a short-lived access token. The refresh token is
-          # not written to disk and is not passed into the sandbox.
-          AGY_OAUTH_TOKEN: ${{ steps.pick.outputs.provider == 'antigravity' && secrets.AGY_OAUTH_TOKEN || '' }}
-          # Needed to read the PR and post the comment. `tools/agent-review.mjs` never passes it to the reviewer.
-          GH_TOKEN: ${{ github.token }}
-        run: node tools/agent-review.mjs "$REVIEW_ROLE" "$REVIEW_NUMBER"
-
-      # The tagging agent is waiting for a review, and GitHub's own "this job failed" notice never reaches the pull
-      # request. Every failure after the gate therefore leaves a marker comment naming what broke. `tools/agent-review.mjs`
-      # already posts one for anything that fails inside it, and leaves a marker so this step stays quiet rather than
-      # repeating it; what this step covers is the rest (installing the CLI). It holds only the job's own token, never a
-      # provider login.
-      - name: Comment when the review stops short
-        if: failure()
-        env:
-          REVIEW_NUMBER: ${{ needs.gate.outputs.number }}
-          GH_TOKEN: ${{ github.token }}
-          PICK: ${{ steps.pick.outcome }}
-          CLAUDE: ${{ steps.install_claude.outcome }}
-          CODEX: ${{ steps.install_codex.outcome }}
-          OPENCODE: ${{ steps.install_opencode.outcome }}
-          ANTIGRAVITY: ${{ steps.install_antigravity.outcome }}
-          REVIEW: ${{ steps.review.outcome }}
-        run: |
-          why="the job stopped"
-          if [ "$REVIEW" = failure ]; then why="the reviewer stopped without posting a verdict"
-          elif [ "$CLAUDE" = failure ] || [ "$CODEX" = failure ] || [ "$OPENCODE" = failure ] || [ "$ANTIGRAVITY" = failure ]; then why="installing the reviewer's CLI failed"
-          elif [ "$PICK" = failure ]; then why="choosing the reviewer failed"
-          fi
-          node tools/agent-review.mjs stop "$why"
-
-  # Everything the gate decided without running a reviewer: a refusal (in fixed words, because a script's message can
-  # carry a path or a key), or a tag that was checked here and runs on a machine's own watcher. This job holds only the
-  # workflow's own token. It never touches a provider login.
-  notice:
-    needs: gate
-    if: always() && (needs.gate.outputs.refusal != '' || (needs.gate.outputs.allowed == 'true' && needs.gate.outputs.machine != 'github'))
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-          persist-credentials: false
-      - name: Say why the review did not run
-        if: needs.gate.outputs.refusal != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          ISSUE_NUMBER: ${{ needs.gate.outputs.number }}
-          REVIEW_REFUSAL: ${{ needs.gate.outputs.refusal }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: node tools/agent-review.mjs refuse "$REVIEW_REFUSAL"
-      - name: Say where the review is queued
-        if: needs.gate.outputs.allowed == 'true' && needs.gate.outputs.machine != 'github'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          ISSUE_NUMBER: ${{ needs.gate.outputs.number }}
-          REVIEW_MACHINE: ${{ needs.gate.outputs.machine }}
-          COMMENT_BODY: ${{ github.event.comment.body }}
-        run: printf '%s' "$COMMENT_BODY" | node tools/agent-review.mjs queued
+          jq -c '{
+            event_type: "agent-review",
+            client_payload: {
+              repository: .repository.full_name,
+              issue_number: .issue.number,
+              comment_id: .comment.id
+            }
+          }' "$GITHUB_EVENT_PATH" |
+            gh api repos/Flame119052/agent-review/dispatches --input - --silent

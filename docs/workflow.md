@@ -1,5 +1,8 @@
 # How work moves: issue → approach → PR → dev → beta → stable
 
+
+> **Shared review hub (D-120, #169):** As of 23 Nov 2026, the hosted review engine, all 7 provider logins, the 4-day Codex refresher, and the multi-repo watchers live in [`Flame119052/agent-review`](https://github.com/Flame119052/agent-review). This repo keeps only the caller workflow (`.github/workflows/agent-review.yml`) and its repo-specific rules (`.github/review.json`). Both `@review` and `@tess-review` tags work.
+
 This is the owner's process for every change to Tess (D-63, #71). Agents and people both follow it.
 
 ## The three channels
@@ -29,13 +32,13 @@ Only `beta` and `stable` are public. The release workflow does it:
 
 ## How much review a change needs (tiers)
 
-The tier comes from the paths the PR touches. `tools/agent-review.mjs` works it out, so nobody has to judge.
+The tier comes from the paths the PR touches, configured in [`.github/review.json`](../.github/review.json) and enforced by [`Flame119052/agent-review`](https://github.com/Flame119052/agent-review).
 
 | Tier | Touches | Approach review | PR review | Krish |
 | --- | --- | --- | --- | --- |
 | **docs** | only `docs/`, `*.md`, issue templates | no | no (CI only) | merges |
-| **normal** | theme, Tess Mini, tools | no | yes, lighter model | merges |
-| **sensitive** | `installer/`, `inbox/`, `patcher/`, `support/`, `.github/`, `tools/release.mjs`, `tools/promote.mjs`, `tools/rescue.mjs`, `tools/check-safety.sh`, signing, rescue | yes, strong model | yes, strong model | reviews and merges |
+| **normal** | theme, non-sensitive tools | no | yes, lighter model | merges |
+| **sensitive** | `installer/`, `inbox/`, `patcher/`, `support/`, `mini/`, `.github/`, `tools/release.mjs`, `tools/declare.mjs`, `tools/promote.mjs`, `tools/rescue.mjs`, `tools/check-safety.sh`, signing, rescue | yes, strong model | yes, strong model | reviews and merges |
 
 **Which model reviews what:**
 - The **strong model** reviews the approach, because a wrong design is the costliest mistake.
@@ -95,7 +98,7 @@ round skips to the next model. Gemini 4 Neon runs in this job on `machine=github
   watcher on the machine polls for tags that name it, checks them with the same rules, and starts the thread with
   `t3 thread start`. The thread answers with the review as its last message and **the watcher posts it**, with the
   marker, the commit it read and a verdict, after confirming the pull request still points at that commit. Setup, the
-  timer and its one-time check are in [`tools/review-watch/README.md`](../tools/review-watch/README.md); installing it is
+  timer and its one-time check are in [`agent-review/tools/review-watch/README.md`](https://github.com/Flame119052/agent-review/blob/main/tools/review-watch/README.md); installing it is
   Krish's step, not a merge.
 - **`machine=vps`** is refused, in fixed words: T3 on `paperclip-vps` runs as root beside Paperclip, so Tess agents do
   not run there through T3 (see "Which machine does what").
@@ -122,7 +125,7 @@ What the machine path enforces, before any pull-request text reaches a thread (D
   and its answer is read, checked for the marker, the commit and one verdict line, and posted by the watcher. A hijacked
   thread can produce a bad review; it cannot comment, push, merge or release in Krish's name.
 - **The same rules as GitHub.** The allowlist, the fork refusal, CI green on the exact head, the tier, the plans-only
-  list, the author rule, usage and reserve are decided by the same `tools/agent-review.mjs`, so a tag cannot be refused
+  list, the author rule, usage and reserve are decided by the same `agent-review`'s `tools/agent-review.mjs`, so a tag cannot be refused
   on one path and allowed on the other. A refusal on a machine is posted as a comment too, in the same fixed words or
   the same rule comment.
 - **The tag as it reads now.** Every tag is fetched again by id right before it runs: one deleted after it was queued
@@ -151,7 +154,7 @@ are public.
    `opencode-go/*` (`OPENCODE_API_KEY`), `zai-coding-plan/*` (`ZHIPU_API_KEY`), `nvidia/*` (`NVIDIA_API_KEY`),
    `sarvam/*` (`SARVAM_API_KEY`), and `opencode/*` (Zen free, no key — only the four named free models). One can be
    empty while another is full, so name the connector in the model, as the examples do.
-3. **The weight.** `caps.per_review_pct` in [`agents.json`](../.github/agents.json) is the share of a 5-hour window one
+3. **The weight.** `caps.per_review_pct` in [`agent-review/.github/agents.json`](https://github.com/Flame119052/agent-review/blob/main/.github/agents.json) is the share of a 5-hour window one
    review of that model takes: 0.1 for DeepSeek V4.1 Flash, 0.2 for GLM-5.3-Flash, 1 for GLM-5.3 on Z.ai, 3 for
    `gpt-6.1-terra`, 7 for `gpt-6.1-sol`, and a cautious 10 for Claude, which reports no numbers of its own. The
    Zen-free, Nvidia, Sarvam, and extra Go / Z.ai models use a cautious share in that table until a window is measured,
@@ -197,7 +200,7 @@ proxy that will not start, a GitHub read that fails — because a job that stops
 waiting: the script posts one marker comment naming what broke (never a secret) and exits non-zero, and the review job
 has a last step that does the same for failures outside the script, such as installing the CLI.
 
-**One file holds the rules.** [`.github/agents.json`](../.github/agents.json) is the only place with model names, the
+**One file holds the rules.** [`agent-review/.github/agents.json`](https://github.com/Flame119052/agent-review/blob/main/.github/agents.json) is the only place with model names, the
 plans-only list, what one review costs, the hard caps, and any quota kept back. Its role lists (`approach`, `pr_normal`,
 `pr_sensitive`) are **pools, not a priority**: they say which models a role may use, and the order means nothing. This
 page explains how to read it and when to change it; it does not repeat the values.
@@ -227,7 +230,7 @@ Hacker News and Reddit in Sep–Nov 2026. Sources are in [`docs/research/reviewe
   API list price from the first request. Leaving it out keeps the plans-only rule true without a footnote.
 **Antigravity is in the GitHub job (D-107, D-109).** `gemini-4-neon` runs on the Google plan. On a Linux machine with no
 D-Bus session (a GitHub VM, and an SSH session on the Dell) agy 1.5.12 keeps that login in one file,
-`~/.gemini/antigravity-cli/antigravity-oauth-token`, instead of the OS keyring. `node tools/agy-ci-login.mjs` on the
+`~/.gemini/antigravity-cli/antigravity-oauth-token`, instead of the OS keyring. `node tools/agy-ci-login.mjs` in `Flame119052/agent-review` on the
 Dell produces the file. The job redeems the refresh token before bubblewrap, mounts only a short-lived access-token
 file, and deletes that file when the run ends. The refresh token is never written to disk and never enters the
 sandbox. The CLI runs with `--dangerously-skip-permissions` so a tool call does not wait for a person, and does not
@@ -256,9 +259,9 @@ On top of that, each CLI is told to stay read-only:
   stops it reading the job's files. The git check has to be skipped because the review copy is a `git archive`, with no
   `.git` in it.
 - Cursor: `--mode ask --sandbox enabled`.
-- OpenCode: the `tess-reviewer` agent (`tools/opencode-reviewer.md`), which denies everything except reading, and denies
+- OpenCode: the `tess-reviewer` agent (`agent-review`'s `tools/opencode-reviewer.md`), which denies everything except reading, and denies
   `external_directory` so reads stop at the review copy. The installed copy must match that file on `main` exactly, or the
-  review stops instead of running under wider rules. The runner also copies `tools/opencode-config.json` to
+  review stops instead of running under wider rules. The runner also copies `agent-review`'s `tools/opencode-config.json` to
   `~/.config/opencode/opencode.json`. That file must match byte for byte, and the folder may contain only `opencode.json`
   and `agents/tess-reviewer.md`, so a stray `opencode.jsonc` or `config.json` cannot widen the reviewer. The json holds
   `$schema` and `providers` only (Nvidia's `headerTimeout`, and Sarvam with `{env:SARVAM_API_KEY}`), never an agent, a
@@ -300,7 +303,7 @@ A review must never take a large share of an allowance, so each one is bounded b
 | Claude | `--max-turns 12`, `--max-budget-usd` (60 cents for Opus, 30 for Sonnet), `--output-format json` | `--max-turns` is real but hidden from `--help` in 2.1.x. The dollar figure is a client-side estimate of API list prices, not the plan's own meter, so it is a guardrail beside the turn cap. The JSON result is what lets the comment say the turns, dollars and tokens a review used. |
 | Codex | `-c model_reasoning_effort=…`, `-c model_auto_compact_token_limit=64000`, `-c features.rollout_budget.*`, `--json` stream monitor | `features.rollout_budget.limit_tokens=200000` (with `enforce_limit=true` and `reminder_at_remaining_tokens=[50000]`) asks Codex to budget its rollout, and the `--json` stream monitor is the hard enforcement that kills any run crossing `caps.codex.max_tokens` (200,000) immediately and refuses it with a comment. Compaction at 64k tokens keeps multi-turn context lean. |
 | Cursor | the 480 s timeout, `--mode ask`, `--sandbox enabled` | Not offered today (see "Left out on purpose"). Only Cursor's own models (Composer) would be allowed, because a Claude or GPT model inside Cursor bills prepaid credit from the first request. |
-| OpenCode | `steps: 12` in the `tess-reviewer` agent file | On the last step OpenCode drops the tools and asks for a summary, which is the review. The agent file must match `tools/opencode-reviewer.md` exactly, and the test keeps its number equal to `caps.opencode.steps`. |
+| OpenCode | `steps: 12` in the `tess-reviewer` agent file | On the last step OpenCode drops the tools and asks for a summary, which is the review. The agent file must match `agent-review`'s `tools/opencode-reviewer.md` exactly, and the test keeps its number equal to `caps.opencode.steps`. |
 | Antigravity | `--print-timeout` set to the same wall clock, prompt on stdin as stream-json | No separate turn cap. The prompt is not one command-line argument, because Linux caps a single argument at 128 KiB. The CLI is told to auto-approve its own tools (D-107). Bubblewrap hides the runner's files; it does not keep the access token from being read. |
 | **All of them** | a 600 s wall clock (480 s for `gpt-6.1-terra` and GLM-5.3-Flash) | The process is killed at the limit, bubblewrap takes its children with it, and the posted comment says so: `codex/gpt-6.1-sol timed out after 600s`. The job then stops instead of running a different model. |
 
@@ -329,7 +332,7 @@ or tokens says nothing about the change and the agent that chose the reviewer ha
 
 ### How to update this
 
-Everything below is one edit to `.github/agents.json`, then `node tools/test-agent-review.mjs`, then a PR. The test
+Everything below lives in [`Flame119052/agent-review`](https://github.com/Flame119052/agent-review) (`.github/agents.json` and `node tools/test-agent-review.mjs` (in `Flame119052/agent-review`)), while repo-specific path rules live in this repo's [`.github/review.json`](../.github/review.json). The test
 checks that every allowed model has a cost weight and a plan, that every role pool names an allowed model with a valid
 effort, that `strong` names allowed models, that the caps name allowed models, that the OpenCode step cap matches the
 agent file, that no retired API-key secret is used anywhere, and that every note stays dated.
@@ -340,15 +343,15 @@ agent file, that no retired API-key secret is used anywhere, and that every note
   does not go in this file at all.
 - **A provider changed its limits.** Nothing to edit: the usage hub reads the limits by itself. The share of a 5-hour
   window one review is assumed to take is `caps.per_review_pct`, per model, in `.github/agents.json`; a model with no
-  entry falls back to a cautious 10% in `tools/agent-review.mjs`, changed only with a measured cost per review to point
+  entry falls back to a cautious 10% in `agent-review`'s `tools/agent-review.mjs`, changed only with a measured cost per review to point
   at.
 - **Change what one review may spend.** Edit `caps` in `.github/agents.json`: `timeout_s` and `timeout_s_by_model` (the
   wall clock), `claude.max_turns` and `claude.max_budget_usd`, `codex.auto_compact_token_limit` and `codex.max_tokens`,
   and `opencode.steps`.
-  `opencode.steps` must equal `steps:` in `tools/opencode-reviewer.md`, because that file is what the runner copies and
-  the test compares the two. The runner also copies `tools/opencode-config.json`; copy both files again on any machine
+  `opencode.steps` must equal `steps:` in `agent-review`'s `tools/opencode-reviewer.md`, because that file is what the runner copies and
+  the test compares the two. The runner also copies `agent-review`'s `tools/opencode-config.json`; copy both files again on any machine
   that runs OpenCode reviews. Then run
-  `node tools/test-agent-review.mjs` and say in the PR what MADE the old number wrong (a run that hit it, or a measured
+  `node tools/test-agent-review.mjs` (in `Flame119052/agent-review`) and say in the PR what MADE the old number wrong (a run that hit it, or a measured
   cost), so the change is not just a preference.
 - **Reserve quota for something else.** Add an entry under `reserve`, for example
   `"claude": { "weekly": 30, "note": "Krish's own work", "until": "2026-11-20" }`. The provider counts as out of usage
@@ -362,8 +365,8 @@ agent file, that no retired API-key secret is used anywhere, and that every note
 
 - **Who can call them.** Only GitHub accounts in the allowlist (the repo variable `AGENT_ALLOWLIST`, today just `Flame119052`). A tag from anyone else is ignored. Anyone can still open issues and PRs.
 - **Where they run.** A standard GitHub Actions job on `ubuntu-latest`: one fresh virtual machine per review, deleted when the job ends. GitHub-hosted Linux machines are free and unlimited for this public repository, so there is no runner to keep online, no box to wake, and no machine of Krish's in the path (D-66). Nothing of Krish's is on the VM: no signing or rescue keys, no Paperclip, no other job's secrets. A tag with `machine=mac` or `machine=omarchy` never reaches the review job: the gate reads it, the notice job posts `Review queued for mac`, and that machine's own watcher opens the review as a T3 thread (above).
-- **What reads the tag first.** The `gate` job runs `tools/agent-gate.sh` from `main` and answers in one place: the caller, the machine, the pull request's own head, CI on that commit, and the tier. A refusal is a fixed code, and the `notice` job posts the fixed words for it — never a script's message, which could carry a path or a key. An account that is not allowlisted still gets nothing at all.
-- **What the VM holds.** Only the chosen reviewer's plan login and a `GITHUB_TOKEN` that can comment on this repository. The tag's choice is checked first (`node tools/agent-review.mjs pick ...`), then that one provider's CLI is installed at a pinned version, and only that provider's login is given to the step. A review can never hold a second provider's login. For Claude and Codex the login stays in the review process and the sandbox gets a per-review token instead (`tools/review-proxy.mjs`, D-69, D-73); that proxy forwards only the one inference route its pinned CLI was measured to call and answers everything else with a 403, so the token is not a way to reach the rest of what the login can do. OpenCode keeps only the one connector key for the model prefix (`opencode-go/` → `OPENCODE_API_KEY`, `zai-coding-plan/` → `ZHIPU_API_KEY`, `nvidia/` → `NVIDIA_API_KEY`, `sarvam/` → `SARVAM_API_KEY`), and a Zen free `opencode/*` model gets none. The script checks the same map again and refuses an unknown prefix or a missing key. The agent file cannot read that key from inside the copy. `GH_TOKEN` is on the step so the review can be posted, and the script removes it before the reviewer process starts.
+- **What reads the tag first.** The `gate` job runs `agent-review`'s `tools/agent-gate.sh` from `main` and answers in one place: the caller, the machine, the pull request's own head, CI on that commit, and the tier. A refusal is a fixed code, and the `notice` job posts the fixed words for it — never a script's message, which could carry a path or a key. An account that is not allowlisted still gets nothing at all.
+- **What the VM holds.** Only the chosen reviewer's plan login and a `GITHUB_TOKEN` that can comment on this repository. The tag's choice is checked first (`node tools/agent-review.mjs pick ...`), then that one provider's CLI is installed at a pinned version, and only that provider's login is given to the step. A review can never hold a second provider's login. For Claude and Codex the login stays in the review process and the sandbox gets a per-review token instead (`agent-review`'s `tools/review-proxy.mjs`, D-69, D-73); that proxy forwards only the one inference route its pinned CLI was measured to call and answers everything else with a 403, so the token is not a way to reach the rest of what the login can do. OpenCode keeps only the one connector key for the model prefix (`opencode-go/` → `OPENCODE_API_KEY`, `zai-coding-plan/` → `ZHIPU_API_KEY`, `nvidia/` → `NVIDIA_API_KEY`, `sarvam/` → `SARVAM_API_KEY`), and a Zen free `opencode/*` model gets none. The script checks the same map again and refuses an unknown prefix or a missing key. The agent file cannot read that key from inside the copy. `GH_TOKEN` is on the step so the review can be posted, and the script removes it before the reviewer process starts.
 - **Which model runs.** The tag says. The pick step only checks the choice — plans-only list, the job's installed CLIs, `strong` for a sensitive change, a different provider from the author, usage and any reserve — and refuses anything that breaks a rule with a comment on the pull request. Usage comes from [#93](https://github.com/Flame119052/tess-music/issues/93)'s quota-only snapshots, one repository variable per machine (`USAGE_SNAPSHOT_MAC`, `_VPS`, `_OMARCHY`): the freshest under 30 minutes wins, and it is read beside the local hub; with none fresh, "no numbers" counts as usable, and the CLI's own refusal is reported in a comment. Those numbers are a check on the agent's choice, never a way for the job to pick for it.
 - **Safety, because the repo is public:**
   - The workflow is triggered only by `issue_comment`, which always runs the workflow file from `main`, never from a PR.
@@ -375,9 +378,9 @@ agent file, that no retired API-key secret is used anywhere, and that every note
 
 ## Codex login refresh
 
-GitHub Actions renews `CODEX_AUTH_JSON` on a schedule (`.github/workflows/codex-refresh.yml`, D-111). The job runs every four days, and it can also be started by hand. It exchanges the stored refresh token, checks the new access token was issued by `https://auth.openai.com` and still has at least a day of life, then writes the login back as the same secret. The token that writes secrets is `CODEX_SECRET_ROTATOR_TOKEN`: a fine-grained personal access token scoped only to Actions (read) and Secrets (read and write) on `Flame119052/tess-music`. The review workflow never receives it.
+GitHub Actions renews `CODEX_AUTH_JSON` on a schedule in `Flame119052/agent-review` (`.github/workflows/codex-refresh.yml`, D-111, D-120). The job runs every four days, and it can also be started by hand. It exchanges the stored refresh token, checks the new access token was issued by `https://auth.openai.com` and still has at least a day of life, then writes the login back as the same secret. The token that writes secrets is `CODEX_SECRET_ROTATOR_TOKEN`: a fine-grained personal access token scoped only to Actions (read) and Secrets (read and write) on `Flame119052/agent-review`. The review workflow never receives it.
 
-Do not run `node tools/codex-ci-login.mjs` while that schedule is on. The copy in `~/.config/tess-codex-ci` goes stale at the first cloud rotation. Its access token can still show days of life, and uploading it replaces the live secret with a dead refresh token. Run that script only after the `codex-refresh` schedule is turned off, and only when the scheduled refresh itself is broken.
+Do not run `node tools/codex-ci-login.mjs` (in `Flame119052/agent-review`) while that schedule is on. The copy in `~/.config/tess-codex-ci` goes stale at the first cloud rotation. Its access token can still show days of life, and uploading it replaces the live secret with a dead refresh token. Run that script only after the `codex-refresh` schedule is turned off, and only when the scheduled refresh itself is broken.
 
 ## Where work happens: branches, worktrees and machines
 

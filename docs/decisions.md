@@ -1183,3 +1183,11 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   launch token changes or its sequence drops. Reset waits for Mini to discard the old conversation before
   syncing the cursor (#166, #168). Support guides the person through macOS's Quit & Reopen prompt and asks
   for capture consent again if restarting Mini cleared the visit (#168).
+
+- **D-120 · 23 Nov 2026 · Krish** — Moved the hosted AI review engine, the 7 provider logins, the 4-day `codex-refresh`
+  schedule, and the usage-snapshot publishers into the shared public hub repo `Flame119052/agent-review` (#169).
+  `tess-music` keeps only the ~25-line caller connector (`.github/workflows/agent-review.yml`), its repo-specific
+  rules (`.github/review.json`), and `AGENT_REVIEW_DISPATCH_TOKEN`. *Why:* all of Krish's repos can share one set of
+  provider logins and one Codex refresh schedule (two repos refreshing the same ChatGPT login invalidate each other),
+  while public repos keep unlimited free GitHub Actions minutes and private repos route to Krish's online machines
+  (`mac` → `omarchy` → `vps`).

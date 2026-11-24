@@ -71,14 +71,6 @@ jobs:
         run: node tools/test-support-mac-install.mjs
       - name: Support filing line tests
         run: node tools/test-reports.mjs
-      - name: Reviewer agent tests
-        run: |
-          node tools/test-codex-refresh.mjs
-          node tools/test-agent-review.mjs
-      - name: Review watcher tests (a tag opens a T3 thread on the machine it names)
-        run: node tools/test-review-watch.mjs
-      - name: Usage publisher tests
-        run: node tools/test-usage-publish.mjs
       - name: Trust tests (signed manifest, loader floor and cache, install stub, sandbox install)
         run: |
           node tools/test-manifest.mjs
@@ -92,4 +84,4 @@ jobs:
           node tools/test-release-revs.mjs
           node tools/test-loader-perf.mjs
       - name: Tools parse
-        run: for f in tools/*.mjs tools/review-watch/*.mjs; do node --check "$f"; done
+        run: for f in tools/*.mjs; do node --check "$f"; done
