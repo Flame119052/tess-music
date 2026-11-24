@@ -1,6 +1,6 @@
 {
-  "version": "0.2.42",
+  "version": "0.2.59",
   "channel": "beta",
-  "sourceCommit": "3ad27a9ef79e39cf9ede2f761d05b9915e77f857",
-  "previousSourceCommit": "683c8dfe6a840894a02e84298f78703efccbd861"
+  "sourceCommit": "f1e23feae882baf4a3cc64b5f7e8caf77e9cb139",
+  "previousSourceCommit": "3ad27a9ef79e39cf9ede2f761d05b9915e77f857"
 }
