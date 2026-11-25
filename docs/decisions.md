@@ -1191,3 +1191,12 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   provider logins and one Codex refresh schedule (two repos refreshing the same ChatGPT login invalidate each other),
   while public repos keep unlimited free GitHub Actions minutes and private repos route to Krish's online machines
   (`mac` → `omarchy` → `vps`).
+- **D-121 · 25 Nov 2026 · Krish & Agent** — Replaced the plain system alert for macOS App Management (`tess-patcher`
+  blocked with exit code 3) with a prominent floating Liquid Glass permission card (`tess-invite permission`, tool
+  version 2) plus gentle non-nagging re-prompting in `installer/updater.sh` (once right after a Mac upgrades to
+  `tess-invite 2` via `.perm-card-v2-*`, then at most once every 3 days via `4320` minutes on `.reapply-tried-*`),
+  and guarded `tess_post` in `support/pi/tess-visit.ts` so a visit cannot submit a second report once `lastReportId`
+  is set. *Why:* a non-technical tester can miss or dismiss a small grey system alert and remain stuck on stock Spotify
+  for the rest of that Spotify version because `.reapply-tried-<version>` previously suppressed retries; guiding them
+  straight to App Management with a persistent corner companion card and `"I turned it on — Apply Tess"` closes the
+  loop without nagging, while refusing duplicate `tess_post` calls stops Support from filing two reports in one chat.

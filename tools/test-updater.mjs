@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1028,17 +1028,75 @@ exit 2
   }
 
   {
+    // App Management card (version 2): Macs already stuck on stock Spotify get one immediate prominent nudge once
+    // tess-invite 2 arrives, can grant permission and click Apply (reapply now), and otherwise see it at most once every 3 days.
+    const s = sandbox({ stock: true });
+    const cwFile = join(s.box, 'can-write');
+    writeFileSync(cwFile, '3');
+    writeFileSync(join(s.tess, 'bin', 'patcher', 'tess-patcher'), `#!/bin/zsh
+APPS="$TESS_TEST_SPOTIFY/Contents/Resources/Apps"
+case "$*" in
+  *can-write*) exit "$(cat "$TESS_CW_FILE" 2>/dev/null || echo 3)" ;;
+  *"backup apply"*)
+    echo apply >> "$TESS_PATCHER_LOG"
+    stage="$APPS.tess-fake"; rm -rf "$stage"; mkdir -p "$stage/xpui/extensions"
+    echo spicetifyWrapper > "$stage/xpui/index.html"
+    rm -rf "$APPS"; mv "$stage" "$APPS"; exit 0 ;;
+esac
+exit 0
+`, { mode: 0o755 });
+    const fakeV2 = `#!/bin/sh
+case "$1" in
+  --check) echo "tess-invite 2"; exit 0 ;;
+esac
+printf '%s\\n' "$*" >> "$TESS_FAKE_DIR/invite-argv.log"
+env | sort > "$TESS_FAKE_DIR/invite-$1.env"
+case "$1" in
+  permission)
+    [ -n "$TESS_GRANT_CW" ] && printf '0' > "$TESS_CW_FILE"
+    exit "\${TESS_FAKE_PERM_RC:-1}" ;;
+esac
+exit 2
+`;
+    const extra = plantInvite(s, fakeV2);
+    // Simulate a Mac already stuck on v1 (`asked` + `tried` exist, no `.perm-card-v2-*` stamp yet).
+    writeFileSync(join(s.state, '.asked-1.3.9.2055'), '');
+    writeFileSync(join(s.state, '.reapply-tried-1.3.9.2055'), '');
+
+    s.run({ ...extra, TESS_TEST_PERMISSION_UI: '1', TESS_CW_FILE: cwFile, TESS_FAKE_PERM_RC: '1' });
+    assert.equal(inviteLog(s, 'invite-argv.log').trim(), 'permission --timeout 900', 'upgrading to tess-invite 2 offers the permission card once even if previously asked');
+    assert.ok(existsSync(join(s.state, '.perm-card-v2-1.3.9.2055')), 'v2 permission prompt recorded');
+    assert.match(readFileSync(join(s.apps, 'xpui.spa'), 'utf8'), /stock Spotify/, 'Later leaves Spotify stock');
+
+    // Immediate next check (< 3 days) must not nag again.
+    writeFileSync(join(s.box, 'invite-argv.log'), '');
+    s.run({ ...extra, TESS_TEST_PERMISSION_UI: '1', TESS_CW_FILE: cwFile, TESS_FAKE_PERM_RC: '1' });
+    assert.equal(inviteLog(s, 'invite-argv.log').trim(), '', 'does not nag again before 3 days have passed');
+
+    // After 3+ days (> 4320 min), gently re-offers; when the user turns it on and clicks Apply, Spotify gets patched and stamps clear.
+    const fourDaysAgo = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000);
+    utimesSync(join(s.state, '.reapply-tried-1.3.9.2055'), fourDaysAgo, fourDaysAgo);
+    writeFileSync(join(s.box, 'invite-argv.log'), '');
+    s.run({ ...extra, TESS_TEST_PERMISSION_UI: '1', TESS_CW_FILE: cwFile, TESS_GRANT_CW: '1', TESS_FAKE_PERM_RC: '0', TESS_SUPPORT_TOKEN: LEAKED });
+    assert.equal(inviteLog(s, 'invite-argv.log').trim(), 'permission --timeout 900', 're-offers permission card after 3 days');
+    const permEnv = inviteLog(s, 'invite-permission.env').split('\n').filter((l) => !l.startsWith('TESS_INVITE_CLAIM_JSON=')).join('\n');
+    assert.ok(!permEnv.includes(LEAKED) && !/TESS_SUPPORT_TOKEN/.test(permEnv), 'permission card never receives TESS_SUPPORT_TOKEN');
+    assert.match(readFileSync(join(s.apps, 'xpui', 'index.html'), 'utf8'), /spicetifyWrapper/, 'clicking I turned it on applies Tess immediately');
+    assert.ok(!existsSync(join(s.state, '.reapply-tried-1.3.9.2055')) && !existsSync(join(s.state, '.asked-1.3.9.2055')) && !existsSync(join(s.state, '.perm-card-v2-1.3.9.2055')), 'successful reapply clears all permission stamps');
+  }
+
+  {
     // Source guards for the invariants the card must never break.
     const updater = readFileSync(join(root, 'installer', 'updater.sh'), 'utf8');
-    const uses = updater.split('\n').filter((l) => /\$SUPPORT_UI/.test(l) && !/^\s*#/.test(l) && /(ask|progress)/.test(l));
-    assert.equal(uses.length, 2, 'the card is started in exactly two places');
+    const uses = updater.split('\n').filter((l) => /\$SUPPORT_UI/.test(l) && !/^\s*#/.test(l) && /(ask|progress|permission)/.test(l));
+    assert.equal(uses.length, 3, 'the card is started in exactly three places');
     for (const l of uses) {
       assert.match(l, /env -u TESS_SUPPORT_TOKEN/, 'each start strips the token variable');
       assert.doesNotMatch(l, /\$tok\b|\$\{tok|install-id|\$iid|\$invite_id/, 'and passes no token, install id or invite id');
     }
     const tokenLines = updater.split('\n').filter((l) => /TESS_SUPPORT_TOKEN/.test(l) && !/^\s*#/.test(l));
     assert.equal(tokenLines.filter((l) => /TESS_SUPPORT_TOKEN="\$tok" sh "\$TMP\/support-install\.sh"/.test(l)).length, 1, 'the installer is the one place that gets the token');
-    assert.equal(tokenLines.length, 3, 'the token name appears only on the installer line and the two env -u strips');
+    assert.equal(tokenLines.length, 4, 'the token name appears only on the installer line and the three env -u strips');
     const order = ['"$VERIFY" "$TMP/support-install.sh"', 'invite/claim', 'TESS_SUPPORT_TOKEN="$tok" sh'].map((m) => updater.indexOf(m));
     assert.ok(order[0] > 0 && order[0] < order[1] && order[1] < order[2], 'download, signature check, SHA pin and claim keep their order before the installer');
     assert.ok(updater.indexOf("awk '$1 == \"support-install\"") < updater.indexOf('invite/claim'), 'the SHA pin is checked before the claim');
@@ -1050,7 +1108,7 @@ exit 2
     assert.match(readFileSync(join(root, '.github', 'workflows', 'release.yml'), 'utf8'), /'support\/mac\/install\.sh'/, 'a pin commit to support/mac/install.sh builds dev');
   }
 
-  console.log('updater tests passed (success, fresh, blocked, failed swap, rollback/no-retry, playing/idle, list reports, theme swap with ditto denied, support invite consent, invite lock released while a dialog waits, claim 404 vs 503, Liquid Glass card part install/rollback, exit codes, progress, no token to the card, plain-dialog fallback)');
+  console.log('updater tests passed (success, fresh, blocked, failed swap, rollback/no-retry, playing/idle, list reports, theme swap with ditto denied, support invite consent, invite lock released while a dialog waits, claim 404 vs 503, Liquid Glass card part install/rollback, exit codes, progress, no token to the card, plain-dialog fallback, App Management v2 nudge & 3-day cooldown)');
 } finally {
   for (const box of boxes) rmSync(box, { recursive: true, force: true });
 }
