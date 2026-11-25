@@ -839,11 +839,26 @@ export default function (pi: ExtensionAPI) {
     name: "tess_post",
     label: "Send report to inbox",
     description:
-      "Post this visit's report. If a still or clip exists, post that too. Takes no arguments. " +
-      "The token stays inside this tool.",
+      "Post this visit's report once. If a still or clip exists, post that too. Takes no arguments. " +
+      "The token stays inside this tool. Call once per visit; to add details afterward, use tess_amend_report.",
     parameters: Type.Object({}),
     async execute() {
       try {
+        if (lastReportId != null) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  ok: false,
+                  report_id: lastReportId,
+                  error: `Report #${lastReportId} was already sent this visit. Use tess_amend_report to add details instead of creating a duplicate report.`,
+                }),
+              },
+            ],
+            details: { ok: false, report_id: lastReportId },
+          };
+        }
         const dir = requireSession();
         const origin = inboxOrigin();
         const tok = process.env.TESS_SUPPORT_TOKEN || "";

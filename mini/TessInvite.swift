@@ -1,9 +1,10 @@
 import SwiftUI
 import AppKit
 
-// The Tess Support invite, drawn as a Liquid Glass card in the same look as Tess's "What's New" sheet (theme core.css,
-// .twn-*). It replaces a grey system alert and two banner notifications, and is the only thing in this file that
-// talks to a person; every decision it reports is an exit code, nothing else.
+// The Tess Liquid Glass cards, drawn in the same look as Tess's "What's New" sheet (theme core.css, .twn-*). It
+// replaces grey system alerts and banners for both Tess Support invites/progress and the macOS App Management
+// permission prompt, and is the only thing in this file that talks to a person; every decision it reports is an exit
+// code, nothing else.
 //
 //   tess-invite ask [--timeout 900]
 //       0 = Add Tess Support (install)   1 = Not now (decline)   2 = closed with x / Escape, timed out, or could
@@ -14,15 +15,20 @@ import AppKit
 //       `failed` when the updater writes that word there. Exit 0 = Open Tess Support, 1 = Done / Close, 2 = timed out,
 //       the file went away, or the card could not be shown.
 //
-//   tess-invite --snapshot <ask|installing|done|failed> <out.png>
+//   tess-invite permission [--timeout 900]
+//       Floating prominent App Management prompt: "Open App Management" opens System Settings to Privacy & Security ->
+//       App Management and slides the companion card to the upper-right corner. Exit 0 = I turned it on — Apply Tess,
+//       1 = Later / Close / Escape, 2 = timed out or could not be shown.
+//
+//   tess-invite --snapshot <ask|installing|done|failed|permission|permissionWait> <out.png>
 //       Renders one state to a PNG with no window at all, so every state can be checked without opening anything.
 //   tess-invite --check
-//       Prints the helper's name and version and exits 0; the updater runs it before it trusts a downloaded copy.
+//       Prints the helper's name and version ("tess-invite 2") and exits 0; the updater runs it before trusting it.
 //
 // No arguments, files or environment here carry a token, a name or an install id: the status file holds one word.
 
 let toolName = "tess-invite"
-let toolVersion = "1"
+let toolVersion = "2"
 let spotifyBundleID = "com.spotify.client"
 
 func spotifyIsFront() -> Bool {
@@ -54,9 +60,9 @@ func spotifyWindowFrame() -> NSRect? {
   return best
 }
 
-enum Phase: String { case ask, installing, done, failed }
+enum Phase: String { case ask, installing, done, failed, permission, permissionWait }
 
-enum Choice { case primary, secondary, dismiss }
+enum Choice { case primary, secondary, dismiss, reopenSettings }
 
 func fail(_ message: String) -> Never {
   FileHandle.standardError.write(("\(toolName): \(message)\n").data(using: .utf8) ?? Data())
@@ -80,6 +86,18 @@ struct Tint {
 let cardWidth: CGFloat = 480
 let cardRadius: CGFloat = 30
 let softWhite = Color.white.opacity(0.7)
+
+func cardWidth(for phase: Phase) -> CGFloat {
+  switch phase {
+  case .permission: return 500
+  case .permissionWait: return 436
+  default: return cardWidth
+  }
+}
+
+func isProminent(_ phase: Phase) -> Bool {
+  phase == .permission || phase == .permissionWait
+}
 
 /// A tinted glass well holding one symbol, like the icon wells in the What's New rows.
 struct Badge<Content: View>: View {
@@ -110,21 +128,25 @@ func symbol(_ name: String, _ tint: Tint, _ size: CGFloat) -> some View {
     .foregroundColor(tint.ink)
 }
 
-/// The rainbow rounded square at the top of What's New, with the glass sheen across its upper half.
+/// The rounded square emblem at the top of feature cards, with a glass sheen across its upper half.
 struct Emblem: View {
+  var colors: [Color] = [rgb(30, 215, 96), rgb(110, 231, 249), rgb(167, 139, 250), rgb(244, 114, 182), rgb(30, 215, 96)]
+  var glow: Color = rgb(30, 215, 96, 0.32)
+  var icon: String = "lifepreserver"
+
   var body: some View {
     let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
     ZStack {
-      shape.fill(AngularGradient(colors: [rgb(30, 215, 96), rgb(110, 231, 249), rgb(167, 139, 250), rgb(244, 114, 182), rgb(30, 215, 96)], center: .center, angle: .degrees(210)))
+      shape.fill(AngularGradient(colors: colors, center: .center, angle: .degrees(210)))
       shape.fill(LinearGradient(stops: [.init(color: Color.white.opacity(0.45), location: 0), .init(color: Color.white.opacity(0), location: 0.52)], startPoint: .top, endPoint: .bottom))
-      Image(systemName: "lifepreserver")
+      Image(systemName: icon)
         .font(.system(size: 29, weight: .semibold))
         .foregroundColor(.white.opacity(0.96))
         .shadow(color: .black.opacity(0.22), radius: 3, x: 0, y: 1)
     }
     .frame(width: 68, height: 68)
     .overlay(shape.strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5))
-    .shadow(color: rgb(30, 215, 96, 0.32), radius: 18, x: 0, y: 12)
+    .shadow(color: glow, radius: 18, x: 0, y: 12)
     .shadow(color: .black.opacity(0.3), radius: 3, x: 0, y: 2)
   }
 }
@@ -168,12 +190,19 @@ struct PillStyle: ButtonStyle {
 
 struct Row: View {
   let tint: Tint
-  let icon: String
+  var icon: String = ""
+  var step: String? = nil
   let title: String
   let detail: String
   var body: some View {
     HStack(alignment: .top, spacing: 16) {
-      Badge(tint: tint, size: 42, radius: 13) { symbol(icon, tint, 19) }
+      Badge(tint: tint, size: 42, radius: 13) {
+        if let step {
+          Text(step).font(.system(size: 17, weight: .bold, design: .rounded)).foregroundColor(tint.ink)
+        } else {
+          symbol(icon, tint, 19)
+        }
+      }
       VStack(alignment: .leading, spacing: 3) {
         Text(title).font(.system(size: 15.5, weight: .semibold)).foregroundColor(.white)
         Text(detail).font(.system(size: 13.5)).foregroundColor(softWhite).lineSpacing(2.5)
@@ -189,31 +218,38 @@ struct Row: View {
 /// blur, so the fill is a little denser to read the same over the fixed backdrop.
 struct CardChrome: View {
   let live: Bool
+  var prominent: Bool = false
   var body: some View {
     let shape = RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
     ZStack(alignment: .top) {
-      Color(red: 26 / 255, green: 26 / 255, blue: 32 / 255).opacity(live ? 0.5 : 0.78)
-      LinearGradient(stops: [.init(color: Color.white.opacity(0.11), location: 0), .init(color: Color.white.opacity(0.03), location: 0.38)], startPoint: .top, endPoint: .bottom)
+      Color(red: 22 / 255, green: 22 / 255, blue: 28 / 255).opacity(live ? (prominent ? 0.72 : 0.5) : (prominent ? 0.90 : 0.78))
+      LinearGradient(stops: [.init(color: Color.white.opacity(prominent ? 0.14 : 0.11), location: 0), .init(color: Color.white.opacity(0.03), location: 0.38)], startPoint: .top, endPoint: .bottom)
       // soft ambient light behind the emblem
       ZStack {
-        RadialGradient(colors: [rgb(30, 215, 96, 0.26), .clear], center: UnitPoint(x: 0.5, y: 0.2), startRadius: 0, endRadius: 190)
-        RadialGradient(colors: [rgb(167, 139, 250, 0.2), .clear], center: UnitPoint(x: 0.22, y: 0.1), startRadius: 0, endRadius: 150)
-        RadialGradient(colors: [rgb(110, 231, 249, 0.16), .clear], center: UnitPoint(x: 0.78, y: 0.12), startRadius: 0, endRadius: 150)
+        if prominent {
+          RadialGradient(colors: [rgb(255, 176, 56, 0.34), .clear], center: UnitPoint(x: 0.5, y: 0.16), startRadius: 0, endRadius: 230)
+          RadialGradient(colors: [rgb(30, 215, 96, 0.22), .clear], center: UnitPoint(x: 0.16, y: 0.12), startRadius: 0, endRadius: 170)
+          RadialGradient(colors: [rgb(64, 156, 255, 0.22), .clear], center: UnitPoint(x: 0.84, y: 0.12), startRadius: 0, endRadius: 170)
+        } else {
+          RadialGradient(colors: [rgb(30, 215, 96, 0.26), .clear], center: UnitPoint(x: 0.5, y: 0.2), startRadius: 0, endRadius: 190)
+          RadialGradient(colors: [rgb(167, 139, 250, 0.2), .clear], center: UnitPoint(x: 0.22, y: 0.1), startRadius: 0, endRadius: 150)
+          RadialGradient(colors: [rgb(110, 231, 249, 0.16), .clear], center: UnitPoint(x: 0.78, y: 0.12), startRadius: 0, endRadius: 150)
+        }
       }
-      .frame(height: 300)
+      .frame(height: prominent ? 340 : 300)
       .frame(maxHeight: .infinity, alignment: .top)
     }
     .clipShape(shape)
-    // a hairline rim: bright where light lands (top left), fading around the edge
+    // a hairline rim: bright where light lands (top left), plus a warm amber edge on action-needed permission cards
     .overlay(
       shape.strokeBorder(
         LinearGradient(stops: [
-          .init(color: Color.white.opacity(0.55), location: 0),
-          .init(color: Color.white.opacity(0.1), location: 0.3),
-          .init(color: Color.white.opacity(0.04), location: 0.6),
-          .init(color: Color.white.opacity(0.22), location: 1),
+          .init(color: prominent ? rgb(255, 205, 122, 0.72) : Color.white.opacity(0.55), location: 0),
+          .init(color: Color.white.opacity(prominent ? 0.22 : 0.1), location: 0.32),
+          .init(color: Color.white.opacity(prominent ? 0.12 : 0.04), location: 0.65),
+          .init(color: prominent ? rgb(111, 240, 160, 0.36) : Color.white.opacity(0.22), location: 1),
         ], startPoint: .topLeading, endPoint: .bottomTrailing),
-        lineWidth: 1)
+        lineWidth: prominent ? 1.5 : 1)
     )
   }
 }
@@ -238,6 +274,8 @@ struct InviteCard: View {
         case .installing: installing
         case .done: done
         case .failed: failed
+        case .permission: permission
+        case .permissionWait: permissionWait
         }
       }
       .transition(.opacity)
@@ -259,9 +297,9 @@ struct InviteCard: View {
         .padding(.trailing, 18)
       }
     }
-    .frame(width: cardWidth)
+    .frame(width: cardWidth(for: model.phase))
     .fixedSize(horizontal: true, vertical: true)
-    .background(CardChrome(live: live))
+    .background(CardChrome(live: live, prominent: isProminent(model.phase)))
   }
 
   // MARK: states
@@ -287,17 +325,20 @@ struct InviteCard: View {
 
   var foot: some View { Rectangle().fill(LinearGradient(colors: [.clear, Color.white.opacity(0.12), .clear], startPoint: .leading, endPoint: .trailing)).frame(height: 1).padding(.horizontal, 36) }
 
+  func pillTag(_ text: String, tint: Tint? = nil) -> some View {
+    Text(text)
+      .font(.system(size: 12, weight: .semibold))
+      .foregroundColor(tint?.ink ?? Color.white.opacity(0.86))
+      .padding(.horizontal, 13).padding(.vertical, 5)
+      .background(Capsule().fill(tint?.lo ?? Color.white.opacity(0.1)))
+      .overlay(Capsule().strokeBorder(tint?.edge ?? Color.white.opacity(0.09), lineWidth: 1))
+  }
+
   var ask: some View {
     VStack(spacing: 0) {
       VStack(spacing: 0) {
         Emblem().padding(.bottom, 20)
-        Text("Personal invite from Krish")
-          .font(.system(size: 12, weight: .semibold))
-          .foregroundColor(Color.white.opacity(0.86))
-          .padding(.horizontal, 13).padding(.vertical, 5)
-          .background(Capsule().fill(Color.white.opacity(0.1)))
-          .overlay(Capsule().strokeBorder(Color.white.opacity(0.09), lineWidth: 1))
-          .padding(.bottom, 14)
+        pillTag("Personal invite from Krish").padding(.bottom, 14)
         title("Want a hand with Tess?", size: 30).padding(.bottom, 10)
         sub("Add a private helper you can click\nanytime Spotify looks off.")
       }
@@ -379,6 +420,85 @@ struct InviteCard: View {
       .padding(.bottom, 28)
     }
   }
+
+  var permission: some View {
+    VStack(spacing: 0) {
+      VStack(spacing: 0) {
+        Emblem(
+          colors: [rgb(255, 190, 68), rgb(255, 122, 89), rgb(244, 114, 182), rgb(167, 139, 250), rgb(255, 190, 68)],
+          glow: rgb(255, 176, 56, 0.36),
+          icon: "checkmark.shield.fill"
+        ).padding(.bottom, 20)
+        pillTag("Spotify updated · Action needed", tint: .amber).padding(.bottom, 14)
+        title("Let Tess update Spotify", size: 29).padding(.bottom, 10)
+        sub("Spotify updated cleanly. Turn on one macOS toggle and Tess will bring your look right back.")
+      }
+      .padding(.top, 38)
+      .padding(.horizontal, 40)
+
+      VStack(alignment: .leading, spacing: 18) {
+        Row(tint: .blue, step: "1", title: "Open App Management", detail: "Click the bright button below to jump straight to that setting.")
+        Row(tint: .amber, step: "2", title: "Turn on tess-patcher", detail: "Flip the switch next to tess-patcher, then confirm with Touch ID or your Mac password.")
+        Row(tint: .green, step: "3", title: "Tess comes right back", detail: "Click \"I turned it on\" — Spotify and all your playlists stay completely safe.")
+      }
+      .padding(.horizontal, 40)
+      .padding(.top, 26)
+      .padding(.bottom, 26)
+
+      foot
+      HStack(spacing: 10) {
+        Spacer(minLength: 0)
+        Button("Later") { choose(.secondary) }.buttonStyle(PillStyle(primary: false))
+        Button("Open App Management") { choose(.primary) }.buttonStyle(PillStyle(primary: true))
+      }
+      .padding(.horizontal, 36)
+      .padding(.top, 18)
+      .padding(.bottom, 28)
+    }
+  }
+
+  var permissionWait: some View {
+    VStack(spacing: 0) {
+      VStack(spacing: 0) {
+        Badge(tint: .blue, size: 64, radius: 19) { symbol("switch.2", .blue, 27) }
+          .padding(.bottom, 18)
+        pillTag("Waiting in System Settings", tint: .blue).padding(.bottom, 12)
+        title("Turn on tess-patcher", size: 24).padding(.bottom, 10)
+        Text("Flip the switch next to tess-patcher in System Settings, confirm with Touch ID or your Mac password, then click below.")
+          .font(.system(size: 14))
+          .foregroundColor(softWhite)
+          .lineSpacing(3)
+          .multilineTextAlignment(.center)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: 344)
+        Button { choose(.reopenSettings) } label: {
+          HStack(spacing: 5) {
+            Image(systemName: "gearshape.fill").font(.system(size: 11, weight: .semibold))
+            Text("Open Settings again").font(.system(size: 12.5, weight: .semibold))
+          }
+          .foregroundColor(Tint.blue.ink)
+          .padding(.horizontal, 12).padding(.vertical, 6)
+          .background(Capsule().fill(Tint.blue.lo))
+          .overlay(Capsule().strokeBorder(Tint.blue.edge, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 14)
+      }
+      .padding(.top, 38)
+      .padding(.horizontal, 32)
+      .padding(.bottom, 24)
+
+      foot
+      HStack(spacing: 10) {
+        Spacer(minLength: 0)
+        Button("Not now") { choose(.secondary) }.buttonStyle(PillStyle(primary: false))
+        Button("I turned it on — Apply Tess") { choose(.primary) }.buttonStyle(PillStyle(primary: true))
+      }
+      .padding(.horizontal, 28)
+      .padding(.top, 18)
+      .padding(.bottom, 26)
+    }
+  }
 }
 
 // MARK: - Live window
@@ -424,13 +544,15 @@ final class Controller {
   var terminalSince: Date?
   let timeout: TimeInterval
   let spotifyOnly: Bool
+  let floating: Bool
 
   init(phase: Phase, statusFile: String?, timeout: TimeInterval, spotifyOnly: Bool) {
     model = Model(phase)
     self.statusFile = statusFile
     self.timeout = timeout
     self.spotifyOnly = spotifyOnly
-    window = GlassWindow(contentRect: NSRect(x: 0, y: 0, width: cardWidth, height: 400), styleMask: [.borderless], backing: .buffered, defer: false)
+    self.floating = isProminent(phase)
+    window = GlassWindow(contentRect: NSRect(x: 0, y: 0, width: cardWidth(for: phase), height: 400), styleMask: [.borderless], backing: .buffered, defer: false)
     host = NSHostingView(rootView: AnyView(EmptyView()))
     host.rootView = AnyView(
       ZStack {
@@ -448,11 +570,17 @@ final class Controller {
     window.isOpaque = false
     window.backgroundColor = .clear
     window.hasShadow = true
-    window.level = .normal
+    window.level = floating ? .floating : .normal
     window.isMovableByWindowBackground = true
     window.isReleasedWhenClosed = false
-    window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
-    window.title = "Tess Support"
+    window.collectionBehavior = floating ? [.canJoinAllSpaces, .fullScreenAuxiliary] : [.moveToActiveSpace, .fullScreenAuxiliary]
+    window.title = floating ? "Tess Music" : "Tess Support"
+  }
+
+  func openAppManagementSettings() {
+    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles") {
+      NSWorkspace.shared.open(url)
+    }
   }
 
   func choose(_ c: Choice) {
@@ -461,6 +589,21 @@ final class Controller {
     case .done: finish(c == .primary ? 0 : 1)
     case .failed: finish(1)
     case .installing: break
+    case .permission:
+      if c == .primary {
+        openAppManagementSettings()
+        shownAt = Date()
+        withAnimation(.easeInOut(duration: 0.25)) { model.phase = .permissionWait }
+        DispatchQueue.main.async { self.moveCorner(animated: true) }
+      } else if c != .reopenSettings {
+        finish(1)
+      }
+    case .permissionWait:
+      if c == .reopenSettings {
+        openAppManagementSettings()
+      } else {
+        finish(c == .primary ? 0 : 1)
+      }
     }
   }
 
@@ -494,6 +637,17 @@ final class Controller {
     }
   }
 
+  func moveCorner(animated: Bool) {
+    let size = host.fittingSize
+    guard size.width > 0, size.height > 0 else { return }
+    guard let area = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
+    let frame = NSRect(x: area.maxX - size.width - 24, y: area.maxY - size.height - 24, width: size.width, height: size.height)
+    window.setFrame(frame, display: true, animate: animated)
+    window.invalidateShadow()
+    window.makeFirstResponder(nil)
+    placed = true
+  }
+
   func fit(animated: Bool) {
     let size = host.fittingSize
     guard size.width > 0, size.height > 0 else { return }
@@ -514,6 +668,9 @@ final class Controller {
         return
       }
       placed = true
+    } else if model.phase == .permissionWait {
+      moveCorner(animated: animated)
+      return
     } else {
       // later (installing -> done): grow or shrink around the card's own middle
       let old = window.frame
@@ -552,6 +709,7 @@ final class Controller {
     } else {
       fit(animated: false)
       window.alphaValue = 0
+      if floating { window.orderFrontRegardless() }
       window.makeKeyAndOrderFront(nil)
       NSApp.activate(ignoringOtherApps: true)
       NSAnimationContext.runAnimationGroup { ctx in
@@ -611,12 +769,23 @@ final class Controller {
 
 // MARK: - Snapshot (no window)
 
+func snapHeight(for phase: Phase) -> CGFloat {
+  switch phase {
+  case .ask, .permission: return 760
+  case .permissionWait: return 520
+  case .installing, .done, .failed: return 460
+  }
+}
+
 /// What stands behind the card in a snapshot: a dark, slightly colourful stand-in for Spotify.
 struct SnapshotBackdrop: View {
   let phase: Phase
   var body: some View {
     ZStack {
       LinearGradient(colors: [rgb(14, 15, 20), rgb(24, 22, 34)], startPoint: .topLeading, endPoint: .bottomTrailing)
+      if isProminent(phase) {
+        RadialGradient(colors: [rgb(255, 176, 56, 0.32), .clear], center: UnitPoint(x: 0.5, y: 0.14), startRadius: 0, endRadius: 380)
+      }
       RadialGradient(colors: [rgb(30, 215, 96, 0.34), .clear], center: UnitPoint(x: 0.1, y: 0.95), startRadius: 0, endRadius: 360)
       RadialGradient(colors: [rgb(167, 139, 250, 0.3), .clear], center: UnitPoint(x: 0.95, y: 0.05), startRadius: 0, endRadius: 360)
       HStack(spacing: 24) {
@@ -627,7 +796,7 @@ struct SnapshotBackdrop: View {
         }
       }
       .fixedSize()
-      .offset(y: phase == .ask ? -300 : -170)
+      .offset(y: (phase == .ask || phase == .permission) ? -300 : -170)
     }
   }
 }
@@ -641,7 +810,7 @@ func renderSnapshot(_ phase: Phase, to path: String) {
       .shadow(color: .black.opacity(0.5), radius: 40, x: 0, y: 22)
       .shadow(color: .black.opacity(0.25), radius: 3, x: 0, y: 2)
   }
-  .frame(width: cardWidth + 160, height: phase == .ask ? 760 : 460)
+  .frame(width: cardWidth(for: phase) + 160, height: snapHeight(for: phase))
   .clipped()
   .environment(\.colorScheme, .dark)
   let renderer = ImageRenderer(content: view)
@@ -666,7 +835,7 @@ func seconds(in args: [String]) -> TimeInterval {
 }
 
 let args = Array(CommandLine.arguments.dropFirst())
-guard let command = args.first else { fail("usage: tess-invite ask | progress --status-file <path> | --snapshot <state> <out.png> | --check") }
+guard let command = args.first else { fail("usage: tess-invite ask | progress --status-file <path> | permission | --snapshot <state> <out.png> | --check") }
 
 switch command {
 case "--check", "--version":
@@ -674,22 +843,24 @@ case "--check", "--version":
   exit(0)
 
 case "--snapshot":
-  guard args.count == 3, let phase = Phase(rawValue: args[1]) else { fail("usage: tess-invite --snapshot <ask|installing|done|failed> <out.png>") }
+  guard args.count == 3, let phase = Phase(rawValue: args[1]) else { fail("usage: tess-invite --snapshot <ask|installing|done|failed|permission|permissionWait> <out.png>") }
   MainActor.assumeIsolated { renderSnapshot(phase, to: args[2]) }
   exit(0)
 
-case "ask", "progress", "status":
+case "ask", "progress", "status", "permission":
   let isAsk = command == "ask"
+  let isPerm = command == "permission"
   var file: String?
-  if !isAsk {
+  if !isAsk && !isPerm {
     file = value("--status-file", in: args) ?? value("--file", in: args)
     guard let f = file, !f.isEmpty else { fail("progress needs --status-file <path>") }
   }
+  let initial: Phase = isPerm ? .permission : isAsk ? .ask : .installing
   let spotifyOnly = isAsk && !args.contains("--any-app")
   let controller = MainActor.assumeIsolated { () -> Controller in
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
-    return Controller(phase: isAsk ? .ask : .installing, statusFile: file, timeout: seconds(in: args), spotifyOnly: spotifyOnly)
+    return Controller(phase: initial, statusFile: file, timeout: seconds(in: args), spotifyOnly: spotifyOnly)
   }
   MainActor.assumeIsolated { controller.show() }
   NSApplication.shared.run()

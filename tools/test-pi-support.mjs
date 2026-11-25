@@ -454,8 +454,11 @@ try {
               { index: 0, id: 't12', type: 'function', function: { name: 'tess_post', arguments: '{}' } },
             ] }, 'tool_calls');
           } else if (llmCall === 6) {
+            // A duplicate tess_post in the same visit must be refused so the inbox never gets two reports;
+            // amending the already-posted report still succeeds.
             sendChunk({ role: 'assistant', tool_calls: [
-              { index: 0, id: 't14', type: 'function', function: { name: 'tess_amend_report', arguments: JSON.stringify({ append_note: 'Also happens in full screen.' }) } },
+              { index: 0, id: 't12b', type: 'function', function: { name: 'tess_post', arguments: '{}' } },
+              { index: 1, id: 't14', type: 'function', function: { name: 'tess_amend_report', arguments: JSON.stringify({ append_note: 'Also happens in full screen.' }) } },
             ] }, 'tool_calls');
           } else if (llmCall === 7) {
             sendChunk({ role: 'assistant', tool_calls: [
@@ -584,6 +587,7 @@ try {
     assert.match(toolResults.get('t3'), /"ok":false.*"ask first/i, 'tess_still refused before consent');
     assert.match(toolResults.get('t5'), /"ok":true.*"spotify\.png"/, 'tess_still succeeds after user yes');
     assert.match(toolResults.get('t6'), /"ok":false.*already spent/i, 'second tess_still refused (one-shot)');
+    assert.match(toolResults.get('t12b'), /"ok":false.*"report_id":"?42"?.*already sent/i, 'duplicate tess_post refused after Report #42');
     assert.ok(postedReport, 'report posted to inbox');
     assert.equal(postedReport.auth, 'Bearer tess_live_tok_abcdef0123456789');
     assert.ok(!JSON.stringify(postedReport.body).includes('bob@example.com'), 'email scrubbed before post');

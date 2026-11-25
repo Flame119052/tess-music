@@ -267,12 +267,35 @@ install_wake
 # newer patcher arrived (step 2), or the user asked (tess repair, or "Try Again" below). Never on a timer, so one
 # failure can't turn into a stream of macOS alerts. Before touching anything the patcher asks macOS whether it may
 # change Spotify's files at all; if not, Spotify is left exactly as it is (stock, working) and the user is asked once.
+# The Liquid Glass card (mini/TessInvite.swift, the signed `invite` part) handles both App Management permission prompts
+# (version >= 2) and Tess Support invites/progress. Never pass tokens, install IDs, or invite IDs to it (`env -u`).
+SUPPORT_UI="$HOME_TESS/bin/tess-invite"
+support_ui() { [ -x "$SUPPORT_UI" ] && [ -f "$SUPPORT_UI" ]; }
+perm_card_ui() {
+  support_ui || return 1
+  "$SUPPORT_UI" --check 2>/dev/null | grep -Eq '^tess-invite ([2-9]|[1-9][0-9]+)'
+}
+
 SETTINGS_URL="x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles"
 asked=""
 blocked() {   # macOS's App Management protection stopped the patcher
   problem "Spotify $1: macOS App Management is blocking tess-patcher; Spotify left stock"
   [ -n "$asked" ] && return 0; asked=1
-  [ -n "$TESS_TEST" ] && { touch "$STATE/.asked-$1"; return 0; }
+  touch "$STATE/.asked-$1" "$STATE/.reapply-tried-$1"
+  if [ -n "$TESS_TEST" ] && [ "${TESS_TEST_PERMISSION_UI:-}" != 1 ]; then
+    return 0
+  fi
+  if perm_card_ui; then
+    touch "$STATE/.perm-card-v2-$1"
+    local ui_rc
+    env -u TESS_SUPPORT_TOKEN "$SUPPORT_UI" permission --timeout 900 >/dev/null 2>&1 </dev/null; ui_rc=$?
+    case $ui_rc in
+      0) reapply now; return 0 ;;
+      1|2) return 0 ;;
+    esac
+    log "app management card exited $ui_rc; falling back to plain dialog"
+  fi
+  [ -n "$TESS_TEST" ] && return 0
   local b=$(osascript -e 'display dialog "Spotify updated, and macOS is stopping Tess from putting its look back. Spotify works normally in the meantime.
 
 To allow it once: in System Settings › Privacy & Security › App Management, turn on tess-patcher." with title "Tess Music" buttons {"Later", "Open Settings"} default button 2 giving up after 900' -e 'button returned of result' 2>/dev/null)
@@ -302,15 +325,31 @@ reapply() {
   [ -f "$APPS/xpui.spa" ] && [ ! -d "$APPS/xpui" ] || return 0
   local spv=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$SPOTIFY/Contents/Info.plist" 2>/dev/null)
   local tried="$STATE/.reapply-tried-$spv"
-  [ -z "$1" ] && [ -f "$tried" ] && return 0
+  local cw=0 rechecked=""
+  if [ -z "$1" ] && [ -f "$tried" ]; then
+    # When an earlier attempt hit App Management, gently re-offer once on the prominent v2 card and then at most
+    # once every 3 days if Spotify is still stock and tess-patcher is still blocked.
+    if perm_card_ui && [ -f "$STATE/.asked-$spv" ] && { [ ! -f "$STATE/.perm-card-v2-$spv" ] || [ -n "$(find "$tried" -mmin +4320 2>/dev/null)" ]; }; then
+      local running_now=$(spotify_running && echo 1)
+      [ -n "$running_now" ] && spotify_playing && return 0
+      "$PATCHER" can-write "$APPS" >/dev/null 2>&1; cw=$?
+      case $cw in
+        0) rechecked=1 ;;
+        3) blocked "$spv"; return 0 ;;
+        *) return 0 ;;
+      esac
+    else
+      return 0
+    fi
+  fi
   local running=$(spotify_running && echo 1)
   if [ -n "$running" ] && spotify_playing; then
     log "Spotify $spv is stock; reapply deferred while music is playing"
     return 0
   fi
   touch "$tried"
-  [ -z "$1" ] && sleep 8   # let Spotify's own update finish writing
-  "$PATCHER" can-write "$APPS" >/dev/null 2>&1; local cw=$?
+  [ -z "$1" ] && [ -z "$rechecked" ] && sleep 8   # let Spotify's own update finish writing
+  "$PATCHER" can-write "$APPS" >/dev/null 2>&1; cw=$?
   case $cw in
     0) ;;
     3) blocked "$spv"; return 0 ;;
@@ -322,7 +361,7 @@ reapply() {
   local bak="$HOME_TESS/.apps-before-reapply"
   rm -rf "$bak"; ditto "$APPS" "$bak" || return 0
   if "$PATCHER" backup apply --no-restart >> "$LOG" 2>&1 && grep -q spicetifyWrapper "$APPS/xpui/index.html" 2>/dev/null; then
-    rm -rf "$bak"; find "$STATE" \( -name ".reapply-*" -o -name ".asked-*" \) -delete
+    rm -rf "$bak"; find "$STATE" \( -name ".reapply-*" -o -name ".asked-*" -o -name ".perm-card-*" \) -delete
     log "Tess applied to Spotify $spv"
     [ -n "$running" ] && restart_spotify_when_idle || true
   else
@@ -560,8 +599,7 @@ SUPPORT_CONFIG="$HOME/.hermes/profiles/tess-support/config.yaml"
 # in Tess's own look. It is optional: a Mac that does not have it yet gets the plain dialogs and banners below, with the
 # same words as before. Nothing is ever handed to it that identifies the person or opens the installer: no token, no
 # install id, no invite id. `env -u` keeps a token out of its environment even if the shell around this run held one.
-SUPPORT_UI="$HOME_TESS/bin/tess-invite"
-support_ui() { [ -x "$SUPPORT_UI" ] && [ -f "$SUPPORT_UI" ]; }
+# SUPPORT_UI and support_ui() are defined above blocked() so both App Management and Tess Support share one card binary.
 # One word the card reads: installing, done or failed. Written beside it and renamed, so the card never reads half a word.
 SUPPORT_STATUS="$STATE/.support-invite-status"
 support_status() { printf '%s\n' "$1" > "$SUPPORT_STATUS.tmp" && mv -f "$SUPPORT_STATUS.tmp" "$SUPPORT_STATUS"; }
