@@ -1,7 +1,7 @@
-# Tess 0.2.60 beta
+# Tess 0.2.61 beta
 
-Source: [`31451b810e90`](https://github.com/Flame119052/tess-music/commit/31451b810e90fcc374181ef893c6ab0b5a53799f)
+Source: [`b5589230d976`](https://github.com/Flame119052/tess-music/commit/b5589230d976a280356653872f7a73cff7dc0afe)
 
 ## Changes since the previous beta
 
-- [#193](https://github.com/Flame119052/tess-music/pull/193) Prominent Liquid Glass App Management prompt and duplicate-post guard (@Flame119052)
+- [#194](https://github.com/Flame119052/tess-music/pull/194) Fix Tess Support setup stuck on "Checking invite…" (@Flame119052)
