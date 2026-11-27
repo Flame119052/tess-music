@@ -1200,3 +1200,11 @@ Format: **D-NN · date · who** — decision. *Why.* Trade-off / revisit when.
   for the rest of that Spotify version because `.reapply-tried-<version>` previously suppressed retries; guiding them
   straight to App Management with a persistent corner companion card and `"I turned it on — Apply Tess"` closes the
   loop without nagging, while refusing duplicate `tess_post` calls stops Support from filing two reports in one chat.
+- **D-122 · 27 Nov 2026 · Krish & Agent** — Added a dedicated `TESS_SUPPORT_ACTION=install` fast-path in
+  `installer/updater.sh` ahead of `$LOCK`, `reapply`, and the parts update loop, guarded every early return in
+  `fetch_components` / `check_support_invite` so failures write `failed` to `.support-invite-status` (instead of leaving
+  `"Checking invite…"` stranded), kept the final `done`/`failed` status file on disk for in-app polling, tracked the
+  spawned installer `Process` plus 90-second stale-file auto-recovery in `mini/TessMini.swift`, and added a 45-second
+  stall guard at `progress <= 0.02` in `theme/Tess/src/core.js`. *Why:* an in-app Support install used to share the full
+  background updater run; if `.installing` was held or an early download/check returned before `invite/claim`, the initial
+  `"Checking invite…"` status never updated or cleared, leaving the card spinning indefinitely.

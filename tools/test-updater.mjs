@@ -1086,6 +1086,43 @@ exit 2
   }
 
   {
+    // In-app Tess Support install (triggered by Tess Mini via TESS_SUPPORT_ACTION=install):
+    // must bypass .installing lock without disturbing it, must never leave .support-invite-status stuck at
+    // "Checking invite..." on early failures, and must preserve the final done/failed status on disk for Mini to poll.
+    const stuckInit = JSON.stringify({ phase: 'installing', progress: 0.01, step: 'Starting setup', detail: 'Checking invite…' }) + '\n';
+    const statusPath = (s) => join(s.state, '.support-invite-status');
+    const parseStatus = (s) => JSON.parse(readFileSync(statusPath(s), 'utf8'));
+
+    // (a) Background .installing lock held -> in-app install bypasses it without deleting it and finishes with phase: "done".
+    const sLock = sandbox();
+    writeFileSync(join(sLock.tess, '.installing'), '');
+    writeFileSync(statusPath(sLock), stuckInit);
+    sLock.run({ ...claimed(41), TESS_SUPPORT_ACTION: 'install' });
+    assert.ok(existsSync(join(sLock.tess, '.installing')), 'in-app support install does not disturb another run lock');
+    assert.equal(readFileSync(join(sLock.box, 'support-token.out'), 'utf8'), SUPPORT_TOKEN, 'in-app install claims invite and runs installer even when .installing is held');
+    assert.equal(parseStatus(sLock).phase, 'done', 'in-app install leaves final phase: done on disk');
+
+    // (b) components.txt download failure -> updates status to phase: "failed" instead of leaving "Checking invite...".
+    const sCompFail = sandbox();
+    writeFileSync(statusPath(sCompFail), stuckInit);
+    sCompFail.run({ ...claimed(42), TESS_SUPPORT_ACTION: 'install', TESS_LIST_FAIL: '1' });
+    assert.equal(parseStatus(sCompFail).phase, 'failed', 'components failure reports failed instead of stuck Checking invite');
+
+    // (c) support-install.sh failure -> keeps final phase: "failed" on disk instead of deleting .support-invite-status.
+    const sInstFail = sandbox();
+    writeFileSync(statusPath(sInstFail), stuckInit);
+    sInstFail.run({ ...claimed(43), TESS_SUPPORT_ACTION: 'install', TESS_INSTALL_EXIT: '1' });
+    assert.ok(existsSync(statusPath(sInstFail)), 'installer failure preserves status file for in-app poller');
+    assert.equal(parseStatus(sInstFail).phase, 'failed', 'installer failure reports failed on disk');
+
+    // (d) invite/check failure -> updates status to phase: "failed" instead of leaving "Checking invite...".
+    const sCheckFail = sandbox();
+    writeFileSync(statusPath(sCheckFail), stuckInit);
+    sCheckFail.run({ TESS_SUPPORT_ACTION: 'install', TESS_INVITE_CHECK_FAIL: '1' });
+    assert.equal(parseStatus(sCheckFail).phase, 'failed', 'invite check failure reports failed instead of stuck Checking invite');
+  }
+
+  {
     // Source guards for the invariants the card must never break.
     const updater = readFileSync(join(root, 'installer', 'updater.sh'), 'utf8');
     const uses = updater.split('\n').filter((l) => /\$SUPPORT_UI/.test(l) && !/^\s*#/.test(l) && /(ask|progress|permission)/.test(l));
