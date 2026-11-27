@@ -130,6 +130,308 @@ restart_spotify_when_idle() {
   open -a "$SPOTIFY"
 }
 
+# The Liquid Glass card (mini/TessInvite.swift, the signed `invite` part) handles both App Management permission prompts
+# (version >= 2) and Tess Support invites/progress. Never pass tokens, install IDs, or invite IDs to it (`env -u`).
+SUPPORT_UI="$HOME_TESS/bin/tess-invite"
+support_ui() { [ -x "$SUPPORT_UI" ] && [ -f "$SUPPORT_UI" ]; }
+perm_card_ui() {
+  support_ui || return 1
+  "$SUPPORT_UI" --check 2>/dev/null | grep -Eq '^tess-invite ([2-9]|[1-9][0-9]+)'
+}
+
+# Krish invites one Mac by its 32-hex install id (`tools/reports.mjs support invite add …`, run on his Mac). Nothing about Tess
+# Support is downloaded, shown or even mentioned unless this Mac was invited, and the check answers only yes or no.
+SUPPORT_INBOX="https://tess-music-player.janus.ing"
+[ -n "$TESS_TEST" ] && [ -n "${TESS_INBOX:-}" ] && SUPPORT_INBOX=$TESS_INBOX
+SUPPORT_CONFIG="$HOME/.hermes/profiles/tess-support/config.yaml"
+[ -n "$TESS_TEST" ] && [ -n "${TESS_SUPPORT_CONFIG:-}" ] && SUPPORT_CONFIG=$TESS_SUPPORT_CONFIG
+# Status file polled by Spotify/Tess Mini during an in-app install and watched by `tess-invite progress`.
+SUPPORT_STATUS="$STATE/.support-invite-status"
+support_status() { printf '%s\n' "$1" > "$SUPPORT_STATUS.tmp" && mv -f "$SUPPORT_STATUS.tmp" "$SUPPORT_STATUS"; }
+support_in_app() {
+  [ "${TESS_SUPPORT_ACTION:-}" = "install" ] || return 0
+  printf '{"phase":"%s","progress":%s,"step":"%s","detail":"%s"}\n' "$1" "$2" "$3" "$4" > "$SUPPORT_STATUS.tmp" \
+    && mv -f "$SUPPORT_STATUS.tmp" "$SUPPORT_STATUS"
+}
+support_app_open() {
+  local app="$HOME/Applications/Tess Support.app"
+  { [ -n "$TESS_TEST" ] || [ -d "$app" ]; } && open "$app" >/dev/null 2>&1
+  return 0
+}
+
+CHANNEL="${TESS_PARTS_CHANNEL:-stable}"
+# GitHub's API is read live but allows 60 reads an hour per network; the raw file address is the fallback.
+get() { curl -fsSL --max-time 60 -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/dist/$1?ref=$CHANNEL" -o "$2" \
+  || curl -fsSL --max-time 60 "https://raw.githubusercontent.com/$REPO/$CHANNEL/dist/$1" -o "$2"; }
+
+fetch_fail() {
+  local log_msg=$1 step=$2 detail=$3
+  if [ "${TESS_SUPPORT_ACTION:-}" = "install" ]; then
+    log "support invite: $log_msg"
+    support_in_app failed 0 "$step" "$detail"
+  else
+    problem "$log_msg"
+    report_parts_failure
+  fi
+}
+
+fetch_components() {
+  if ! get components.txt "$TMP/components.txt" || ! get components.sig "$TMP/components.sig"; then
+    fetch_fail "parts list download failed" "Download failed" "Could not reach GitHub. Check your connection and click Try again."
+    return 1
+  fi
+  if ! "$VERIFY" "$TMP/components.txt" "$(tr -d '\n' < "$TMP/components.sig")"; then
+    fetch_fail "parts list failed its signature check; ignored" "Signature check failed" "Could not verify the release list. Try again in a moment."
+    return 1
+  fi
+  rm -f "$STATE/.parts-list-reported"
+  # each line: name sha256 url source-hash (and one "version X.Y.Z" and one "rev N" line)
+  rev=$(awk '$1 == "rev" { print $2 }' "$TMP/components.txt")
+  last=$(cat "$STATE/rev-$CHANNEL" 2>/dev/null); case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  if [ -z "$rev" ]; then
+    # A pre-rev list is only acceptable before this channel has ever installed a rev; otherwise it is a replay.
+    [ "$last" -gt 0 ] && { fetch_fail "parts list has no rev but $last is installed; ignored" "Verification failed" "Release check failed. Try again shortly."; return 1; }
+  else
+    case "$rev" in *[!0-9]*) fetch_fail "parts list has a bad rev; ignored" "Verification failed" "Could not verify the release version. Try again shortly."; return 1 ;; esac
+    # correctly signed is not enough: an older list served by a mirror is still a downgrade
+    [ "$rev" -ge "$last" ] || { fetch_fail "parts list is older than the one already installed ($rev < $last); ignored" "Mirror out of date" "Try again in a minute once mirrors finish updating."; return 1; }
+  fi
+  # Only record the version once the list is accepted, so a refused downgrade cannot relabel the install.
+  awk '$1 == "version" { print $2 }' "$TMP/components.txt" > "$STATE/version.new" && [ -s "$STATE/version.new" ] && mv "$STATE/version.new" "$STATE/version" || rm -f "$STATE/version.new"
+  return 0
+}
+
+support_ask() {
+  if support_ui; then
+    local ui_rc
+    env -u TESS_SUPPORT_TOKEN "$SUPPORT_UI" ask --timeout 900 >/dev/null 2>&1 </dev/null; ui_rc=$?
+    case $ui_rc in
+      0) printf '%s\n' install; return 0 ;;
+      1) printf '%s\n' decline; return 0 ;;
+      2) return 0 ;;
+    esac
+    log "support invite: the card exited $ui_rc; asking with the plain dialog"
+  fi
+  if [ -n "$TESS_TEST" ]; then
+    [ -n "${TESS_TEST_INVITE_WAIT:-}" ] && sleep "$TESS_TEST_INVITE_WAIT"
+    case "${TESS_TEST_INVITE_ANSWER:-}" in
+      install|decline) printf '%s\n' "$TESS_TEST_INVITE_ANSWER" ;;
+    esac
+    return 0
+  fi
+  lsappinfo info -only bundleid $(lsappinfo front 2>/dev/null) 2>/dev/null | grep -q '"com.spotify.client"' || return 0
+  local res
+  res=$(osascript -e 'display dialog "Krish invited you to Tess Support — a private helper in your Dock that can check Spotify and send him a bug note when something looks off. Nothing runs unless you open it.
+
+Install Tess Support?" with title "Tess Music" buttons {"Not now", "Install"} default button 2 giving up after 900' 2>/dev/null) || res=""
+  case "$res" in
+    *"gave up:true"*) return 0 ;;
+    *"button returned:Install"*) printf '%s\n' install ;;
+    *"button returned:Not now"*) printf '%s\n' decline ;;
+  esac
+  return 0
+}
+
+support_welcome() {
+  local app="$HOME/Applications/Tess Support.app"
+  if [ -n "$TESS_TEST" ]; then
+    [ "${TESS_TEST_WELCOME_ANSWER:-}" = open ] && open "$app" >/dev/null 2>&1
+    return 0
+  fi
+  local res
+  res=$(osascript -e 'display dialog "Tess Support is now in your Dock.
+
+Click Tess Support anytime something in Spotify looks off — it can run a quick check, ask before taking a screenshot, and send Krish a note. Nothing runs unless you open it." with title "Tess Music" buttons {"Done", "Open Tess Support"} default button 1 giving up after 900' 2>/dev/null) || res=""
+  case "$res" in
+    *"button returned:Open Tess Support"*) [ -d "$app" ] && open "$app" >/dev/null 2>&1 ;;
+  esac
+  return 0
+}
+
+check_support_invite() {
+  local in_app=0
+  [ "${TESS_SUPPORT_ACTION:-}" = "install" ] && in_app=1
+  if [ ! -x "$VERIFY" ]; then
+    support_in_app failed 0 "Setup cannot verify files" "Tess verifier is missing. Run tess doctor and try again."
+    return 0
+  fi
+  # They already have it: never mention it, never ask again.
+  if [ -f "$SUPPORT_CONFIG" ] || [ -f "$HOME_TESS/support/current/installed.json" ]; then
+    rm -f "$STATE/.support-invited"
+    support_in_app done 1.0 "Tess Support is ready" "Open the chat right inside Spotify."
+    return 0
+  fi
+  # Keep two invite runs from overlapping. Wait briefly if the user clicked Install in-app while a background check holds SLOCK.
+  [ -d "$SLOCK" ] && [ -n "$(find "$SLOCK" -maxdepth 0 -mmin +60 2>/dev/null)" ] && rmdir "$SLOCK" 2>/dev/null
+  local _sl_try=0
+  while ! mkdir "$SLOCK" 2>/dev/null; do
+    if [ "$in_app" -eq 1 ] && [ $_sl_try -lt 10 ]; then
+      _sl_try=$((_sl_try + 1))
+      sleep 1
+      continue
+    fi
+    support_in_app failed 0 "Setup is already running" "Wait a moment and click Try again."
+    return 0
+  done
+  trap 'rmdir "$SLOCK" 2>/dev/null' EXIT
+  local iid invited invite_id body tok rc code claim want have
+  iid=$(tr -d '[:space:]' < "$HOME_TESS/install-id" 2>/dev/null) || iid=""
+  case "$iid" in ''|*[!0-9a-f]*) iid="" ;; esac
+  if [ ${#iid} -ne 32 ]; then
+    support_in_app failed 0 "Install ID missing" "Run tess doctor and click Try again."
+    return 0
+  fi
+  if ! curl -fsS --max-time 30 -H "content-type: application/json" --data-binary "{\"install\":\"$iid\"}" \
+    "$SUPPORT_INBOX/v1/support/invite/check" -o "$TMP/invite-check.json" 2>/dev/null; then
+    log "support invite: check failed"
+    support_in_app failed 0 "Could not reach Tess" "Check your internet connection and click Try again."
+    return 0
+  fi
+  body=$(cat "$TMP/invite-check.json" 2>/dev/null) || body=""
+  invited=$(printf '%s' "$body" | sed -n 's/.*"invited"[[:space:]]*:[[:space:]]*true.*/1/p')
+  if [ "$invited" != 1 ]; then
+    rm -f "$STATE/.support-invited"
+    support_in_app failed 0 "Invite no longer open" "Ask Krish for a fresh invite."
+    return 0
+  fi
+  invite_id=$(printf '%s' "$body" | sed -n 's/.*"invite_id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')
+  case "$invite_id" in ''|*[!0-9]*)
+    support_in_app failed 0 "Invite check failed" "Could not read invite details. Click Try again."
+    return 0 ;;
+  esac
+  printf '%s\n' "$invite_id" > "$STATE/.support-invited"
+  if [ "$in_app" -eq 0 ]; then
+    [ -f "$STATE/.support-invite-asked-$invite_id" ] && return 0
+    [ -f "$STATE/.support-invite-retry-$invite_id" ] && [ -z "$(find "$STATE/.support-invite-retry-$invite_id" -mmin +1440 2>/dev/null)" ] && return 0
+    if [ -z "$TESS_TEST" ] && pgrep -x TessMini >/dev/null 2>&1; then
+      return 0
+    fi
+    case "$(support_ask)" in
+      decline) touch "$STATE/.support-invite-asked-$invite_id"; log "support invite $invite_id: not now"; return 0 ;;
+      install) ;;
+      *) return 0 ;;
+    esac
+  fi
+  support_in_app installing 0.02 "Verifying invite" "Checking signed installer…"
+  # Signed first, claimed second: a bad download or a bad signature must not use up the invite.
+  if ! get support-install.sh "$TMP/support-install.sh" || ! get support-install.sig "$TMP/support-install.sig"; then
+    touch "$STATE/.support-invite-retry-$invite_id"
+    support_in_app failed 0 "Download failed" "Could not reach GitHub. Try again in a moment."
+    log "support invite $invite_id: installer download failed"
+    return 0
+  fi
+  if ! "$VERIFY" "$TMP/support-install.sh" "$(tr -d '\n' < "$TMP/support-install.sig")"; then
+    touch "$STATE/.support-invite-retry-$invite_id"
+    support_in_app failed 0 "Signature check failed" "Nothing was installed."
+    log "support invite $invite_id: installer failed its signature check; nothing was installed"
+    return 0
+  fi
+  # Bind the signed script to this rev-checked release so a stale mirror cannot replay an older signed copy.
+  want=$(awk '$1 == "support-install" { print $2 }' "$TMP/components.txt")
+  have=$(shasum -a 256 "$TMP/support-install.sh" | awk '{print $1}')
+  if [ -z "$want" ] || [ "$want" != "$have" ]; then
+    touch "$STATE/.support-invite-retry-$invite_id"
+    support_in_app failed 0 "Release mismatch" "Nothing was installed."
+    log "support invite $invite_id: installer does not match this release; nothing was installed"
+    return 0
+  fi
+  [ "$in_app" -eq 1 ] || support_ui || notify "Installing Tess Support… this takes about a minute."
+  claim="$TMP/invite-claim.json"
+  : > "$claim"; chmod 600 "$claim" 2>/dev/null
+  code=$(curl -sS --max-time 30 -H "content-type: application/json" \
+    --data-binary "{\"install\":\"$iid\",\"invite_id\":$invite_id}" \
+    -o "$claim" -w '%{http_code}' "$SUPPORT_INBOX/v1/support/invite/claim" 2>/dev/null) || code=""
+  case "$code" in
+    200) ;;
+    404)
+      rm -f "$STATE/.support-invited"
+      touch "$STATE/.support-invite-asked-$invite_id"
+      support_in_app failed 0 "Invite expired" "Ask Krish for a fresh invite."
+      log "support invite $invite_id: the invite is no longer open (spent, expired or revoked); not asking again"
+      rm -f "$claim"; return 0 ;;
+    *)
+      touch "$STATE/.support-invite-retry-$invite_id"
+      support_in_app failed 0 "Could not claim invite" "Temporary inbox error. Try again shortly."
+      log "support invite $invite_id: the invite could not be claimed (HTTP ${code:-none})"
+      rm -f "$claim"; return 0 ;;
+  esac
+  body=$(cat "$claim" 2>/dev/null) || body=""
+  rm -f "$claim"
+  tok=$(printf '%s' "$body" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\(tess_[0-9a-f]*\)".*/\1/p')
+  body=""
+  case "$tok" in tess_*) ;; *) tok="" ;; esac
+  if [ ${#tok} -lt 20 ]; then
+    touch "$STATE/.support-invite-asked-$invite_id"
+    support_in_app failed 0 "Invite reply incomplete" "Ask Krish for a fresh invite."
+    log "support invite $invite_id: the inbox answered without a token; not asking again"
+    return 0
+  fi
+  local ui_pid="" ui_rc=""
+  if [ "$in_app" -eq 0 ] && support_ui && support_status installing; then
+    env -u TESS_SUPPORT_TOKEN "$SUPPORT_UI" progress --status-file "$SUPPORT_STATUS" >/dev/null 2>&1 </dev/null &
+    ui_pid=$!
+  elif [ "$in_app" -eq 1 ]; then
+    support_in_app installing 0.04 "Starting setup" "Preparing Pi runtime…"
+  fi
+  local -a install_env
+  install_env=(TESS_SUPPORT_PROGRESS_FILE="$SUPPORT_STATUS" TESS_VERIFY="$VERIFY")
+  if [ -z "$TESS_TEST" ] && [ -z "${HERMES_HOME:-}" ] && [ -L "$HOME/.hermes" ] && [ -d "$HOME/.hermes" ] && [ -O "$HOME/.hermes" ]; then
+    local resolved_hermes
+    resolved_hermes=$(cd -P "$HOME/.hermes" 2>/dev/null && pwd) || resolved_hermes=""
+    case "$resolved_hermes" in
+      ""|"$HOME"|"$HOME"/*) ;;
+      /*) install_env+=(HERMES_HOME="$resolved_hermes") ;;
+    esac
+  fi
+  env "${install_env[@]}" TESS_SUPPORT_TOKEN="$tok" sh "$TMP/support-install.sh" >> "$LOG" 2>&1
+  rc=$?
+  tok=""
+  touch "$STATE/.support-invite-asked-$invite_id"
+  if [ "$rc" -eq 0 ]; then
+    rm -f "$STATE/.support-invited"
+    log "support installed"
+    if [ "$in_app" -eq 1 ]; then
+      support_in_app done 1.0 "Tess Support is ready" "Open the chat right inside Spotify."
+    elif [ -n "$ui_pid" ]; then
+      support_status done
+      wait "$ui_pid"; ui_rc=$?
+      [ "$ui_rc" -eq 0 ] && support_app_open
+    else
+      support_welcome
+    fi
+  else
+    log "support invite $invite_id: installer exited $rc"
+    if [ "$in_app" -eq 1 ]; then
+      support_in_app failed 0 "Could not finish setup" "Check guard.log or try again from Settings."
+    elif [ -n "$ui_pid" ]; then
+      support_status failed
+      wait "$ui_pid"; ui_rc=$?
+      [ "$ui_rc" -eq 1 ] || notify "Tess Support couldn't finish installing; some files may have been partially set up. Run the uninstall command or ask Krish."
+    else
+      notify "Tess Support couldn't finish installing; some files may have been partially set up. Run the uninstall command or ask Krish."
+    fi
+  fi
+  [ "$in_app" -eq 0 ] && rm -f "$SUPPORT_STATUS" "$SUPPORT_STATUS.tmp"
+  return 0
+}
+
+# Dedicated fast-path for in-Spotify install clicks: never waits on or disturbs $LOCK, never blocks on Spotify checks,
+# and always leaves .support-invite-status with either done or failed so the UI cannot hang on "Checking invite…".
+if [ "${TESS_SUPPORT_ACTION:-}" = "install" ]; then
+  mkdir -p "$STATE"
+  [ -f "$HOME_TESS/install-id" ] || od -An -tx1 -N16 /dev/urandom | tr -d ' \n' > "$HOME_TESS/install-id"
+  if [ ! -x "$VERIFY" ]; then
+    support_in_app failed 0 "Setup cannot verify files" "Tess verifier is missing. Run tess doctor and try again."
+    exit 0
+  fi
+  TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+  if fetch_components; then
+    check_support_invite
+  fi
+  rm -rf "$TMP"
+  exit 0
+fi
+
 [ -n "$SPOTIFY" ] && [ -d "$SPOTIFY" ] || exit 0
 [ -e "$LOCK" ] && [ -z "$(find "$LOCK" -mmin +30 2>/dev/null)" ] && exit 0   # another run or the installer is working
 touch "$LOCK"; trap 'rm -f "$LOCK"' EXIT
@@ -267,15 +569,6 @@ install_wake
 # newer patcher arrived (step 2), or the user asked (tess repair, or "Try Again" below). Never on a timer, so one
 # failure can't turn into a stream of macOS alerts. Before touching anything the patcher asks macOS whether it may
 # change Spotify's files at all; if not, Spotify is left exactly as it is (stock, working) and the user is asked once.
-# The Liquid Glass card (mini/TessInvite.swift, the signed `invite` part) handles both App Management permission prompts
-# (version >= 2) and Tess Support invites/progress. Never pass tokens, install IDs, or invite IDs to it (`env -u`).
-SUPPORT_UI="$HOME_TESS/bin/tess-invite"
-support_ui() { [ -x "$SUPPORT_UI" ] && [ -f "$SUPPORT_UI" ]; }
-perm_card_ui() {
-  support_ui || return 1
-  "$SUPPORT_UI" --check 2>/dev/null | grep -Eq '^tess-invite ([2-9]|[1-9][0-9]+)'
-}
-
 SETTINGS_URL="x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles"
 asked=""
 blocked() {   # macOS's App Management protection stopped the patcher
@@ -386,36 +679,8 @@ STAMP="$STATE/.checked"
 [ -z "$TESS_FORCE" ] && [ -f "$STAMP" ] && [ -z "$(find "$STAMP" -mmin +20 2>/dev/null)" ] && exit 0
 touch "$STAMP"
 [ -x "$VERIFY" ] || exit 0
-CHANNEL="${TESS_PARTS_CHANNEL:-stable}"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"; rm -f "$LOCK"' EXIT
-# GitHub's API is read live but allows 60 reads an hour per network; the raw file address is the fallback
-get() { curl -fsSL --max-time 60 -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/dist/$1?ref=$CHANNEL" -o "$2" \
-  || curl -fsSL --max-time 60 "https://raw.githubusercontent.com/$REPO/$CHANNEL/dist/$1" -o "$2"; }
-if ! get components.txt "$TMP/components.txt" || ! get components.sig "$TMP/components.sig"; then
-  problem "parts list download failed"
-  report_parts_failure
-  exit 0
-fi
-if ! "$VERIFY" "$TMP/components.txt" "$(tr -d '\n' < "$TMP/components.sig")"; then
-  problem "parts list failed its signature check; ignored"
-  report_parts_failure
-  exit 0
-fi
-rm -f "$STATE/.parts-list-reported"
-
-# each line: name sha256 url source-hash (and one "version X.Y.Z" and one "rev N" line)
-rev=$(awk '$1 == "rev" { print $2 }' "$TMP/components.txt")
-last=$(cat "$STATE/rev-$CHANNEL" 2>/dev/null); case "$last" in ''|*[!0-9]*) last=0 ;; esac
-if [ -z "$rev" ]; then
-  # A pre-rev list is only acceptable before this channel has ever installed a rev; otherwise it is a replay.
-  [ "$last" -gt 0 ] && { problem "parts list has no rev but $last is installed; ignored"; report_parts_failure; exit 0; }
-else
-  case "$rev" in *[!0-9]*) problem "parts list has a bad rev; ignored"; report_parts_failure; exit 0 ;; esac
-  # correctly signed is not enough: an older list served by a mirror is still a downgrade
-  [ "$rev" -ge "$last" ] || { problem "parts list is older than the one already installed ($rev < $last); ignored"; report_parts_failure; exit 0; }
-fi
-# Only record the version once the list is accepted, so a refused downgrade cannot relabel the install.
-awk '$1 == "version" { print $2 }' "$TMP/components.txt" > "$STATE/version.new" && [ -s "$STATE/version.new" ] && mv "$STATE/version.new" "$STATE/version"
+fetch_components || exit 0
 part_file() {
   case "$1" in
     command) echo "$HOME_TESS/tess" ;;
@@ -572,260 +837,7 @@ done < "$TMP/components.txt"
 [ -n "$trouble" ] && doctor --auto
 
 # --- 3. A private Tess Support invite (issue #137) ----------------------------------------------------------------
-# Krish invites one Mac by its 32-hex install id (`tools/reports.mjs support invite add …`, run on his Mac). Nothing about Tess
-# Support is downloaded, shown or even mentioned unless this Mac was invited, and the check answers only yes or no.
-# A yes asks once, in the person's own words; Not now is remembered for that invite for good, and a dialog nobody was
-# there to answer is not a decision, so it asks again next time.
-#
-# The invite is not spent until the signed installer has passed the verifier: a failed download or a bad signature
-# costs nothing. The token is minted by the inbox at claim time and only ever reaches the installer through its
-# environment, never a command line, and it is gone before anything else runs. This function never reads or writes
-# Spotify, so tools/check-safety.sh's rule about Spotify's folder is untouched by it.
-#
-# For the same reason every failure below is logged with `log`, never `problem`: `problem` sets trouble, which asks the
-# doctor to repair Spotify, and nothing on this path ever touched Spotify.
-#
-# Runs inside the 20-minute parts check above (which is where TESS_FORCE=1 already lands), so it asks no more often.
-SUPPORT_INBOX="https://tess-music-player.janus.ing"
-# A sandbox may point the check at its own fake; a real Mac always uses the one inbox, so an env var cannot send a
-# person's invite elsewhere.
-[ -n "$TESS_TEST" ] && [ -n "${TESS_INBOX:-}" ] && SUPPORT_INBOX=$TESS_INBOX
-# A sandbox keeps its support profile inside its own folder (TESS_TEST only); a real Mac always uses ~/.hermes, so a
-# stray environment variable can neither offer Tess Support again nor hide it.
-SUPPORT_CONFIG="$HOME/.hermes/profiles/tess-support/config.yaml"
-[ -n "$TESS_TEST" ] && [ -n "${TESS_SUPPORT_CONFIG:-}" ] && SUPPORT_CONFIG=$TESS_SUPPORT_CONFIG
-
-# The Liquid Glass card (mini/TessInvite.swift, the signed `invite` part) shows the invite, the progress and the result
-# in Tess's own look. It is optional: a Mac that does not have it yet gets the plain dialogs and banners below, with the
-# same words as before. Nothing is ever handed to it that identifies the person or opens the installer: no token, no
-# install id, no invite id. `env -u` keeps a token out of its environment even if the shell around this run held one.
-# SUPPORT_UI and support_ui() are defined above blocked() so both App Management and Tess Support share one card binary.
-# One word the card reads: installing, done or failed. Written beside it and renamed, so the card never reads half a word.
-SUPPORT_STATUS="$STATE/.support-invite-status"
-support_status() { printf '%s\n' "$1" > "$SUPPORT_STATUS.tmp" && mv -f "$SUPPORT_STATUS.tmp" "$SUPPORT_STATUS"; }
-support_app_open() {
-  local app="$HOME/Applications/Tess Support.app"
-  { [ -n "$TESS_TEST" ] || [ -d "$app" ]; } && open "$app" >/dev/null 2>&1
-  return 0
-}
-
-# What the person clicked: install, decline, or nothing at all. A timeout (or a dialog that could not be shown) is not
-# an answer, so the invite asks again the next time someone is at the Mac.
-support_ask() {
-  if support_ui; then
-    # Exactly 0 (Add Tess Support) and 1 (Not now) are answers. Closing the card, a timeout or no screen to show it on
-    # (2) means nobody decided, so the invite is not spent.
-    local ui_rc
-    env -u TESS_SUPPORT_TOKEN "$SUPPORT_UI" ask --timeout 900 >/dev/null 2>&1 </dev/null; ui_rc=$?
-    case $ui_rc in
-      0) printf '%s\n' install; return 0 ;;
-      1) printf '%s\n' decline; return 0 ;;
-      2) return 0 ;;
-    esac
-    # A card that would not start at all (a file that cannot run here, or one that crashed) must not hide the invite:
-    # the plain dialog below asks instead.
-    log "support invite: the card exited $ui_rc; asking with the plain dialog"
-  fi
-  if [ -n "$TESS_TEST" ]; then
-    # Hold the dialog open, as a person who walked away would, so a test can prove nothing else on the Mac waits on it.
-    [ -n "${TESS_TEST_INVITE_WAIT:-}" ] && sleep "$TESS_TEST_INVITE_WAIT"
-    case "${TESS_TEST_INVITE_ANSWER:-}" in
-      install|decline) printf '%s\n' "$TESS_TEST_INVITE_ANSWER" ;;
-    esac
-    return 0
-  fi
-  # Never intrude over other apps: only ask while Spotify is the frontmost app.
-  lsappinfo info -only bundleid $(lsappinfo front 2>/dev/null) 2>/dev/null | grep -q '"com.spotify.client"' || return 0
-  local res
-  res=$(osascript -e 'display dialog "Krish invited you to Tess Support — a private helper in your Dock that can check Spotify and send him a bug note when something looks off. Nothing runs unless you open it.
-
-Install Tess Support?" with title "Tess Music" buttons {"Not now", "Install"} default button 2 giving up after 900' 2>/dev/null) || res=""
-  case "$res" in
-    *"gave up:true"*) return 0 ;;                        # they were not there; ask again next check
-    *"button returned:Install"*) printf '%s\n' install ;;
-    *"button returned:Not now"*) printf '%s\n' decline ;;
-  esac
-  return 0
-}
-
-# Once it is installed, say what it is and offer to open it. This is the only place a person is told it is a thing.
-support_welcome() {
-  local app="$HOME/Applications/Tess Support.app"
-  if [ -n "$TESS_TEST" ]; then
-    [ "${TESS_TEST_WELCOME_ANSWER:-}" = open ] && open "$app" >/dev/null 2>&1
-    return 0
-  fi
-  local res
-  res=$(osascript -e 'display dialog "Tess Support is now in your Dock.
-
-Click Tess Support anytime something in Spotify looks off — it can run a quick check, ask before taking a screenshot, and send Krish a note. Nothing runs unless you open it." with title "Tess Music" buttons {"Done", "Open Tess Support"} default button 1 giving up after 900' 2>/dev/null) || res=""
-  case "$res" in
-    *"button returned:Open Tess Support"*) [ -d "$app" ] && open "$app" >/dev/null 2>&1 ;;
-  esac
-  return 0
-}
-
-check_support_invite() {
-  [ -x "$VERIFY" ] || return 0
-  # They already have it: never mention it, never ask again.
-  if [ -f "$SUPPORT_CONFIG" ] || [ -f "$HOME_TESS/support/current/installed.json" ]; then rm -f "$STATE/.support-invited"; return 0; fi
-  # A dialog can wait 15 minutes, and the install runs after it. The caller has already dropped the main update lock
-  # (.installing) and removed it from the top-level EXIT trap. A lock of its own keeps two invite dialogs from ever
-  # opening at once without ever standing in the way of an update or deleting another run's .installing lock on exit.
-  # A run killed mid-dialog leaves the folder behind; an hour is longer than any dialog plus install.
-  [ -d "$SLOCK" ] && [ -n "$(find "$SLOCK" -maxdepth 0 -mmin +60 2>/dev/null)" ] && rmdir "$SLOCK" 2>/dev/null
-  mkdir "$SLOCK" 2>/dev/null || return 0
-  # zsh runs a function's EXIT trap when the function returns; only the lock this run created is removed.
-  trap 'rmdir "$SLOCK" 2>/dev/null' EXIT
-  local iid invited invite_id body tok rc code claim want have
-  iid=$(tr -d '[:space:]' < "$HOME_TESS/install-id" 2>/dev/null) || iid=""
-  # A report id is 32 lowercase hex characters; anything else is not an id this Mac can be invited by.
-  case "$iid" in ''|*[!0-9a-f]*) return 0 ;; esac
-  [ ${#iid} -eq 32 ] || return 0
-  curl -fsS --max-time 30 -H "content-type: application/json" --data-binary "{\"install\":\"$iid\"}" \
-    "$SUPPORT_INBOX/v1/support/invite/check" -o "$TMP/invite-check.json" 2>/dev/null \
-    || { log "support invite: check failed"; return 0; }
-  body=$(cat "$TMP/invite-check.json" 2>/dev/null) || body=""
-  invited=$(printf '%s' "$body" | sed -n 's/.*"invited"[[:space:]]*:[[:space:]]*true.*/1/p')
-  if [ "$invited" != 1 ]; then rm -f "$STATE/.support-invited"; return 0; fi
-  invite_id=$(printf '%s' "$body" | sed -n 's/.*"invite_id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')
-  case "$invite_id" in ''|*[!0-9]*) return 0 ;; esac
-  printf '%s\n' "$invite_id" > "$STATE/.support-invited"
-  local in_app=0
-  if [ "${TESS_SUPPORT_ACTION:-}" = "install" ]; then
-    in_app=1
-  else
-    [ -f "$STATE/.support-invite-asked-$invite_id" ] && return 0
-    # They said Install; a failure on our side must not re-ask every 20 minutes.
-    [ -f "$STATE/.support-invite-retry-$invite_id" ] && [ -z "$(find "$STATE/.support-invite-retry-$invite_id" -mmin +1440 2>/dev/null)" ] && return 0
-    # When Tess Mini is running on a real Mac, Spotify's in-theme Liquid Glass card handles the invite directly
-    # without opening a separate macOS window (#153).
-    if [ -z "$TESS_TEST" ] && pgrep -x TessMini >/dev/null 2>&1; then
-      return 0
-    fi
-    case "$(support_ask)" in
-      decline) touch "$STATE/.support-invite-asked-$invite_id"; log "support invite $invite_id: not now"; return 0 ;;
-      install) ;;
-      *) return 0 ;;   # nobody answered: ask again next time, and do not spend the invite
-    esac
-  fi
-  [ "$in_app" -eq 1 ] && printf '{"phase":"installing","progress":0.02,"step":"Verifying invite","detail":"Checking signed installer…"}\n' > "$SUPPORT_STATUS.tmp" && mv -f "$SUPPORT_STATUS.tmp" "$SUPPORT_STATUS"
-  # Signed first, claimed second: a bad download or a bad signature must not use up the invite.
-  if ! get support-install.sh "$TMP/support-install.sh" || ! get support-install.sig "$TMP/support-install.sig"; then
-    touch "$STATE/.support-invite-retry-$invite_id"
-    [ "$in_app" -eq 1 ] && printf '{"phase":"failed","progress":0,"step":"Download failed","detail":"Could not reach GitHub. Try again in a moment."}\n' > "$SUPPORT_STATUS.tmp" && mv -f "$SUPPORT_STATUS.tmp" "$SUPPORT_STATUS"
-    log "support invite $invite_id: installer download failed"
-    return 0
-  fi
-  if ! "$VERIFY" "$TMP/support-install.sh" "$(tr -d '\n' < "$TMP/support-install.sig")"; then
-    touch "$STATE/.support-invite-retry-$invite_id"
-    [ "$in_app" -eq 1 ] && printf '{"phase":"failed","progress":0,"step":"Signature check failed","detail":"Nothing was installed."}\n' > "$SUPPORT_STATUS.tmp" && mv -f "$SUPPORT_STATUS.tmp" "$SUPPORT_STATUS"
-    log "support invite $invite_id: installer failed its signature check; nothing was installed"
-    return 0
-  fi
-  # Bind the signed script to this rev-checked release so a stale mirror cannot replay an older signed copy.
-  want=$(awk '$1 == "support-install" { print $2 }' "$TMP/components.txt")
-  have=$(shasum -a 256 "$TMP/support-install.sh" | awk '{print $1}')
-  if [ -z "$want" ] || [ "$want" != "$have" ]; then
-    touch "$STATE/.support-invite-retry-$invite_id"
-    [ "$in_app" -eq 1 ] && printf '{"phase":"failed","progress":0,"step":"Release mismatch","detail":"Nothing was installed."}\n' > "$SUPPORT_STATUS.tmp" && mv -f "$SUPPORT_STATUS.tmp" "$SUPPORT_STATUS"
-    log "support invite $invite_id: installer does not match this release; nothing was installed"
-    return 0
-  fi
-  # With the card, "setting up" is shown on the card once there is a token to install with, so a download or a claim that
-  # fails never leaves a card spinning or a banner that promised an install. Without it, the banner is as it was.
-  [ "$in_app" -eq 1 ] || support_ui || notify "Installing Tess Support… this takes about a minute."
-  # The status code, not -f, decides what happened: a 404 is a spent invite, while a 429/503 or a dropped connection is
-  # a temporary miss. The reply body goes to a private temp file (it may hold the token) and is never logged.
-  claim="$TMP/invite-claim.json"
-  : > "$claim"; chmod 600 "$claim" 2>/dev/null
-  code=$(curl -sS --max-time 30 -H "content-type: application/json" \
-    --data-binary "{\"install\":\"$iid\",\"invite_id\":$invite_id}" \
-    -o "$claim" -w '%{http_code}' "$SUPPORT_INBOX/v1/support/invite/claim" 2>/dev/null) || code=""
-  case "$code" in
-    200) ;;
-    404)
-      # Spent, expired, revoked, or not this Mac's: the invite is gone, so never ask about it again.
-      rm -f "$STATE/.support-invited"
-      touch "$STATE/.support-invite-asked-$invite_id"
-      [ "$in_app" -eq 1 ] && printf '{"phase":"failed","progress":0,"step":"Invite expired","detail":"Ask Krish for a fresh invite."}\n' > "$SUPPORT_STATUS.tmp" && mv -f "$SUPPORT_STATUS.tmp" "$SUPPORT_STATUS"
-      log "support invite $invite_id: the invite is no longer open (spent, expired or revoked); not asking again"
-      rm -f "$claim"; return 0 ;;
-    *)
-      # 429, a 5xx, or no answer at all: temporary. Keep the invite open, and wait a day before asking again.
-      touch "$STATE/.support-invite-retry-$invite_id"
-      [ "$in_app" -eq 1 ] && printf '{"phase":"failed","progress":0,"step":"Could not claim invite","detail":"Temporary inbox error. Try again shortly."}\n' > "$SUPPORT_STATUS.tmp" && mv -f "$SUPPORT_STATUS.tmp" "$SUPPORT_STATUS"
-      log "support invite $invite_id: the invite could not be claimed (HTTP ${code:-none})"
-      rm -f "$claim"; return 0 ;;
-  esac
-  body=$(cat "$claim" 2>/dev/null) || body=""
-  rm -f "$claim"
-  tok=$(printf '%s' "$body" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\(tess_[0-9a-f]*\)".*/\1/p')
-  body=""
-  case "$tok" in tess_*) ;; *) tok="" ;; esac
-  if [ ${#tok} -lt 20 ]; then
-    # A 200 with no token is a broken reply, but the invite may have been spent on the other side: never ask again.
-    touch "$STATE/.support-invite-asked-$invite_id"
-    log "support invite $invite_id: the inbox answered without a token; not asking again"
-    return 0
-  fi
-  # The token is in this one command's environment and nowhere else: not argv (which any process can read), not the
-  # log, not the shell it came from. The installer copies it out and unsets it itself.
-  # The card runs beside the installer, not inside it: it only watches a status file, and the installer is started
-  # exactly as before, with the token in that one command's environment.
-  local ui_pid="" ui_rc=""
-  if [ "$in_app" -eq 0 ] && support_ui && support_status installing; then
-    env -u TESS_SUPPORT_TOKEN "$SUPPORT_UI" progress --status-file "$SUPPORT_STATUS" >/dev/null 2>&1 </dev/null &
-    ui_pid=$!
-  elif [ "$in_app" -eq 1 ]; then
-    printf '{"phase":"installing","progress":0.04,"step":"Starting setup","detail":"Preparing Pi runtime…"}\n' > "$SUPPORT_STATUS.tmp" && mv -f "$SUPPORT_STATUS.tmp" "$SUPPORT_STATUS"
-  fi
-  # If ~/.hermes was offloaded to an external drive via a user-owned symlink outside $HOME, pass its real folder so
-  # support-install.sh installs cleanly without weakening its symlink guard.
-  local -a install_env
-  install_env=(TESS_SUPPORT_PROGRESS_FILE="$SUPPORT_STATUS" TESS_VERIFY="$VERIFY")
-  if [ -z "$TESS_TEST" ] && [ -z "${HERMES_HOME:-}" ] && [ -L "$HOME/.hermes" ] && [ -d "$HOME/.hermes" ] && [ -O "$HOME/.hermes" ]; then
-    local resolved_hermes
-    resolved_hermes=$(cd -P "$HOME/.hermes" 2>/dev/null && pwd) || resolved_hermes=""
-    case "$resolved_hermes" in
-      ""|"$HOME"|"$HOME"/*) ;;
-      /*) install_env+=(HERMES_HOME="$resolved_hermes") ;;
-    esac
-  fi
-  env "${install_env[@]}" TESS_SUPPORT_TOKEN="$tok" sh "$TMP/support-install.sh" >> "$LOG" 2>&1
-  rc=$?
-  tok=""
-  touch "$STATE/.support-invite-asked-$invite_id"
-  if [ "$rc" -eq 0 ]; then
-    rm -f "$STATE/.support-invited"
-    log "support installed"
-    if [ "$in_app" -eq 1 ]; then
-      printf '{"phase":"done","progress":1.0,"step":"Tess Support is ready","detail":"Open the chat right inside Spotify."}\n' > "$SUPPORT_STATUS.tmp" && mv -f "$SUPPORT_STATUS.tmp" "$SUPPORT_STATUS"
-    elif [ -n "$ui_pid" ]; then
-      support_status done
-      wait "$ui_pid"; ui_rc=$?
-      # 0 is Open Tess Support; Done, closing the card and a card that could not be shown all leave it closed.
-      [ "$ui_rc" -eq 0 ] && support_app_open
-    else
-      support_welcome
-    fi
-  else
-    # Not "nothing was changed": the installer runs one step at a time and may have finished some of them.
-    log "support invite $invite_id: installer exited $rc"
-    if [ "$in_app" -eq 1 ]; then
-      printf '{"phase":"failed","progress":0,"step":"Could not finish setup","detail":"Check guard.log or try again from Settings."}\n' > "$SUPPORT_STATUS.tmp" && mv -f "$SUPPORT_STATUS.tmp" "$SUPPORT_STATUS"
-    elif [ -n "$ui_pid" ]; then
-      support_status failed
-      wait "$ui_pid"; ui_rc=$?
-      # Close is 1. Anything else means the card never reached a person, so the same words go out as a banner.
-      [ "$ui_rc" -eq 1 ] || notify "Tess Support couldn't finish installing; some files may have been partially set up. Run the uninstall command or ask Krish."
-    else
-      notify "Tess Support couldn't finish installing; some files may have been partially set up. Run the uninstall command or ask Krish."
-    fi
-  fi
-  rm -f "$SUPPORT_STATUS" "$SUPPORT_STATUS.tmp"
-  return 0
-}
+# Helpers and check_support_invite() are defined near the top so TESS_SUPPORT_ACTION=install can run before $LOCK.
 # From here on this run no longer owns .installing, so leaving must never delete a lock someone else took meanwhile.
 rm -f "$LOCK"; trap 'rm -rf "$TMP"' EXIT
 check_support_invite

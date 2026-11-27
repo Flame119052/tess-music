@@ -387,6 +387,7 @@ final class PiSupportBridge {
   private var seq = 0
   private var cmdSeq = 0
   private var busy = false
+  private var installProc: Process?
   private var supportErrors = MiniSupportErrors()
   private var lastActive = Date()
   private var events: [[String: Any]] = []
@@ -412,26 +413,55 @@ final class PiSupportBridge {
     return "none"
   }
 
+  private var statusPath: String { "\(stateDir)/.support-invite-status" }
+
+  private func writeInstallStatus(phase: String, progress: Double, step: String, detail: String) {
+    let obj: [String: Any] = ["phase": phase, "progress": progress, "step": step, "detail": detail]
+    guard let data = try? JSONSerialization.data(withJSONObject: obj),
+          var text = String(data: data, encoding: .utf8) else { return }
+    text += "\n"
+    try? FileManager.default.createDirectory(atPath: stateDir, withIntermediateDirectories: true)
+    try? text.write(toFile: statusPath, atomically: true, encoding: .utf8)
+  }
+
   func statusJSON() -> String {
     let fm = FileManager.default
     let state = supportState()
     var obj: [String: Any] = ["state": state]
-    if state == "invited",
-       let raw = try? String(contentsOfFile: "\(stateDir)/.support-invited", encoding: .utf8) {
-      let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-      if !id.isEmpty, id.allSatisfy(\.isNumber) {
-        obj["inviteId"] = id
-        obj["asked"] = fm.fileExists(atPath: "\(stateDir)/.support-invite-asked-\(id)")
+    if state == "installed" {
+      try? fm.removeItem(atPath: statusPath)
+    } else {
+      if state == "invited",
+         let raw = try? String(contentsOfFile: "\(stateDir)/.support-invited", encoding: .utf8) {
+        let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !id.isEmpty, id.allSatisfy(\.isNumber) {
+          obj["inviteId"] = id
+          obj["asked"] = fm.fileExists(atPath: "\(stateDir)/.support-invite-asked-\(id)")
+        }
       }
-    }
-    let statusPath = "\(stateDir)/.support-invite-status"
-    if let raw = try? String(contentsOfFile: statusPath, encoding: .utf8) {
-      let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-      if let d = trimmed.data(using: .utf8),
-         let parsed = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
-        obj["install"] = parsed
-      } else if trimmed == "installing" || trimmed == "done" || trimmed == "failed" {
-        obj["install"] = ["phase": trimmed, "progress": trimmed == "done" ? 1.0 : 0.0, "step": trimmed == "installing" ? "Setting up Tess Support" : "", "detail": ""]
+      if let raw = try? String(contentsOfFile: statusPath, encoding: .utf8) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let d = trimmed.data(using: .utf8),
+           var parsed = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+          if (parsed["phase"] as? String) == "installing" {
+            lock.lock()
+            let running = installProc?.isRunning == true
+            lock.unlock()
+            if !running {
+              let attrs = try? fm.attributesOfItem(atPath: statusPath)
+              let mtime = attrs?[.modificationDate] as? Date
+              if mtime == nil || Date().timeIntervalSince(mtime!) > 90 {
+                let step = "Previous setup timed out"
+                let detail = "Click Try again to retry."
+                writeInstallStatus(phase: "failed", progress: 0, step: step, detail: detail)
+                parsed = ["phase": "failed", "progress": 0, "step": step, "detail": detail]
+              }
+            }
+          }
+          obj["install"] = parsed
+        } else if trimmed == "installing" || trimmed == "done" || trimmed == "failed" {
+          obj["install"] = ["phase": trimmed, "progress": trimmed == "done" ? 1.0 : 0.0, "step": trimmed == "installing" ? "Setting up Tess Support" : "", "detail": ""]
+        }
       }
     }
     if let data = try? JSONSerialization.data(withJSONObject: obj), let s = String(data: data, encoding: .utf8) {
@@ -453,6 +483,11 @@ final class PiSupportBridge {
   func triggerInstall() {
     let fm = FileManager.default
     guard supportState() == "invited" else { return }
+    lock.lock()
+    let alreadyRunning = installProc?.isRunning == true
+    lock.unlock()
+    if alreadyRunning { return }
+
     if let raw = try? String(contentsOfFile: "\(stateDir)/.support-invited", encoding: .utf8) {
       let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
       if !id.isEmpty, id.allSatisfy(\.isNumber) {
@@ -460,15 +495,22 @@ final class PiSupportBridge {
         try? fm.removeItem(atPath: "\(stateDir)/.support-invite-retry-\(id)")
       }
     }
-    let statusPath = "\(stateDir)/.support-invite-status"
-    let initStatus = "{\"phase\":\"installing\",\"progress\":0.01,\"step\":\"Starting setup\",\"detail\":\"Checking invite…\"}\n"
-    try? initStatus.write(toFile: statusPath, atomically: true, encoding: .utf8)
+    writeInstallStatus(phase: "installing", progress: 0.01, step: "Starting setup", detail: "Checking invite…")
     let updater = "\(tessDir)/updater.sh"
-    guard fm.fileExists(atPath: updater) else { return }
+    guard fm.fileExists(atPath: updater) else {
+      writeInstallStatus(phase: "failed", progress: 0, step: "Updater missing", detail: "Run tess doctor and click Try again.")
+      return
+    }
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/bin/zsh")
     p.arguments = [updater]
     var env = ProcessInfo.processInfo.environment
+    let curPath = env["PATH"] ?? ""
+    if curPath.isEmpty {
+      env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+    } else if !curPath.split(separator: ":").contains("/usr/bin") {
+      env["PATH"] = "\(curPath):/usr/bin:/bin:/usr/sbin:/sbin"
+    }
     env["TESS_FORCE"] = "1"
     env["TESS_SUPPORT_ACTION"] = "install"
     env["TMPDIR"] = "/tmp"
@@ -476,7 +518,31 @@ final class PiSupportBridge {
     p.standardInput = FileHandle.nullDevice
     p.standardOutput = FileHandle.nullDevice
     p.standardError = FileHandle.nullDevice
-    try? p.run()
+    p.terminationHandler = { [weak self] proc in
+      guard let self else { return }
+      self.lock.lock()
+      if self.installProc === proc { self.installProc = nil }
+      self.lock.unlock()
+      if self.supportState() != "installed" {
+        let raw = (try? String(contentsOfFile: self.statusPath, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let d = raw?.data(using: .utf8)
+        let parsed = d.flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
+        if parsed == nil || (parsed?["phase"] as? String) == "installing" {
+          self.writeInstallStatus(phase: "failed", progress: 0, step: "Setup didn't finish", detail: "Click Try again to retry.")
+        }
+      }
+    }
+    lock.lock()
+    installProc = p
+    lock.unlock()
+    do {
+      try p.run()
+    } catch {
+      lock.lock()
+      if installProc === p { installProc = nil }
+      lock.unlock()
+      writeInstallStatus(phase: "failed", progress: 0, step: "Couldn't start setup", detail: "Click Try again to retry.")
+    }
   }
 
   func eventsJSON(after: Int) -> String {

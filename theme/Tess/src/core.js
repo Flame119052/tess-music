@@ -3080,6 +3080,9 @@
 
   function pollSupportInstall() {
     clearInterval(supInstallPoll);
+    const startedAt = Date.now();
+    let lastKey = '';
+    let lastChange = startedAt;
     supInstallPoll = setInterval(async () => {
       const d = await supportFetchStatus();
       if (!d) return;
@@ -3096,7 +3099,21 @@
         supInstallPoll = null;
         setInviteProgress(d.install);
       } else if (d.install) {
+        const key = `${d.install.progress ?? ''}|${d.install.step ?? ''}|${d.install.detail ?? ''}`;
+        if (key !== lastKey) {
+          lastKey = key;
+          lastChange = Date.now();
+        } else if ((d.install.progress ?? 0) <= 0.02 && Date.now() - lastChange > 45000) {
+          clearInterval(supInstallPoll);
+          supInstallPoll = null;
+          setInviteProgress({ phase: 'failed', progress: 0, step: 'Taking too long', detail: 'Click Try again to retry.' });
+          return;
+        }
         setInviteProgress(d.install);
+      } else if (d.state === 'invited' && Date.now() - startedAt > 5000) {
+        clearInterval(supInstallPoll);
+        supInstallPoll = null;
+        setInviteProgress({ phase: 'failed', progress: 0, step: 'Setup stopped', detail: 'Click Try again to retry.' });
       }
     }, 450);
   }
