@@ -1,6 +1,6 @@
 {
-  "version": "0.2.60",
+  "version": "0.2.61",
   "channel": "stable",
-  "sourceCommit": "31451b810e90fcc374181ef893c6ab0b5a53799f",
-  "previousSourceCommit": "f1e23feae882baf4a3cc64b5f7e8caf77e9cb139"
+  "sourceCommit": "b5589230d976a280356653872f7a73cff7dc0afe",
+  "previousSourceCommit": "31451b810e90fcc374181ef893c6ab0b5a53799f"
 }
